@@ -1,0 +1,21 @@
+# roles.toml — 角色权限配置
+# 复制为 roles.toml 并填入你的值
+
+# 主人 QQ 号（唯一）
+admin_qq = 0
+
+# 全局 OP 列表（需先用 /~op add 注册，再 /~op group set 指派到群）
+op_qqs = [
+    # 123456789,
+]
+
+# 分群 OP 指派 — OP 只在自己被指派的群有管理权
+[group_owners]
+# 群号 = [OP的QQ号列表]
+# 247478659 = [
+#     123456789,
+# ]
+
+# QQ -> 昵称映射
+[qq_name_map]
+# QQ号 = "昵称"
