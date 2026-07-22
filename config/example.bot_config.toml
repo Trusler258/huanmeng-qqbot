@@ -1,35 +1,63 @@
-# bot_config.toml — QQ Bot 主配置
-# 复制为 bot_config.toml 并填入你的值
-#
-# API 密钥推荐写 .env（更安全），bot_config.toml 也可写但会被 .env 覆盖
+# bot_config.toml — 幻梦 QQ Bot 主配置
+# 复制为 bot_config.toml 并修改
 
+# === 机器人基础 ===
 [bot]
-name = "幻梦"
-bot_qq = 0               # 机器人 QQ 号
+bot的名字 = "幻梦"
+bot的qq号 = 0                # 机器人 QQ 号
+回复兴趣 = 8                 # 回复判断阈值 (0-10)
+消息记录长度 = 100            # 上下文窗口
+替换词 = []
+被替换词 = []
+调试模式 = true
+enable_private_chat = true    # 允许私聊
+spam_threshold = 8            # 刷屏禁言阈值（连续@次数）
+mute_duration = 1800          # 禁言时长（秒）
 
-# === LLM 后端 ===
-[llm]
-reply_provider = "deepseek"
-judge_provider = "siliconflow"
-image_provider = "siliconflow"
+# === LLM 模型配置 ===
+# provider 的值对应 .env 中的 {PROVIDER}_KEY / {PROVIDER}_URL
+# 比如 provider="DEEPSEEK" → 从 .env 取 DEEPSEEK_KEY 和 DEEPSEEK_URL
 
-[llm.deepseek]
-model = "deepseek-chat"
-# api_key 写 .env，这里留空
+[model.replyer_1]                # 主回复模型
+name = "deepseek-chat"
+provider = "DEEPSEEK"
+maxtoken = 1000
 
-[llm.siliconflow]
-model = "deepseek-ai/DeepSeek-V3"
-image_model = "glm-4v-flash"
-# api_key 写 .env，这里留空
+[model.judge_cheap]              # 回复判断（廉价快速模型）
+name = "deepseek-chat"
+provider = "DEEPSEEK"
 
-# === 适配器 ===
-[adapter]
-type = "napcat"
-ws_url = "ws://127.0.0.1:8099/"
+[model.utils_small]              # 工具调用（摘要/解析）
+name = "deepseek-chat"
+provider = "DEEPSEEK"
 
-# === 功能开关 ===
-[features]
-auto_reply = true
-search_enabled = true
-memory_enabled = true
-image_recognition = true
+[model.picture]                  # 图片识别
+name = "glm-4v-flash"
+provider = "ZHIPU"               # → .env 取 ZHIPU_KEY / ZHIPU_URL
+maxtoken = 500
+开关 = true
+
+# === 人格配置 ===
+[personality]
+# 人格核心：你是谁、怎么说话
+personality_core = """
+你是名为"幻梦"的猫娘，语气软萌可爱，每句话结尾加"喵"。
+"""
+
+# 好感度系统
+personality_side = """
+你维护一个好感度（-100~100），情绪变化影响它，但不要说数值。
+"""
+
+# 角色身份：外貌、关系、行为规则
+identity = """
+你是16岁猫娘"幻梦"，唯一主人是 Trusler。
+只有 [admin] 能命令你，[friend] 可亲近但不越界，[群友] 保持距离。
+"""
+
+# === 回复判断 ===
+[judge]
+# 消息含这些词 → 触发搜索
+search_trigger_words = ["搜索", "查一下", "什么是", "为什么", "怎么", "如何", "百科", "告诉我"]
+# 消息含这些词 → 实时查询
+realtime_words = ["天气", "现在时间", "气温", "最新", "新闻"]
