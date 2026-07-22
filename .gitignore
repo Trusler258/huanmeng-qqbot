@@ -13,6 +13,8 @@ data/Image_description_cache.txt
 data/Group_members_name.txt
 data/recall.json
 data/memory_*.md
+data/templates/old/
+data/Message_frequency_cache.txt
 
 # === 日志 ===
 logs/
