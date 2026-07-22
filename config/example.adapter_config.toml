@@ -1,0 +1,7 @@
+# adapter_config.toml — 适配器配置
+# 复制为 adapter_config.toml 并填入你的值
+
+[napcat]
+ws_url = "ws://127.0.0.1:8099/"
+retry_interval = 5        # 重连间隔（秒）
+heartbeat_interval = 30   # 心跳间隔（秒）
