@@ -1,0 +1,69 @@
+# 幻梦 QQ Bot — .gitignore
+
+# === 敏感配置（API 密钥） ===
+config/.env
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# === 运行时数据 ===
+data/img_temp/
+data/fav.json
+data/luck.json
+data/search_cache.json
+data/Image_description_cache.txt
+data/Group_members_name.txt
+data/recall.json
+
+# === 日志 ===
+logs/
+*.log
+
+# === IDE / 编辑器 ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# === 系统文件 ===
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# === 私有模块（不上传） ===
+modules/gh.py
+modules/wdsj.py
+modules/tuf_commands.py
+modules/weather.py
+modules/chinese_chess.py
+modules/box.py
+services/wdsj_api.py
+services/tuf_api.py
+modules_private/
+.bot_protect
+__pycache__/
+*.pyc
+logs/
+data/img_temp/
+data/fav.json
+data/luck.json
+data/search_cache.json
+data/Image_description_cache.txt
+data/Message_frequency_cache.txt
+data/Group_members_name.txt
+config/.env
+config/bot_config.toml
+config/adapter_config.toml
+data/memory_*.md
+data/templates/old/
+.workbuddy/
+outputs/
