@@ -1,6 +1,5 @@
 # 语言文件：所有用户可见的文本集中管理
 # 变量用法：${name} 会被替换为 bot_config.toml 中的 [bot] bot的名字
-# 其他变量见各条注释
 
 [bot]
 fallback_reply = "喵～${name}刚刚没听清，可以再说一遍吗？"
@@ -9,81 +8,41 @@ fallback_reply = "喵～${name}刚刚没听清，可以再说一遍吗？"
 header = "╭―――――― ${name} 指令帮助 ――――――╮"
 footer = "╰――  /~help <指令> 查看详细用法  ――╯"
 usage_hint = "/~help <指令>  查看某个指令的详细用法"
-usage_example = "例如: /~help wzq, /~help weather"
+usage_example = "例如: /~help wzq"
 not_found = "没有「${keyword}」的详细帮助喵~ 试试 /~help 看全部"
 
-# 分类 + 指令列表 (数组 of 数组: ["标签", "文本"])
 sections = [
-    ["--- 聊天 ---", "@${name} <内容>     跟我说话（也会自动判断插话）", "{{提示词}}         注入临时人设（仅主人）"],
-    ["--- 工具 ---", "/~天气 <城市>      7 天天气预报", "/~eq [数量]        地震速报", "/~md <内容>         Markdown卡片", "/~box <单号>        快递物流", "/~s <关键词>        联网搜索", "/~remind <时间> <事> 定时提醒", "/~抽 <A> <B>        随机选择", "/~tr <语言> <文本>  翻译 (中英日韩法德)", "/~countdown <日期> <事> 倒计时"],
-    ["--- 数据 ---", "/~stats [...]      群聊统计 (昨天/今日)", "/~recall [数量]     撤回记录", "/~favlist           好感度"],
-    ["--- 游戏 ---", "/~wzq ...          五子棋对战", "/~wdsj <模式> <名>  洛花星雨战绩", "/~luck              今日运气值", "/~gh                公会登记"],
-    ["--- 音游 (TUF) ---", "/~tufsearch /~tuflevel /~tufd /~tufpage"],
-    ["--- 系统 ---", "/~cost              Token消耗统计", "/~info             运行状态", "/~up [版本]         更新日志", "/~ping <目标>       全球延迟测试", "/~md <内容>         Markdown卡片"],
-    ["--- 主人专用 ---", "/~owner ...        配置/数据管理", "/~memory ...       记忆查询", "/~preset ...        提示词注入管理", "/~analyze ...      零上下文日志分析", "/~reload           热重载配置", "/~token ...        Debug token计算"],
+    ["--- 聊天 ---", "@${name} <内容>     跟我说话"],
+    ["--- 工具 ---", "/~s <关键词>        联网搜索", "/~remind <时间> <事> 定时提醒", "/~抽 <A> <B>        随机选择", "/~countdown <日期> <事> 倒计时"],
+    ["--- 数据 ---", "/~stats [...]      群聊统计", "/~recall [数量]     撤回记录", "/~favlist           好感度"],
+    ["--- 游戏 ---", "/~wzq ...          五子棋对战", "/~luck              今日运气值"],
+    ["--- 系统 ---", "/~cost              Token消耗统计", "/~info             运行状态", "/~up [版本]         更新日志", "/~ping <目标>       全球延迟测试"],
+    ["--- 主人专用 ---", "/~owner ...        配置/数据管理", "/~memory ...       记忆查询", "/~preset ...        提示词注入管理", "/~reload           热重载配置"],
 ]
 
-# 详细帮助（按指令名查找）
 [help.detail]
-wzq = "【五子棋 /~wzq】\nduel @某人    发起挑战\naccept        接受挑战\ndecline       拒绝挑战\ncancel        取消未开始的挑战\n<坐标>        落子 (H8 / 8,8)\nai <难度> [nofb] 人机对战 (可选无禁手)\nboard         查看棋盘\nsurrender     认输\nundo          悔棋 (对手再发一次确认)\nstatus        对局信息\nhistory [N]   历史战绩\nhistory <编号> board 查看对局棋盘"
-
-weather = "【天气 /~天气 /~weather】\n/~天气 深圳       查询深圳7天天气\n/~weather Beijing  支持中文和英文城市名\n自动生成精美天气卡片"
-
-box = "【快递 /~box】\n/~box 73706815751505   查询快递单号\n显示物流轨迹、当前状态、预估送达\n失败自动降级为纯文本"
-
-remind = "【提醒 /~remind /~提醒】\n/~remind 30分钟后 吃饭\n/~remind 2小时后 开会\n/~remind 明天14:30 午休\n/~remind 14:30 下班\n到期自动 @ 提醒"
-
-chou = "【抽签 /~抽】\n/~抽 吃面 吃饭 打游戏   空格分隔\n/~抽 选项A,选项B,选项C   逗号分隔\n随机选一个 + 猫娘点评"
-
-stats = "【统计 /~stats /~统计】\n/~stats         今日群聊统计\n/~stats 昨天    昨日群聊回顾\n自动 0 点发送日报"
-
-recall = "【撤回 /~recall】\n/~recall        查看最近 5 条撤回\n/~recall 10     查看最近 10 条\n主动录制，100% 命中"
-
-s = "【搜索 /~s】\n/~s Python asyncio 用法\n自动判断是否需要搜索 + DuckDuckGo"
-
-favlist = "【好感度 /~favlist】\n查看当前群/私聊的好感度排行\n从高到低，显示昵称"
-
-luck = "【运气 /~luck】\n获取今日运气值 (1~100)\n0.1% 概率抽到 1000\n同一个人当天内结果不变"
-
-up = "【更新日志 /~up /~updateinfo】\n/~up            最新版本\n/~up 0.9.4      指定版本\n/~up all        完整日志\n生成精美 HTML 卡片"
-
-updateinfo = "【更新日志 /~up /~updateinfo】\n/~up            最新版本\n/~up 0.9.4      指定版本\n/~up all        完整日志"
-
-info = "【系统信息 /~info】\n显示运行状态: 系统/运行时间/内存/磁盘/CPU\n连接状态/消息统计/实时模型名/Token消耗"
-
-ping = "【全球延迟测试 /~ping】\n/~ping <域名或IP> [区域...]  从全球节点测试延迟\n/~ping google.com              默认 CN/US/JP/DE/SG\n/~ping baidu.com CN,JP         指定国家\n/~ping qq.com Beijing          指定城市\n/~ping qq.com tcp              TCP 协议\n数据来源: Globalping (3500+ 节点)"
-
-tufsearch = "【TUF 搜索 /~tufsearch】\n/~tufsearch Freedom Dive   搜索谱面\n/~tufpage 2                翻页"
-
-tuflevel = "【TUF 详情 /~tuflevel /~tuf谱面】\n/~tuflevel Galaxy Collapse  谱面详情卡片"
-
-tufd = "【TUF 下载 /~tufd】\n/~tufd <编号>  下载谱面直链"
-
-owner = "【配置管理 /~owner (主人)】\n/~owner wl show        查看白名单\n/~owner wl add <群号> atonly   添加仅@模式\n/~owner wl rmv <群号>  移除白名单\n/~owner prefix         查看当前拦截关键词\n/~owner prefix set <词1,词2>  设置关键词\n/~owner prefix clear    清空关键词\n/~owner stats          查看统计汇总"
-
-memory = "【记忆管理 /~memory (主人)】\n/~memory list    查看所有记忆组\n/~memory read <群号> [N]  查看最近N条记忆\n/~memory search <群号> <词> 关键词搜索\n/~memory clean <群号>      清空记忆"
-
-preset = "【提示词注入 /~preset (主人)】\n/~preset          查看已注入的提示词\n/~preset show     同上\n/~preset clear    清除注入"
-
-analyze = "【零上下文分析 /~analyze (主人)】\n/~analyze test  测试分析能力\n发送任意非聊天内容给 bot 分析"
-
-reload = "【重载 /~reload (主人)】\n热重载 .toml 配置，不重启 bot"
-
-gh = "【公会登记 /~gh】\n/~gh add <公会名>        登记\n/~gh fix <公会名>        修改\n/~gh del                 删除\n/~gh list                查看列表\n/~gh new <qq> <公会名>   帮登记(需op)\n/~gh op <qq>             授权(仅主人)"
-
-cost = "【Token消耗 /~cost】\n查看今日/累计 Token 消耗和预估费用\ndeepseek: 缓存命中 ¥0.02/M, 未命中 ¥1/M, 输出 ¥2/M"
-
-token = "【Token计算 /~token /~tokens】\n/~token <文本>   用 DeepSeek tokenizer 计算 token 数\n显示预估输入/输出费用"
-
-draw = "【绘画 /~draw】\n/~draw <提示词>                    文生图 (默认 1024x1024)\n/~draw 512x512 <提示词>           指定尺寸\n/~draw 1024x768 <提示词>          横版\n/~draw 768x1024 <提示词>          竖版\n支持分辨率: 256×256~1792×1792\n模型: agnes-image-2.1-flash (免费无限量)"
-
-video = "【视频 /~video】\n/~video <提示词>                   文生视频 (默认 1152x768 81帧 24fps)\n/~video <提示词> 512x512           指定尺寸\n/~video <提示词> 768x768 121        指定尺寸+帧数\n/~video <提示词> 512x512 81 30      尺寸+帧数+fps\n模型: agnes-video-v2.0 (免费 500秒/天)"
-
-img2video = "【图生视频 /~img2video】\n/~img2video <图片URL>               将图片转为视频\n/~img2video <图片URL> <描述>         带提示词的图生视频\n/~img2video <URL> 512x512            指定输出尺寸\n模型: agnes-video-v2.0 (免费 500秒/天)"
-
-md = "【Markdown /~md】\n/~md <内容>        发送 Markdown 消息卡片\n示例: /~md # 标题\\n> 引用\\n**粗体**"
-
-eq = "【地震 /~eq /~地震】\n/~eq           最新 1 条地震速报\n/~eq 3         最新 3 条\n/~eq m5        5级以上\n/~eq 四川      筛选地点"
+wzq = "【五子棋 /~wzq】\nduel @某人    发起挑战\naccept        接受挑战\ndecline       拒绝挑战\ncancel        取消未开始的挑战\n<坐标>        落子 (H8 / 8,8)\nai <难度> [nofb] 人机对战\nboard         查看棋盘\nsurrender     认输\nundo          悔棋\nstatus        对局信息\nhistory [N]   历史战绩"
+remind = "【提醒 /~remind】\n/~remind 30分钟后 吃饭\n/~remind 明天14:30 开会\n到期自动 @ 提醒"
+chou = "【抽签 /~抽】\n/~抽 吃面 吃饭 打游戏\n随机选一个 + 猫娘点评"
+stats = "【统计 /~stats】\n/~stats         今日群聊统计\n/~stats 昨天    昨日群聊回顾"
+recall = "【撤回 /~recall】\n/~recall        查看最近 5 条撤回\n/~recall 10     查看最近 10 条"
+s = "【搜索 /~s】\n/~s Python asyncio 用法"
+favlist = "【好感度 /~favlist】\n查看当前群/私聊的好感度排行"
+luck = "【运气 /~luck】\n获取今日运气值 (1~100)"
+up = "【更新日志 /~up】\n/~up            最新版本\n/~up 0.9.4      指定版本\n/~up all        完整日志"
+updateinfo = "【更新日志 /~up】\n/~up            最新版本\n/~up 0.9.4      指定版本"
+info = "【系统信息 /~info】\n显示运行状态: 系统/运行时间/内存/磁盘/CPU"
+ping = "【全球延迟测试 /~ping】\n/~ping <域名或IP>  测试延迟\n数据来源: Globalping"
+owner = "【配置管理 /~owner (主人)】"
+memory = "【记忆管理 /~memory (主人)】\n/~memory list    查看所有记忆组\n/~memory read <群号> [N]  查看记忆\n/~memory search <群号> <词> 关键词搜索"
+preset = "【提示词注入 /~preset (主人)】\n/~preset clear    清除注入"
+reload = "【重载 /~reload (主人)】\n热重载 .toml 配置"
+cost = "【Token消耗 /~cost】\n查看今日/累计 Token 消耗和预估费用"
+token = "【Token计算 /~token】\n/~token <文本>   计算 token 数和费用"
+draw = "【绘画 /~draw】\n/~draw <提示词>   文生图"
+video = "【视频 /~video】\n/~video <提示词>  文生视频"
+img2video = "【图生视频 /~img2video】\n/~img2video <图片URL>  图生视频"
+eq = "【地震 /~eq】\n/~eq           最新 1 条地震速报\n/~eq 3         最新 3 条"
 
 [ping]
 response = "喵~ ${name}在线中 (。>∀<。)ﾉ"
@@ -109,59 +68,16 @@ no_result = "没有找到相关信息喵，可以试试其他关键词~"
 result_header = "【搜索结果】"
 searching = "正在帮你搜喵，等一下下..."
 
-[weather]
-prompt_input = "喵？你还没有说城市呢～ 比如 /~天气 深圳 就可以啦 (｡･ᴗ･)✧"
-city_not_found = "呜…这个城市好像查不到，是不是名字写错了喵？再试一次好不好 (´;︵;`)"
-api_error = "天气服务暂时出了点小问题喵: ${message}"
-fallback_error = "天气服务暂时不可用，请稍后再试喵～"
-table_header_date = "日期"
-table_header_condition = "天气(白天/夜间)"
-table_header_temp = "最高/最低温"
-table_header_wind = "风力"
-table_header_aqi = "空气质量(AQI)"
-table_format = "${date} ${condition} ${temp} ${wind} ${aqi}"   # 表行列可根据需要调整
-talk_admin = "喵～主人，${location}的天气幻梦已经帮你看好啦！"
-talk_user = "喵～你，${location}的天气我帮你查啦！"
-talk_temp_range = "未来一周气温在${min}℃到${max}℃之间，最热是${max_day}的${max}℃，最凉快是${min_day}的${min}℃。"
-talk_rain = "出门别忘了带伞哦——${rain_dates}，淋湿了可不行 (,,•́ . •̀,,)"
-talk_no_rain = "这几天都不会下雨，可以放心出门啦～"
-talk_aqi_good = "深呼吸几口，空气都是甜的喵～"
-talk_aqi_moderate = "空气还行，正常活动没问题"
-talk_aqi_poor = "空气质量一般，敏感的话记得戴口罩哦"
-talk_footer = "下面给你列了逐日预报，有什么行程可以对着看喵～"
-searching = "正在帮你看天气喵，等等哦..."
-
-[box]
-prompt_input = "喵？你还没有告诉我单号呢～ 比如 /~box 73706815751505 就可以啦 (｡･ᴗ･)✧"
-api_error = "快递查询服务好像睡着了喵… 待会儿再试试吧 (´;︵;`)"
-network_error = "网络好像不太稳定，查不到快递喵，再试一次好不好？"
-no_result = "没有找到这个单号的物流信息喵，是不是单号输错了？"
-header = "喵～${cp_name}快递（单号${tracking_no}）信息来啦！"
-state = "当前状态：${state}"
-latest = "最新动态：${msg}"
-trajectory_header = "物流轨迹："
-trajectory_item = "  ${time} - ${context}"
-delivering_tip = "快递员正在派送，记得保持电话畅通喵～"
-signed_tip = "已经签收了哦~"
-parse_error = "快递信息解析出错喵… 可能数据格式变了，找管理员修一下代码吧 (｡•́︿•̀｡)"
-
-[wdsj]
-lb_searching = "正在查排行榜喵，有点慢...等一下下"
-player_searching = "正在查 ${player} 的 ${template} 战绩喵，等一下下..."
-lb_fail = "查询「${board}」失败喵~"
-player_not_found = "未找到玩家「${player}」的${template}战绩喵~ 检查名字或试试官网"
-img_download_fail = "图片下载失败喵~ 试试不带 img 看文字数据"
-
 [image]
-service_error = "呜…图片服务好像抽风了喵，待会儿再试试吧 (｡•́︿•̀｡)"
-broken_image = "这张图片好像挂了喵，再戳一下试试~"
-download_error = "图片下载失败喵，可能服务器在睡觉…"
+service_error = "图片服务暂时不可用喵"
+broken_image = "这张图片好像挂了喵"
+download_error = "图片下载失败喵"
 
 [relation]
 prompt_usage = "参数不足，请按格式：/#添加关系 QQ号 昵称 关系"
 invalid_qq = "QQ号必须是纯数字"
 invalid_role = "关系不能设置为admin"
-success = "已更新关系：${qq}(${name}) → ${role}"
+success = "已更新关系：${qq}(${name}) -> ${role}"
 save_fail = "保存配置失败: ${error}"
 
 [reload]
@@ -169,83 +85,41 @@ permission_denied = "权限不足喵~"
 success = "配置热重载完成喵~ done!"
 
 [resetfav]
-empty = "好感度记录本来就是空的喵，不需要重置啦~"
-success = "好感度已全部重置喵~ 下次聊天时会重新开始计算 (｡･ω･｡)"
+empty = "好感度记录本来就是空的喵"
+success = "好感度已全部重置喵~"
 
 [error]
 permission_denied = "Permission denied"
 unknown_command = "未知指令 ${prefix}${cmd}，使用 /~help 查看可用指令喵~"
 command_error = "指令执行时出了点小问题喵，请稍后再试~"
-command_error_detail = "指令 /~${cmd} 执行异常喵…\n错误: ${err}\n详情: ${msg}"
+command_error_detail = "指令 /~${cmd} 执行异常喵…\n错误: ${err}"
 api_fail = "服务暂时不可用喵，请稍后再试~"
-hallucination = "呜...我好像说了些不确定的东西喵，主人换种问法试试？"
+hallucination = "我好像说了些不确定的东西喵，换种问法试试？"
 
-# 记忆文件头部
 [memory]
 file_header = "# ${name}的记忆 (${chat_id})\n"
 recall_header = "【你的过往记忆（与当前话题相关的部分）】"
+summarize_prompt = "请根据以下聊天记录，生成一条结构化记忆摘要。"
 
-# 更新日志
 [update_info]
 read_error = "读取更新日志失败喵: ${error}"
 
-# 其他临时标记
 [testsys]
-card_markdown = "📌 **系统测试卡片**\n点击下方按钮，机器人将回复“test ok”。"
+card_markdown = "系统测试卡片"
 button_label = "点我测试"
 button_visited = "已点"
 unsupport_tip = "当前版本不支持此按钮"
 
-# ── 戳一戳 ──
 [poke]
 message = "${name} 摸了摸${bot_name}的头"
 
-# ── 快递状态映射（i18n）──
-[box.state_transport]
-default = "运输中"
-
-[box.state_delivering]
-default = "派送中"
-
-[box.state_signed]
-default = "已签收"
-
-[box.state_return]
-default = "退件"
-
-[box.state_pending]
-default = "待揽收"
-
-[box.state_finish]
-default = "已完成"
-
-# ── 天气表格前缀 ──
-[weather.table_header_prefix]
-default = "【逐日预报】"
-
-# ── 图片识别提示词 ──
-[image.recognition_prompt]
-default = "请按以下格式描述图片：\n1. 文字提取：完整提取图中所有可见文字（没有则写\"无文字\"）。\n2. 图像描述：详细描述场景、光线色调、所有物体、人物动作神态、构图氛围、前后景物层次。用一段完整流畅的文字。"
-
-# ── 记忆摘要提示词（增强版）──
-[memory.summarize_prompt]
-default = """请根据以下聊天记录，生成一条结构化记忆摘要。
-要求：用中文，40~80字。包含谁说了什么、讨论了什么主题、达成了什么结论或决定。
-如果是闲聊/日常话题，记录氛围和情感色彩。如果是问题咨询，记录问题的核心和答案要点。
-只输出记忆文本，不要解释、编号或前缀。
-
-对话记录：
-{conversation}
-
-记忆摘要："""
-
 [recall]
 group_only = "撤回记录仅在群聊中可用喵~"
-empty = "这个群还没有撤回记录喵~（可能是重启后数据清空了）"
+empty = "这个群还没有撤回记录喵~"
 
 [remind]
 usage = "用法: /~remind <时间> <内容>  例如: /~remind 30分钟后 该吃饭啦喵~"
-invalid_time = "时间格式不对喵~ 试试: /~remind 30分钟后 吃饭  或  /~remind 明天14:30 开会"
+invalid_time = "时间格式不对喵~ 试试: /~remind 30分钟后 吃饭"
 
 [luck]
 prompt = "要抽什么呢？试试 /~抽 吃饭 睡觉 打游戏 喵~"
@@ -254,41 +128,24 @@ min_options = "至少给两个选项喵~ 比如 /~抽 吃面 吃饭"
 [stats]
 group_only = "群聊统计仅在群聊中可用喵~"
 
-[analyze]
-fail = "分析失败喵~ 试试缩短日志或重试。"
-
 [preset]
 permission = "权限不足喵~ 只有主人可以使用此指令"
-cleared = "提示词已清除喵~ (｡･ω･｡)"
+cleared = "提示词已清除喵~"
 no_preset = "当前没有注入的提示词喵~"
-empty = "当前没有注入的提示词喵~ 用法：发 {{提示词内容}} 来注入，{{reset}} 清除"
+empty = "当前没有注入的提示词喵~"
 
 [translate]
 fail = "翻译失败喵~ 稍后再试"
 
 [countdown]
-empty_list = "还没有倒计时喵~ 试试 /~countdown 2026-12-25 圣诞节"
+empty_list = "还没有倒计时喵~"
 empty_single = "还没有倒计时喵~"
 delete_invalid_id = "编号必须是数字喵~"
 delete_out_of_range = "编号超出范围喵~"
 
 [wzq]
-start = "人机对战开始！你执黑 vs AI(${diff})，请先落子喵~"
-user_not_found = "找不到「${name}」的 QQ 号喵~ 请用 @ 或 QQ 号"
+start = "人机对战开始！你执黑 vs AI，请先落子喵~"
+user_not_found = "找不到玩家喵~"
 no_game = "当前没有对局喵~"
 no_records = "还没有对局记录喵~"
-only_n_records = "只有 ${count} 场记录喵~"
-
-[xq]
-start = "对局开始！你执红方，请落子喵~"
-invalid_move = "走法「${move}」不对喵~ 试试 h2e2 或 炮二平五"
-not_your_game = "这不是你的对局喵~"
-no_game = "当前群没有象棋对局喵~ 用 /~xq start 开始"
-game_exists = "当前群已经有一局象棋在进行中喵~ 用 /~xq resign 认输结束"
-game_over = "这局已经结束了喵~ ${result}"
-checkmate_player = "将死！你赢了喵~"
-stalemate = "困毙！和棋喵~"
-checkmate_ai = "将死！AI 赢了喵~"
-check = "将军！"
-resign = "你认输了喵~ AI 获胜！"
 only_n_records = "只有 ${count} 场记录喵~"
