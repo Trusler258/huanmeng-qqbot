@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=440, initial-scale=1.0">
+<title>排行榜 · {{BOT_NAME}}</title>
+<style>
+@page{margin:0}
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:440px;font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:#fff;background:#0f3460}
+.card{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);border-radius:12px;padding:16px}
+.header{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,0.1)}
+.header .title{font-size:18px;font-weight:bold}
+.header .period-tag{font-size:11px;background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:4px}
+.entry{display:flex;align-items:center;gap:10px;padding:6px 0}
+.rank{width:28px;text-align:right;font-size:14px;font-weight:bold;color:#aaa;flex-shrink:0}
+.entry:nth-child(1) .rank{color:#ffd700}
+.entry:nth-child(2) .rank{color:#c0c0c0}
+.entry:nth-child(3) .rank{color:#cd7f32}
+.head{width:32px;height:32px;border-radius:4px;background:rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden;position:relative}
+.head::before{content:"?";font-size:14px;color:rgba(255,255,255,0.3);position:absolute}
+.head img{width:100%;height:100%;object-fit:cover;position:relative;z-index:1;image-rendering:pixelated}
+.name{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.value{font-size:13px;font-weight:bold;color:#4fc3f7;flex-shrink:0}
+.footer{margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);font-size:10px;color:#666;text-align:center}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <span class="title">{{TITLE}}</span>
+    <span class="period-tag">{{PERIOD}}</span>
+  </div>
+  {{ENTRIES}}
+  <div class="footer">{{BRAND}}</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Sarasa Gothic SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh;
+  }
+  .card {
+    background: linear-gradient(135deg, #16213e 0%, #0f3460 100%);
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    max-width: 700px;
+  }
+  .header { text-align: center; margin-bottom: 16px; }
+  .header h2 { font-size: 20px; color: #e0e0e0; margin-bottom: 4px; }
+  .header .sub { font-size: 13px; color: #8892b0; }
+  .players { display: flex; justify-content: space-around; align-items: center; margin-bottom: 16px; }
+  .player { text-align: center; }
+  .player .name { font-size: 15px; margin-bottom: 2px; }
+  .player .stone {
+    width: 28px; height: 28px; border-radius: 50%; margin: 4px auto;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+  .stone.black { background: radial-gradient(circle at 35% 35%, #555, #111); }
+  .stone.white { background: radial-gradient(circle at 35% 35%, #fff, #999); border: 1px solid #666; }
+  .player .role { font-size: 11px; color: #8892b0; }
+  .active-turn { color: #64ffda; font-weight: bold; }
+  .vs { font-size: 16px; color: #ccc; }
+  .board-wrap { display: flex; justify-content: center; }
+  .board-container { position: relative; }
+  .coord-row { display: flex; }
+  .coord-label {
+    width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: #666; user-select: none;
+  }
+  .board-grid {
+    display: grid;
+    grid-template-columns: 28px repeat(15, 34px);
+    grid-template-rows: 28px repeat(15, 34px);
+    background: #c8a45c;
+    border: 2px solid #8b6914;
+    border-radius: 4px;
+  }
+  .corner-cell {
+    background: #b8934e; border-radius: 4px 0 0 0;
+  }
+  .col-label {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: #5a3e0b; font-weight: bold;
+    background: #b8934e;
+  }
+  .row-label {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: #5a3e0b; font-weight: bold;
+    background: #b8934e;
+  }
+  .cell {
+    width: 34px; height: 34px;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .cell::before {
+    content: ''; position: absolute;
+    width: 90%; height: 1px; background: #8b6914; top: 50%; left: 5%;
+  }
+  .cell::after {
+    content: ''; position: absolute;
+    width: 1px; height: 90%; background: #8b6914; left: 50%; top: 5%;
+  }
+  .stone-piece {
+    width: 28px; height: 28px; border-radius: 50%; z-index: 1;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .stone-piece.black { background: radial-gradient(circle at 35% 35%, #555, #111); }
+  .stone-piece.white { background: radial-gradient(circle at 35% 35%, #fff, #bbb); border: 1px solid #999; }
+  .stone-piece.last-move {
+    box-shadow: 0 0 0 3px rgba(255, 100, 100, 0.7), 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .star-point {
+    width: 8px; height: 8px; background: #8b6914; border-radius: 50%; z-index: 1;
+  }
+  .status-bar {
+    text-align: center; margin-top: 12px; font-size: 14px; padding: 8px;
+    background: rgba(255,255,255,0.05); border-radius: 8px;
+  }
+  .status-bar.win { color: #ffd700; }
+  .status-bar.draw { color: #8892b0; }
+  .status-bar.playing { color: #64ffda; }
+  .status-bar.waiting { color: #ff9800; }
+  .footer { text-align: center; margin-top: 8px; font-size: 11px; color: #555; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <h2>五子棋</h2>
+    <div class="sub">${SUB_TEXT} | ${DATE}</div>
+  </div>
+  <div class="players">
+    <div class="player">
+      <div class="name ${BLACK_ACTIVE}">${BLACK_NAME}</div>
+      <div class="stone black"></div>
+      <div class="role">黑方</div>
+    </div>
+    <div class="vs">VS</div>
+    <div class="player">
+      <div class="name ${WHITE_ACTIVE}">${WHITE_NAME}</div>
+      <div class="stone white"></div>
+      <div class="role">白方</div>
+    </div>
+  </div>
+  <div class="board-wrap">
+    <div class="board-container">
+      <div class="board-grid">
+        <div class="corner-cell"></div>
+        ${COL_LABELS}
+        ${CELLS}
+      </div>
+    </div>
+  </div>
+  <div class="status-bar ${STATUS_CLASS}">${STATUS_TEXT}</div>
+  <div class="footer">手数 ${MOVE_COUNT} | 坐标如 H8 或 8,8 | /~wzq 查看帮助</div>
+</div>
+</body>
+</html>

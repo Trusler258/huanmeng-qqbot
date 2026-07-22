@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=800, initial-scale=1.0">
+<title>更新日志 · 幻梦</title>
+
+<style>
+/* ═══════════════════════════════════════
+   幻梦 Design System — 更新日志卡片
+   ═══════════════════════════════════════ */
+:root {
+  --primary:       #ec4899;
+  --primary-light: #f472b6;
+  --primary-pale:  rgba(236,72,153,0.10);
+  --primary-glow:  rgba(236,72,153,0.22);
+
+  --bg-page:  #0d0d1a;
+  --bg-card:  rgba(255,255,255,0.04);
+  --bg-code:  #0a0c12;
+
+  --text-primary:   #ffffff;
+  --text-secondary: rgba(255,255,255,0.60);
+  --text-muted:     rgba(255,255,255,0.35);
+
+  --success: #10b981;
+  --warning: #f59e0b;
+  --error:   #ef4444;
+  --info:    #38bdf8;
+  --deepseek:#5686FE;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+
+  --shadow-card: 0 8px 40px rgba(0,0,0,0.5), 0 0 100px rgba(236,72,153,0.05);
+
+  --font-sans: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Consolas', 'Courier New', monospace;
+
+  --border: rgba(255,255,255,0.07);
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+html {
+  width: 760px;
+  margin: 0 auto;
+  background:
+    radial-gradient(ellipse 70% 50% at 20% -15%, rgba(236,72,153,0.16) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 40% at 80% 115%, rgba(86,134,254,0.10) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 60% at 50% 45%,  rgba(244,114,182,0.03) 0%, transparent 65%),
+    linear-gradient(165deg, #0d0d1a 0%, #100e1d 45%, #0d1022 100%);
+  min-height: 100vh;
+}
+
+body {
+  width: 760px;
+  margin: 0 auto;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-x: hidden;
+  background: transparent;
+}
+
+/* ── 卡片外壳 ── */
+.card-wrapper { padding: 28px 24px 36px; }
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  overflow: hidden;
+  position: relative;
+}
+
+.card::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--primary) 30%, var(--primary-light) 65%, var(--deepseek) 100%);
+}
+
+/* ── 顶部标题栏 ── */
+.changelog-header {
+  padding: 26px 30px 22px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* 幻梦图标 */
+.logo-wrap {
+  width: 48px; height: 48px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  background: linear-gradient(135deg, rgba(236,72,153,0.20), rgba(244,114,182,0.12));
+  border: 1px solid rgba(236,72,153,0.25);
+  box-shadow: 0 2px 16px rgba(236,72,153,0.18);
+  flex-shrink: 0;
+}
+
+.header-text { flex: 1; }
+.header-title {
+  font-size: 20px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.header-title .bot-name {
+  background: linear-gradient(135deg, var(--primary), var(--primary-light));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.header-title .sep {
+  color: var(--text-muted);
+  font-weight: 300;
+  -webkit-text-fill-color: unset;
+}
+.header-title .type-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 400;
+  -webkit-text-fill-color: unset;
+}
+
+.header-date {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 5px;
+  font-weight: 300;
+  letter-spacing: 0.3px;
+}
+
+/* 版本号徽章 */
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary-light);
+  background: rgba(236,72,153,0.10);
+  border: 1px solid rgba(236,72,153,0.25);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+/* 分割线 */
+.divider {
+  height: 1px;
+  margin: 0 28px;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--border) 15%,
+    rgba(236,72,153,0.28) 50%,
+    var(--border) 85%,
+    transparent
+  );
+}
+
+/* ── Changelog 内容区 ── */
+.changelog-body {
+  padding: 22px 30px 24px;
+}
+
+/* ── Markdown 渲染样式 ── */
+
+/* h2 → 分区标题，粉色左边框 */
+.changelog-body h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 22px 0 12px;
+  padding: 8px 14px;
+  background: rgba(236,72,153,0.06);
+  border-left: 3px solid var(--primary);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.changelog-body h2:first-child { margin-top: 0; }
+
+/* h3 → 子分区标题 */
+.changelog-body h3 {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--primary-light);
+  margin: 16px 0 8px;
+  padding: 4px 0;
+  opacity: 0.85;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changelog-body h3::before {
+  content: '';
+  display: inline-block;
+  width: 2px; height: 12px;
+  background: var(--primary-light);
+  border-radius: 2px;
+  opacity: 0.6;
+}
+
+/* ul/li */
+.changelog-body ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.changelog-body li {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  padding: 5px 12px 5px 30px;
+  border-radius: var(--radius-sm);
+  position: relative;
+  background: rgba(255,255,255,0.015);
+  transition: background 0.15s;
+}
+.changelog-body li:hover { background: rgba(236,72,153,0.04); color: var(--text-primary); }
+
+.changelog-body li::before {
+  content: '\25B8';
+  position: absolute;
+  left: 12px;
+  color: var(--primary);
+  opacity: 0.6;
+  font-size: 11px;
+  top: 7px;
+}
+
+/* 嵌套列表 */
+.changelog-body li ul { margin-top: 5px; padding-left: 10px; }
+.changelog-body li li { background: transparent; font-size: 13px; }
+.changelog-body li li::before { color: var(--primary-light); opacity: 0.4; content: '\B7'; font-size: 14px; top: 5px; }
+
+/* p */
+.changelog-body p {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin: 6px 0 10px;
+}
+
+/* 行内 code */
+.changelog-body code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: #86efac;
+  background: rgba(16,185,129,0.08);
+  border: 1px solid rgba(16,185,129,0.15);
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+
+/* ── Mac 风格代码块 ── */
+.changelog-body .code-block-wrap {
+  position: relative;
+  margin: 12px 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-left: 3px solid var(--primary);
+}
+
+/* Mac 标题栏：红黄绿三点 + 语言标签 */
+.changelog-body .code-mac-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(255,255,255,0.04);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.changelog-body .code-mac-bar .dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.changelog-body .code-mac-bar .dot-red    { background: #ff5f57; }
+.changelog-body .code-mac-bar .dot-yellow { background: #febc2e; }
+.changelog-body .code-mac-bar .dot-green  { background: #28c840; }
+.changelog-body .code-mac-bar .lang-label {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.changelog-body .code-block-wrap pre {
+  background: var(--bg-code);
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  overflow-x: auto;
+}
+
+.changelog-body pre {
+  background: var(--bg-code);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.changelog-body pre code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+  background: none !important;
+  border: none;
+  padding: 14px !important;
+  display: block;
+  white-space: pre !important;
+  tab-size: 4;
+  color: rgba(255,255,255,0.82) !important;
+}
+.changelog-body pre code .hljs-keyword      { color: #c678dd !important; }
+.changelog-body pre code .hljs-string       { color: #98c379 !important; }
+.changelog-body pre code .hljs-number        { color: #d19a66 !important; }
+.changelog-body pre code .hljs-comment       { color: #5c6370 !important; font-style: italic; }
+.changelog-body pre code .hljs-function      { color: #61afef !important; }
+.changelog-body pre code .hljs-class         { color: #e5c07b !important; }
+.changelog-body pre code .hljs-built_in      { color: #56b6c2 !important; }
+.changelog-body pre code .hljs-attr          { color: #d19a66 !important; }
+.changelog-body pre code .hljs-name,
+.changelog-body pre code .hljs-title         { color: #61afef !important; }
+.changelog-body pre code .hljs-literal       { color: #d19a66 !important; }
+.changelog-body pre code .hljs-operator      { color: #56b6c2 !important; }
+.changelog-body pre code .hljs-punctuation   { color: rgba(255,255,255,0.55) !important; }
+.changelog-body pre code .hljs-subst         { color: #e06c75 !important; }
+.changelog-body pre code .hljs-type,
+.changelog-body pre code .hljs-selector-tag  { color: #e5c07b !important; }
+.changelog-body pre code .hljs-variable,
+.changelog-body pre code .hljs-params        { color: #e06c75 !important; }
+.changelog-body pre code .hljs-regexp        { color: #98c379 !important; }
+.changelog-body pre code .hljs-symbol        { color: #61afef !important; }
+.changelog-body pre code .hljs-bullet        { color: #61afef !important; }
+.changelog-body pre code .hljs-meta           { color: #61afef !important; }
+.changelog-body pre code .hljs-deletion       { color: #e06c75 !important; }
+.changelog-body pre code .hljs-addition       { color: #98c379 !important; }
+.changelog-body pre code .hljs-section        { color: #e06c75 !important; font-weight: bold; }
+
+/* 标注/引用块 */
+.changelog-body blockquote {
+  margin: 10px 0;
+  padding: 10px 16px;
+  border-left: 3px solid rgba(56,189,248,0.5);
+  background: rgba(56,189,248,0.05);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* strong / em */
+.changelog-body strong { color: var(--text-primary); font-weight: 700; }
+.changelog-body em { color: var(--primary-light); font-style: normal; }
+
+/* hr */
+.changelog-body hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border) 20%, rgba(236,72,153,0.2) 50%, var(--border) 80%, transparent);
+  margin: 18px 0;
+}
+
+/* 表格 */
+.changelog-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.changelog-body thead th {
+  background: rgba(236,72,153,0.08);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(236,72,153,0.18);
+}
+.changelog-body td {
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  color: var(--text-secondary);
+}
+.changelog-body tbody tr:last-child td { border-bottom: none; }
+.changelog-body tbody tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+
+/* 标签徽章 */
+.tag-new      { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(16,185,129,0.12); color:#34d399; border:1px solid rgba(52,211,153,0.25); vertical-align:middle; }
+.tag-fix      { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(59,130,246,0.12); color:#60a5fa; border:1px solid rgba(96,165,250,0.25); vertical-align:middle; }
+.tag-optimize { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(245,158,11,0.12); color:#fbbf24; border:1px solid rgba(251,191,36,0.25); vertical-align:middle; }
+.tag-break    { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(239,68,68,0.12); color:#f87171; border:1px solid rgba(248,113,113,0.25); vertical-align:middle; }
+
+.icon-h2 { font-size: 15px; margin-right: 2px; opacity: 0.8; }
+
+/* ── 底部 ── */
+.footer {
+  padding: 14px 30px 18px;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.18);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.footer-credit {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.footer-credit .hl-pink { color: var(--primary-light); }
+.footer-credit .hl-blue { color: #5686FE; }
+.footer-credit .heart   { color: var(--primary); }
+
+.footer-brand {
+  font-size: 10px;
+  color: var(--primary);
+  opacity: 0.4;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+</style>
+</head>
+<body>
+
+<div class="card-wrapper">
+  <div class="card">
+
+    <!-- 顶部标题栏 -->
+    <div class="changelog-header">
+      <div class="logo-wrap">✨</div>
+      <div class="header-text">
+        <div class="header-title">
+          <span class="bot-name">幻梦</span>
+          <span class="sep">·</span>
+          <span class="type-label">Changelog</span>
+        </div>
+        <div class="header-date">{{RELEASE_DATE}}</div>
+      </div>
+      <div class="version-badge">{{VERSION}}</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Changelog 内容（服务端预渲染注入） -->
+    <div class="changelog-body">
+{{CHANGELOG_MARKDOWN}}
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- 底部 -->
+    <div class="footer">
+      <div class="footer-credit">
+        <span class="hl-pink">幻梦 QQ Bot</span>
+        <span>·</span>
+        <span>Trusler &amp;</span>
+        <span class="hl-blue">DeepSeek</span>
+        <span>·</span>
+        <span>Made with <span class="heart">❤️</span></span>
+      </div>
+      <div class="footer-brand">{{BRAND}}</div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

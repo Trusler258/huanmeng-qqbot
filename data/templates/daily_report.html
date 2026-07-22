@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=720">
+<style>
+:root {
+  --bg: #0d0d1a;
+  --card-bg: rgba(255,255,255,0.04);
+  --primary: #ec4899;
+  --primary-light: #f472b6;
+  --accent: #8b5cf6;
+  --gold: #f59e0b;
+  --silver: #94a3b8;
+  --bronze: #d97706;
+  --text: #fff;
+  --text2: rgba(255,255,255,0.65);
+  --text3: rgba(255,255,255,0.35);
+  --border: rgba(255,255,255,0.07);
+  --radius: 14px;
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{
+  width:720px;margin:0 auto;font-family:'PingFang SC','Microsoft YaHei',sans-serif;
+  font-size:13px;color:var(--text);line-height:1.5;
+  background:radial-gradient(ellipse 60% 40% at 30% -10%,rgba(236,72,153,0.12) 0%,transparent 55%),
+             radial-gradient(ellipse 50% 35% at 75% 110%,rgba(139,92,246,0.08) 0%,transparent 55%),
+             linear-gradient(170deg,#0d0d1a 0%,#100e1d 50%,#0d1022 100%);
+  min-height:100vh;
+}
+.card-wrapper{padding:24px 20px 32px}
+.card{
+  background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:0 8px 40px rgba(0,0,0,0.5);
+  overflow:hidden;position:relative;
+}
+.card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,var(--primary),var(--accent),var(--gold));
+}
+
+/* Header */
+.report-header{
+  padding:22px 24px 18px;
+  display:flex;align-items:center;gap:14px;
+}
+.header-icon{
+  width:46px;height:46px;border-radius:12px;
+  background:linear-gradient(135deg,rgba(236,72,153,0.18),rgba(139,92,246,0.12));
+  display:flex;align-items:center;justify-content:center;font-size:22px;
+  border:1px solid rgba(236,72,153,0.2);
+}
+.header-info{flex:1}
+.header-title{font-size:18px;font-weight:800;letter-spacing:0.5px}
+.header-title .gradient{
+  background:linear-gradient(135deg,var(--primary),var(--primary-light));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+}
+.header-sub{font-size:11px;color:var(--text3);margin-top:3px}
+.date-badge{
+  font-family:'Consolas','Courier New',monospace;
+  font-size:13px;font-weight:600;color:var(--primary-light);
+  background:rgba(236,72,153,0.08);border:1px solid rgba(236,72,153,0.2);
+  padding:5px 12px;border-radius:20px;
+}
+
+/* Summary row */
+.summary-row{
+  display:flex;gap:10px;padding:0 24px 18px;
+}
+.summary-item{
+  flex:1;text-align:center;
+  background:rgba(255,255,255,0.025);
+  border:1px solid var(--border);border-radius:10px;
+  padding:10px 8px;
+}
+.summary-item .num{font-size:22px;font-weight:800}
+.summary-item .num.c-pink{color:var(--primary-light)}
+.summary-item .num.c-purple{color:#a78bfa}
+.summary-item .num.c-amber{color:#fbbf24}
+.summary-item .num.c-green{color:#34d399}
+.summary-item .label{font-size:10px;color:var(--text3);margin-top:2px;letter-spacing:0.5px}
+
+.divider{
+  height:1px;margin:0 22px;
+  background:linear-gradient(90deg,transparent,var(--border) 20%,rgba(236,72,153,0.2) 50%,var(--border) 80%,transparent);
+}
+
+/* Section title */
+.section-title{
+  padding:16px 24px 8px;
+  font-size:13px;font-weight:700;color:var(--text2);
+  display:flex;align-items:center;gap:6px;
+}
+.section-title::before{
+  content:'';width:3px;height:14px;background:var(--primary);border-radius:2px;opacity:0.7;
+}
+
+/* Ranking bars */
+.ranking-list{padding:0 24px 8px}
+.rank-item{
+  display:flex;align-items:center;gap:10px;padding:7px 10px;
+  border-radius:8px;margin-bottom:4px;
+  background:rgba(255,255,255,0.012);
+  transition:background 0.15s;
+}
+.rank-pos{
+  width:28px;font-size:15px;font-weight:800;text-align:center;flex-shrink:0;
+}
+.rank-pos.top1{color:var(--gold)}
+.rank-pos.top2{color:var(--silver)}
+.rank-pos.top3{color:var(--bronze)}
+.rank-pos.rest{color:var(--text3);font-size:12px}
+.rank-name{width:100px;font-size:13px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank-bar-wrap{flex:1;height:18px;background:rgba(255,255,255,0.05);border-radius:9px;overflow:hidden;position:relative}
+.rank-bar{
+  height:100%;border-radius:9px;transition:width 0.3s;
+  background:linear-gradient(90deg,var(--primary),var(--primary-light));
+  position:relative;
+}
+.rank-bar.gold{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.rank-bar.silver{background:linear-gradient(90deg,#94a3b8,#cbd5e1)}
+.rank-bar.bronze{background:linear-gradient(90deg,#d97706,#f59e0b)}
+.rank-bar.purple{background:linear-gradient(90deg,#7c3aed,#8b5cf6)}
+.rank-count{
+  font-family:'Consolas','Courier New',monospace;
+  font-size:11px;font-weight:700;width:36px;text-align:right;
+  color:var(--text2);flex-shrink:0;
+}
+
+/* Hours heatmap */
+.hours-grid{
+  display:flex;gap:2px;padding:0 24px 14px;flex-wrap:wrap;
+}
+.hour-cell{
+  width:24px;height:24px;border-radius:4px;font-size:8px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  color:rgba(255,255,255,0.6);line-height:1;
+}
+.hour-cell .h-label{font-size:7px;color:rgba(255,255,255,0.3);margin-top:1px}
+
+/* Fun facts */
+.fun-facts{padding:0 24px 12px}
+.fun-fact{
+  display:flex;align-items:center;gap:8px;padding:6px 12px;
+  border-radius:8px;margin-bottom:4px;
+  background:rgba(255,255,255,0.02);
+  font-size:12px;color:var(--text2);
+}
+.fun-fact .emoji{font-size:16px;flex-shrink:0}
+
+/* Footer */
+.footer{
+  padding:12px 24px 16px;border-top:1px solid var(--border);
+  background:rgba(0,0,0,0.15);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.footer-left{font-size:10px;color:var(--text3);display:flex;align-items:center;gap:5px}
+.footer-right{font-size:9px;color:var(--primary);opacity:0.4;letter-spacing:1.5px;font-weight:700}
+</style>
+</head>
+<body>
+<div class="card-wrapper">
+<div class="card">
+
+  <!-- Header -->
+  <div class="report-header">
+    <div class="header-icon">📊</div>
+    <div class="header-info">
+      <div class="header-title"><span class="gradient">幻梦</span> · 日报</div>
+      <div class="header-sub">群 {{GROUP_ID}} · {{REPORT_DATE}}</div>
+    </div>
+    <div class="date-badge">{{GROUP_NAME}}</div>
+  </div>
+
+  <!-- Summary -->
+  <div class="summary-row">
+    <div class="summary-item"><div class="num c-pink">{{TOTAL_MSGS}}</div><div class="label">总消息</div></div>
+    <div class="summary-item"><div class="num c-purple">{{PARTICIPANTS}}</div><div class="label">发言人数</div></div>
+    <div class="summary-item"><div class="num c-amber">{{PEAK_HOUR}}</div><div class="label">最热时段</div></div>
+    <div class="summary-item"><div class="num c-green">{{AVG_MSG}}</div><div class="label">人均发言</div></div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Ranking -->
+  <div class="section-title">🏆 发言排行</div>
+  <div class="ranking-list">
+{{RANKING_ROWS}}
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Active Hours -->
+  <div class="section-title">🕐 24h 活跃热力</div>
+  <div class="hours-grid">
+{{HOURS_CELLS}}
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Fun facts -->
+  <div class="section-title">🐱 幻梦锐评</div>
+  <div class="fun-facts">
+{{FUN_FACTS}}
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-left">
+      <span>📅 每日 {{REPORT_TIME}}</span>
+      <span>·</span>
+      <span>Made with ❤️</span>
+    </div>
+    <div class="footer-right">HUANMENG BOT</div>
+  </div>
+
+</div>
+</div>
+</body>
+</html>
