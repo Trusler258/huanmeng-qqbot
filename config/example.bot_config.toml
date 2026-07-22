@@ -1,0 +1,40 @@
+# bot_config.toml — QQ Bot 主配置
+# 复制为 bot_config.toml 并填入你的值
+
+[bot]
+name = "幻梦"
+bot_qq = 0               # 机器人 QQ 号
+admin_qq = 0             # 主人 QQ 号
+
+# === LLM 配置 ===
+[llm]
+provider = "deepseek"    # deepseek / siliconflow / openai
+
+[llm.deepseek]
+api_key = "sk-xxxxxxxx"
+model = "deepseek-chat"
+base_url = "https://api.deepseek.com"
+
+[llm.judge]
+provider = "siliconflow"
+model = "deepseek-ai/DeepSeek-V3"
+
+[llm.siliconflow]
+api_key = "sk-xxxxxxxx"
+base_url = "https://api.siliconflow.cn/v1"
+
+[llm.image]
+provider = "siliconflow"
+model = "glm-4v-flash"  # 图片识别
+
+# === QQ 适配器 ===
+[adapter]
+type = "napcat"
+ws_url = "ws://127.0.0.1:8099/"
+
+# === 功能开关 ===
+[features]
+auto_reply = true
+search_enabled = true
+memory_enabled = true
+image_recognition = true
