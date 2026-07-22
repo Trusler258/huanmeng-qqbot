@@ -311,8 +311,8 @@ class HuanmengBot:
                         await page.close()
                         cq = f"[CQ:image,file=file:///{out_path}]"
                         cfg = get_config()
-                        target_groups = cfg.target_groups if hasattr(cfg, 'target_groups') else []
-                        for gid in target_groups:
+                        # ★ 发到所有群（stats 日报同理，没有绑定玩家的群收到空表也不影响）
+                        for gid in cfg.group_ids():
                             try:
                                 await send_group_msg(cq, int(gid))
                             except Exception:

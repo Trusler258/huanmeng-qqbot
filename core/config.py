@@ -203,6 +203,21 @@ class BotConfig:
             return True
         return False
 
+    def group_ids(self) -> list[int]:
+        """返回所有已知群号（从群统计文件中提取）"""
+        from pathlib import Path
+        p = Path(__file__).resolve().parent.parent / "data" / "stats"
+        ids = set()
+        if p.exists():
+            for f in p.glob("group_*_*.json"):
+                try:
+                    ids.add(int(f.stem.split("_")[1]))
+                except Exception:
+                    pass
+        if not ids:
+            return list(self.group_owners.keys())
+        return sorted(ids)
+
     def get_group_owner(self, group_id: int) -> list[int]:
         """获取群的 OP 指派列表"""
         return self.group_owners.get(group_id, [])
