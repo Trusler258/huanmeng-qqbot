@@ -287,7 +287,7 @@ def set_group_op(group_id: int, op_qq: int) -> str:
 
 
 def del_group_op(group_id: int, op_qq: int = 0) -> str:
-    """撤销群的 OP 指派，恢复 admin 权限。op_qq=0 时清空整个群"""
+    """撤销群的 OP 指派。op_qq=0 时清空整个群并移除全局 OP 注册"""
     data = _read_roles()
     group_owners: dict = data.get("group_owners", {})
     if str(group_id) not in group_owners:
@@ -300,11 +300,18 @@ def del_group_op(group_id: int, op_qq: int = 0) -> str:
             del group_owners[str(group_id)]
         msg = f"已撤销群 {group_id} 对 QQ {op_qq} 的指派"
     else:
-        del group_owners[str(group_id)]
-        msg = f"已撤销群 {group_id} 的全部 OP 指派，恢复 admin 权限"
+        removed = group_owners.pop(str(group_id))
+        # 同步清空全局花名册中该群涉及的 OP（若不再被任何群指派）
+        global_ops: list = data.get("op_qqs", [])
+        for q in removed:
+            still_assigned = any(q in owners for owners in group_owners.values())
+            if not still_assigned and q in global_ops:
+                global_ops.remove(q)
+        data["op_qqs"] = global_ops
+        msg = f"已清空群 {group_id} 的全部 OP（{len(removed)} 人）"
     data["group_owners"] = group_owners
     _write_roles(data)
-    logger.info("撤销群 OP 指派: group=%d op_qq=%d", group_id, op_qq)
+    logger.info("撤销群 OP: group=%d op_qq=%d cleared=%d", group_id, op_qq, len(removed) if not op_qq else 0)
     return msg
 
 
