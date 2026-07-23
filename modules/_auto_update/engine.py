@@ -87,6 +87,30 @@ async def _fetch_compare(base_sha: str, head_sha: str) -> list[dict] | None:
         return None
 
 
+async def _fetch_commit_log(base_sha: str, head_sha: str) -> str:
+    """获取两个 commit 之间的提交日志（用于更新报告）"""
+    if not base_sha:
+        return ""
+    try:
+        url = f"{GITHUB_API}/compare/{base_sha[:7]}...{head_sha[:7]}"
+        headers = {"Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            commits = data.get("commits", [])
+            if not commits:
+                return ""
+            lines = ["\n更新日志:"]
+            for c in commits:
+                sha = c.get("sha", "")[:7]
+                msg = c.get("commit", {}).get("message", "").split("\n")[0][:60]
+                lines.append(f"  {sha}  {msg}")
+            return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 async def _get_head_sha() -> str | None:
     """获取远程 HEAD commit SHA"""
     try:
@@ -205,6 +229,9 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
                 save_state(root, state)
                 return "无法获取完整文件列表，请稍后再试"
 
+    # 3.5 获取更新日志
+    commit_log = await _fetch_commit_log(base, head) if base else ""
+
     # 4. 处理 .bot_protect（优先合并）
     _merge_bot_protect_priority(files, root, head, state)
 
@@ -295,6 +322,8 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
                          f"({ok} hunks 成功, {skip} hunks 跳过)")
     if not updated_files:
         parts.append("已是最新")
+    if commit_log:
+        parts.append(commit_log)
     return "\n".join(parts)
 
 
