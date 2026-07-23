@@ -27,8 +27,6 @@ modules/tuf_commands.py
 modules/weather.py
 modules/chinese_chess.py
 modules/box.py
-modules/admin.py
-modules/cchess/
 modules/leave.py
 modules/local_search.py
 modules/ping.py
