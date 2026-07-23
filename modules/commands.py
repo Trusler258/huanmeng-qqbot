@@ -2862,6 +2862,7 @@ COMMAND_MAP: dict[str, callable] = {
     "weather":    cmd_weather,
     "reload":     cmd_reload,
     "update":     _cmd_update,
+    "upd":        _cmd_update,    # 短别名
     "gh":         _cmd_gh,
     "添加关系":   cmd_add_relation,
     "resetfav":   cmd_reset_fav,
