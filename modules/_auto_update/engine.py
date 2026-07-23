@@ -76,6 +76,12 @@ async def _fetch_compare(base_sha: str, head_sha: str) -> list[dict] | None:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             return resp.json().get("files", [])
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            logger.warning("Compare 基准 SHA 已失效（force-push），需全量同步")
+        else:
+            logger.warning("Compare API 失败: %s", e)
+        return None
     except Exception as e:
         logger.warning("Compare API 失败: %s", e)
         return None
@@ -148,16 +154,20 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
     if not force and stored == head:
         return "已是最新"
 
-    # 3. 获取 diff
+    # 3. 获取 diff（404 时 base SHA 已失效，清空后重新全量获取）
     base = stored if stored and not force else ""
     files = await _fetch_compare(base, head)
     if not files:
-        # 首次或 force → 只有 SHA 不同，无需 patch
-        if not stored:
+        if stored:
+            # 旧 SHA 可能已被 force-push 覆盖，清除后下次从新基线开始
+            logger.info("△ 旧基线 SHA 失效，清除并从当前 HEAD 重建基线")
             state["remote_sha"] = head
+            state.pop("files", None)
             save_state(root, state)
-            return "首次运行，无历史版本来 diff。请用 /~update 同步后续更新"
-        return "无法获取 diff 数据"
+            return "历史 commit 已过期（仓库可能 force-push 过）。基线已重置，请再次 /~update 完成全量同步。"
+        state["remote_sha"] = head
+        save_state(root, state)
+        return "首次运行，无历史版本来 diff。请用 /~update 同步后续更新"
 
     # 4. 处理 .bot_protect（优先合并）
     _merge_bot_protect_priority(files, root, head, state)
