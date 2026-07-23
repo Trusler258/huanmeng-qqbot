@@ -147,16 +147,6 @@ _HELP_DETAIL = {
            "  history [N]   历史战绩\n"
            "  history <编号> board 查看对局棋盘",
 
-    "weather": "【天气 /~天气 /~weather】\n"
-               "  /~天气 深圳       查询深圳7天天气\n"
-               "  /~weather Beijing  支持中文和英文城市名\n"
-               "  自动生成精美天气卡片",
-
-    "box": "【快递 /~box】\n"
-           "  /~box 73706815751505   查询快递单号\n"
-           "  显示物流轨迹、当前状态、预估送达\n"
-           "  失败自动降级为纯文本",
-
     "remind": "【提醒 /~remind /~提醒】\n"
               "  /~remind 30分钟后 吃饭\n"
               "  /~remind 2小时后 开会\n"
@@ -211,16 +201,6 @@ _HELP_DETAIL = {
             "  测试 bot 是否在线\n"
             "  随机猫娘卖萌回复，@ 触发者",
 
-    "tufsearch": "【TUF 搜索 /~tufsearch】\n"
-                 "  /~tufsearch Freedom Dive   搜索谱面\n"
-                 "  /~tufpage 2                翻页",
-
-    "tuflevel": "【TUF 详情 /~tuflevel /~tuf谱面】\n"
-                "  /~tuflevel Galaxy Collapse  谱面详情卡片",
-
-    "tufd": "【TUF 下载 /~tufd】\n"
-            "  /~tufd <编号>  下载谱面直链",
-
     "owner": "【配置管理 /~owner (主人)】\n"
              "  list <bot|adapter|roles>   列所有配置\n"
              "  get <路径>      读取: get bot.reply_threshold\n"
@@ -267,28 +247,8 @@ _HELP_DETAIL = {
     "tokens": "【Token计算 /~tokens】\n"
               "  /~tokens <文本>  计算 token 数和预估费用\n",
 
-    "wdsj": "【战绩查询 /~wdsj】\n"
-            "  /~wdsj bd <玩家名>         绑定玩家名\n"
-            "  /~wdsj bd list              查看所有绑定\n"
-            "  /~wdsj bedwars-stats 玩家名 查询战绩（绑定后省略玩家名）\n"
-            "  /~wdsj daily [are]          今日日增排名（默认起床，are=竞技场）\n"
-            "  /~wdsj lb <榜名> [周期]    排行榜（img生成图片）\n"
-            "  /~wdsj boards                查看可用榜单\n"
-            "  /~wdsj rank [榜名]          本群排名\n"
-            "  /~wdsj trend <玩家> [指标]  日报走势图\n"
-            "  指标: bw_kills/bw_wins/bw_finals/bw_deaths/arena_kills\n"
-            "  数据来源: wdsj.net Nexus",
-
     "resetfav": "【重置好感 /~resetfav (主人)】\n"
                 "  清空所有好感度数据",
-
-    "xq": "【中国象棋 /~xq /~象棋】\n"
-          "  /~xq start          开始对局（AI对战）\n"
-          "  /~xq 炮二平五         走棋（支持中文谱）\n"
-          "  /~xq h2e2            走棋（支持坐标谱）\n"
-          "  /~xq board           查看棋盘\n"
-          "  /~xq resign          认输\n"
-          "  /~xq history         走棋记录",
 
     "memory": "【记忆 /~memory】\n"
               "  working      瞬时记忆（当前对话）\n"
