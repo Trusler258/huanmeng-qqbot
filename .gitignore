@@ -20,16 +20,43 @@ data/Message_frequency_cache.txt
 logs/
 *.log
 
-# === 私有模块 ===
+# === 私有模块源码 ===
 modules/gh.py
 modules/wdsj.py
 modules/tuf_commands.py
 modules/weather.py
 modules/chinese_chess.py
 modules/box.py
+modules/admin.py
+modules/cchess/
+modules/leave.py
+modules/local_search.py
+modules/ping.py
 services/wdsj_api.py
 services/tuf_api.py
 modules_private/
+seed_collect.py
+
+# === 私有模块模板/数据 ===
+data/templates/box_card.html
+data/templates/cchess_board.html
+data/templates/tuf_level_card.html
+data/templates/tuf_search_results.html
+data/templates/wdsj_card.html
+data/templates/weather_card.html
+data/wdsj_help.md
+
+# === 临时脚本/测试/调试图 ===
+_check_all.py
+_fix_admin.py
+_revert.py
+data/read_the_username.py
+test_cchess_render.py
+test_changelog.py
+data/eq_province_zoom.png
+data/eq_test_card.png
+data/eq_tianditu_card.png
+data/eq_zoom_fix.png
 
 # === Python ===
 __pycache__/
