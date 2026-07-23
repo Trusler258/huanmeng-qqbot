@@ -101,6 +101,37 @@ async def _get_head_sha() -> str | None:
         return None
 
 
+async def _fetch_all_files(head_sha: str) -> list[dict] | None:
+    """获取某个 commit 的完整文件列表（用于首次/force-push 全量同步）"""
+    try:
+        url = f"{GITHUB_API}/commits/{head_sha}"
+        headers = {"Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            tree_url = data.get("commit", {}).get("tree", {}).get("url", "")
+            if not tree_url:
+                return None
+            # 递归获取所有文件
+            tree_resp = await client.get(tree_url + "?recursive=1", headers=headers)
+            tree_resp.raise_for_status()
+            tree_data = tree_resp.json()
+            files = []
+            for item in tree_data.get("tree", []):
+                if item["type"] == "blob":
+                    file_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/{item['path']}"
+                    files.append({
+                        "filename": item["path"],
+                        "status": "added",
+                        "raw_url": file_url,
+                    })
+            return files
+    except Exception as e:
+        logger.warning("获取完整文件列表失败: %s", e)
+        return None
+
+
 async def _get_blob_sha(rel_path: str, commit_sha: str) -> str:
     """获取某个文件在指定 commit 中的 blob SHA"""
     try:
@@ -154,20 +185,25 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
     if not force and stored == head:
         return "已是最新"
 
-    # 3. 获取 diff（404 时 base SHA 已失效，清空后重新全量获取）
+    # 3. 获取 diff（404 时 base SHA 已失效，清空后自动全量重试）
     base = stored if stored and not force else ""
     files = await _fetch_compare(base, head)
     if not files:
         if stored:
-            # 旧 SHA 可能已被 force-push 覆盖，清除后下次从新基线开始
-            logger.info("△ 旧基线 SHA 失效，清除并从当前 HEAD 重建基线")
+            logger.info("△ 旧基线 SHA 失效，清除后全量获取最新文件")
             state["remote_sha"] = head
             state.pop("files", None)
             save_state(root, state)
-            return "历史 commit 已过期（仓库可能 force-push 过）。基线已重置，请再次 /~update 完成全量同步。"
-        state["remote_sha"] = head
-        save_state(root, state)
-        return "首次运行，无历史版本来 diff。请用 /~update 同步后续更新"
+            # 递归重试：空 base → 获取完整文件树
+            files = await _fetch_all_files(head)
+            if not files:
+                return "无法获取完整文件列表，请检查网络"
+        else:
+            files = await _fetch_all_files(head) if not files else files
+            if not files:
+                state["remote_sha"] = head
+                save_state(root, state)
+                return "无法获取完整文件列表，请稍后再试"
 
     # 4. 处理 .bot_protect（优先合并）
     _merge_bot_protect_priority(files, root, head, state)
@@ -201,8 +237,26 @@ async def check_and_update(check_only: bool = False, force: bool = False) -> str
         if _is_protected(rel, protect):
             continue
 
-        # 无 patch 或无变化
+        # 无 patch → 全量下载（首次/force-push 场景）
         if not patch_text:
+            raw_url = item.get("raw_url", "")
+            if raw_url and not check_only:
+                try:
+                    async with httpx.AsyncClient(timeout=15, verify=False) as dl:
+                        dl_resp = await dl.get(raw_url)
+                        dl_resp.raise_for_status()
+                    _write_local(root, rel, dl_resp.text)
+                    try:
+                        blob = await _get_blob_sha(rel, head)
+                        set_file_blob(state, rel, blob, 1, 0)
+                    except Exception:
+                        pass
+                    updated_files.append(rel)
+                    ok += 1
+                except Exception as e:
+                    logger.warning("下载 %s 失败: %s", rel, e)
+            elif raw_url:
+                updated_files.append(f"[新增] {rel}")
             continue
 
         # 显示模式
