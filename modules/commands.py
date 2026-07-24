@@ -29,6 +29,7 @@ from services.sender import send_group_msg, send_private_msg, send_raw_group, se
 from modules.search import perform_search
 from modules.earthquake import cmd_eq
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
+from modules.voice import cmd_voice
 try:
     from modules.ping import cmd_ping
 except ImportError:
@@ -244,6 +245,12 @@ _HELP_DETAIL = {
 
     "balance": "【余额查询 /~balance】\n"
                "  查询 DeepSeek API 余额\n",
+
+    "voice": "【语音 /~voice】\n"
+             "  /~voice <文本>           Edge TTS 合成语音\n"
+             "  /~voice list             列出可用语音\n"
+             "  /~voice zh-CN-YunxiNeural <文本>  指定发音人\n"
+             "  默认: 晓晓 (女声)",
 
     "cost": "【Token消耗 /~cost】\n"
             "  查看今日/累计 token 消耗和费用\n",
@@ -2212,8 +2219,12 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if mode == "are":
             rows, today, time_start, time_end = build_arena_daily_rankings(label_date=label_date)
         else:
-            from datetime import date as _date
-            # ★ 查询过去日期时自动用跨天模式（昨天 0:01 → 今天 0:01）
+            from datetime import date as _date, timedelta as _td
+            # ★ push 模式强制用跨天（昨天 0:01 → 今天 0:01）
+            is_push = len(args) >= 2 and args[-1].lower() in ("send", "push", "推送", "发送")
+            if is_push and not label_date:
+                label_date = (_date.today() - _td(days=1)).isoformat()
+            # ★ 查询过去日期时自动用跨天模式
             use_cross = label_date and label_date != _date.today().isoformat()
             rows, today, new_players, time_start, time_end = build_daily_rankings(
                 label_date=label_date, cross_day=use_cross)
@@ -2243,21 +2254,12 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             return "排名卡片渲染失败喵~"
         cq = f"[CQ:image,file=file:///{out_path.replace(chr(92), chr(47))}]"
 
-        # ★ 推送模式：强制发到指定群或所有群
+        # ★ 推送模式：发到当前群（仅 is_group 时）
         if len(args) >= 2 and args[-1].lower() in ("send", "push", "推送", "发送"):
-            from core.config import get_config as _get_cfg
-            _cfg = _get_cfg()
-            target_groups = _cfg.config.get("wdsj", {}).get("target_groups", []) if hasattr(_cfg, 'config') else []
-            if not target_groups:
-                target_groups = _cfg.group_ids()
-            sent_to = []
-            for _gid in target_groups:
-                try:
-                    await send_group_msg(cq, int(_gid))
-                    sent_to.append(str(_gid))
-                except Exception:
-                    pass
-            return f"日榜已推送到 {len(sent_to)} 个群: {', '.join(sent_to)} (14人)" if rows else "推送完成，但无数据"
+            if not is_group:
+                return "send 模式仅在群聊中可用喵~"
+            await send_group_msg(cq, group_id)
+            return None
 
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
         return None
@@ -2680,7 +2682,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
     if action == "wdsj":
         import toml
         from pathlib import Path
-        _cfg_path = Path("config/bot_config.toml")
+        _cfg_path = Path(__file__).resolve().parent.parent / "config" / "bot_config.toml"
         if len(args) < 2:
             return "用法: /~owner wdsj groups <show|set|clear>\n  show  查看推送群\n  set 1058782600,247478659  设推送群\n  clear  清除(发全群)"
         sub = args[1].lower()
@@ -2893,6 +2895,8 @@ COMMAND_MAP: dict[str, callable] = {
     "绘画":       cmd_draw,
     "video":      cmd_video,
     "视频":       cmd_video,
+    "voice":      cmd_voice,
+    "语音":       cmd_voice,
     "img2video":  cmd_img2video,
     "图生视频":   cmd_img2video,
     "eq":         cmd_eq,
