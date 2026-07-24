@@ -81,7 +81,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
     buffer_snapshot = list(ctx.get_buffer(chat_id))
 
-    sentences, fav_change, llm_calls, face_cq, mood, action, at_qq, mode_switch, origin, actor = await generate_multi_reply(
+    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply(
         msg_history=ctx.get_context(chat_id),
         speaker_name=sender_name,
         current_msg=f"[系统] {system_msg}",
@@ -190,11 +190,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     stm_add(chat_id, role_tag, f"{sender_name}: {msg_content}", sender_name)
 
     # ------指令拦截------
-    # 支持 /~开头 或 @bot /~xxx 两种格式
+    # 仅消息开头 /~ 或 /# 触发指令
     import re as _re
-    cmd_match = _re.search(r'(/~|/#)\s*(\S[\s\S]*?)(?:\s*$|\s*\n)', msg_content)
+    cmd_match = _re.match(r'(/~|/#)\s*(\S[\s\S]*?)(?:\s*$|\s*\n)', msg_content)
     if not cmd_match:
-        cmd_match = _re.search(r'(/~|/#)(\S[\s\S]*)', msg_content)
+        cmd_match = _re.match(r'(/~|/#)(\S[\s\S]*)', msg_content)
     if cmd_match:
         full_cmd = cmd_match.group(0)
         logger.info("指令拦截: '%s' from=%s", full_cmd, sender_name)
@@ -469,7 +469,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d", sender_name, chat_id)
-    sentences, fav_change, llm_calls, face_cq, mood, action, at_qq, mode_switch, origin, actor = await generate_multi_reply(
+    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply(
         msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
         is_group=is_group, extra_info=extra_info_for_llm,

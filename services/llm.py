@@ -319,6 +319,10 @@ async def call_llm(
             if json_mode and finish == "stop":
                 logger.warning("JSON模式返回空，关闭json_mode重试...")
                 return await call_llm(model_cfg, messages, max_tokens, temperature, timeout, json_mode=False)
+            if finish == "length":
+                boosted = min(max_tokens * 2, 8000)
+                logger.warning("finish_reason=length, 扩大上限 %d→%d 重试...", max_tokens, boosted)
+                return await call_llm(model_cfg, messages, boosted, temperature, timeout, json_mode)
 
         # 记录 token 消耗
         try:
@@ -506,11 +510,11 @@ async def generate_multi_reply(
     fmt_reminder = (
         "【格式规则：严格输出 JSON，不要任何额外文字】"
         "\n"
-        '{"replies":["完整的第一句话","自然的第二句话"],"fav":2,"calls":[],"face":null,"mood":"开心","action":"摇了摇尾巴","at":null,"mode":null,"origin":"user","actor":{"name":"当前发言者","qq":0}}'
+        '{"replies":["完整的第一句话","自然的第二句话"],"mood_detail":["开心","好奇"],"fav":2,"calls":[],"face":null,"mood":"开心","action":"摇了摇尾巴","at":null,"mode":null,"origin":"user","actor":{"name":"当前发言者","qq":发言人QQ号}}'
         "\n"
         f"日常回复 1~3 句，每句≤{max_chars}字。复杂问题 3~6 句，每句≤150 字，展开说透。fav -5~+5。"
             "\n"
-            "mood: 当前情绪。action: 动作描写。at: @的QQ号，不@就null。mode: 模式切换。face: 极少用，通常null。"
+                        "mood: 当前整体情绪。mood_detail: 每句话对应情绪数组(和replies一一对应)。action: 动作描写。at: @的QQ号，不@就null。mode: 模式切换。face: 极少用，通常null。"
             "\n"
             "origin: 谁发起操作(user/bot)。actor: 替谁执行({name,qq})，bot发起时actor=null。"
             "\n"
@@ -591,15 +595,16 @@ async def generate_multi_reply(
                 pass
 
         mood = data.get("mood", "")
+        mood_detail = data.get("mood_detail")  # 每句情绪数组
         action = data.get("action", "")
         at_qq = data.get("at")
         mode_switch = data.get("mode")
         origin = data.get("origin", "user")
         actor = data.get("actor") or {}
 
-        logger.info("JSON回复解析: %d句 fav=%+d calls=%d mood=%s action=%s at=%s mode=%s origin=%s",
-                   len(replies), fav_change, len(calls), mood, action, at_qq, mode_switch, origin)
-        return replies, fav_change, calls, face_cq, mood, action, at_qq, mode_switch, origin, actor
+        logger.info("JSON回复解析: %d句 fav=%+d calls=%d mood=%s action=%s",
+                   len(replies), fav_change, len(calls), mood)
+        return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor
     except json.JSONDecodeError:
         logger.warning("JSON解析失败，尝试修复: %s...", raw[:80])
         # 修复 JSON 中最常见错误：replies 数组里未转义的双引号
@@ -797,7 +802,7 @@ async def _judge_combined(
         f"【上下文】{context_str}\n"
         f"【新消息】{msg}\n"
     )
-    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=6, temperature=0.3, timeout=15.0)
+    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=500, temperature=0.3, timeout=15.0)
     result = result.strip()
     logger.debug("合并判断: '%s...' → '%s'", msg[:30], result)
     try:
