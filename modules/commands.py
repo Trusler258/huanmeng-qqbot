@@ -29,7 +29,11 @@ from services.sender import send_group_msg, send_private_msg, send_raw_group, se
 from modules.search import perform_search
 from modules.earthquake import cmd_eq
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
-from modules.ping import cmd_ping
+try:
+    from modules.ping import cmd_ping
+except ImportError:
+    async def cmd_ping(args, user_id, group_id, sender_name, is_group, bot_qq):
+        return "ping 模块未安装喵~"
 try:
     from modules.op import cmd_op, cmd_persona, cmd_master, cmd_sleep, cmd_hanxu
 except ImportError:
@@ -2208,7 +2212,11 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if mode == "are":
             rows, today, time_start, time_end = build_arena_daily_rankings(label_date=label_date)
         else:
-            rows, today, new_players, time_start, time_end = build_daily_rankings(label_date=label_date)
+            from datetime import date as _date
+            # ★ 查询过去日期时自动用跨天模式（昨天 0:01 → 今天 0:01）
+            use_cross = label_date and label_date != _date.today().isoformat()
+            rows, today, new_players, time_start, time_end = build_daily_rankings(
+                label_date=label_date, cross_day=use_cross)
 
             if not rows:
                 now = datetime.now()
@@ -2234,6 +2242,23 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not out_path:
             return "排名卡片渲染失败喵~"
         cq = f"[CQ:image,file=file:///{out_path.replace(chr(92), chr(47))}]"
+
+        # ★ 推送模式：强制发到指定群或所有群
+        if len(args) >= 2 and args[-1].lower() in ("send", "push", "推送", "发送"):
+            from core.config import get_config as _get_cfg
+            _cfg = _get_cfg()
+            target_groups = _cfg.config.get("wdsj", {}).get("target_groups", []) if hasattr(_cfg, 'config') else []
+            if not target_groups:
+                target_groups = _cfg.group_ids()
+            sent_to = []
+            for _gid in target_groups:
+                try:
+                    await send_group_msg(cq, int(_gid))
+                    sent_to.append(str(_gid))
+                except Exception:
+                    pass
+            return f"日榜已推送到 {len(sent_to)} 个群: {', '.join(sent_to)} (14人)" if rows else "推送完成，但无数据"
+
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
         return None
 
@@ -2650,6 +2675,37 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
                 return admin.group_set(gid, "at_only", "false")
             return f"设置: group={gid} mode={mode}\n支持: atonly, default"
         return "格式: wl add|remove group|private <ID>\n      wl gset <群号> atonly|default\n例: wl add group 1058782600 atonly"
+
+    # ── wdsj 推送群管理 ──
+    if action == "wdsj":
+        import toml
+        from pathlib import Path
+        _cfg_path = Path("config/bot_config.toml")
+        if len(args) < 2:
+            return "用法: /~owner wdsj groups <show|set|clear>\n  show  查看推送群\n  set 1058782600,247478659  设推送群\n  clear  清除(发全群)"
+        sub = args[1].lower()
+        if sub == "show" or sub == "groups":
+            data = toml.load(_cfg_path) if _cfg_path.exists() else {}
+            gs = data.get("wdsj", {}).get("target_groups", [])
+            if gs:
+                return f"WDSJ 日榜推送群: {', '.join(str(g) for g in gs)}"
+            return "未设置推送群，凌晨自动发全群"
+        if sub == "set":
+            if len(args) < 3:
+                return "用法: /~owner wdsj groups set <群号1,群号2,...>"
+            gs = [int(x.strip()) for x in args[2].split(",") if x.strip().isdigit()]
+            data = toml.load(_cfg_path) if _cfg_path.exists() else {}
+            data.setdefault("wdsj", {})["target_groups"] = gs
+            _cfg_path.write_text(toml.dumps(data), encoding="utf-8")
+            cfg.config["wdsj"] = data["wdsj"]  # 热更新内存
+            return f"WDSJ 日榜推送群已设为: {', '.join(str(g) for g in gs)}"
+        if sub == "clear":
+            data = toml.load(_cfg_path) if _cfg_path.exists() else {}
+            data.setdefault("wdsj", {}).pop("target_groups", None)
+            _cfg_path.write_text(toml.dumps(data), encoding="utf-8")
+            cfg.config["wdsj"] = data["wdsj"]
+            return "已清除推送群限制，凌晨发全群"
+        return f"未知: /~owner wdsj {sub}"
 
     # ── draw/video 配额管理 ──
     if action in ("draw", "video"):

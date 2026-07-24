@@ -311,10 +311,15 @@ class HuanmengBot:
                         await page.close()
                         cq = f"[CQ:image,file=file:///{out_path}]"
                         cfg = get_config()
-                        # ★ 发到所有群（stats 日报同理，没有绑定玩家的群收到空表也不影响）
-                        for gid in cfg.group_ids():
+                        # ★ 发到所有群（优先用配置 wdsj.target_groups，否则全群）
+                        gids = cfg.config.get("wdsj", {}).get("target_groups", []) if hasattr(cfg, 'config') else []
+                        if not gids:
+                            gids = cfg.group_ids()
+                        logger.info("日榜目标群: %s", gids)
+                        for gid in gids:
                             try:
                                 await send_group_msg(cq, int(gid))
+                                logger.info("日榜已发到群 %d", gid)
                             except Exception:
                                 pass
                         logger.info("日榜已推送: %d 人 (%s)", len(rows), today)
