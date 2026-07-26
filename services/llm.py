@@ -574,7 +574,7 @@ async def generate_multi_reply(
             raw_cleaned, fav_change = _extract_fav_change(raw)
             replies = _clean_sentences(raw_cleaned)
             logger.info("回退旧格式: %d句", len(replies))
-            return replies, fav_change, [], "", "", "", None, None, "user", {}
+            return replies, fav_change, [], "", "", "", None, None, None, "user", {}
         if isinstance(replies[0], list):
             replies = [str(r) for r in replies[0]]
         else:
@@ -643,7 +643,7 @@ async def generate_multi_reply(
                             fav_m = re.search(r'"fav"\s*:\s*(-?\d+)', raw)
                             fav_change = max(-5, min(5, int(fav_m.group(1)) if fav_m else 0))
                             logger.info("修复提取: %d句 fav=%+d", len(parts), fav_change)
-                            return parts, fav_change, [], "", "", "", None, None, "user", {}
+                            return parts, fav_change, [], "", "", None, "", None, None, "user", {}
         except Exception:
             pass
         logger.warning("修复也失败，回退旧格式: %s...", raw[:80])
@@ -651,7 +651,7 @@ async def generate_multi_reply(
         raw_cleaned, fav_change = _extract_fav_change(raw)
         sentences = _clean_sentences(raw_cleaned)
         logger.info("多句回复生成完成(旧格式): %d句 fav=%+d", len(sentences), fav_change)
-        return sentences, fav_change, [], "", "", "", None, None, "user", {}
+        return sentences, fav_change, [], "", "", None, "", None, None, "user", {}
 
 
 # ── 判断模型调用 ────────────────────────────────────────────
