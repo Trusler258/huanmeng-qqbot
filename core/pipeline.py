@@ -90,7 +90,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         reply_model=cfg.reply_model,
         is_group=is_group,
         extra_info="\n".join(extra_parts),
-        user_id=user_id, group_id=group_id, bot_qq=bot_qq,
+        user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=cfg.bot_qq,
     )
 
     if sentences:
@@ -474,7 +474,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
         is_group=is_group, extra_info=extra_info_for_llm,
-        user_id=user_id, group_id=group_id, bot_qq=bot_qq,
+        user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
     )
 
     if not sentences:
