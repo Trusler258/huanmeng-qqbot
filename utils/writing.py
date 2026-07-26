@@ -14,25 +14,34 @@ from core.logger import get_logger
 
 logger = get_logger("writing")
 
-# ★ 写作请求关键词
+# ★ 写作请求关键词（不含代码）
 _WRITE_PATTERNS = [
-    r"写[一]?[篇封首次个条]",       # 写一篇/封/首/次/个/条
-    r"写作文", r"写文章", r"写[封信]", r"写诗", r"写代码",
-    r"写(个|一下|一段|一份)",        # 写个/一下/一段/一份
+    r"写[一]?[篇封首次条]",           # 写一篇/封/首/次/条
+    r"写作文", r"写文章", r"写[封信]", r"写诗",
+    r"写(个|一下|一段|一份)",         # 写个/一下 (会被代码过滤)
     r"帮我写", r"给你写", r"请写",
-    r"不少于\d+字",                    # 不少于800字
+    r"不少于\d+字",                   # 不少于800字
     r"阅读.(?:下面|以下).*材料",     # 阅读下面的材料
     r"根据要求写作", r"根据以下要求",
-    r"自拟标题", r"明确文体",        # 高考作文关键词
+    r"自拟标题", r"明确文体",         # 高考作文关键词
     r"字数.{0,3}\d+.{0,3}字",        # 字数800字左右
 ]
 
 _WRITE_RE = re.compile("|".join(_WRITE_PATTERNS))
 
+# 代码关键词：匹配到则不是写作请求
+_CODE_KEYWORDS = re.compile(
+    r"python|java|c\+\+|c#|golang|rust|typescript|javascript|html|css"
+    r"|代码|程序|tkinter|flask|django|react|vue|node|api|贪吃蛇|窗口",
+    re.IGNORECASE,
+)
+
 
 def is_writing_request(msg: str) -> bool:
-    """检测消息是否为写作请求"""
-    return bool(_WRITE_RE.search(msg))
+    """检测消息是否为写作请求（排除代码）"""
+    if not _WRITE_RE.search(msg):
+        return False
+    return not _CODE_KEYWORDS.search(msg)
 
 
 # ★ 写作专用系统提示词（无 ||| 格式约束）
@@ -94,6 +103,26 @@ async def generate_and_send_file(
         safe_title = f"reply_{time.strftime('%Y%m%d_%H%M%S')}"
 
     fname = f"{safe_title}.txt"
+
+    # 检测编程语言，给正确后缀
+    lang_ext = {
+        "python": "py", "py": "py", "python3": "py",
+        "javascript": "js", "js": "js",
+        "typescript": "ts", "ts": "ts",
+        "html": "html", "htm": "html",
+        "css": "css",
+        "java": "java",
+        "c++": "cpp", "cpp": "cpp", "cxx": "cpp",
+        "c#": "cs", "csharp": "cs",
+        "go": "go", "golang": "go",
+        "rust": "rs", "rs": "rs",
+    }
+    import re
+    lower = (title + raw[:200]).lower()
+    for kw, ext in lang_ext.items():
+        if re.search(rf'\b{re.escape(kw)}\b', lower):
+            fname = f"{safe_title}.{ext}"
+            break
     fpath = Path(tempfile.gettempdir()) / fname
     fpath.write_text(raw.strip(), encoding="utf-8")
     logger.info("写作管道: %s (%d 字)", fname, len(raw))
