@@ -73,6 +73,21 @@ def _load_html() -> str:
     return _HTML
 
 
+def _load_static(name: str) -> bytes | None:
+    here = Path(__file__).resolve().parent.parent
+    path = here / "data" / "templates" / name
+    if path.exists():
+        return path.read_bytes()
+    return None
+
+
+_CONTENT_TYPES = {
+    ".css": "text/css",
+    ".js": "application/javascript",
+    ".html": "text/html",
+}
+
+
 def _build_html() -> str:
     return r"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -314,6 +329,25 @@ async def _http_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             writer.write(resp)
             await writer.drain()
             return
+
+        # 静态文件 CSS/JS
+        if request.startswith("GET /"):
+            path = lines[0].split()[1]
+            name = path.lstrip("/")
+            if name in ("console.css", "console.js", "guard.js"):
+                body = _load_static(name)
+                if body:
+                    ext = "." + name.rsplit(".", 1)[-1]
+                    ct = _CONTENT_TYPES.get(ext, "application/octet-stream")
+                    resp = (
+                        "HTTP/1.1 200 OK\r\n"
+                        f"Content-Type: {ct}; charset=utf-8\r\n"
+                        f"Content-Length: {len(body)}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode() + body
+                    writer.write(resp)
+                    await writer.drain()
+                    return
 
         # 普通 HTTP → 返回 HTML
         html = _load_html()
