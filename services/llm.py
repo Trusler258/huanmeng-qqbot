@@ -354,6 +354,75 @@ async def call_llm(
         return ""
 
 
+# ── Function Calling ─────────────────────────────────────
+
+class ToolCallResult:
+    """工具调用结果"""
+    def __init__(self, content: str, tool_calls: list[dict] | None):
+        self.content = content or ""
+        self.tool_calls = tool_calls or []
+
+async def call_llm_with_tools(
+    model_cfg: "ModelConfig",
+    messages: list[dict],
+    tools: list[dict],
+    max_tokens: int | None = None,
+    temperature: float = 0.7,
+    timeout: float = 60.0,
+) -> ToolCallResult:
+    """
+    调用 LLM，支持 Function Calling。
+    返回 ToolCallResult，包含可能的 tool_calls。
+    """
+    from __future__ import annotations
+
+    client = _create_client(model_cfg)
+    loop = asyncio.get_running_loop()
+
+    req_params = {
+        "model": model_cfg.model if hasattr(model_cfg, 'model') else model_cfg.name,
+        "temperature": temperature,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+    }
+    if max_tokens is not None:
+        req_params["max_tokens"] = max_tokens
+
+    try:
+        completion = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: client.chat.completions.create(**req_params)),
+            timeout=timeout,
+        )
+        msg = completion.choices[0].message
+        content = msg.content or ""
+        tc_list: list[dict] = []
+
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+                tc_list.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": args,
+                })
+            logger.info("LLM [%s] → tool_calls: %s",
+                       model_cfg.name[:20],
+                       [(t["name"], str(t["arguments"])[:60]) for t in tc_list])
+
+        return ToolCallResult(content=content.strip(), tool_calls=tc_list)
+
+    except asyncio.TimeoutError:
+        logger.error("LLM FC [%s] 超时", model_cfg.name[:20])
+        return ToolCallResult(content="", tool_calls=[])
+    except Exception as e:
+        logger.error("LLM FC [%s] 失败: %s", model_cfg.name[:20], e)
+        return ToolCallResult(content="", tool_calls=[])
+
+
 # ── 高级功能：多句回复生成 ─────────────────────────────────
 
 def _extract_fav_change(raw: str) -> tuple[str, int]:
@@ -451,6 +520,107 @@ def _build_history_messages(msg_history: list[str], bot_name: str) -> list[dict]
         turns.append({"role": role, "content": content})
 
     return turns
+
+
+# ── Function Calling 增强版生成 ──────────────────────────
+
+async def generate_multi_reply_with_tools(
+    msg_history: list[str],
+    speaker_name: str,
+    current_msg: str,
+    bot_name: str,
+    system_prompt: str,
+    reply_model: "ModelConfig",
+    is_group: bool = True,
+    extra_info: str = "",
+    max_tokens: int = 3000,
+    user_id: int = 0,
+    group_id: int = 0,
+    bot_qq: int = 0,
+) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
+    """
+    跟 generate_multi_reply 一样，但先走 FC 工具调用。
+    如果 LLM 选择调用工具，执行后把结果喂回去，再生成最终回复。
+    """
+    from core.tools import get_tool_schemas, execute_tool
+
+    tools = get_tool_schemas()
+    msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
+
+    # 第一次调用：允许工具
+    result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.8)
+
+    if result.tool_calls:
+        logger.info("FC: 检测到 %d 个工具调用", len(result.tool_calls))
+        # 把 LLM 的 tool_call 消息加入对话
+        msgs.append({
+            "role": "assistant",
+            "content": result.content or "",
+            "tool_calls": [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)},
+                }
+                for tc in result.tool_calls
+            ],
+        })
+
+        # 执行工具并追加 tool 结果
+        for tc in result.tool_calls:
+            tool_result = await execute_tool(
+                tc["name"], tc["arguments"],
+                user_id=user_id, group_id=group_id,
+                sender_name=speaker_name, is_group=is_group, bot_qq=bot_qq,
+            )
+            tool_text = tool_result or "无数据返回"
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": tool_text,
+            })
+            logger.info("FC: 工具 %s 返回 %d 字符", tc["name"], len(tool_text))
+
+        # 第二次调用：基于工具结果生成最终回复
+        final_result = await call_llm_with_tools(
+            reply_model, msgs, tools=[],
+            max_tokens=max_tokens, temperature=0.8,
+        )
+        raw = final_result.content or result.content or ""
+    else:
+        raw = result.content
+
+    return _parse_reply(raw, speaker_name)
+
+def _build_messages(
+    msg_history: list[str],
+    speaker_name: str,
+    current_msg: str,
+    bot_name: str,
+    system_prompt: str,
+    is_group: bool,
+    extra_info: str,
+) -> list[dict]:
+    """构建 messages 列表（与 generate_multi_reply 相同的格式）"""
+    msgs = [{"role": "system", "content": _build_system_text(bot_name, system_prompt, is_group)}]
+    for i, msg in enumerate(msg_history):
+        role = "user" if i % 2 == 0 else "assistant"
+        msgs.append({"role": role, "content": msg})
+
+    user_parts = []
+    if extra_info:
+        user_parts.append(f"【当前可用的搜索/记忆信息】\n{extra_info}\n请参考以上信息回答。")
+    max_chars = "40" if is_group else "12"
+    fmt_reminder = (
+        "【格式规则：严格输出 JSON，不要任何额外文字】\n"
+        '{"replies":["完整的第一句话","自然的第二句话"],"fav":2,"calls":[],"face":null,"mood":"开心","action":"摇尾巴","at":null,"mode":null,"origin":"user","actor":{"name":"发言人","qq":0}}\n'
+        f"日常回复 1~3 句，每句≤{max_chars}字。fav -5~+5。\n"
+        "如果有需要查询的信息（天气/排行/搜索等），直接回复即可，不要在意calls字段。"
+    )
+    user_parts.append(fmt_reminder)
+    user_parts.append(f"{speaker_name} 发消息：「{current_msg}」")
+    msgs.append({"role": "user", "content": "\n".join(user_parts)})
+    return msgs
 
 
 async def generate_multi_reply(
