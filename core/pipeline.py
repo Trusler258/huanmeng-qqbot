@@ -17,7 +17,7 @@ from modules.memory import (
 from modules.fav import update_fav, get_fav
 from modules.commands import handle_command
 from modules.search import auto_search_if_needed
-from services.llm import generate_multi_reply
+from services.llm import generate_multi_reply, generate_multi_reply_with_tools
 from services.sender import send_sentences, send_by_chat_type, send_raw_group, send_raw_user
 
 logger = get_logger("pipeline")
@@ -81,7 +81,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
     buffer_snapshot = list(ctx.get_buffer(chat_id))
 
-    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply(
+    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply_with_tools(
         msg_history=ctx.get_context(chat_id),
         speaker_name=sender_name,
         current_msg=f"[系统] {system_msg}",
@@ -90,6 +90,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         reply_model=cfg.reply_model,
         is_group=is_group,
         extra_info="\n".join(extra_parts),
+        user_id=user_id, group_id=group_id, bot_qq=bot_qq,
     )
 
     if sentences:
@@ -469,10 +470,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d", sender_name, chat_id)
-    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply(
+    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply_with_tools(
         msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
         is_group=is_group, extra_info=extra_info_for_llm,
+        user_id=user_id, group_id=group_id, bot_qq=bot_qq,
     )
 
     if not sentences:
