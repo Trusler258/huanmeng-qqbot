@@ -356,6 +356,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         pass
 
     extra_info = "\n".join(extra_info_parts)
+
+    # ── 用户画像注入 ──
+    try:
+        from core.user_profile import build_profile_text
+        profile_text = build_profile_text(user_id)
+        if profile_text:
+            extra_info += f"\n\n【发言者画像】\n{profile_text}"
+    except ImportError:
+        pass
+
     if extra_info:
         logger.info("额外信息: 记忆=%d字 搜索=%d字", len(related_memories), 0)
 
@@ -764,6 +774,24 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     await maybe_save_memory(msg_content, sentences[0] if sentences else "", sender_name, chat_id, user_id, buffer_snapshot)
 
     logger.info("✅ 管道处理完成: %d句 sent chat=%d", len(sentences), chat_id)
+
+    # ── 后台提取用户画像（不阻塞）──
+    asyncio.ensure_future(_async_extract_profile(user_id, sender_name, msg_content))
+
+
+# ------用户画像后台提取------
+async def _async_extract_profile(user_id: int, sender_name: str, msg: str):
+    """后台异步提取用户画像，不阻塞主流程"""
+    try:
+        from core.user_profile import extract_from_message, update_profile
+        extracted = await extract_from_message(user_id, sender_name, msg)
+        if extracted:
+            update_profile(user_id, extracted)
+            from core.logger import get_logger
+            get_logger("pipeline").info("画像更新: uid=%d new=%s", user_id,
+                                       {k: extracted[k] for k in sorted(extracted.keys())[:3]})
+    except Exception:
+        pass
 
 
 # ------指令路由------
