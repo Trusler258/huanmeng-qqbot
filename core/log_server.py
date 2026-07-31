@@ -150,6 +150,43 @@ async def _http_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             await writer.drain()
             return
 
+        # 封锁页 ?blocked=1
+        if request.startswith("GET /"):
+            import urllib.parse
+            qs = urllib.parse.urlparse(lines[0].split()[1]).query
+            if urllib.parse.parse_qs(qs).get("blocked") == ["1"]:
+                body = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>访问被禁止 · 幻梦控制台</title>
+<style>*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{background:#0a0a14;color:#e5e7eb;font-family:'Noto Sans SC',system-ui,sans-serif;
+display:grid;place-items:center;-webkit-font-smoothing:antialiased}
+.card{text-align:center;border:1px solid rgba(239,68,68,.35);border-radius:18px;
+padding:40px 48px;background:rgba(239,68,68,.06);box-shadow:0 0 60px rgba(239,68,68,.12)}
+h1{font-size:20px;font-weight:700;color:#ef4444;margin-bottom:10px}
+p{font-size:13px;color:#6b7280;margin-bottom:16px}
+code{font-family:'JetBrains Mono',monospace;font-size:11px;color:#f87171;
+background:rgba(239,68,68,.1);padding:4px 10px;border-radius:6px}
+a{color:#67e8f9;font-size:13px;text-decoration:none;display:inline-block;margin-top:8px}
+a:hover{text-decoration:underline}
+</style></head><body>
+<div class="card">
+<h1>⛔ 访问被禁止</h1>
+<p>开发者工具未在限期内关闭</p>
+<code>ERR_DEVTOOLS_DETECTED</code><br>
+<a href="/">← 刷新返回控制台</a>
+</div></body></html>""".encode("utf-8")
+                resp = (
+                    "HTTP/1.1 403 Forbidden\r\n"
+                    "Content-Type: text/html; charset=utf-8\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode() + body
+                writer.write(resp)
+                await writer.drain()
+                return
+
         # 静态文件 CSS/JS
         if request.startswith("GET /"):
             path = lines[0].split()[1]

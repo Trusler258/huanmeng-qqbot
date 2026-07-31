@@ -108,7 +108,7 @@ async def extract_from_message(
     用 cheap LLM 从发言提取用户信息。
     返回增量更新 dict，无收获返回 None。
     """
-    if not msg or len(msg) < 4 or _is_sensitive(msg):
+    if not msg or len(msg) < 8 or _is_sensitive(msg):
         return None
 
     # 简单关键词提取先（零成本），兜底再调 LLM
@@ -116,7 +116,10 @@ async def extract_from_message(
     if quick:
         return quick
 
-    # LLM 提取（异步，轻量）
+    # LLM 提取：只对≥20字的长消息调用，避免浪费
+    if len(msg) < 20 or not re.search(r'[\u4e00-\u9fa5a-zA-Z]{4}', msg):
+        return None
+
     try:
         from services.llm import call_llm
         from core.config import get_config
@@ -139,10 +142,18 @@ def _quick_extract(msg: str) -> dict[str, Any] | None:
     """零成本关键词快速提取，有收获直接返回，不做 LLM"""
     result: dict[str, Any] = {}
 
-    # 姓名提取
-    m = re.search(r'我(?:叫|是|就是)([\u4e00-\u9fa5a-zA-Z]{1,8})', msg)
+    # 姓名提取（严格：只取 2-3 字中文名，前后有分隔）
+    _NOISE_NAMES = {"谁", "什么", "哪个", "哪里", "怎么样", "为啥", "你", "我", "他", "它", "你们", "我们", "他们",
+                     "这个", "那个", "一个", "两个", "真的", "假的", "可以", "没问题", "不知道",
+                     "采购", "销售", "学生", "同学", "你好", "好的", "嗯", "哦", "啊", "哈", "是", "不是",
+                     "习惯了", "你同学", "最强小学生", "fv", "神", "god", "admin", "root"}
+    m = re.search(r'(?:^|[，。！？\s])我(?:叫|是)([\u4e00-\u9fa5]{2,3})(?:[，。！？\s]|$)', msg)
+    if not m:
+        m = re.search(r'(?:^|[，。！？\s])I\'?m\s+([a-zA-Z]{2,8})(?:[，。！？\s]|$)', msg, re.IGNORECASE)
     if m:
-        result["name"] = m.group(1)
+        name = m.group(1)
+        if name not in _NOISE_NAMES:
+            result["name"] = name
 
     # 身份标签
     identities = {
@@ -193,11 +204,11 @@ def _quick_extract(msg: str) -> dict[str, Any] | None:
     if m:
         facts.append(m.group(0)[:15])
 
-    # 偏好语气
+    # 偏好语气（要求明确的交流偏好表达）
     tone_map = {
         "幽默": r'(?:搞笑|幽默|笑话|梗|整活)',
-        "温柔": r'(?:温柔|摸摸|抱抱|安慰)',
-        "直接": r'(?:直接|别废话|说重点|简洁)',
+        "温柔": r'(?:温柔点|摸摸我|抱抱我|安慰一下)',
+        "直接": r'(?:说重点|别废话|直接点|一句话说清楚|简洁点)',
     }
     for tone, pat in tone_map.items():
         if re.search(pat, msg):

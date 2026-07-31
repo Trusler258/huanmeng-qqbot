@@ -204,19 +204,31 @@ class BotConfig:
         return False
 
     def group_ids(self) -> list[int]:
-        """返回所有已知群号（从群统计文件中提取）"""
+        """返回所有已知群号（从群统计归档 + group_owners 中提取）"""
         from pathlib import Path
-        p = Path(__file__).resolve().parent.parent / "data" / "stats"
+        import re
         ids = set()
-        if p.exists():
-            for f in p.glob("group_*_*.json"):
-                try:
-                    ids.add(int(f.stem.split("_")[1]))
-                except Exception:
-                    pass
-        if not ids:
-            return list(self.group_owners.keys())
-        return sorted(ids)
+        _p = Path(__file__).resolve().parent.parent
+        # 统计归档（格式: stats_{group_id}_{date}.json）
+        archive = _p / "data" / "stats_archive"
+        if archive.exists():
+            for f in archive.glob("stats_*.json"):
+                m = re.match(r'stats_(\d+)_', f.name)
+                if m:
+                    ids.add(int(m.group(1)))
+        # 数据目录下的当日文件
+        for f in (_p / "data").glob("group_*_*.json"):
+            try:
+                ids.add(int(f.stem.split("_")[1]))
+            except Exception:
+                pass
+        # group_owners
+        for k in self.group_owners:
+            try:
+                ids.add(int(k))
+            except (ValueError, TypeError):
+                pass
+        return sorted(ids) if ids else []
 
     def get_group_owner(self, group_id: int) -> list[int]:
         """获取群的 OP 指派列表"""
