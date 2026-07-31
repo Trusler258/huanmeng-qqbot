@@ -257,7 +257,9 @@ def build_daily_rankings(label_date=None, cross_day=False):
     # 直接使用最早/最晚的真实采集时间
     time_start = min(all_times)[11:16] if all_times else "??:??"
     if cross_day and cross_times:
-        time_end = min(cross_times)[11:16] if cross_times else max(all_times)[11:16]
+        end_ts = min(cross_times) if cross_times else max(all_times)
+        # ★ 跨天模式：end 加日期前缀避免"00:01 → 00:01"的误解
+        time_end = f"{end_ts[5:10]} {end_ts[11:16]}"
     else:
         time_end = max(all_times)[11:16] if all_times else "??:??"
     return rows, label_date, new_players, time_start, time_end

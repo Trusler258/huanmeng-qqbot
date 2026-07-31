@@ -237,7 +237,10 @@ class EventDispatcher:
         bot_qq = cfg.bot_qq
 
         # ═══ 白名单与权限检查（最优先，连日志都不记）═══
-        is_command = msg_type == "文字" and (msg_content.startswith("/~") or msg_content.startswith("/#"))
+        is_command = msg_type == "文字" and (
+            msg_content.startswith("/~") or msg_content.startswith("/#") or
+            (msg_content.startswith("/") and len(msg_content) > 1 and msg_content[1:2] not in "~#/ ")
+        )
 
         # ★ 分群指令白名单（群内才检查）
         if is_command and is_group:
@@ -281,8 +284,11 @@ class EventDispatcher:
             msg_content[:30].replace("\n", " "),
         )
 
-        # 预设昵称覆盖
+        # 预设昵称覆盖（全局 + 本群自定义）
         preset_name = cfg.qq_name_map.get(str(user_id))
+        if is_group:
+            gs = cfg.group_settings.get(chat_id, {})
+            preset_name = gs.get("nicknames", {}).get(str(user_id), preset_name)
         if preset_name:
             old_name = sender_name
             sender_name = preset_name
@@ -425,8 +431,8 @@ class EventDispatcher:
                     # 注入上下文
                     from core.context_manager import get_context_mgr
                     ctx = get_context_mgr()
-                    ctx.append_to_context(chat_id, f"[图片(仅参考)] {sender_name}: {short_desc}")
-                    return f"【系统】{sender_name}发了一张图片：{short_desc}"
+                    ctx.append_to_context(chat_id, f'{sender_name}:[图片]:描述"{short_desc}"')
+                    return f'[图片]:描述"{short_desc}"'
             except Exception as e:
                 logger.warning("图片@同步识别失败: %s", e)
             return "[图片]"
@@ -444,7 +450,7 @@ class EventDispatcher:
                 # 注入上下文
                 from core.context_manager import get_context_mgr
                 ctx = get_context_mgr()
-                ctx.append_to_context(chat_id, f"[图片(仅参考)] {sender_name}: {short_desc}")
+                ctx.append_to_context(chat_id, f'[图片描述]"{short_desc}" {sender_name}')
                 # 保存到仓库
                 try:
                     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as cl:
@@ -729,7 +735,7 @@ class EventDispatcher:
                 return None
             desc = await recognize_image(img_url, cfg.image_model)
             if desc and desc.strip():
-                return f"[引用图片描述] {desc.strip()[:200]}"
+                return f'[图片]:描述"{desc.strip()[:200]}"'
         except Exception as e:
             logger.warning("引用图片识别失败: %s", e)
 

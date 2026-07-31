@@ -1,0 +1,46 @@
+{
+  "11111": {
+    "name": "小明",
+    "tags": [
+      "学生",
+      "程序员"
+    ],
+    "interests": [
+      "游戏",
+      "编程"
+    ],
+    "dislikes": [
+      "政治"
+    ],
+    "tone": "",
+    "events": [],
+    "status": "备考中",
+    "facts": [
+      "我是小明"
+    ],
+    "last_seen": 1785156363,
+    "message_count": 0
+  },
+  "22222": {
+    "name": "小红",
+    "tags": [
+      "大学生"
+    ],
+    "interests": [
+      "游戏",
+      "编程",
+      "音乐"
+    ],
+    "dislikes": [
+      "政治"
+    ],
+    "tone": "",
+    "events": [],
+    "status": "生气中",
+    "facts": [
+      "我是小红"
+    ],
+    "last_seen": 1785155922,
+    "message_count": 0
+  }
+}
