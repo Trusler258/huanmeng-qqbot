@@ -120,7 +120,8 @@ class HuanmengBot:
         _asyncio.ensure_future(self._bg_eq_poller())
         _asyncio.ensure_future(self._bg_log_server())
         _asyncio.ensure_future(self._bg_wdsj_collector())
-        info("后台任务已启动: 提醒轮询 + 每日0点统计 + 控制文件 + 昵称同步 + 地震速报 + 日志控制台:58888 + 战绩采集")
+        _asyncio.ensure_future(self._bg_pc_status_server())
+        info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890")
 
         # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
         try:
@@ -366,6 +367,11 @@ class HuanmengBot:
         """后台任务：每天 23:59 自动同步 QQ 昵称到 roles.toml"""
         from modules.nickname_sync import nickname_sync_loop
         await nickname_sync_loop()
+
+    async def _bg_pc_status_server(self):
+        """PC 状态接收服务器 (端口 58890)"""
+        from services.pc_status import start_pc_server
+        await start_pc_server(58890)
 
     async def _bg_eq_poller(self):
         """后台任务：地震速报自动轮询"""

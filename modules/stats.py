@@ -211,77 +211,73 @@ async def generate_daily_report_image(stats: dict, group_id: int, date_str: str,
 
     # ── 排行条 ──
     max_count = user_entries[0][1]["count"] if user_entries else 1
-    bar_colors = ["gold", "silver", "bronze", "purple", "purple"]
+    bar_classes = {0: "rb1", 1: "rb2", 2: "rb3"}
+    rank_classes = {0: "r1", 1: "r2", 2: "r3"}
     rank_icons = {0: "🥇", 1: "🥈", 2: "🥉"}
     ranking_rows = []
     for i, (uid, v) in enumerate(user_entries[:8]):
         name = v.get("name", str(uid))
         count = v["count"]
         pct = int(count / max_count * 100)
-        color = bar_colors[i] if i < len(bar_colors) else "purple"
+        rc = rank_classes.get(i, "")
+        bc = bar_classes.get(i, "")
         icon = rank_icons.get(i, f"{i+1}")
-        pos_class = "top1" if i == 0 else ("top2" if i == 1 else ("top3" if i == 2 else "rest"))
         ranking_rows.append(
-            f'<div class="rank-item">'
-            f'<div class="rank-pos {pos_class}">{icon}</div>'
-            f'<div class="rank-name">{name}</div>'
-            f'<div class="rank-bar-wrap"><div class="rank-bar {color}" style="width:{pct}%"></div></div>'
-            f'<div class="rank-count">{count}</div>'
+            f'<div class="rrow">'
+            f'<div class="rnum {rc}">{icon}</div>'
+            f'<div class="rname">{name}</div>'
+            f'<div class="rbar-w"><div class="rbar {bc}" style="width:{pct}%"></div></div>'
+            f'<div class="rcnt">{count}</div>'
             f'</div>'
         )
 
     # ── 24h 热力 ──
     max_hour = max(all_hours.values()) if all_hours else 1
-    from core.config import get_config
-    cfg = get_config()
     hours_cells = []
     for h in range(24):
         h_str = str(h)
         count = all_hours.get(h_str, 0)
         intensity = int(count / max_hour * 100) if max_hour > 0 else 0
-        # 颜色梯度: 0% → #1a1a2e, 100% → #ec4899
-        r, g, b = 26 + int((236 - 26) * intensity / 100), 26 + int((72 - 26) * intensity / 100), 46 + int((153 - 46) * intensity / 100)
-        bg = f"#{r:02x}{g:02x}{b:02x}"
-        hours_cells.append(
-            f'<div class="hour-cell" style="background:{bg}">'
-            f'<span>{count}</span><span class="h-label">{h}h</span>'
-            f'</div>'
-        )
+        # 0→l0, 1-20→l1, 21-40→l2, 41-60→l3, 61-80→l4, 81-100→l5
+        if intensity == 0:     lv = "l0"
+        elif intensity <= 20:  lv = "l1"
+        elif intensity <= 40:  lv = "l2"
+        elif intensity <= 60:  lv = "l3"
+        elif intensity <= 80:  lv = "l4"
+        else:                  lv = "l5"
+        hours_cells.append(f'<div class="hr-c {lv}" title="{h}h:{count}条"></div>')
 
     # ── 锐评 ──
     fun = []
-    # 水群王
     if user_entries:
         top_name = user_entries[0][1].get("name", str(user_entries[0][0]))
         fun.append(
-            f'<div class="fun-fact"><span class="emoji">🗣️</span>今日金话筒：<strong>{top_name}</strong>，'
+            f'<div class="fn-it">🗣️ 今日金话筒：<strong>{top_name}</strong>，'
             f'贡献了 {user_entries[0][1]["count"]} 条消息，占全群 {int(user_entries[0][1]["count"]/total*100)}%，话痨认证喵~</div>'
         )
-    # 潜水
     if len(user_entries) >= 3:
         last_name = user_entries[-1][1].get("name", str(user_entries[-1][0]))
         fun.append(
-            f'<div class="fun-fact"><span class="emoji">🤿</span>深海潜水员：<strong>{last_name}</strong>，'
+            f'<div class="fn-it">🤿 深海潜水员：<strong>{last_name}</strong>，'
             f'仅冒泡 {user_entries[-1][1]["count"]} 次，需要氧气瓶吗？</div>'
         )
-    # 活跃时段
     if all_hours:
         dead_hours = sorted(all_hours.items(), key=lambda x: x[1])[:2]
         dead_str = "、".join(f"{h}点" for h, _ in dead_hours)
         fun.append(
-            f'<div class="fun-fact"><span class="emoji">😴</span>全员休眠期：{dead_str}，'
+            f'<div class="fn-it">😴 全员休眠期：{dead_str}，'
             f'群聊变鬼城(。-ω-)zzz</div>'
         )
         morning = all_hours.get("8", 0) + all_hours.get("9", 0) + all_hours.get("10", 0)
         night = all_hours.get("21", 0) + all_hours.get("22", 0) + all_hours.get("23", 0)
         if night > morning * 1.5:
             fun.append(
-                f'<div class="fun-fact"><span class="emoji">🌙</span>夜猫子聚集地！晚上比早上活跃 {int(night/max(1,morning))} 倍，'
+                f'<div class="fn-it">🌙 夜猫子聚集地！晚上比早上活跃 {int(night/max(1,morning))} 倍，'
                 f'熬夜冠军预备中~</div>'
             )
         elif morning > night * 1.5:
             fun.append(
-                f'<div class="fun-fact"><span class="emoji">☀️</span>早鸟群！早上比晚上活跃 {int(morning/max(1,night))} 倍，'
+                f'<div class="fn-it">☀️ 早鸟群！早上比晚上活跃 {int(morning/max(1,night))} 倍，'
                 f'打工人的觉悟喵~</div>'
             )
 
@@ -299,6 +295,7 @@ async def generate_daily_report_image(stats: dict, group_id: int, date_str: str,
     html = html.replace("{{HOURS_CELLS}}", "\n".join(hours_cells))
     html = html.replace("{{FUN_FACTS}}", "\n".join(fun))
     html = html.replace("{{REPORT_TIME}}", now.strftime("%H:%M"))
+    html = html.replace("{{BRAND}}", "幻梦 Project")
 
     # ── 截图 ──
     from modules.changelog import render_card_to_image, _ensure_browser

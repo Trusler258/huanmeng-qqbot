@@ -4,6 +4,26 @@ import asyncio
 import re
 from pathlib import Path
 
+# ── 回复后处理：去重括号动作、修正语气分裂 ──
+_PARREN_ACTION = re.compile(r'[(（][^)）]*[)）]')
+
+def _clean_reply(text: str) -> str:
+    """修复语气分裂：连续多个括号动作描述只保留第一个"""
+    # 找末尾连续括号动作
+    matches = list(_PARREN_ACTION.finditer(text))
+    if len(matches) >= 2:
+        # 检查是否连续（无文字间隔）
+        consecutive = True
+        for i in range(1, len(matches)):
+            between = text[matches[i-1].end():matches[i].start()]
+            if between.strip():
+                consecutive = False
+                break
+        if consecutive:
+            # 只保留第一个
+            text = text[:matches[0].start()] + text[matches[0].start():matches[0].end()].strip()
+    return text
+
 from core.logger import get_logger
 from core.config import get_config
 from utils.format_lang import format_lang
@@ -96,6 +116,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     if sentences:
         # 静默去除 [FACE:xxx] 残留文本，LLM 不该输出这个
         sentences = [re.sub(r'\[FACE:[^\]]*\]?', '', s).strip() for s in sentences]
+        sentences = [_clean_reply(s) for s in sentences]
         sentences = [s for s in sentences if s]
         if not sentences:
             sentences = ["喵~"]
@@ -191,11 +212,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     stm_add(chat_id, role_tag, f"{sender_name}: {msg_content}", sender_name)
 
     # ------指令拦截------
-    # 仅消息开头 /~ 或 /# 触发指令
+    # /~ /# / 三种前缀都触发指令
     import re as _re
-    cmd_match = _re.match(r'(/~|/#)\s*(\S[\s\S]*?)(?:\s*$|\s*\n)', msg_content)
+    cmd_match = _re.match(r'(/(?:~|#|(?=[a-zA-Z])))\s*(\S[\s\S]*?)(?:\s*$|\s*\n)', msg_content)
     if not cmd_match:
-        cmd_match = _re.match(r'(/~|/#)(\S[\s\S]*)', msg_content)
+        cmd_match = _re.match(r'(/(?:~|#|(?=[a-zA-Z])))(\S[\s\S]*)', msg_content)
     if cmd_match:
         full_cmd = cmd_match.group(0)
         logger.info("指令拦截: '%s' from=%s", full_cmd, sender_name)
@@ -513,6 +534,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if not filtered:
         filtered.append(format_lang("bot.fallback_reply", name=cfg.bot_name))
     sentences = filtered
+    sentences = [_clean_reply(s) for s in sentences]
 
     # actor 始终以真实发送者为准，不信任 LLM 输出
     if origin == "user" and (not actor or actor.get("qq") != user_id):
@@ -542,7 +564,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------scan replies for inline /~commands ------
     if sentences:
         new_lines = []
-        _cmd_re = _re.compile(r'/[\~\#]\s*(\w+)(?:\s+\[?([^\]]*)\]?)?')
+        _cmd_re = _re.compile(r'/(?:\~|\#|(?=[a-zA-Z]))\s*(\w+)(?:\s+\[?([^\]]*)\]?)?')
         for _line in sentences:
             _line = str(_line) if _line else ""
             _added = 0

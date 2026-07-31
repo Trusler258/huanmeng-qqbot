@@ -129,8 +129,8 @@ async def _compress_with_deepseek(chat_id: int, entries: list[dict]):
         result = await call_llm(
             model_cfg=cfg.reply_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
-            temperature=0,
+            max_tokens=300,
+            temperature=0.2,
             timeout=15.0,
         )
         if not result:

@@ -46,12 +46,12 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "wdsj_query",
-            "description": "查询起床战争单项数据(文字)。只问击杀/死亡/KD/胜场等具体数字时用这个，别用wdsj。",
+            "description": "查询起床战争/竞技场/空岛战绩(文字)。问击杀/死亡/KD/胜场等数字时用这个。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "player": {"type": "string", "description": "玩家游戏名，'我'表示自身"},
-                    "mode": {"type": "string", "enum": ["bw", "sw"]},
+                    "player": {"type": "string", "description": "玩家游戏名，'我'表示查自己的"},
+                    "mode": {"type": "string", "enum": ["bw", "sw", "ar"], "description": "bw=起床战争 sw=空岛战争 ar=竞技场"},
                     "stat": {"type": "string", "description": "kill/kills/death/deaths/kd/wins/losses/score"},
                 },
             },
@@ -69,7 +69,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "搜索互联网，回答需要实时信息的问题。",
+            "description": "搜索互联网获取实时信息（天气/新闻/事实查询）。聊天记录里已有上下文时不要调用此工具。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -138,7 +138,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_code",
-            "description": "根据需求编写代码。支持Python/JS/HTML/CSS/Java/C++/C#/Go/Rust/TS。单文件直接发送，多文件打包zip。",
+            "description": "编写程序代码（仅限真正的编程任务）。不要用来生成数学题、作文、文章等非代码内容。支持Python/JS/HTML/CSS/Java/C++/C#/Go/Rust/TS。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -147,6 +147,28 @@ TOOLS: list[dict] = [
                 },
                 "required": ["language", "description"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agent_think",
+            "description": "需要多步推理/分析时调用。比如分析聊天记录、总结讨论、规划方案。会自己搜索和思考，返回最终结论。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "要分析的问题"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "system_status",
+            "description": "查看主人Trusler的电脑状态: 当前窗口、正在播放的音乐、歌词等。问'在干嘛''在听什么'时用。仅限管理员使用。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
 ]
@@ -164,6 +186,8 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "chess":       "xq",
     "read_url":    "",  # 自有实现
     "write_code":  "",  # 自有实现
+    "agent_think": "",  # 自有实现
+    "system_status": "",  # 自有实现
 }
 
 
@@ -178,6 +202,8 @@ async def _write_code(
     """FC 代码生成：单文件发送，多文件 zip"""
     import re, zipfile, tempfile
     from pathlib import Path
+    from core.logger import get_logger
+    logger = get_logger("tools")
 
     ext_map = {
         "python": "py", "javascript": "js", "html": "html", "css": "css",
@@ -189,13 +215,40 @@ async def _write_code(
     from services.llm import call_llm
     from core.config import get_config
     cfg = get_config()
-    msgs = [
-        {"role": "system", "content": f"你是{language}程序员。只输出代码不解释。多文件用 //FILE:name.{ext} 和 //END 分隔。"},
+
+    # 优化需求描述：用户原文 → 技术规格（不限 token）
+    opt_msgs = [
+        {"role": "system", "content": "把下面的请求优化成一段技术规格，列出所有功能点和要求。不要修改任何功能细节，只整理格式。输出纯文本。"},
         {"role": "user", "content": description},
     ]
-    code = await call_llm(cfg.reply_model, msgs, max_tokens=4096, temperature=0.3)
+    spec = await call_llm(cfg.reply_model, opt_msgs, temperature=0.3)
+    spec = (spec or description).strip()
+
+    # 发送优化结果
+    from services.sender import send_group_msg, send_private_msg
+    preview = f"[规格] {spec[:100]}{'...' if len(spec) > 100 else ''}"
+    if is_group:
+        await send_group_msg(preview, group_id)
+    else:
+        await send_private_msg(preview, user_id)
+
+    # 进度提示
+    progress_msg = "正在生成代码喵..."
+    if is_group:
+        await send_group_msg(progress_msg, group_id)
+    else:
+        await send_private_msg(progress_msg, user_id)
+
+    msgs = [
+        {"role": "system", "content": f"你是{language}程序员。只输出代码不解释。多文件用 //FILE:name.{ext} 和 //END 分隔。"},
+        {"role": "user", "content": spec},
+    ]
+    code = await call_llm(cfg.reply_model, msgs, temperature=0.3, timeout=120.0)
     if not code:
-        return "代码生成失败"
+        logger.error("write_code: 代码生成 LLM 返回空")
+        return "代码生成失败，请稍后重试"
+
+    logger.info("write_code: LLM 返回 %d 字符", len(code))
 
     files = {}
     parts = re.split(r'//FILE:\s*(.+?)\s*\n', code.strip())
@@ -215,13 +268,17 @@ async def _write_code(
     if not files:
         return "代码解析失败"
 
+    logger.info("write_code: 解析到 %d 个文件: %s", len(files), list(files.keys()))
+
     tmp = Path(tempfile.mkdtemp(prefix="bot_code_"))
     for fname, content in files.items():
         (tmp / fname).write_text(content, encoding="utf-8")
+        logger.info("write_code: 写入 %s (%d 字节)", fname, len(content.encode("utf-8")))
 
     from services.sender import send_file
     if len(files) == 1:
         fname = list(files.keys())[0]
+        logger.info("write_code: 发送单文件 %s", fname)
         ok = await send_file(str(tmp / fname), group_id if is_group else user_id, is_group)
         return f"已发送 {fname}" if ok else "文件发送失败"
     else:
@@ -231,6 +288,52 @@ async def _write_code(
                 zf.write(str(tmp / fname), fname)
         ok = await send_file(str(zip_path), group_id if is_group else user_id, is_group)
         return f"已发送 {len(files)} 个文件的 zip" if ok else "zip 发送失败"
+
+
+async def _agent_think(question: str, chat_id: int, is_group: bool) -> str:
+    """FC agent 工具：独立 LLM 循环，最多 3 轮思考+搜索，返回结论"""
+    from services.llm import call_llm, call_llm_with_tools
+    from core.config import get_config
+    cfg = get_config()
+
+    search_tool = [{
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "搜索互联网获取实时信息。",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        },
+    }]
+
+    msgs = [
+        {"role": "system", "content": "你是幻梦的思考助手。分析问题，必要时搜索，最后给出简洁结论。≤100字。"},
+        {"role": "user", "content": question},
+    ]
+
+    for round_idx in range(3):
+        result = await call_llm_with_tools(cfg.reply_model, msgs, search_tool, max_tokens=1000, temperature=0.3)
+        if not result.tool_calls:
+            return (result.content or "无法分析").strip()[:200]
+        # 执行搜索
+        for tc in result.tool_calls:
+            from modules.search import perform_search
+            if tc["name"] == "search_web":
+                r = await perform_search(tc["arguments"].get("query", ""), 3, "all")
+                msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": str(r)})
+        msgs.append({"role": "user", "content": f"第{round_idx+1}轮搜索完成，请给出最终结论（100字内）。"})
+        result2 = await call_llm(cfg.reply_model, msgs, max_tokens=200, temperature=0.3)
+        if result2:
+            return result2.strip()[:200]
+    return "分析超时，请稍后再试"
+
+
+async def _system_status() -> str:
+    """查询 PC 状态（从 HTTP 端点缓存读取）"""
+    try:
+        from services.pc_status import format_pc_status
+        return format_pc_status()
+    except ImportError:
+        return "PC 状态模块未加载"
 
 
 async def _read_url(url: str) -> str | None:
@@ -325,25 +428,32 @@ async def execute_tool(
     sender_name: str,
     is_group: bool,
     bot_qq: int,
+    original_msg: str = "",  # 用户原始消息，用于 write_code 不受 FC 截断
 ) -> str | None:
     """
     执行单个工具调用，返回自然语言结果文本。
     返回 None 表示没有数据。
     """
     cmd_name = _TOOL_CMD_MAP.get(tool_name)
-    if not cmd_name:
-        logger.warning("未知工具调用: %s args=%s", tool_name, arguments)
-        return None
 
-    # read_url 自有实现
+    # 自有实现（不走 COMMAND_MAP）
     if tool_name == "read_url":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
+        desc = original_msg or arguments.get("description", "")
         return await _write_code(
             arguments.get("language", "python"),
-            arguments.get("description", ""),
+            desc,
             user_id, group_id, sender_name, is_group, bot_qq,
         )
+    if tool_name == "agent_think":
+        return await _agent_think(arguments.get("question", ""), group_id if is_group else user_id, is_group)
+    if tool_name == "system_status":
+        return await _system_status()
+
+    if not cmd_name:
+        logger.warning("未知工具调用: %s args=%s", tool_name, arguments)
+        return None
 
     # 从 commands 模块获取 handler
     from modules.commands import COMMAND_MAP

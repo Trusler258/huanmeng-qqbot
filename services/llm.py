@@ -287,7 +287,7 @@ async def call_llm(
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
     
-    logger.debug("调用LLM [%s] url=%s tokens=%s temp=%.1f timeout=%.1fs",
+    logger.info("调用LLM [%s] url=%s tokens=%s temp=%.1f timeout=%.1fs",
                  model_cfg.name[:20], model_cfg.url.split('/')[-2] if '/' in model_cfg.url else model_cfg.url[:20],
                  str(max_tokens), temperature, timeout)
     
@@ -374,7 +374,6 @@ async def call_llm_with_tools(
     调用 LLM，支持 Function Calling。
     返回 ToolCallResult，包含可能的 tool_calls。
     """
-    from __future__ import annotations
 
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
@@ -547,50 +546,210 @@ async def generate_multi_reply_with_tools(
     tools = get_tool_schemas()
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
 
-    # 第一次调用：允许工具
-    result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.8)
+    # 多轮 FC Agent 循环：最多 5 轮，LLM 可以连续调多个工具
+    MAX_ROUNDS = 5
+    errors = []
+    data_results = []
+    action_results = []
 
-    if result.tool_calls:
-        logger.info("FC: 检测到 %d 个工具调用", len(result.tool_calls))
-        # 把 LLM 的 tool_call 消息加入对话
+    for round_idx in range(MAX_ROUNDS):
+        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4)
+        raw_preview = (result.content or "")[:200].replace("\n", "\\n")
+        logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
+
+        if not result.tool_calls:
+            if not (result.content or "").strip() and round_idx == 0:
+                logger.warning("LLM 返回空内容，重试...")
+                continue
+            # 非 JSON 且首次 → 强制 json_mode 重试一次
+            raw = (result.content or "").strip()
+            if round_idx == 0 and raw and not raw.startswith("{"):
+                logger.info("LLM 输出非 JSON，强制重试...")
+                json_raw = await call_llm(reply_model, msgs, max_tokens=max_tokens, temperature=0.3, json_mode=True)
+                if json_raw and json_raw.startswith("{"):
+                    result.content = json_raw
+                    logger.info("json_mode 重试成功: %s...", json_raw[:80])
+                else:
+                    logger.info("json_mode 重试失败，用原文")
+            break
+
+        logger.info("FC: 轮%d 检测到 %d 个工具调用", round_idx + 1, len(result.tool_calls))
         msgs.append({
             "role": "assistant",
-            "content": result.content or "",
+            "content": None,
             "tool_calls": [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)},
-                }
+                {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)}}
                 for tc in result.tool_calls
             ],
         })
 
-        # 执行工具并追加 tool 结果
-        for tc in result.tool_calls:
-            tool_result = await execute_tool(
+        # 并行执行本轮所有工具
+        async def run_one(tc):
+            r = await execute_tool(
                 tc["name"], tc["arguments"],
                 user_id=user_id, group_id=group_id,
                 sender_name=speaker_name, is_group=is_group, bot_qq=bot_qq,
+                original_msg=current_msg,
             )
-            tool_text = tool_result or "无数据返回"
-            msgs.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": tool_text,
-            })
+            return tc, r or ""
+
+        tool_results = await asyncio.gather(*(run_one(tc) for tc in result.tool_calls))
+        for tc, tool_text in tool_results:
+            msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": tool_text})
             logger.info("FC: 工具 %s 返回 %d 字符", tc["name"], len(tool_text))
 
-        # 第二次调用：基于工具结果生成最终回复
-        final_result = await call_llm_with_tools(
-            reply_model, msgs, tools=[],
-            max_tokens=max_tokens, temperature=0.8,
-        )
-        raw = final_result.content or result.content or ""
-    else:
-        raw = result.content
+            if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text:
+                errors.append(tool_text)
+            elif tc["name"] in ("wdsj_query", "weather", "search_web", "earthquake"):
+                data_results.append(tool_text)
+            elif tool_text:
+                action_results.append(tool_text)
 
-    return _parse_reply(raw, speaker_name)
+        # 遇到错误或数据结果 → 停止循环
+        if errors or data_results:
+            break
+
+    # ── 处理结果 ──
+    if errors:
+        return _parse_reply(
+            json.dumps({"replies": [errors[0].rstrip("。") + "喵"], "fav": 0, "calls": [], "face": None, "mood": "无奈", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}),
+            speaker_name,
+        )
+    if data_results:
+        wrap_msgs = [
+            {"role": "system", "content": "你是幻梦，一个可爱的QQ机器人。用自然语气回复，加个喵或颜文字。1句，≤40字。"},
+            {"role": "user", "content": f"用户说「{current_msg}」\n查到数据：{data_results[0]}\n请用一句话自然回复。"},
+        ]
+        raw = await call_llm(reply_model, wrap_msgs, max_tokens=80, temperature=0.4)
+        if raw:
+            return _parse_reply(
+                json.dumps({"replies": [raw.strip()], "fav": 0, "calls": [], "face": None, "mood": "好奇", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}, ensure_ascii=False),
+                speaker_name,
+            )
+        return _parse_reply(
+            json.dumps({"replies": [data_results[0]], "fav": 0, "calls": [], "face": None, "mood": "好奇", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}, ensure_ascii=False),
+            speaker_name,
+        )
+
+    if action_results:
+        reply_text = action_results[0]
+        return _parse_reply(
+            json.dumps({"replies": [reply_text], "fav": 0, "calls": [], "face": None, "mood": "开心", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}),
+            speaker_name,
+        )
+
+    # 无工具调用 → 优先尝试 JSON，失败则按纯文本处理
+    raw = result.content or ""
+    if not raw.strip():
+        return [], 0, [], "", "", None, "", None, None, "user", {}
+
+    # 尝试 JSON 解析（LLM 有时返回 JSON 但不调工具）
+    parsed = _parse_reply(raw, speaker_name, quiet=True)
+    if parsed[0]:
+        return parsed
+
+    # 纯文本：按句号拆开发送
+    sentences = [s.strip() + "。" for s in raw.replace("\n", " ").split("。") if s.strip()]
+    if not sentences:
+        sentences = [raw.strip()[:120]]
+    return sentences, 0, [], "", "", None, "", None, None, "user", {}
+
+
+
+def _parse_reply(
+    raw: str,
+    speaker_name: str = "",
+    quiet: bool = False,
+) -> tuple:
+    """解析 LLM JSON 回复，返回标准 11 元组。quiet=True 时 JSON 失败不告警"""
+    if not raw:
+        return [], 0, [], "", "", None, "", None, None, "user", {}
+
+    try:
+        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
+        raw = re.sub(r'\s*```$', '', raw)
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            raw = raw[start:end + 1]
+        raw = re.sub(r'//[^\n]*', '', raw)
+        data = json.loads(raw)
+        data = _normalize_reply_json(data)
+        replies = data.get("replies", [])
+        if not isinstance(replies, list) or not replies:
+            raw_cleaned, fav_change = _extract_fav_change(raw)
+            replies = _clean_sentences(raw_cleaned)
+            return replies, fav_change, [], "", "", None, "", None, None, "user", {}
+        if isinstance(replies[0], list):
+            replies = [str(r) for r in replies[0]]
+        else:
+            replies = [str(r) for r in replies]
+
+        fav_change = data.get("fav", 0)
+        calls = data.get("calls", [])
+        face_cq = ""
+        face = data.get("face")
+        if face:
+            try:
+                from modules.face_lib import get_face, make_cq
+                fp = get_face(str(face).strip())
+                if fp:
+                    face_cq = make_cq(fp)
+            except Exception:
+                pass
+
+        mood = data.get("mood", "")
+        mood_detail = data.get("mood_detail")
+        action = data.get("action", "")
+        at_qq = data.get("at")
+        mode_switch = data.get("mode")
+        origin = data.get("origin", "user")
+        actor = data.get("actor") or {}
+
+        logger.info("JSON回复解析: %d句 fav=%+d calls=%d mood=%s",
+                   len(replies), fav_change, len(calls), mood)
+        return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor
+
+    except json.JSONDecodeError:
+        if not quiet:
+            logger.warning("JSON解析失败，尝试修复: %s...", raw[:80])
+        try:
+            m = re.search(r'"replies"\s*:\s*\[', raw)
+            if m:
+                inner = raw[m.end():]
+                depth = 0
+                end_pos = -1
+                for i, ch in enumerate(inner):
+                    if ch == '[': depth += 1
+                    elif ch == ']':
+                        if depth == 0:
+                            end_pos = i
+                            break
+                        depth -= 1
+                if end_pos >= 0:
+                    parts = []
+                    in_str = False
+                    cur = ""
+                    repl_inner = inner[:end_pos]
+                    for i, ch in enumerate(repl_inner):
+                        if ch == '"':
+                            in_str = not in_str
+                        elif ch == ',' and not in_str:
+                            parts.append(cur.strip().strip('"').strip("'"))
+                            cur = ""
+                            continue
+                        cur += ch
+                    if cur.strip():
+                        parts.append(cur.strip().strip('"').strip("'"))
+                    parts = [p for p in parts if p]
+                    if parts:
+                        fm = re.search(r'"fav"\s*:\s*(-?\d+)', raw)
+                        fv = int(fm.group(1)) if fm else 0
+                        return parts, fv, [], "", "", None, "", None, None, "user", {}
+        except Exception:
+            pass
+        return [], 0, [], "", "", None, "", None, None, "user", {}
+
 
 def _build_messages(
     msg_history: list[str],
@@ -609,13 +768,17 @@ def _build_messages(
 
     user_parts = []
     if extra_info:
-        user_parts.append(f"【当前可用的搜索/记忆信息】\n{extra_info}\n请参考以上信息回答。")
+        user_parts.append(f"【上下文】\n{extra_info}")
+        ctx_hint = "优先用上下文+自身知识回答，上下文够用就别搜。"
+    else:
+        ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
     max_chars = "40" if is_group else "12"
     fmt_reminder = (
-        "【格式规则：严格输出 JSON，不要任何额外文字】\n"
-        '{"replies":["完整的第一句话","自然的第二句话"],"fav":2,"calls":[],"face":null,"mood":"开心","action":"摇尾巴","at":null,"mode":null,"origin":"user","actor":{"name":"发言人","qq":0}}\n'
-        f"日常回复 1~3 句，每句≤{max_chars}字。fav -5~+5。\n"
-        "如果有需要查询的信息（天气/排行/搜索等），直接回复即可，不要在意calls字段。"
+        f"{ctx_hint}\n"
+        "只有当明确要求写代码才用 write_code，出题/写文章/答疑等直接文字回答。"
+        "工具：查天气/战绩/搜索。不需要工具就直接回复。\n"
+        f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
+        f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。"
     )
     user_parts.append(fmt_reminder)
     user_parts.append(f"{speaker_name} 发消息：「{current_msg}」")
@@ -717,7 +880,7 @@ async def generate_multi_reply(
     logger.info("开始多句回复生成 | speaker=%s | history_turns=%d | extra=%d字",
                speaker_name, len(turns) - 1, len(extra_info))
 
-    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.8, json_mode=True)
+    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True)
     if not raw:
         logger.warning("多句回复生成为空，将使用 fallback")
         return [], 0, [], "", "", "", None, None, "user", {}
@@ -972,7 +1135,7 @@ async def _judge_combined(
         f"【上下文】{context_str}\n"
         f"【新消息】{msg}\n"
     )
-    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=500, temperature=0.3, timeout=15.0)
+    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=500, temperature=0.4, timeout=15.0)
     result = result.strip()
     logger.debug("合并判断: '%s...' → '%s'", msg[:30], result)
     try:
@@ -1001,7 +1164,7 @@ async def call_summary_model(
         summary_model,
         [{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
-        temperature=0.3,
+        temperature=0.4,
         timeout=30.0,
     )
     

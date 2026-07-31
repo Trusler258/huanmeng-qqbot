@@ -29,7 +29,7 @@ from services.sender import send_group_msg, send_private_msg, send_raw_group, se
 from modules.search import perform_search
 from modules.earthquake import cmd_eq
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
-from modules.voice import cmd_voice
+# from modules.voice import cmd_voice
 try:
     from modules.ping import cmd_ping
 except ImportError:
@@ -2865,13 +2865,34 @@ async def _owner_legacy(args, action, admin):
             return admin.config_set(f"adapter.group_settings.{gid}", "null")
     return f"未知操作: {action}"
 
+async def cmd_restart(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """远程重启 /~restart"""
+    from core.config import get_config
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id if is_group else 0):
+        return "权限不足"
+    from services.sender import send_group_msg, send_private_msg
+    if is_group:
+        await send_group_msg("正在重启喵～", group_id)
+    else:
+        await send_private_msg("正在重启喵～", user_id)
+    import os
+    os._exit(0)
+
+
 # ════════════════════════════════════════════════════════════
 #  指令注册表 & 分发器
 # ════════════════════════════════════════════════════════════
 
+async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """查看主人 PC 状态: 窗口标题、音乐、歌词"""
+    from services.pc_status import format_pc_status
+    return format_pc_status()
+
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
     "ping":       cmd_ping,
+    "restart":    cmd_restart,
     "favlist":    cmd_favlist,
     "info":       cmd_info,
     "search":     cmd_search,  # LLM CALL 调用用，/~s 已废弃
@@ -2895,8 +2916,8 @@ COMMAND_MAP: dict[str, callable] = {
     "绘画":       cmd_draw,
     "video":      cmd_video,
     "视频":       cmd_video,
-    "voice":      cmd_voice,
-    "语音":       cmd_voice,
+    # "voice":      cmd_voice,
+    # "语音":       cmd_voice,
     "img2video":  cmd_img2video,
     "图生视频":   cmd_img2video,
     "eq":         cmd_eq,
@@ -2943,6 +2964,8 @@ COMMAND_MAP: dict[str, callable] = {
     "tufsearch":  cmd_tuf_search,
     "tufd":       cmd_tufd,
     "tufpage":    cmd_tufpage,
+    "sys":        cmd_sys,
+    "pc":         cmd_sys,
 }
 
 
@@ -2972,6 +2995,9 @@ async def handle_command(
     elif text.startswith("/#"):
         prefix = "/#"
         cmd_part = text[2:].strip()
+    elif text.startswith("/") and len(text) > 1 and text[1] not in "~#/ ":
+        prefix = "/"
+        cmd_part = text[1:].strip()
     else:
         return None
 
