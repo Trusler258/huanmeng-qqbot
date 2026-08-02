@@ -194,7 +194,7 @@ class WSConnectionManager:
                 # 重连后重试一次
                 if await self._ensure_connected():
                     try:
-                        await self._ws.send(request)
+                        await self._ws.send(json.dumps(payload))
                         raw_resp = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
                         resp = _safe_json_load(raw_resp)
                         if resp and resp.get("retcode") == 0:

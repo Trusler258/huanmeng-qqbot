@@ -186,7 +186,14 @@ def save_search_memory(query: str, result: str, sender_name: str, user_id: int, 
 # ════════════════════════════════════════════════════════════
 
 def extract_keywords(text: str) -> set[str]:
-    return set(re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]{2,}', text))
+    """提取关键词 + 2字 N-gram（提升中文匹配召回率）"""
+    base = set(re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]{2,}', text))
+    # 中文 2-gram：把"今天天气"拆成"今天""天天""天气"，提升模糊匹配召回率
+    chinese = re.findall(r'[\u4e00-\u9fa5]+', text)
+    for seg in chinese:
+        for i in range(len(seg) - 1):
+            base.add(seg[i:i+2])
+    return base
 
 
 def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = 5) -> str:
@@ -210,7 +217,10 @@ def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, m
     if not top:
         return ""
 
-    return format_lang("memory.recall_header") + "\n" + "\n".join(top)
+    result = format_lang("memory.recall_header") + "\n" + "\n".join(top)
+    if len(result) > 800:
+        result = result[:800] + "\n..."  # 截断上限从 400 提升到 800
+    return result
 
 
 # ════════════════════════════════════════════════════════════

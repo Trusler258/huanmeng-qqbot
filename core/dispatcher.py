@@ -30,7 +30,8 @@ class EventDispatcher:
 
     def __init__(self):
         self._msg_count = 0   # 统计：已处理的消息总数
-        self._seen_ids: set[str] = set()  # 消息去重 (message_id)
+        # 用 dict 保持插入顺序（Python 3.7+），set 是无序的，截断时会随机丢一半
+        self._seen_ids: dict[str, None] = {}
         self._seen_max = 500  # 去重集合上限
 
     @property
@@ -72,9 +73,11 @@ class EventDispatcher:
         if msg_id:
             if msg_id in self._seen_ids:
                 return  # 已处理过，跳过
-            self._seen_ids.add(msg_id)
+            self._seen_ids[msg_id] = None
             if len(self._seen_ids) > self._seen_max:
-                self._seen_ids = set(list(self._seen_ids)[-self._seen_max//2:])
+                # 按插入顺序保留最近一半（dict 保持插入顺序）
+                keep = list(self._seen_ids.keys())[-(self._seen_max // 2):]
+                self._seen_ids = {k: None for k in keep}
 
         # ── 静默过滤: meta_event (心跳包，每30秒一次，不计数不记录) ──
         if post_type == "meta_event":
