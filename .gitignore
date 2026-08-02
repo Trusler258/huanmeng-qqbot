@@ -77,3 +77,4 @@ Thumbs.db
 .DS_Store
 .bot_protect
 docs/fix_change.md
+test_fc_sim.py
