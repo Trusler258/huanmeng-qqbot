@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 from typing import Any
 
@@ -18,7 +19,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "weather",
-            "description": "查询指定城市的天气。返回当前温度/天气/风力/穿衣建议等。",
+            "description": "查询城市天气。用户问天气/温度/下雨/穿什么时调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -32,12 +33,12 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "wdsj",
-            "description": "查询起床战争战绩图片。要求看图/卡片/战绩总览时用这个。说'我的起床战绩'→player='我'。",
+            "description": "生成战绩图片卡片。用户说'查战绩/看战绩/我的日报'时调用，返回图片。player='我'表示查发言人自己。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "player": {"type": "string", "description": "玩家游戏名，'我'表示查发言人自己"},
-                    "mode": {"type": "string", "enum": ["bw", "sw", "daily"], "description": "模式: bw=起床战争, sw=空岛战争, daily=今日日报"},
+                    "mode": {"type": "string", "enum": ["bw", "sw", "daily"], "description": "bw=起床战争, sw=空岛战争, daily=今日日报"},
                 },
             },
         },
@@ -46,7 +47,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "wdsj_query",
-            "description": "查询起床战争/竞技场/空岛战绩(文字)。问击杀/死亡/KD/胜场等数字时用这个。",
+            "description": "查具体数字（击杀/死亡/KD/胜场）。用户问'杀了多少/死了多少/KD多少'时调用，返回文字。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -69,7 +70,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "搜索互联网获取实时信息（天气/新闻/事实查询）。聊天记录里已有上下文时不要调用此工具。",
+            "description": "搜索互联网。用户问实时信息（新闻/事实/不懂的概念）时调用。日常聊天不需要调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -124,7 +125,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "read_url",
-            "description": "抓取并总结网页内容。用户发送链接时自动调用。",
+            "description": "抓取并总结网页内容。用户发送链接时调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -138,7 +139,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_code",
-            "description": "编写程序代码（仅限真正的编程任务）。不要用来生成数学题、作文、文章等非代码内容。支持Python/JS/HTML/CSS/Java/C++/C#/Go/Rust/TS。",
+            "description": "编写程序代码。用户要求写代码/脚本/网页时调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -153,7 +154,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "agent_think",
-            "description": "需要多步推理/分析时调用。比如分析聊天记录、总结讨论、规划方案。会自己搜索和思考，返回最终结论。",
+            "description": "复杂分析工具。需要分析聊天记录、总结讨论、多步推理时调用。简单问题不需要调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -167,7 +168,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "system_status",
-            "description": "查看主人Trusler的电脑状态: 当前窗口、正在播放的音乐、歌词等。问'在干嘛''在听什么'时用。仅限管理员使用。",
+            "description": "查看主人电脑状态（当前窗口、在听什么歌）。仅限管理员使用。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -214,34 +215,11 @@ async def _write_code(
 
     from services.llm import call_llm
     from core.config import get_config
-    cfg = get_config()
-
-    # 优化需求描述：用户原文 → 技术规格（不限 token）
-    opt_msgs = [
-        {"role": "system", "content": "把下面的请求优化成一段技术规格，列出所有功能点和要求。不要修改任何功能细节，只整理格式。输出纯文本。"},
-        {"role": "user", "content": description},
-    ]
-    spec = await call_llm(cfg.reply_model, opt_msgs, temperature=0.3)
-    spec = (spec or description).strip()
-
-    # 发送优化结果
     from services.sender import send_group_msg, send_private_msg
-    preview = f"[规格] {spec[:100]}{'...' if len(spec) > 100 else ''}"
-    if is_group:
-        await send_group_msg(preview, group_id)
-    else:
-        await send_private_msg(preview, user_id)
-
-    # 进度提示
-    progress_msg = "正在生成代码喵..."
-    if is_group:
-        await send_group_msg(progress_msg, group_id)
-    else:
-        await send_private_msg(progress_msg, user_id)
-
+    cfg = get_config()
     msgs = [
-        {"role": "system", "content": f"你是{language}程序员。只输出代码不解释。多文件用 //FILE:name.{ext} 和 //END 分隔。"},
-        {"role": "user", "content": spec},
+        {"role": "system", "content": f"你是{language}程序员。下面是程序设计题，写出完整解法代码。只输出代码不写注释，多文件用 //FILE:name.{ext} 和 //END 分隔。"},
+        {"role": "user", "content": description[:4000]},
     ]
     code = await call_llm(cfg.reply_model, msgs, temperature=0.3, timeout=120.0)
     if not code:
@@ -275,19 +253,136 @@ async def _write_code(
         (tmp / fname).write_text(content, encoding="utf-8")
         logger.info("write_code: 写入 %s (%d 字节)", fname, len(content.encode("utf-8")))
 
+    # ── 编译 + 运行 ──
+    run_result = ""
+    cpp_files = sorted([f for f in files if f.endswith(".cpp")])
+    if cpp_files and language in ("c++", "cpp"):
+        try:
+            run_result = await _compile_and_run(tmp, cpp_files, group_id if is_group else user_id, is_group, description)
+        except Exception as e:
+            logger.warning("编译运行异常: %s", e)
+            run_result = f"[编译异常] {e}"
+
     from services.sender import send_file
+    send_msgs = []
     if len(files) == 1:
         fname = list(files.keys())[0]
         logger.info("write_code: 发送单文件 %s", fname)
         ok = await send_file(str(tmp / fname), group_id if is_group else user_id, is_group)
-        return f"已发送 {fname}" if ok else "文件发送失败"
+        send_msgs.append(f"已发送 {fname}" if ok else "文件发送失败")
     else:
         zip_path = tmp / "code.zip"
         with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
             for fname in sorted(files.keys()):
                 zf.write(str(tmp / fname), fname)
         ok = await send_file(str(zip_path), group_id if is_group else user_id, is_group)
-        return f"已发送 {len(files)} 个文件的 zip" if ok else "zip 发送失败"
+        send_msgs.append(f"已发送 {len(files)} 个文件的 zip" if ok else "zip 发送失败")
+
+    if run_result:
+        send_msgs.append(run_result)
+    return "\n".join(send_msgs)
+
+
+async def _compile_and_run(tmp: Path, cpp_files: list[str], chat_id: int, is_group: bool, description: str = "") -> str:
+    """编译 C++ 文件并运行，返回结果（限时 5s，限内存 256MB）"""
+    import subprocess, shutil
+
+    exe = tmp / "a.out"
+    # 编译
+    if shutil.which("g++") is None:
+        return "[编译失败] 服务器未安装 g++"
+    cmd = ["g++", "-std=c++14", "-O2", "-o", str(exe)] + [str(tmp / f) for f in cpp_files]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=str(tmp),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode != 0:
+            err = stderr.decode(errors="replace")[:500].strip()
+            return f"[编译失败]\n{err}"
+    except asyncio.TimeoutError:
+        return "[编译超时]"
+    except Exception as e:
+        return f"[编译异常] {e}"
+
+    # 运行（从 description 中提取输入数据）
+    stdin_data = _extract_input(description)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(exe), cwd=str(tmp),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(stdin_data.encode() if stdin_data else None),
+            timeout=5,
+        )
+        out = stdout.decode(errors="replace")[:500].strip()
+        err_out = stderr.decode(errors="replace")[:200].strip()
+        if err_out:
+            return f"[运行输出]\n{out}\n\n[stderr]\n{err_out}"
+        return f"[运行输出]\n{out}"
+    except asyncio.TimeoutError:
+        proc.kill()
+        return "[运行超时] 超过 5 秒"
+    except Exception as e:
+        return f"[运行异常] {e}"
+
+
+def _extract_input(text: str) -> str:
+    """从题目描述中提取样例输入"""
+    import re
+    # 匹配 "输入 #1" 后面的代码块
+    for pat in [r'输入\s*#\d+\s*\n```\s*\n?(.*?)```', r'输入样例.*?\n```\s*\n?(.*?)```']:
+        m = re.search(pat, text, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+    # 匹配题目中的第一组数字行（典型输入格式，如 "0 2 197\n26 121"）
+    m = re.search(r'(\d[\d\s]+\d)\s*$', text, re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
+async def _optimize_search_keywords(query: str) -> str:
+    """用 LLM 把用户口语转换为精炼搜索关键词"""
+    # 短查询或纯英文/数字不优化
+    if len(query) <= 3:
+        return query
+
+    from services.llm import call_llm
+    from core.config import get_config
+    cfg = get_config()
+
+    prompt = f"""把以下搜索词优化为精炼关键词（3-5个词，空格分隔）。
+规则：
+- 去掉口语词（帮我查/是什么/搜一下/怎么/为什么）
+- 展开缩写（5090D→RTX 5090D, 4090→RTX 4090）
+- 保留核心名词，不要堆砌
+- 只输出关键词，不要解释
+
+搜索词: {query}
+优化后:"""
+
+    try:
+        result = await call_llm(
+            cfg.reply_model,
+            [{"role": "user", "content": prompt}],
+            max_tokens=50,
+            temperature=0.2,
+            timeout=8.0,
+        )
+        if result and result.strip():
+            optimized = result.strip().split("\n")[0].strip()
+            # 去掉可能的引号/前缀
+            optimized = optimized.strip("\"'""''")
+            if optimized and len(optimized) < len(query) * 3:
+                logger.info("搜索词优化: '%s' → '%s'", query, optimized)
+                return optimized
+    except Exception as e:
+        logger.debug("搜索词优化失败，用原文: %s", e)
+    return query
 
 
 async def _agent_think(question: str, chat_id: int, is_group: bool) -> str:
@@ -300,30 +395,53 @@ async def _agent_think(question: str, chat_id: int, is_group: bool) -> str:
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "搜索互联网获取实时信息。",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            "description": "搜索互联网。如果第一轮结果不够回答，换关键词重新搜索。",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "精炼搜索关键词"}}, "required": ["query"]},
         },
     }]
 
     msgs = [
-        {"role": "system", "content": "你是幻梦的思考助手。分析问题，必要时搜索，最后给出简洁结论。≤100字。"},
+        {"role": "system", "content": (
+            "你是幻梦的思考助手。你的任务是回答用户的问题。\n"
+            "流程：\n"
+            "1. 分析问题，判断需要搜索什么\n"
+            "2. 调用 search_web 搜索（用精炼关键词，不要用完整句子）\n"
+            "3. 如果第一轮结果不够回答，换关键词重新搜索（最多3轮）\n"
+            "4. 综合所有搜索结果，给出完整结论\n"
+            "结论要求：200字以内，包含具体信息，不要泛泛而谈。"
+        )},
         {"role": "user", "content": question},
     ]
 
     for round_idx in range(3):
         result = await call_llm_with_tools(cfg.reply_model, msgs, search_tool, max_tokens=1000, temperature=0.3)
         if not result.tool_calls:
-            return (result.content or "无法分析").strip()[:200]
+            # 没有工具调用 → 直接返回结论
+            return (result.content or "无法分析").strip()[:500]
+
         # 执行搜索
         for tc in result.tool_calls:
             from modules.search import perform_search
             if tc["name"] == "search_web":
-                r = await perform_search(tc["arguments"].get("query", ""), 3, "all")
+                raw_q = tc["arguments"].get("query", "")
+                # 搜索词优化
+                optimized_q = await _optimize_search_keywords(raw_q)
+                r = await perform_search(optimized_q, limit=6, source="all")
                 msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": str(r)})
-        msgs.append({"role": "user", "content": f"第{round_idx+1}轮搜索完成，请给出最终结论（100字内）。"})
-        result2 = await call_llm(cfg.reply_model, msgs, max_tokens=200, temperature=0.3)
-        if result2:
-            return result2.strip()[:200]
+
+        if round_idx < 2:
+            # 还有轮次 → 让 LLM 决定是否继续搜索
+            msgs.append({"role": "user", "content": (
+                f"第{round_idx+1}轮搜索完成。如果结果足够回答，直接给结论。"
+                f"如果不够，换关键词重新搜索。"
+            )})
+        else:
+            # 最后一轮 → 强制给结论
+            msgs.append({"role": "user", "content": "搜索已完成，请综合所有结果给出最终结论（200字内）。"})
+            result2 = await call_llm(cfg.reply_model, msgs, max_tokens=400, temperature=0.3)
+            if result2:
+                return result2.strip()[:500]
+
     return "分析超时，请稍后再试"
 
 
@@ -331,44 +449,62 @@ async def _system_status() -> str:
     """查询 PC 状态（从 HTTP 端点缓存读取）"""
     try:
         from services.pc_status import format_pc_status
-        return format_pc_status()
+        return format_pc_status(owner="Trusler")
     except ImportError:
         return "PC 状态模块未加载"
 
 
 async def _read_url(url: str) -> str | None:
-    """抓取网页正文，提取纯文本内容"""
-    import requests
-    from bs4 import BeautifulSoup
-
+    """抓取网页正文，提取纯文本内容（统一用 PageScraper + LLM 摘要）"""
     if not url.startswith("http"):
         return "请提供完整链接（http/https）"
 
+    # 用统一的 PageScraper 提取正文（readability + 智能截断）
     try:
-        resp = requests.get(url, timeout=10, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
-        resp.encoding = resp.apparent_encoding or "utf-8"
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # 移除脚本/样式
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-            tag.decompose()
-
-        body = soup.find("body") or soup
-        text = body.get_text(separator="\n", strip=True)
-
-        # 压缩空行
-        import re
-        text = re.sub(r'\n{3,}', '\n\n', text)
-
-        # 截断过长内容
-        if len(text) > 4000:
-            text = text[:4000] + "\n...(内容已截断)"
-
-        return f"网页标题: {soup.title.string if soup.title else '无'}\n\n正文:\n{text}"
+        from modules.local_search import get_scraper
+        scraper = get_scraper()
+        loop = asyncio.get_running_loop()
+        raw_text = await loop.run_in_executor(None, lambda: scraper.scrape(url, max_chars=6000))
     except Exception as e:
         return f"抓取失败: {e}"
+
+    if not raw_text:
+        return f"无法读取该页面: {url}"
+
+    # LLM 摘要：把 6000 字压缩成 800 字核心信息
+    from services.llm import call_llm
+    from core.config import get_config
+    cfg = get_config()
+
+    summary_prompt = f"""提取以下网页正文的核心信息（800字以内）。
+规则：
+1. 保留关键事实、数据、步骤、结论
+2. 去掉广告、导航、重复内容
+3. 保持原文的客观性，不要添加自己的理解
+4. 如果是技术文章，保留代码示例和关键参数
+5. 如果是新闻，保留时间、地点、人物、事件
+
+网页内容：
+{raw_text}
+
+核心信息："""
+
+    try:
+        summary = await call_llm(
+            cfg.reply_model,
+            [{"role": "user", "content": summary_prompt}],
+            max_tokens=1200,
+            temperature=0.2,
+            timeout=20.0,
+        )
+        if summary and summary.strip():
+            logger.info("网页摘要完成: %s (%d→%d字)", url[:50], len(raw_text), len(summary))
+            return summary.strip()
+    except Exception as e:
+        logger.warning("LLM 摘要失败，返回原文: %s", e)
+
+    # LLM 摘要失败 → 返回原文（已截断）
+    return raw_text
 
 
 async def _resolve_player(user_id: int, game: str) -> str | None:
@@ -495,7 +631,13 @@ async def execute_tool(
             return _extract_stats(player, stat, result)
         return "wdsj 指令未注册"
     elif tool_name == "search_web":
-        args = [arguments.get("query", "")]
+        # ★ FC 路径搜索词优化：LLM 传来的 query 可能是完整句子，先优化成关键词
+        raw_query = arguments.get("query", "")
+        if raw_query:
+            optimized = await _optimize_search_keywords(raw_query)
+            args = [optimized]
+        else:
+            args = [""]
     elif tool_name == "earthquake":
         prov = arguments.get("province", "")
         if prov:

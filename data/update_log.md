@@ -1,5 +1,138 @@
 # 更新日志
 
+## v1.5.0 — Function Calling + 代码生成 + 用户画像 + 语音合成 + 视觉重构 — 2026.8.3
+
+### 🤖 Function Calling 集成（DeepSeek FC）
+- 8 个工具自动调用：天气、战绩、排名、搜索、地震、五子棋、PC 状态、代码生成
+- 多轮 FC Agent 循环（最多 2 轮），同轮多工具并行执行 (`asyncio.gather`)
+- 工具结果分类：错误回复 / 数据自然回复 / 动作直接返回
+- 首轮非 JSON 输出 → `json_mode=True` 强制重试（补救重试 max_tokens 上限 800）
+- 纯文本回复静默降级，不刷 WARNING
+- FC 工具定义统一在 `core/tools.py` 的 `TOOLS` 表 + `_TOOL_CMD_MAP`
+- `call_llm_with_tools` 独立封装（不依赖 `call_llm`，直接使用 OpenAI SDK）
+
+### 💻 代码生成管道（FC write_code）
+- LLM 自动检测编程语言 → 生成完整解法代码
+- 单文件直接发送 QQ 文件，多文件打包 zip
+- C++ 代码自动 g++ 编译 + 带超时执行（防止死循环）
+- 编译/运行结果跟随文件一起回复
+- **长题防御**：>2000 字代码题直接认怂"看不懂喵"，不烧 token
+- 去掉了规格优化中间步骤和"正在生成代码喵"废话消息，原题直喂
+
+### 👤 用户画像系统（`core/user_profile.py`）
+- JSON 文件存储 `data/user_profiles.json`，按用户 QQ 号索引
+- 每次发言后台异步提取：关键词快速提取（零成本，≥20字才调 LLM）
+- 画像字段：tags(标签) / interests(兴趣) / dislikes(雷点) / tone(语气偏好) / events(重要事件) / status(当前状态)
+- 画像注入 `extra_info`，LLM 根据画像个性化回复
+- 回溯脚本 `scripts/backfill_profiles.py`：从 msglog 批量建画像
+- 竞态安全：提取完成前不阻塞、不丢失
+
+### 🎙️ 语音合成（`/~voice`）⚠️ 未完成
+- Edge TTS 语音合成，默认女声晓晓（zh-CN-XiaoxiaoNeural）
+- SSML 情绪分句控制：根据 `mood_detail` 动态插入 `<mstts:express-as>` 标签
+- 物理参数调节：pitch+28Hz / rate+35% 童声尖音效果
+- 生成 WAV 文件 → 通过 QQ 语音消息发送
+
+### 🖥️ PC 状态监控（`services/pc_status.py`）
+- 服务器端口 58890 接收 HTTP POST
+- 本地 `scripts/pc_status_reporter.py` 定期采集：窗口标题 + 音乐播放器 + 歌词
+- FC 工具 `system_status` + 指令 `/~sys` / `/sys` / `/~pc`
+- 缓存有效期 30s，超时返回"未开机"
+
+### ✨ Crystal Aurora v2 视觉重构（7 个模板）
+- 背景：4 层径向渐变极光（粉/紫/蓝/青）+ conic-gradient 水晶折射 + 噪点纹理
+- 卡片：blur(24px) saturate(1.4) 玻璃效果 + mask 渐变边框 + 顶部高光条 + 多层阴影
+- 标题：三色渐变 + drop-shadow 发光
+- 代码块：Mac 风格（红黄绿圆点 + 语言标签 + 渐变标题栏）+ One Dark token 配色
+- 列表：发光圆点标记；表格：渐变表头 + 斑马纹；引用块：渐变 border + 引号装饰
+- 模板：`changelog_card / md_card / daily_report / weather_card / box_card / leaderboard_card / wzq_board`
+
+### 🩺 根因修复：LLM 空返回 & 不按 JSON 格式输出（最影响体验）
+
+这组问题直接导致用户看到"回复生成失败"或回复牛头不对马嘴。根因不在提示词，而在代码层。
+
+#### 根因 1：`_build_messages` 消息角色判断错误（`llm.py#L816`）
+- **问题**：FC 管道的多轮上下文用 `i % 2` 奇偶判断 role（user/assistant 交替）
+- **后果**：多轮对话中 bot 回复被标成 user、用户消息被标成 assistant，LLM 收到错乱的对话历史 → 输出格式不跟着走
+- **修复**：改为 `bot_name:` 前缀判断，以消息内容本身确定发言人角色
+- **影响范围**：所有走 FC 管道的群聊回复，之前的"LLM 不按 JSON 输出"很大概率是这里引起的
+
+#### 根因 2：FC 管道 JSON 输出双重失败（`llm.py#L612` + `call_llm_with_tools`）
+- **问题**：`call_llm_with_tools` 开启了 `response_format={"type":"json_object"}` → v4-flash **不支持与 tools 同时使用** → LLM 返回空 content + 空 tool_calls
+- **后果**：管线检测到空 content → 重试（仍然空）→ 最终报"LLM返回空内容"给用户
+- **修复**：撤回 `response_format`，改为在 `_build_messages` 的格式提醒最前面加 `★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★`（提示词级硬约束）
+- **附带优化**：JSON 补救重试的 `max_tokens` 从 3000 降到 800（v4-flash 3000 tokens 会导致 `finish_reason=length` 再触发一轮重试）
+
+#### 根因 3：`_judge_combined` 判断模块 max_tokens 浪费（`llm.py#L1232`）
+- **问题**：判断用户消息是否需要回复的 LLM 调用设了 `max_tokens=500`，实际只需要 `true/false` 两个字符
+- **后果**：500 tokens = 一次判断浪费 ~400 token 配额，累积到并发时加剧 flash 的 token 压力
+- **修复**：砍到 20
+
+#### 其余 8 处修复
+| # | 文件 | 修复内容 |
+|---|------|----------|
+| 1 | `sender.py#L197` | API 调用 `request` 参数 → `json.dumps(payload)`（payload 格式错误导致发送失败） |
+| 2 | `commands.py#L3013` | `/#` 指令检查缺少 `cfg = get_config()` → NameError 崩溃 |
+| 3 | `commands.py#L2899` | 加 `/s` 别名（lang.toml 引导用户用 `/~s` 但代码里找不到 → 回复"未知指令"） |
+| 4 | `tools.py#L348` | `_agent_think` 残留 11 行无用代码（在其他 agent 工具清代码时遗漏） |
+| 5 | `dispatcher.py#L31` | `_seen_ids` set → dict 按插入顺序截断（set 无顺序，清旧 ID 时误清新 ID → 消息被跳过） |
+| 6 | `spam_guard.py#L126` | timestamps 和 messages 数组同步过滤（一个清了另一个没清 → 数组长度不一致） |
+| 7 | `pipeline.py#L419` | 删除 60 行工具代理死代码（已被 FC 系统替代，但残留代码仍在拦截消息流） |
+| 8 | `pipeline.py` + `tools.py` | `write_code` 引用了不存在的 `code_model` 变量 → NameError 崩溃 |
+| — | `pipeline.py` | >2000 字代码题直接认怂，不调 LLM 避免 120s 超时浪费 |
+
+### 🐛 其他修复
+- **LLM 失败回退**：三个 LLM 调用返回空时补齐 `mood_detail` 字段，防止元组解包崩溃
+- **v4-flash 内存压缩超时**：15s 超时导致压缩结果为空
+- **changelog 卡片渲染器用错**：`changelog.py` 有两个 MD 渲染器（标准库版 `markdown_to_enhanced_html` + 简易正则版 `_md_to_html`），`generate_changelog_image` 错误调了简易版 → 模板 CSS 是为标准库版设计的 HTML 结构写的（表头高亮/斑马纹/代码语言标签/嵌套列表缩进/斜体粗体/多行引用块），简易版产不出对应结构 → 大量样式闲置失效。修复：优先调标准库版，失败回退简易版
+
+### 📦 仓库整理 & 配置完善
+- 移除 18 个泄露的私有文件（模板/模块/脚本）
+- 清理 `lang.toml` 私有模块帮助文本（weather/box/wdsj/gh/tuf/xq）
+- 添加 `example.bot_config.toml`、`example.roles.toml`、`example.adapter_config.toml`、`example.env`
+- 配置模板重写：中文 key、provider 映射 env 环境变量
+- `PLUGIN_DEV.md` 插件开发指南
+- `test_fc_sim.py` FC 模拟测试
+
+### 🔄 自动更新优化
+- 自动处理 force-push 导致旧 SHA 404：降级全量下载 + 重试
+- `/~upd` 短别名 + `/~upd test` 公开连通性测试
+- `/~upd` 输出详细更新日志含 commit 信息
+
+### 🎯 其他改进
+- `/~op group del` 清群时同步清理全局 `op_qqs` 花名册
+- `/~owner wdsj groups` 管理推送群 + `/~wdsj daily send` 强制推送
+- `mood_detail` 管道集成（每句话对应情绪）
+- `log_server` 支持分离式静态文件 (console.css/js/guard.js) 路由
+- `log_server` `_build_html` 精简，删除 190 行旧版内联模板
+
+### 🔮 文件变更
+| 文件 | 变更 |
+|------|------|
+| `core/tools.py` | **重写**：FC 工具系统 (TOOLS + _TOOL_CMD_MAP + execute_tool + _write_code)，+872/-408 |
+| `services/llm.py` | **大修**：`call_llm_with_tools` + FC 多轮 Agent + json_mode 兜底 + 提示词增强，+362 行 |
+| `core/user_profile.py` | **新建**：用户画像系统，406 行 |
+| `modules/voice.py` | **新建**：Edge TTS 语音合成，105 行 |
+| `services/pc_status.py` | **新建**：PC 状态监控 HTTP 服务，77 行 |
+| `scripts/pc_status_reporter.py` | **新建**：本地 PC 状态采集上报，97 行 |
+| `scripts/backfill_profiles.py` | **新建**：msglog 回溯建画像，73 行 |
+| `scripts/fix_config_toml.py` | **新建**：配置文件迁移脚本，66 行 |
+| `test_fc_sim.py` | **新建**：FC 模拟测试，165 行 |
+| `docs/PLUGIN_DEV.md` | **新建**：插件开发指南，252 行 |
+| `data/user_profiles.json` | **新建**：用户画像数据 |
+| `config/example.*.toml` | **新建**：example 配置模板 |
+| `core/pipeline.py` | FC 集成 / write_code 认怂 / 工具代理死代码清理 / 用户画像注入 |
+| `core/dispatcher.py` | `_seen_ids` 优化 / PC 状态路由 |
+| `core/config.py` | 配置模板兼容 / PC 状态配置 |
+| `modules/commands.py` | FC 指令 + voice/sys/upd 指令 + 批量修复 |
+| `modules/auto_update.py` | force-push 容错 + 短别名 |
+| `modules/memory.py` | 画像注入适配 |
+| `modules/op.py` | group del 同步清理 |
+| `modules/stats.py` | WDSJ 推送群管理 |
+| `data/templates/*.html` | Crystal Aurora v2 7 个模板重构 |
+| `data/update_log.md` | 本文档 |
+
+
 ## v1.4.2 — 自然对话重构 + OP权限分层 + 模式系统 --2026.7.15
 
 ### 🗣️ 自然对话重构

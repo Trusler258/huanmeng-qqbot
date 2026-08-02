@@ -2885,9 +2885,28 @@ async def cmd_restart(args, user_id, group_id, sender_name, is_group, bot_qq):
 # ════════════════════════════════════════════════════════════
 
 async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """查看主人 PC 状态: 窗口标题、音乐、歌词"""
-    from services.pc_status import format_pc_status
-    return format_pc_status()
+    """查看主人 PC 状态: 系统资源 + 窗口 + 音乐 (HTML 卡片)"""
+    from services.pc_status import build_sys_card_html, format_pc_status
+    from modules.changelog import render_card_to_image
+    from services.sender import send_group_msg, send_private_msg
+    import uuid
+
+    # 尝试生成 HTML 卡片
+    html = build_sys_card_html(owner="Trusler", bot_name="幻梦")
+    if html:
+        filename = f"sys_{uuid.uuid4().hex[:8]}.jpg"
+        img_path = await render_card_to_image(html, filename, width=760)
+        if img_path:
+            normalized = img_path.replace("\\", "/")
+            cq = f"[CQ:image,file=file:///{normalized}]"
+            if is_group:
+                await send_group_msg(cq, group_id)
+            else:
+                await send_private_msg(cq, user_id)
+            return None
+
+    # 兜底：纯文本
+    return format_pc_status(owner="Trusler")
 
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
@@ -2895,7 +2914,8 @@ COMMAND_MAP: dict[str, callable] = {
     "restart":    cmd_restart,
     "favlist":    cmd_favlist,
     "info":       cmd_info,
-    "search":     cmd_search,  # LLM CALL 调用用，/~s 已废弃
+    "search":     cmd_search,  # LLM CALL 调用用
+    "s":          cmd_search,  # 兼容 lang.toml 帮助文本中的 /~s 用法
     "read":       cmd_read,
     "天气":       cmd_weather,
     "weather":    cmd_weather,
@@ -3010,6 +3030,8 @@ async def handle_command(
         if is_group:
             logger.warning("/#指令在群聊中使用被拒绝 user=%d", user_id)
             return format_lang("error.permission_denied")
+        from core.config import get_config
+        cfg = get_config()
         roles = load_roles_config()
         if not cfg.is_admin(user_id, group_id):
             logger.warning("非管理员使用/#指令 user=%d", user_id)

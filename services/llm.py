@@ -203,56 +203,109 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool) -> str:
 
 
 def _build_dynamic_command_list() -> str:
-    """从 COMMAND_MAP 动态生成全部指令用法列表"""
+    """从 COMMAND_MAP 动态生成全部指令用法列表（含中文说明）"""
     try:
         from modules.commands import COMMAND_MAP
     except ImportError:
         return ""
-    seen = set()
-    lines = ["【全部可调用指令（用法示例）】"]
-    for name in sorted(COMMAND_MAP):
-        if name in seen:
-            continue
-        seen.add(name)
-        usage = _get_cmd_desc(name)
-        if usage:
-            lines.append(f"  {usage}")
+    lines = ["【全部可调用指令】"]
+    for name in sorted(set(COMMAND_MAP)):
+        desc = _CMD_DESC.get(name)
+        if desc:
+            lines.append(f"  /~{name}: {desc}")
         else:
             lines.append(f"  /~{name}")
     return "\n".join(lines)
 
-
-def _get_cmd_desc(name: str) -> str:
-    """从 lang.toml 提取指令用法的第一行示例"""
-    try:
-        from pathlib import Path
-        lang_path = Path(__file__).resolve().parent.parent / "config" / "lang.toml"
-        if lang_path.exists():
-            import re
-            text = lang_path.read_text(encoding="utf-8")
-            pat = rf'\[help\.detail\.{re.escape(name)}\](.*?)(?=\n\[|\Z)'
-            m = re.search(pat, text, re.DOTALL)
-            if m:
-                block = m.group(1)
-                for line in block.strip().split("\n"):
-                    line = line.strip()
-                    if line.startswith("#") or "=" not in line:
-                        continue
-                    # 取 = 后面的值
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    # 展开 \n，取第一行用法示例
-                    parts = val.split("\\n")
-                    # 找第一行以 /~ 开头的示例
-                    for p in parts:
-                        p = p.strip()
-                        if p.startswith("/~"):
-                            return p.replace("【", "").replace("】", "")
-                    # 没有 /~ 行就用第一行
-                    first = parts[0].strip().replace("【", "").replace("】", "")
-                    return first if first else ""
-    except Exception:
-        pass
-    return ""
+# ── 指令说明（精简，面向 LLM）─────────────────────────────
+_CMD_DESC = {
+    # 数据查询
+    "balance": "查 DeepSeek API 余额（还剩多少钱）",
+    "cost":    "查今日 Token 消耗统计（调了多少次、花了多少钱）",
+    "tokens":  "查今日各模型 Token 用量明细",
+    "stats":   "查自身统计（回复次数/好感度/被@次数）",
+    "setstats":"设置自身统计数据（主人用）",
+    "unstats": "管理员用",
+    # PC状态
+    "sys":     "查看主人电脑状态（当前窗口、在听什么歌、歌词）",
+    "pc":      "同 sys，查看主人电脑状态",
+    # 好感度 / 关系
+    "favlist": "查看本群好感度排行榜",
+    "resetfav":"重置某人的好感度（管理员）",
+    "添加关系":"添加用户的预设身份（管理员）",
+    # 天气 / 地震 / 新闻
+    "weather": "查指定城市天气",
+    "天气":    "同 weather，查天气",
+    "eq":      "查最近地震信息",
+    "地震":    "同 eq，查地震",
+    "wzq":     "查五子棋战绩排行榜",
+    # 搜索 / 阅读
+    "search":  "搜索互联网获取信息，返回总结",
+    "read":    "阅读网页内容，返回总结",
+    # 记忆 / 上下文
+    "memory":  "显示当前群聊的记忆（管理员）",
+    "recall":  "召回历史聊天中与当前话题相关的记忆",
+    "persona": "查看机器人的性格描述/adoptable persona",
+    # 群管理
+    "op":      "移交特权/管理员",
+    "owner":   "移交拥有者权限",
+    "leave":   "退出群聊（管理员）",
+    "nickname":"给群友设置备注名",
+    # 模式 / 预设
+    "preset":  "切换群聊 preset（管理员）",
+    "sleep":   "切换群聊到休眠模式",
+    "叙事":    "切换群聊到叙事模式",
+    "主人":    "切换群聊到主人互动模式",
+    "含蓄":    "切换群聊到含蓄模式",
+    # 提醒 / 倒计时 / 抽签
+    "remind":  "设置定时提醒",
+    "countdown":"设置倒计时",
+    "倒计时":   "同 countdown",
+    "luck":    "抽签/运势占卜",
+    "抽":      "同 luck，抽签",
+    # 信息 / 更新
+    "info":    "查看个人信息/群信息",
+    "updateinfo":"更新个人备注信息",
+    "up":      "同 updateinfo",
+    "reload":  "热重载配置（管理员）",
+    "update":  "从 git 拉取最新代码并更新 bot",
+    "upd":     "同 update",
+    "gh":      "从 git 拉取指定分支代码更新 bot",
+    "md":      "用 LLM 渲染 Markdown 为图片卡片",
+    # 绘画 / 视频 / 语音
+    "draw":    "AI 绘画生成图片",
+    "绘画":    "同 draw",
+    "video":   "AI 生成视频",
+    "视频":    "同 video",
+    "img2video":"图片转视频",
+    "图生视频": "同 img2video",
+    "voice":   "文本转语音播报",
+    "语音":    "同 voice",
+    "box":     "查看或加入小游戏盒子",
+    # 五子棋 / 象棋 / 翻译
+    "五子棋":   "发起五子棋对战",
+    "象棋":    "发起象棋对战",
+    "tr":      "翻译文本到指定语言",
+    "翻译":    "同 tr，翻译文本",
+    "xq":      "查看大群在线信息",
+    # 战绩 / TUFD
+    "wdsj":    "查我的数据",
+    "tufd":    "查 TUFD 信息",
+    "tuflevel":"查 TUFD 难度信息",
+    "tufpage":"查看 TUFD 关卡页面",
+    "tufsearch":"搜索 TUFD 谱面",
+    "tuf谱面":  "同 tufsearch",
+    "analyze": "分析谱面数据",
+    # 系统
+    "help":    "显示帮助信息",
+    "ping":    "检查机器人是否在线",
+    "restart": "重启机器人（管理员）",
+    "reload":  "热重载配置文件（管理员）",
+    # 调试/测试
+    "jsonraw": "查看原始 LLM 输出 JSON（调试用）",
+    "testok":  "测试用",
+    "testsys": "测试用",
+}
 
 
 # ── 底层调用：同步 OpenAI → 异步执行器 ────────────────────
@@ -319,8 +372,8 @@ async def call_llm(
             if json_mode and finish == "stop":
                 logger.warning("JSON模式返回空，关闭json_mode重试...")
                 return await call_llm(model_cfg, messages, max_tokens, temperature, timeout, json_mode=False)
-            if finish == "length":
-                boosted = min(max_tokens * 2, 8000)
+            if finish == "length" and max_tokens < 2000:
+                boosted = min(max_tokens * 2, 2000)
                 logger.warning("finish_reason=length, 扩大上限 %d→%d 重试...", max_tokens, boosted)
                 return await call_llm(model_cfg, messages, boosted, temperature, timeout, json_mode)
 
@@ -546,8 +599,12 @@ async def generate_multi_reply_with_tools(
     tools = get_tool_schemas()
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
 
+    # 长消息（题目/长文）→ 扩大输出 token
+    if len(current_msg) > 2000:
+        max_tokens = max(max_tokens, 8000)
+
     # 多轮 FC Agent 循环：最多 5 轮，LLM 可以连续调多个工具
-    MAX_ROUNDS = 5
+    MAX_ROUNDS = 2
     errors = []
     data_results = []
     action_results = []
@@ -558,19 +615,38 @@ async def generate_multi_reply_with_tools(
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
 
         if not result.tool_calls:
-            if not (result.content or "").strip() and round_idx == 0:
-                logger.warning("LLM 返回空内容，重试...")
-                continue
+            if not (result.content or "").strip():
+                if round_idx == 0:
+                    logger.warning("LLM 返回空内容，重试...")
+                    continue
+                # 第二轮仍空 → json_mode 兜底（FC 路径未开 json_mode，这里补一次）
+                logger.warning("LLM 连续返回空内容，用 json_mode 兜底...")
+                json_raw = await call_llm(
+                    reply_model, msgs,
+                    max_tokens=min(max_tokens, 800),
+                    temperature=0.3, json_mode=True,
+                )
+                if json_raw and json_raw.strip():
+                    result.content = json_raw
+                    logger.info("json_mode 兜底成功: %s...", json_raw[:80])
+                else:
+                    logger.error("json_mode 兜底仍失败，放弃")
+                    break
             # 非 JSON 且首次 → 强制 json_mode 重试一次
             raw = (result.content or "").strip()
             if round_idx == 0 and raw and not raw.startswith("{"):
-                logger.info("LLM 输出非 JSON，强制重试...")
-                json_raw = await call_llm(reply_model, msgs, max_tokens=max_tokens, temperature=0.3, json_mode=True)
-                if json_raw and json_raw.startswith("{"):
-                    result.content = json_raw
-                    logger.info("json_mode 重试成功: %s...", json_raw[:80])
+                # 先尝试从混合文本中提取 JSON（LLM 有时会先吐自然语言再吐 JSON）
+                json_pos = raw.find('{"replies"') if '"replies"' in raw else raw.find('{"')
+                if json_pos >= 0:
+                    extracted = raw[json_pos:]
+                    logger.info("从混合文本提取 JSON: pos=%d", json_pos)
+                    result.content = extracted
                 else:
-                    logger.info("json_mode 重试失败，用原文")
+                    logger.info("LLM 输出非 JSON，强制重试...")
+                    json_raw = await call_llm(reply_model, msgs, max_tokens=min(max_tokens, 800), temperature=0.3, json_mode=True)
+                    if json_raw and json_raw.startswith("{"):
+                        result.content = json_raw
+                        logger.info("json_mode 重试成功: %s...", json_raw[:80])
             break
 
         logger.info("FC: 轮%d 检测到 %d 个工具调用", round_idx + 1, len(result.tool_calls))
@@ -600,7 +676,7 @@ async def generate_multi_reply_with_tools(
 
             if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text:
                 errors.append(tool_text)
-            elif tc["name"] in ("wdsj_query", "weather", "search_web", "earthquake"):
+            elif tc["name"] in ("wdsj_query", "weather", "search_web", "earthquake", "sys", "pc"):
                 data_results.append(tool_text)
             elif tool_text:
                 action_results.append(tool_text)
@@ -762,26 +838,44 @@ def _build_messages(
 ) -> list[dict]:
     """构建 messages 列表（与 generate_multi_reply 相同的格式）"""
     msgs = [{"role": "system", "content": _build_system_text(bot_name, system_prompt, is_group)}]
-    for i, msg in enumerate(msg_history):
-        role = "user" if i % 2 == 0 else "assistant"
-        msgs.append({"role": role, "content": msg})
+    # 按 bot_name: 前缀判断角色（与 _build_history_messages 一致）
+    # 群聊中多个用户连续发言时，奇偶索引会把第 2/4/6 条 user 消息错误标为 assistant，
+    # 导致 LLM 看到混乱的对话历史，返回空内容或非 JSON 输出
+    for line in msg_history:
+        line = line.strip()
+        if not line:
+            continue
+        is_bot = False
+        content = line
+        for sep in [f"{bot_name}: ", f"{bot_name}："]:
+            if line.startswith(f"{bot_name}{sep}"):
+                is_bot = True
+                content = line[len(bot_name) + len(sep):].strip()
+                break
+        role = "assistant" if is_bot else "user"
+        msgs.append({"role": role, "content": content})
 
     user_parts = []
-    if extra_info:
+    # 大消息（题目/长文）→ 去记忆，给 LLM 省上下文
+    is_long = len(current_msg) > 1500
+    if extra_info and not is_long:
         user_parts.append(f"【上下文】\n{extra_info}")
         ctx_hint = "优先用上下文+自身知识回答，上下文够用就别搜。"
     else:
         ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
     max_chars = "40" if is_group else "12"
     fmt_reminder = (
+        "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
         f"{ctx_hint}\n"
         "只有当明确要求写代码才用 write_code，出题/写文章/答疑等直接文字回答。"
         "工具：查天气/战绩/搜索。不需要工具就直接回复。\n"
         f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
-        f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。"
+        f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。严格按照这个 JSON 格式输出！"
     )
     user_parts.append(fmt_reminder)
-    user_parts.append(f"{speaker_name} 发消息：「{current_msg}」")
+    # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
+    msg_text = current_msg[:2500] + ("…[截断]" if len(current_msg) > 2500 else "")
+    user_parts.append(f"{speaker_name} 发消息：「{msg_text}」")
     msgs.append({"role": "user", "content": "\n".join(user_parts)})
     return msgs
 
@@ -1135,7 +1229,7 @@ async def _judge_combined(
         f"【上下文】{context_str}\n"
         f"【新消息】{msg}\n"
     )
-    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=500, temperature=0.4, timeout=15.0)
+    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=20, temperature=0.4, timeout=15.0)
     result = result.strip()
     logger.debug("合并判断: '%s...' → '%s'", msg[:30], result)
     try:

@@ -124,9 +124,11 @@ def check_and_record(
         return False
 
     # 清理过期记录（超出时间窗口的）
+    # 必须同时过滤 timestamps 和 messages，否则 zip 会错位配对
     cutoff = now - _DEFAULT_WINDOW
-    record.timestamps = [t for t in record.timestamps if t > cutoff]
-    record.messages = [m for m, t in zip(record.messages, record.timestamps)]
+    pairs = [(t, m) for t, m in zip(record.timestamps, record.messages) if t > cutoff]
+    record.timestamps = [p[0] for p in pairs]
+    record.messages = [p[1] for p in pairs]
 
     # 归一化消息
     normalized = _normalize_msg(msg_text)
