@@ -3,7 +3,7 @@ import json, os, httpx, re
 
 # ── 模型配置 ──
 API_URL = "https://api.deepseek.com/v1"
-API_KEY = "sk-e681a1b5a8dd4cbc9d7351a4e71f3ad1"
+API_KEY = os.environ.get("DEEPSEEK_KEY", "")
 MODEL = "deepseek-v4-flash"
 
 # ── 系统提示词 ──
