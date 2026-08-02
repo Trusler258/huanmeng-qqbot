@@ -66,10 +66,8 @@ def _load_html() -> str:
     path = here / "data" / "templates" / "console.html"
     if path.exists():
         _HTML = path.read_text(encoding="utf-8")
-    else:
-        _HTML = _build_html()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_HTML, encoding="utf-8")
+        return _HTML
+    _HTML = _build_html()
     return _HTML
 
 
@@ -89,13 +87,98 @@ _CONTENT_TYPES = {
 
 
 def _build_html() -> str:
-    """控制台 HTML 不存在时的最小后备页面"""
-    return """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+    """全功能 Web 控制台 — 暗色主题 + 来源筛选"""
+    return r"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>幻梦 QQ Bot · 控制台</title></head>
-<body style="background:#0d0d1a;color:#e5e7eb;font-family:sans-serif;display:grid;place-items:center;height:100vh">
-<div style="text-align:center"><h1 style="color:#67e8f9">幻梦 QQ Bot</h1>
-<p style="color:#6b7280">控制台模板文件缺失，请检查部署</p></div></body></html>"""
+<title>幻梦 QQ Bot · 控制台</title>
+<style>
+:root{--bg:#0a0a14;--card:rgba(255,255,255,.03);--t1:#e5e7eb;--t2:#9ca3af;--t3:#6b7280;--border:rgba(255,255,255,.07);--pink:#ec4899;--cyan:#06b6d4;--r8:8px;}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--t1);font:13px/1.5 Consolas,monospace;height:100vh;display:flex;flex-direction:column}
+.toolbar{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--card);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.toolbar span{font-size:11px;color:var(--t3)}
+.btn{padding:3px 12px;border:1px solid var(--border);border-radius:var(--r8);background:rgba(255,255,255,.03);color:var(--t2);font-size:11px;cursor:pointer;transition:.15s}
+.btn:hover{background:rgba(255,255,255,.08);color:var(--t1)}
+.btn.on{background:var(--pink);border-color:var(--pink);color:#fff}
+.stat{font-size:10px;color:var(--t3);margin-left:auto}
+#log{flex:1;overflow-y:auto;padding:6px 8px;font-size:12px}
+.line{padding:1px 4px;border-radius:3px;white-space:pre-wrap;word-break:break-all}
+.line:hover{background:rgba(255,255,255,.03)}
+.ts{color:var(--t3);margin-right:6px}
+.lv{font-weight:700;margin-right:4px}
+.lv.INFO{color:#34d399}.lv.WARNING{color:#fbbf24}.lv.ERROR,.lv.CRITICAL{color:#ef4444}.lv.DEBUG{color:#6366f1}
+.src{color:#6b7280;font-size:10px;margin:0 4px}
+.src.pc_status{color:var(--cyan)}
+</style></head><body>
+<div class=toolbar>
+<span>幻梦控制台</span>
+<button class="btn on" onclick="setFilter('all',this)">全部</button>
+<button class=btn onclick="setFilter('bot',this)">机器人</button>
+<button class=btn onclick="setFilter('pc_status',this)">PC状态</button>
+<button class=btn onclick="setFilter('llm',this)">LLM</button>
+<button class=btn onclick="setFilter('memory',this)">记忆</button>
+<span class=stat id=stat></span>
+</div>
+<div id=log></div>
+<script>
+let filter='all',logEl=document.getElementById('log'),statEl=document.getElementById('stat');
+let lines=[],maxLines=2000;
+const BOT_MODS=['dispatcher','pipeline','sender','commands','image'];
+const LLM_MODS=['llm','judge'];
+const MEM_MODS=['memory','user_profile','context_manager'];
+
+function srcClass(mod){if(mod==='pc_status')return' src pc_status';if(BOT_MODS.includes(mod))return' src bot';if(LLM_MODS.includes(mod))return' src llm';if(MEM_MODS.includes(mod))return' src memory';return''}
+
+function setFilter(f,btn){
+  filter=f;
+  document.querySelectorAll('.btn').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  render();
+}
+
+function shouldShow(src){
+  if(filter==='all')return true;
+  let mod=src.split(':')[0];
+  if(filter==='bot')return BOT_MODS.includes(mod)||src.startsWith('bot');
+  if(filter==='llm')return LLM_MODS.includes(mod);
+  if(filter==='memory')return MEM_MODS.includes(mod);
+  if(filter==='pc_status')return mod==='pc_status';
+  return true;
+}
+
+function escape(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+function render(){
+  let html='',count=0;
+  for(let i=lines.length-1;i>=0;i--){
+    let l=lines[i];
+    if(!shouldShow(l.src))continue;
+    count++;
+    html+='<div class=line><span class=ts>'+escape(l.ts)+'</span><span class="lv '+escape(l.lv)+'">'+escape(l.lv)+'</span><span class="'+srcClass(l.src.split(':')[0])+'">'+escape(l.src)+'</span>'+escape(l.msg)+'</div>';
+  }
+  logEl.innerHTML=html||'<div style="color:var(--t3);padding:8px">暂无日志</div>';
+  statEl.textContent='显示 '+count+'/'+lines.length+' 行';
+}
+
+function connect(){
+  let proto=location.protocol==='https:'?'wss':'ws';
+  let ws=new WebSocket(proto+'://'+location.host);
+  ws.onmessage=function(e){
+    let d=JSON.parse(e.data);
+    lines.push(d);
+    if(lines.length>maxLines)lines.splice(0,lines.length-maxLines);
+    if(shouldShow(d.src)){
+      let div=document.createElement('div');
+      div.className='line';
+      div.innerHTML='<span class=ts>'+escape(d.ts)+'</span><span class="lv '+escape(d.lv)+'">'+escape(d.lv)+'</span><span class="'+srcClass(d.src.split(':')[0])+'">'+escape(d.src)+'</span>'+escape(d.msg);
+      logEl.insertBefore(div,logEl.firstChild);
+    }
+    statEl.textContent=lines.length+' 行';
+  };
+  ws.onclose=function(){setTimeout(connect,2000)};
+}
+connect();
+</script></body></html>"""
 
 
 
@@ -212,6 +295,7 @@ a:hover{text-decoration:underline}
         resp = (
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/html; charset=utf-8\r\n"
+            "Cache-Control: no-cache, no-store, must-revalidate\r\n"
             f"Content-Length: {len(body)}\r\n"
             "Connection: close\r\n\r\n"
         ).encode() + body
