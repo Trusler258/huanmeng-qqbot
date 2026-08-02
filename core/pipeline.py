@@ -86,6 +86,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         "【戳一戳规则：只用 1 句简短回应，不要展开话题，不要超过 20 字】",
         "【禁止重复：绝对不要说摸头很舒服、摸摸头、被摸了之类的前一次用过的句式，每次必须想全新的回应】",
         "【随机语气：可以从疑惑、开心、害羞、吓一跳、嫌弃、淡定中随机选一种情绪回应】",
+        "【禁止调用任何工具/指令/搜索，只输出纯文本回复】",
     ]
 
     try:
@@ -201,7 +202,6 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     display_name = cfg.get_display_name(user_id, chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
     context_line = f"[{role_tag}] {display_name}[fav={fav_val}]: {msg_content}"
-    ctx.append_to_context(chat_id, context_line)
 
     buffer_text = f"{sender_name}: {msg_content}"
     if quoted_msg:
@@ -226,6 +226,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if msg_type != "文字":
         logger.debug("非文字消息(type=%s)，不进入回复管道", msg_type)
         return
+
+    # ★ 指令和非文字消息不写入 LLM 上下文（避免污染）
+    # 只有进入回复管道的消息才写入 group_context
+    ctx.append_to_context(chat_id, context_line)
 
     # ------回复判断------
     should_reply = False
@@ -415,69 +419,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         except ImportError:
             pass
 
-    if not error_report:
-        try:
-            from core.tools import inject_tool_system, try_tool_select, execute_tool, get_tool_status
-            system_prompt_for_llm = inject_tool_system(cfg.system_prompt)
-
-            tool = None
-            is_explicit_query = any(kw in msg_content for kw in ["快递", "战绩"])
-            if is_explicit_query and not msg_content.startswith("/~"):
-                judge_ok, tool = await try_tool_select(full_msg, msg_history_for_llm)
-                if not tool and judge_ok:
-                    query_hints = ["怎么", "哪些", "推荐", "求", "查", "介绍", "哪里", "在哪", "搜"]
-                    is_query = any(h in msg_content for h in query_hints)
-                    if is_query:
-                        tool = ("search", msg_content)
-                        logger.debug("工具选择兜底 → search")
-                    else:
-                        logger.debug("工具选择兜底跳过（不像查询）: '%s'", msg_content[:40])
-
-            tool_result = None
-            if tool:
-                tool_name, args = tool
-                status_args = args
-                if tool_name == "search":
-                    try:
-                        from core.tools import _optimize_keywords
-                        keywords = await _optimize_keywords(args)
-                        status_args = "、".join(keywords) if keywords else args
-                    except Exception:
-                        pass
-                status = get_tool_status(tool_name, status_args)
-                if status:
-                    if is_group:
-                        await send_by_chat_type(status, chat_id, is_group=True)
-                    else:
-                        await send_by_chat_type(status, chat_id, is_group=False, user_id=user_id)
-                tool_result = await execute_tool(tool_name, args, user_id, chat_id if is_group else 0)
-
-            if tool_result:
-                if tool_result.startswith("PROGRESS:"):
-                    lines = tool_result.split("\n", 1)
-                    prog_msgs = lines[0].replace("PROGRESS:", "").split("；")
-                    for msg in prog_msgs:
-                        msg = msg.strip()
-                        if msg:
-                            if is_group:
-                                await send_by_chat_type(msg, chat_id, is_group=True)
-                            else:
-                                await send_by_chat_type(msg, chat_id, is_group=False, user_id=user_id)
-                    tool_result = lines[1] if len(lines) > 1 else ""
-                if not tool_result:
-                    tool_result = None
-
-            if tool_result:
-                if extra_info_for_llm:
-                    extra_info_for_llm = extra_info_for_llm + "\n" + tool_result
-                else:
-                    extra_info_for_llm = tool_result
-                ctx.append_to_context(chat_id, f"[系统] 工具查询结果: {tool_result[:300]}")
-                logger.info("工具调用结果已注入: %s...", tool_result[:80])
-        except ImportError:
-            pass
-        except Exception as e:
-            logger.debug("工具调用代理跳过: %s", e)
+    # 工具预选/执行代理已删除：inject_tool_system / try_tool_select / get_tool_status
+    # 三个函数在 core/tools.py 中不存在，ImportError 被静默吞掉，整段是死代码。
+    # 工具选择/执行由 generate_multi_reply_with_tools 中的 FC Agent 全权处理。
 
     # ------Agent写作路由------
     try:
@@ -498,6 +442,41 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             logger.info("写作管道回退 → 走正常生成")
     except ImportError:
         pass
+
+    # ------编程路由（长代码题直接走 write_code，不经过 FC）------
+    import re as _re
+    _CODE_HINTS = [
+        r"使用\s*c\+\+", r"编程解决", r"写(个|代码|程序).*题",
+        r"编写程序", r"#include", r"\.cpp", r"交互题",
+        r"时间复杂度", r"std::", r"using namespace",
+    ]
+    _code_detected = any(_re.search(p, msg_content) for p in _CODE_HINTS)
+    if _code_detected and len(msg_content) > 500:
+        # 太长的题直接认怂，16岁看不懂
+        if len(msg_content) > 2000:
+            logger.info("编程请求过长 %d字，认怂", len(msg_content))
+            from services.sender import send_group_msg, send_private_msg
+            msg = "呜…这题好难喵，我看不懂~( ＞﹏＜ )"
+            if is_group:
+                await send_group_msg(msg, chat_id)
+            else:
+                await send_private_msg(msg, user_id)
+            return
+        logger.info("编程请求检测: from=%s len=%d → 走代码生成管道", sender_name, len(msg_content))
+        try:
+            from core.tools import _write_code
+            lang = "c++" if any(k in msg_content.lower() for k in ("c++", "cpp", "#include")) else "python"
+            if "javascript" in msg_content.lower() or "js" in msg_content.lower():
+                lang = "javascript"
+            result = await _write_code(
+                language=lang, description=msg_content[:3000],
+                user_id=user_id, group_id=chat_id, sender_name=sender_name,
+                is_group=is_group, bot_qq=bot_qq,
+            )
+            logger.info("代码生成管道完成: chat=%d result=%s", chat_id, result[:80])
+            return
+        except Exception as e:
+            logger.warning("代码生成管道失败: %s，回退正常生成", e)
 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d", sender_name, chat_id)
@@ -670,6 +649,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------上下文回写------
     _context_reply = re.sub(r'\s*\[系统\]\s*已调用:\s*\S+', '', " || ".join(sentences)).strip()
+    # ★ CQ 码简化写入上下文（避免 [CQ:image,file=...] 污染 LLM 上下文）
+    _context_reply = re.sub(r'\[CQ:image[^\]]*\]', '[图片]', _context_reply)
+    _context_reply = re.sub(r'\[CQ:face[^\]]*\]', '[表情]', _context_reply)
+    _context_reply = re.sub(r'\[CQ:at[^\]]*\]', '@', _context_reply)
+    _context_reply = re.sub(r'\[CQ:[^\]]*\]', '[消息]', _context_reply)
     ctx.append_to_context(chat_id, f"{cfg.bot_name}: {_context_reply}")
 
     for s in sentences:
@@ -862,7 +846,7 @@ async def _send_test_card(chat_id, is_group, user_id):
 # ------msglog搜索------
 def get_msglog_context(current_msg, context, chat_id):
     try:
-        if len(current_msg) < 6:
+        if len(current_msg) < 3:
             return ""
         query_parts = [current_msg]
         for line in context[-3:]:
