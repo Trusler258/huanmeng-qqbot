@@ -102,7 +102,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
     buffer_snapshot = list(ctx.get_buffer(chat_id))
 
-    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply_with_tools(
+    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=ctx.get_context(chat_id),
         speaker_name=sender_name,
         current_msg=f"[系统] {system_msg}",
@@ -111,6 +111,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         reply_model=cfg.reply_model,
         is_group=is_group,
         extra_info="\n".join(extra_parts),
+        max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=cfg.bot_qq,
     )
 
@@ -201,6 +202,12 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             pass
     display_name = cfg.get_display_name(user_id, chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
+
+    # ★ 好感度 -100 → 直接忽略
+    if fav_val <= -100:
+        logger.warning("好感度-100忽略: uid=%d(%s) chat=%d fav=%d", user_id, sender_name, chat_id, fav_val)
+        return
+
     context_line = f"[{role_tag}] {display_name}[fav={fav_val}]: {msg_content}"
 
     buffer_text = f"{sender_name}: {msg_content}"
@@ -265,35 +272,6 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.info("用户%d在忽略列表中，跳过回复 (%ds后解除)", user_id, remaining_seconds(user_id))
         return
 
-    # ------骚扰检测：连续无意义@3次→忽略5分钟------
-    if is_group and is_mentioned:
-        _meaningless = len(msg_content.strip().replace("@", "").replace(str(bot_qq), "").strip()) < 4
-        if _meaningless:
-            key = f"spam_{user_id}"
-            _spam_count = getattr(ctx, '_spam_counter', {})
-            now_ts = __import__('time').time()
-            last_count, last_ts = _spam_count.get(key, (0, 0))
-            if now_ts - last_ts > 300:
-                last_count = 0
-            last_count += 1
-            _spam_count[key] = (last_count, now_ts)
-            setattr(ctx, '_spam_counter', _spam_count)
-            if last_count >= 3:
-                ignore_user(user_id)
-                logger.warning("骚扰检测: user=%d(%s) 连续%d次，已加入忽略列表(5min)", user_id, sender_name, last_count)
-                await send_by_chat_type(
-                    f"(缩成一团不敢出声了…先躲5分钟喵呜~)",
-                    chat_id, is_group=True)
-                return
-
-    # ------刷屏检测------
-    if is_group and is_mentioned:
-        from modules.spam_guard import check_and_record, execute_mute
-        should_mute = check_and_record(chat_id, user_id, msg_content)
-        if should_mute:
-            logger.warning("刷屏禁言触发: user=%d(%s) 群=%d", user_id, sender_name, chat_id)
-            await execute_mute(chat_id, user_id, sender_name)
-            return
 
     # ------记忆检索+好感度+上下文组装------
     full_msg = f"[{role_tag}] {sender_name}发了: {msg_content}"
@@ -318,6 +296,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     weekdays = "日一二三四五六"
     now_str += f" 周{weekdays[int(now.strftime('%w'))]}"
     extra_info_parts.append(f"当前时间：{now_str}")
+
+    # 节假日信息
+    try:
+        from modules.holiday import get_today_holiday_text
+        holiday_text = get_today_holiday_text()
+        if holiday_text:
+            extra_info_parts.append(holiday_text)
+    except Exception:
+        pass
 
     from modules.preset import get_preset
     active_preset = get_preset(chat_id)
@@ -408,14 +395,42 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         extra_info_for_llm = extra_info
 
     # ------系统提示词+工具代理------
+    # cfg.system_prompt 结构: # 核心人格\n{core}\n---\n# 侧面人格\n{side}\n---\n# 固定身份\n{identity}\n---\n{self_awareness}
+    # persona 注入策略（全替换模式）：
+    #   - per-user persona dict {core, side, identity} 非空 → JSON 编码后用 PERSONA::: 标记，
+    #     _build_system_text 检测到后用三段构造 header，禁用 face_lib/private_tone/play_mode
+    #   - 保留 format_rules/command_tools/fav/anti_repeat（功能段）
+    #   - 同步设置记忆 override：私聊有 persona 时用专属记忆文件
+    #   - 无 per-user persona 时回退 [private_persona] 基底，再回退默认
     system_prompt_for_llm = cfg.system_prompt
     if not is_group:
         try:
-            from modules.op import get_persona
-            custom = get_persona(user_id)
+            from modules.op import get_persona, get_persona_memory_id
+            from modules.memory import set_persona_override
+            custom = get_persona(user_id, cfg.private_persona_version)
             if custom:
-                system_prompt_for_llm = custom
-                logger.debug("私聊人格注入 [%d]: %s...", user_id, custom[:40])
+                # 设置记忆覆盖（persona 专属记忆文件）
+                memory_id = get_persona_memory_id(user_id)
+                set_persona_override(user_id, memory_id)
+                # persona JSON 编码后用 PERSONA::: 标记注入
+                import json as _json
+                persona_json = _json.dumps(custom, ensure_ascii=False)
+                system_prompt_for_llm = f"PERSONA:::{persona_json}:::{cfg.system_prompt}"
+                logger.debug("私聊人格注入(全替换) [%d]: core=%s...", user_id, custom.get("core", "")[:40])
+            else:
+                # 无 persona：清除记忆覆盖
+                set_persona_override(user_id, None)
+                if cfg.private_persona_core or cfg.private_identity:
+                    # 全局 [private_persona] 基底：替换 core/side/identity，保留 self_awareness
+                    private_core = cfg.private_persona_core or cfg.personality_core
+                    parts = [f"# 核心人格\n{private_core}"]
+                    if cfg.private_persona_side:
+                        parts.append(f"# 侧面人格\n{cfg.private_persona_side}")
+                    ident = cfg.private_identity or cfg.identity
+                    parts.append(f"# 固定身份\n{ident}")
+                    parts.append(cfg._build_self_awareness())
+                    system_prompt_for_llm = "\n---\n".join(parts)
+                    logger.debug("私聊使用 [private_persona] 基底")
         except ImportError:
             pass
 
@@ -426,7 +441,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------Agent写作路由------
     try:
         from utils.writing import is_writing_request, generate_and_send_file
-        if is_writing_request(msg_content):
+        if await is_writing_request(msg_content, msg_history_for_llm):
             logger.info("写作请求检测: from=%s", sender_name)
             handled = await generate_and_send_file(
                 msg=full_msg if not is_group else msg_content,
@@ -480,10 +495,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d", sender_name, chat_id)
-    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor = await generate_multi_reply_with_tools(
+    sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
         is_group=is_group, extra_info=extra_info_for_llm,
+        max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
     )
 
@@ -569,6 +585,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------CALL执行------
     executed_calls = []
     call_results = []
+    call_texts = []  # 延迟执行的发文件类 CALL
     if llm_calls:
         for call in llm_calls:
             if not isinstance(call, dict):
@@ -596,15 +613,22 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
             call_text = f"/~{cmd_name} {cmd_args}".strip()
             logger.info("JSON CALL: %s (by=%s origin=%s)", call_text, caller_name, origin)
-            try:
-                result = await handle_command(call_text, caller_id, chat_id, caller_name, is_group, bot_qq, raw_message)
-                call_results.append(result)
-                executed_calls.append(call_text.split(" ")[0])
-            except Exception as e:
-                logger.warning("JSON CALL执行失败 [%s]: %s", cmd_name, e)
-                err_msg = f"指令 /~{cmd_name} 执行失败喵~\n错误: {str(e)[:200]}\n请联系管理员 @Trusler"
-                await send_by_chat_type(err_msg, chat_id if is_group else chat_id,
-                                       is_group=True, user_id=None)
+            # write_code 类发文件指令延迟执行，等文字先发送
+            _send_file_cmds = ("write_code",)
+            if cmd_name in _send_file_cmds:
+                call_results.append(None)  # 占位，稍后填充
+                call_texts.append((call_text, len(call_results) - 1, caller_id, caller_name))
+            else:
+                try:
+                    result = await handle_command(call_text, caller_id, chat_id, caller_name, is_group, bot_qq, raw_message)
+                    call_results.append(result)
+                except Exception as e:
+                    logger.warning("JSON CALL执行失败 [%s]: %s", cmd_name, e)
+                    err_msg = f"指令 /~{cmd_name} 执行失败喵~\n错误: {str(e)[:200]}\n请联系管理员 @Trusler"
+                    await send_by_chat_type(err_msg, chat_id if is_group else chat_id,
+                                           is_group=True, user_id=None)
+                    call_results.append(f"[CALL错误] {e}")
+            executed_calls.append(call_text.split(" ")[0])
 
     is_at_me = raw_message and f"[CQ:at,qq={bot_qq}]" in raw_message
     combined_reply = " || ".join(sentences)
@@ -713,6 +737,14 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if call_results:
         async def _send_call_results():
             await task
+            # 等待文字全部发出后，再执行发文件类 CALL
+            for call_text, idx, caller_id, caller_name in call_texts:
+                try:
+                    result = await handle_command(call_text, caller_id, chat_id, caller_name, is_group, bot_qq, raw_message)
+                    call_results[idx] = result
+                except Exception as e:
+                    logger.warning("延迟CALL执行失败: %s", e)
+                    call_results[idx] = f"[CALL错误] {e}"
             is_search_or_read = any(c.lstrip("/~") in ("search", "read") for c in executed_calls)
             for i, r in enumerate(call_results):
                 if not r:
@@ -737,6 +769,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 try:
                     from services.llm import call_llm as raw_llm, _build_system_text
                     follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group)
+                    # 搜索总结 → 用事实型 prompt，避免猫娘人设的"每句≤40字"压缩摘要
+                    if is_search_or_read:
+                        follow_sys = "你是一个信息总结助手。请把搜索结果按事件分段完整列出时间线、数据、影响，不要遗漏细节。禁止使用 Markdown 格式（不要 ## ** 表格 | 等标记），纯文本输出。"
                     if is_call_error:
                         err_detail = effective_result.replace("[CALL错误]", "").strip()
                         prompt = (
@@ -747,20 +782,35 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         max_t = 120
                     elif is_search_or_read:
                         prompt = (
-                            "你刚才搜索了以下内容，请直接总结给用户。\n"
-                            "规则：直接汇报关键信息。没找到就说没找到。不要反问。不要用[CALL][FACE][fav:]。\n"
-                            f"搜索结果:\n{effective_result[:2000]}"
+                            "你刚才搜索了以下内容，请按时间线或主题分段总结给用户。\n"
+                            "规则：纯文本输出，不要JSON，不要Markdown（禁止 ## ** | 表格等标记）。\n"
+                            "按事件分段列出，每个事件写时间+地点+经过+影响。\n"
+                            "禁止只说感想、禁止只给一句话、禁止用'好家伙'等感叹代替事实。把具体数据全部列出来。\n"
+                            f"搜索结果:\n{effective_result[:4000]}"
                         )
-                        max_t = 300
+                        max_t = None  # 不限 token
                     else:
-                        prompt = f"上面是调用结果，自然地回应一句。结果: {effective_result[:100]}"
-                        max_t = 30
+                        prompt = (
+                            "上面是调用结果，用一句话自然回应。纯文本，不要JSON。\n"
+                            f"结果: {effective_result[:500]}"
+                        )
+                        max_t = 200
                     follow = await raw_llm(cfg.reply_model, [
                         {"role": "system", "content": follow_sys},
                         {"role": "user", "content": prompt},
                     ], max_tokens=max_t, temperature=0.7, timeout=15.0)
                     if follow and follow.strip():
-                        f_text = follow.strip()[:200]
+                        f_text = follow.strip()
+                        # 兜底：如果 LLM 仍然输出 JSON，提取文本
+                        if f_text.startswith('{') and '"replies"' in f_text:
+                            try:
+                                import json
+                                extracted = json.loads(f_text)
+                                if isinstance(extracted, dict) and "replies" in extracted:
+                                    f_text = "。".join(extracted["replies"])
+                            except Exception:
+                                pass
+                        f_text = f_text[:300]
                         f_text = re.sub(r'[\[［]fav:\s*[+-]?\d+[\]］]', '', f_text).strip()
                         ctx.append_to_context(chat_id, f"{cfg.bot_name}: {f_text}")
                         await send_by_chat_type(f_text, chat_id if is_group else chat_id,
@@ -792,6 +842,22 @@ async def _async_extract_profile(user_id: int, sender_name: str, msg: str):
         from core.user_profile import extract_from_message, update_profile
         extracted = await extract_from_message(user_id, sender_name, msg)
         if extracted:
+            # 防幻觉：用户名/facts 不可能是长句子或指令
+            for field in ("name", "facts"):
+                val = extracted.get(field, "")
+                if isinstance(val, list):
+                    filtered = [v for v in val if isinstance(v, str) and len(v) < 20 and not any(
+                        kw in v for kw in ("查询", "帮我", "我叫", "战绩", "域名", "搜索", "什么", "怎么", "/~")
+                    )]
+                    if not filtered:
+                        extracted.pop(field, None)
+                    else:
+                        extracted[field] = filtered
+                elif isinstance(val, str) and val:
+                    if len(val) > 15 or any(kw in val for kw in ("查询", "帮我", "域名", "搜索", "什么", "怎么")):
+                        extracted.pop(field, None)
+            if not extracted:
+                return
             update_profile(user_id, extracted)
             from core.logger import get_logger
             get_logger("pipeline").info("画像更新: uid=%d new=%s", user_id,

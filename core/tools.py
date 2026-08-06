@@ -139,7 +139,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_code",
-            "description": "编写程序代码。用户要求写代码/脚本/网页时调用。",
+            "description": "编写程序代码并发送文件给用户。用户让你写代码/做游戏/做网页/写脚本时必须调用此工具，不要只口头答应。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -172,6 +172,20 @@ TOOLS: list[dict] = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "whois",
+            "description": "查询域名注册信息（注册商、注册时间、到期时间、NS、域名状态）。用户问'这个域名谁注册的/什么时候到期/注册商是谁'时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {"type": "string", "description": "域名，如 01240820.xyz、google.com"},
+                },
+                "required": ["domain"],
+            },
+        },
+    },
 ]
 
 # ── 工具名 → 命令名 映射 ──────────────────────────────────
@@ -189,6 +203,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "write_code":  "",  # 自有实现
     "agent_think": "",  # 自有实现
     "system_status": "",  # 自有实现
+    "whois":       "whois",  # ★ 域名查询
 }
 
 
@@ -416,15 +431,23 @@ async def _agent_think(question: str, chat_id: int, is_group: bool) -> str:
     for round_idx in range(3):
         result = await call_llm_with_tools(cfg.reply_model, msgs, search_tool, max_tokens=1000, temperature=0.3)
         if not result.tool_calls:
-            # 没有工具调用 → 直接返回结论
             return (result.content or "无法分析").strip()[:500]
+
+        # 插入 assistant tool_calls 消息（DeepSeek API 要求 tool 消息前必须有对应的 tool_calls）
+        msgs.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)}}
+                for tc in result.tool_calls
+            ],
+        })
 
         # 执行搜索
         for tc in result.tool_calls:
             from modules.search import perform_search
             if tc["name"] == "search_web":
                 raw_q = tc["arguments"].get("query", "")
-                # 搜索词优化
                 optimized_q = await _optimize_search_keywords(raw_q)
                 r = await perform_search(optimized_q, limit=6, source="all")
                 msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": str(r)})
@@ -658,6 +681,9 @@ async def execute_tool(
             args = ["quit"]
         else:
             args = []
+    elif tool_name == "whois":
+        domain = arguments.get("domain", "")
+        args = [domain] if domain else []
 
     # 调用 handler
     try:

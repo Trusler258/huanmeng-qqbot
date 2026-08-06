@@ -72,9 +72,11 @@ def format_lang(key_path: str, **kwargs) -> str:
     node: dict | str | list = data
     for p in parts:
         if isinstance(node, dict):
-            node = node[p]
+            node = node.get(p)
+            if node is None:
+                return f"[LANG:{key_path}]"
         else:
-            raise KeyError(f"语言路径 '{key_path}' 在 '{p}' 处中断: 期望 dict 但得到 {type(node).__name__}")
+            return f"[LANG:{key_path}]"
 
     text: str
     if isinstance(node, list):

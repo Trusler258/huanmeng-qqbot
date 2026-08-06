@@ -4,17 +4,22 @@
 - 管理每个对话的记忆缓冲区
 - 管理活跃的发送任务（支持取消旧任务）
 - 上下文自动裁剪（FIFO，不超过配置上限）
+- 持久化到 data/context_cache.json，重启不丢瞬时记忆
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Optional
 
 from core.logger import get_logger
 from core.config import get_config
 
 logger = get_logger("context")
+
+_CACHE_FILE = Path(__file__).resolve().parent.parent / "data" / "context_cache.json"
 
 
 class ContextManager:
@@ -31,6 +36,37 @@ class ContextManager:
         self.group_context: dict[int, list[str]] = {}
         self.memory_buffer: dict[int, list[str]] = {}
         self.active_send_tasks: dict[int, asyncio.Task] = {}
+        self._dirty: set[int] = set()
+        self._load_from_disk()
+
+    # ── 持久化 ──────────────────────────────────────────
+
+    def _load_from_disk(self):
+        """从文件恢复上下文"""
+        try:
+            if not _CACHE_FILE.exists():
+                return
+            with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            for k, v in raw.items():
+                self.group_context[int(k)] = v
+            logger.info("上下文已从磁盘恢复: %d 个对话", len(raw))
+        except Exception as e:
+            logger.warning("上下文恢复失败: %s", e)
+
+    def _save_to_disk(self):
+        """持久化上下文到文件"""
+        try:
+            _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            # 只存最近 30 条，控制文件大小
+            compact = {}
+            for k, v in self.group_context.items():
+                if v:
+                    compact[str(k)] = v[-30:]
+            with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(compact, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning("上下文持久化失败: %s", e)
 
     # ── 上下文操作 ───────────────────────────────────────
 
@@ -49,6 +85,10 @@ class ContextManager:
             self.group_context[chat_id] = self.group_context[chat_id][-max_len:]
             logger.debug("上下文裁剪 [%d]: 移除 %d 条 (上限=%d)",
                        chat_id, len(removed), max_len)
+
+        # 每 3 条写一次磁盘
+        if len(self.group_context[chat_id]) % 3 == 0:
+            self._save_to_disk()
 
     def get_context(self, chat_id: int) -> list[str]:
         """获取某对话的完整上下文"""
@@ -138,4 +178,15 @@ def init_context():
     """初始化全局上下文管理器"""
     global _global_ctx_mgr
     _global_ctx_mgr = ContextManager()
-    logger.info("上下文管理器已初始化")
+    logger.info("上下文管理器已初始化（含磁盘持久化）")
+
+
+def save_context():
+    """SAFELY persist all context to disk (call on shutdown)"""
+    mgr = get_context_mgr()
+    # Transfer all group_context data before saving
+    try:
+        mgr._save_to_disk()
+        logger.info("上下文已写入磁盘")
+    except Exception as e:
+        logger.warning("上下文写入失败: %s", e)

@@ -31,8 +31,35 @@ _overflow_buffers: dict[int, list[dict]] = {}
 _OVERFLOW_THRESHOLD = 10  # 累积 10 条后触发压缩
 
 
-def _get_memory_file(chat_id: int) -> Path:
+# 私聊 persona 记忆覆盖：user_id → persona 专属 memory_id
+# pipeline 私聊有 persona 时调用 set_persona_override 设置
+_persona_overrides: dict[int, str] = {}
+
+
+def set_persona_override(user_id: int, memory_id: str | None):
+    """设置私聊 persona 的记忆覆盖。memory_id 为 None 时清除覆盖"""
+    if memory_id:
+        _persona_overrides[user_id] = memory_id
+    else:
+        _persona_overrides.pop(user_id, None)
+
+
+def clear_memory_by_id(memory_id: str) -> bool:
+    """删除指定 memory_id 的记忆文件"""
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    file = MEMORY_DIR / f"memory_{memory_id}.md"
+    if file.exists():
+        file.unlink()
+        logger.info("已清空记忆文件: %s", file.name)
+        return True
+    return False
+
+
+def _get_memory_file(chat_id) -> Path:
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    # 私聊 persona 覆盖：chat_id 是 user_id 且有 override 时用 persona 专属 ID
+    if isinstance(chat_id, int) and chat_id in _persona_overrides:
+        return MEMORY_DIR / f"memory_{_persona_overrides[chat_id]}.md"
     return MEMORY_DIR / f"memory_{chat_id}.md"
 
 

@@ -173,13 +173,31 @@ def reload_skill_cache():
     _skill_loaded = False
 
 
-def _build_system_text(bot_name: str, personality: str, is_group: bool) -> str:
-    """根据群聊/私聊组装 system prompt"""
+def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_persona: dict | None = None) -> str:
+    """根据群聊/私聊组装 system prompt
+
+    custom_persona dict {core, side, identity} 非空时：用三段构造 header（全替换人设），
+    禁用 face_lib/private_tone/play_mode（表情/语气/玩模式），保留功能段（format/command/fav/anti_repeat）。
+    """
     sec = _load_skill_sections()
 
-    header = sec.get("prompt_header", "你是{bot_name}").format(
-        bot_name=bot_name, personality=personality
-    )
+    if custom_persona:
+        # per-user persona：用三段构造 header
+        parts = []
+        core = custom_persona.get("core", "")
+        side = custom_persona.get("side", "")
+        identity = custom_persona.get("identity", "")
+        if core:
+            parts.append(f"# 核心人格\n{core}")
+        if side:
+            parts.append(f"# 侧面人格\n{side}")
+        if identity:
+            parts.append(f"# 固定身份\n{identity}")
+        header = "\n---\n".join(parts) if parts else f"# 角色设定\n{personality}"
+    else:
+        header = sec.get("prompt_header", "你是{bot_name}").format(
+            bot_name=bot_name, personality=personality
+        )
 
     fmt_key = "group_format" if is_group else "private_format"
     format_rules = sec.get(fmt_key, "")
@@ -187,10 +205,10 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool) -> str:
     fav_format = sec.get("fav_format", "")
     fav_tiers = sec.get("fav_tiers", "")
     anti_repeat = sec.get("anti_repeat", "")
-    play_mode = sec.get("play_mode", "")
+    play_mode = sec.get("play_mode", "") if not custom_persona else ""
     command_tools = sec.get("command_tools", "")
-    face_lib = sec.get("face_lib", "")
-    private_tone = sec.get("private_tone", "") if not is_group else ""
+    face_lib = sec.get("face_lib", "") if not custom_persona else ""
+    private_tone = sec.get("private_tone", "") if (not is_group and not custom_persona) else ""
 
     # 动态注入 COMMAND_MAP 全部指令
     cmd_list = _build_dynamic_command_list()
@@ -717,7 +735,7 @@ async def generate_multi_reply_with_tools(
     # 无工具调用 → 优先尝试 JSON，失败则按纯文本处理
     raw = result.content or ""
     if not raw.strip():
-        return [], 0, [], "", "", None, "", None, None, "user", {}
+        return [], 0, [], "", "", None, "", None, None, "user", {}, None
 
     # 尝试 JSON 解析（LLM 有时返回 JSON 但不调工具）
     parsed = _parse_reply(raw, speaker_name, quiet=True)
@@ -728,7 +746,7 @@ async def generate_multi_reply_with_tools(
     sentences = [s.strip() + "。" for s in raw.replace("\n", " ").split("。") if s.strip()]
     if not sentences:
         sentences = [raw.strip()[:120]]
-    return sentences, 0, [], "", "", None, "", None, None, "user", {}
+    return sentences, 0, [], "", "", None, "", None, None, "user", {}, None
 
 
 
@@ -739,7 +757,7 @@ def _parse_reply(
 ) -> tuple:
     """解析 LLM JSON 回复，返回标准 11 元组。quiet=True 时 JSON 失败不告警"""
     if not raw:
-        return [], 0, [], "", "", None, "", None, None, "user", {}
+        return [], 0, [], "", "", None, "", None, None, "user", {}, None
 
     try:
         raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.IGNORECASE)
@@ -755,7 +773,7 @@ def _parse_reply(
         if not isinstance(replies, list) or not replies:
             raw_cleaned, fav_change = _extract_fav_change(raw)
             replies = _clean_sentences(raw_cleaned)
-            return replies, fav_change, [], "", "", None, "", None, None, "user", {}
+            return replies, fav_change, [], "", "", None, "", None, None, "user", {}, None
         if isinstance(replies[0], list):
             replies = [str(r) for r in replies[0]]
         else:
@@ -781,10 +799,11 @@ def _parse_reply(
         mode_switch = data.get("mode")
         origin = data.get("origin", "user")
         actor = data.get("actor") or {}
+        instructs = data.get("instructs")
 
         logger.info("JSON回复解析: %d句 fav=%+d calls=%d mood=%s",
                    len(replies), fav_change, len(calls), mood)
-        return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor
+        return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, instructs
 
     except json.JSONDecodeError:
         if not quiet:
@@ -821,10 +840,10 @@ def _parse_reply(
                     if parts:
                         fm = re.search(r'"fav"\s*:\s*(-?\d+)', raw)
                         fv = int(fm.group(1)) if fm else 0
-                        return parts, fv, [], "", "", None, "", None, None, "user", {}
+                        return parts, fv, [], "", "", None, "", None, None, "user", {}, None
         except Exception:
             pass
-        return [], 0, [], "", "", None, "", None, None, "user", {}
+        return [], 0, [], "", "", None, "", None, None, "user", {}, None
 
 
 def _build_messages(
@@ -837,7 +856,18 @@ def _build_messages(
     extra_info: str,
 ) -> list[dict]:
     """构建 messages 列表（与 generate_multi_reply 相同的格式）"""
-    msgs = [{"role": "system", "content": _build_system_text(bot_name, system_prompt, is_group)}]
+    # 拆 PERSONA:::{json}:::{原system} 标记（与 generate_multi_reply 一致）
+    _custom_persona = None
+    _personality = system_prompt
+    if system_prompt.startswith("PERSONA:::"):
+        parts = system_prompt.split(":::", 2)
+        if len(parts) == 3:
+            try:
+                _custom_persona = json.loads(parts[1])
+            except Exception:
+                _custom_persona = None
+            _personality = parts[2]
+    msgs = [{"role": "system", "content": _build_system_text(bot_name, _personality, is_group, custom_persona=_custom_persona)}]
     # 按 bot_name: 前缀判断角色（与 _build_history_messages 一致）
     # 群聊中多个用户连续发言时，奇偶索引会把第 2/4/6 条 user 消息错误标为 assistant，
     # 导致 LLM 看到混乱的对话历史，返回空内容或非 JSON 输出
@@ -867,8 +897,8 @@ def _build_messages(
     fmt_reminder = (
         "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
         f"{ctx_hint}\n"
-        "只有当明确要求写代码才用 write_code，出题/写文章/答疑等直接文字回答。"
-        "工具：查天气/战绩/搜索。不需要工具就直接回复。\n"
+        "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
+        "★ 搜索规则：用户没说'搜/查/找/介绍一下'就绝对不要搜，用你自己的知识回答。不用工具就直接输出 JSON。\n"
         f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
         f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。严格按照这个 JSON 格式输出！"
     )
@@ -917,10 +947,23 @@ async def generate_multi_reply(
         (句子列表, 好感度变化值, CALL列表, FACE_CQ码)
     """
     # 1. 从 main_skill.md 组装 system 消息（群聊/私聊不同）
+    #    system_prompt 形如 "PERSONA:::{json}:::{原system}" 时拆出 custom_persona dict 注入
+    _custom_persona = None
+    _personality = system_prompt
+    if system_prompt.startswith("PERSONA:::"):
+        parts = system_prompt.split(":::", 2)
+        if len(parts) == 3:
+            try:
+                _custom_persona = json.loads(parts[1])
+            except Exception:
+                _custom_persona = None
+            _personality = parts[2]
+
     system_text = _build_system_text(
         bot_name=bot_name,
-        personality=system_prompt,
+        personality=_personality,
         is_group=is_group,
+        custom_persona=_custom_persona,
     )
 
     # 2. 解析历史为多轮 user/assistant 消息（排除最后一条，因为它就是当前消息，
@@ -977,7 +1020,7 @@ async def generate_multi_reply(
     raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True)
     if not raw:
         logger.warning("多句回复生成为空，将使用 fallback")
-        return [], 0, [], "", "", "", None, None, "user", {}
+        return [], 0, [], "", "", "", None, None, "user", {}, [], []
 
     logger.debug("多句生成原始输出: %s", raw[:200])
 
@@ -1001,7 +1044,7 @@ async def generate_multi_reply(
             raw_cleaned, fav_change = _extract_fav_change(raw)
             replies = _clean_sentences(raw_cleaned)
             logger.info("回退旧格式: %d句", len(replies))
-            return replies, fav_change, [], "", "", "", None, None, None, "user", {}
+            return replies, fav_change, [], "", "", "", None, None, None, "user", {}, []
         if isinstance(replies[0], list):
             replies = [str(r) for r in replies[0]]
         else:
@@ -1023,6 +1066,7 @@ async def generate_multi_reply(
 
         mood = data.get("mood", "")
         mood_detail = data.get("mood_detail")  # 每句情绪数组
+        instructs = data.get("instructs") or []  # 每句语气指令（语音模式）
         action = data.get("action", "")
         at_qq = data.get("at")
         mode_switch = data.get("mode")
@@ -1031,7 +1075,7 @@ async def generate_multi_reply(
 
         logger.info("JSON回复解析: %d句 fav=%+d calls=%d mood=%s action=%s",
                    len(replies), fav_change, len(calls), mood)
-        return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor
+        return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, instructs
     except json.JSONDecodeError:
         logger.warning("JSON解析失败，尝试修复: %s...", raw[:80])
         # 修复 JSON 中最常见错误：replies 数组里未转义的双引号

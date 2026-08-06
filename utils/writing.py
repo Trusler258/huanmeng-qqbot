@@ -32,16 +32,48 @@ _WRITE_RE = re.compile("|".join(_WRITE_PATTERNS))
 # 代码关键词：匹配到则不是写作请求
 _CODE_KEYWORDS = re.compile(
     r"python|java|c\+\+|c#|golang|rust|typescript|javascript|html|css"
-    r"|代码|程序|tkinter|flask|django|react|vue|node|api|贪吃蛇|窗口",
+    r"|代码|程序|tkinter|flask|django|react|vue|node|api|贪吃蛇|窗口"
+    r"|2048|游戏|小游戏|网页|写个|页面",
     re.IGNORECASE,
 )
 
 
-def is_writing_request(msg: str) -> bool:
-    """检测消息是否为写作请求（排除代码）"""
+async def is_writing_request(msg: str, chat_history: list[str] | None = None) -> bool:
+    """LLM 判断是写作/作文请求还是代码/聊天（排除代码生成和普通对话）"""
+    # 快速过滤：完全不像写作请求的直接跳过
     if not _WRITE_RE.search(msg):
         return False
-    return not _CODE_KEYWORDS.search(msg)
+
+    from services.llm import call_llm
+    from core.config import get_config
+    cfg = get_config()
+
+    history_text = ""
+    if chat_history:
+        recent = chat_history[-6:]  # 最近 6 条
+        history_text = "\n".join(recent)
+
+    prompt = (
+        "判断用户意图类型。仅回复一个词：\n"
+        "writing — 要求写文章/作文/诗歌/故事/邮件等长文本\n"
+        "code — 要求写代码/程序/网页/脚本/小游戏\n"
+        "chat — 闲聊、提问、命令等非创作类\n\n"
+        f"最近对话:\n{history_text}\n\n"
+        f"用户消息: {msg}\n\n"
+        "类型:"
+    )
+
+    try:
+        result = await call_llm(
+            cfg.reply_model, [{"role": "user", "content": prompt}],
+            max_tokens=10, temperature=0.1, timeout=5.0,
+        )
+        label = (result or "").strip().lower()
+        logger.info("意图判断: '%s' → %s", msg[:40], label)
+        return "writing" in label
+    except Exception as e:
+        logger.debug("意图判断失败, 回退关键词: %s", e)
+        return not _CODE_KEYWORDS.search(msg)
 
 
 # ★ 写作专用系统提示词（无 ||| 格式约束）
