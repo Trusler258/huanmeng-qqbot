@@ -621,7 +621,7 @@ def _load_modes() -> dict:
         return {}
     try:
         data = json.loads(_MODE_FILE.read_text(encoding="utf-8"))
-        # ★ 兼容旧格式: "247478659": "sleeping" → {"mode":"sleeping","since":0}
+        # ★ 兼容旧格式: "987654321": "sleeping" → {"mode":"sleeping","since":0}
         for k, v in list(data.items()):
             if isinstance(v, str):
                 data[k] = {"mode": v, "since": 0}
