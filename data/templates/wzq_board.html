@@ -74,18 +74,18 @@ body{width:680px;margin:0 auto;position:relative;z-index:1;background:radial-gra
 <div class="logo">HM</div>
 <div class="head-text">
 <div class="head-title"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GOMOKU</span></div>
-<div class="head-sub"> · </div>
+<div class="head-sub">${SUB_TEXT} · ${DATE}</div>
 </div>
 </div>
 <div class="players">
-<div class="player "><div class="name"></div><div class="stone black"></div><div class="role">BLACK</div></div>
+<div class="player ${BLACK_ACTIVE}"><div class="name">${BLACK_NAME}</div><div class="stone black"></div><div class="role">BLACK</div></div>
 <div class="vs">VS</div>
-<div class="player "><div class="name"></div><div class="stone white"></div><div class="role">WHITE</div></div>
+<div class="player ${WHITE_ACTIVE}"><div class="name">${WHITE_NAME}</div><div class="stone white"></div><div class="role">WHITE</div></div>
 </div>
-<div class="board-section"><div class="board-grid"><div class="corner-cell"></div></div></div>
-<div class="status-bar "></div>
+<div class="board-section"><div class="board-grid"><div class="corner-cell"></div>${COL_LABELS}${CELLS}</div></div>
+<div class="status-bar ${STATUS_CLASS}">${STATUS_TEXT}</div>
 <div class="foot">
-<div class="foot-l"><span class="dot"></span><span class="pk">幻梦 Bot</span><span>·</span><span>手数 </span><span>·</span><span>H8 或 8,8</span></div>
+<div class="foot-l"><span class="dot"></span><span class="pk">幻梦 Bot</span><span> · </span><span>手数 ${MOVE_COUNT}</span><span> · </span><span>H8 或 8,8</span></div>
 <div class="foot-r">HUANMENG</div>
 </div>
 </div></div>

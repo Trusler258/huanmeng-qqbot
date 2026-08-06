@@ -18,46 +18,121 @@ logger = get_logger("op")
 
 # ── 数据文件路径 ──
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-_PERSONA_FILE = _DATA_DIR / "private_personas.json"
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+# per-user persona 存到 config/persona_data.json（带版本戳，配置改动自动失效）
+_PERSONA_FILE = _CONFIG_DIR / "persona_data.json"
 _MASTER_FILE = _DATA_DIR / "private_masters.json"
 
 
 # ════════════════════════════════════════════════════════════
-#  私聊人格存储
+#  私聊人格存储（config/persona_data.json）
+#  格式: {"_version": 1, "users": {uid: {"persona": str, "version": int, "set_at": ts}}}
+#  version 与 bot_config.toml [private_persona].version 对应，不匹配自动失效
 # ════════════════════════════════════════════════════════════
 
-def get_persona(user_id: int) -> str | None:
-    """获取用户的私聊自定义人格，无则返回 None"""
+def _load_persona_data() -> dict:
+    """加载 persona_data.json，返回 {"_version": 0, "users": {}}"""
     if not _PERSONA_FILE.exists():
-        return None
+        return {"_version": 0, "users": {}}
     try:
         data = json.loads(_PERSONA_FILE.read_text(encoding="utf-8"))
-        return data.get(str(user_id))
+        # 兼容旧格式（纯 {uid: str}）
+        if "users" not in data:
+            return {"_version": 0, "users": {}}
+        return data
     except Exception as e:
-        logger.warning("读取私聊人格失败: %s", e)
-        return None
+        logger.warning("读取 persona_data 失败: %s", e)
+        return {"_version": 0, "users": {}}
 
 
-def set_persona(user_id: int, persona: str):
-    """设置用户的私聊自定义人格"""
-    data = {}
-    if _PERSONA_FILE.exists():
-        try:
-            data = json.loads(_PERSONA_FILE.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning("设置私聊人格-读文件失败: %s", e)
-            data = {}
-    if persona.strip():
-        data[str(user_id)] = persona.strip()
-    else:
-        data.pop(str(user_id), None)
+def _save_persona_data(data: dict):
     _PERSONA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _PERSONA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _PERSONA_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def get_persona(user_id: int, current_version: int = 0) -> dict | None:
+    """获取用户 persona dict {core, side, identity}。版本不匹配返回 None"""
+    data = _load_persona_data()
+    entry = data.get("users", {}).get(str(user_id))
+    if not entry:
+        return None
+    # 兼容旧格式（纯字符串 → core）
+    if isinstance(entry, str):
+        return {"core": entry, "side": "", "identity": ""} if current_version == 0 else None
+    if entry.get("version", 0) != current_version:
+        return None
+    # 新格式：三段
+    if "core" in entry or "side" in entry or "identity" in entry:
+        return {
+            "core": entry.get("core", ""),
+            "side": entry.get("side", ""),
+            "identity": entry.get("identity", ""),
+        }
+    # 旧格式 {persona: str}
+    p = entry.get("persona", "")
+    return {"core": p, "side": "", "identity": ""} if p else None
+
+
+def set_persona_field(user_id: int, field: str, value: str, version: int = 0):
+    """设置 persona 单字段 (core/side/identity)"""
+    data = _load_persona_data()
+    uid = str(user_id)
+    entry = data.get("users", {}).get(uid, {})
+    # 兼容旧格式转新格式
+    if isinstance(entry, str):
+        entry = {"core": entry, "side": "", "identity": ""}
+    elif "persona" in entry and "core" not in entry:
+        entry = {"core": entry["persona"], "side": "", "identity": ""}
+    entry[field] = value.strip()[:2000]
+    entry["version"] = version
+    entry["set_at"] = int(time.time())
+    # 三段都空则删除
+    if not any([entry.get("core"), entry.get("side"), entry.get("identity")]):
+        data["users"].pop(uid, None)
+    else:
+        data["users"][uid] = entry
+    _save_persona_data(data)
 
 
 def clear_persona(user_id: int):
-    """清除用户的私聊人格"""
-    set_persona(user_id, "")
+    """清除用户的私聊自定义人格"""
+    data = _load_persona_data()
+    data["users"].pop(str(user_id), None)
+    _save_persona_data(data)
+
+
+def get_persona_memory_id(user_id: int) -> str | None:
+    """返回当前 persona 的记忆文件 ID（user_id_phash8），无 persona 返回 None"""
+    data = _load_persona_data()
+    entry = data.get("users", {}).get(str(user_id))
+    if not entry:
+        return None
+    if isinstance(entry, str):
+        core, side, identity = entry, "", ""
+    elif "core" in entry or "side" in entry or "identity" in entry:
+        core = entry.get("core", "")
+        side = entry.get("side", "")
+        identity = entry.get("identity", "")
+    else:
+        core = entry.get("persona", "")
+        side, identity = "", ""
+    if not any([core, side, identity]):
+        return None
+    import hashlib
+    h = hashlib.md5(f"{core}|{side}|{identity}".encode()).hexdigest()[:8]
+    return f"{user_id}_p{h}"
+
+
+def clear_persona_memory(user_id: int) -> str | None:
+    """清除当前 persona 的记忆文件，返回 memory_id 或 None"""
+    from modules.memory import clear_memory_by_id
+    memory_id = get_persona_memory_id(user_id)
+    if not memory_id:
+        return None
+    clear_memory_by_id(memory_id)
+    return memory_id
 
 
 # ════════════════════════════════════════════════════════════
@@ -414,32 +489,97 @@ async def cmd_op(args, user_id, group_id, sender_name, is_group, bot_qq):
         return "用法: /~op [add|del <QQ> | group set|del|list]"
 
 
+def _format_persona_display(p: dict) -> str:
+    """格式化显示 persona 三段"""
+    lines = ["当前人格:"]
+    if p.get("core"):
+        lines.append(f"\n[核心人格]\n{p['core']}")
+    if p.get("side"):
+        lines.append(f"\n[侧面人格]\n{p['side']}")
+    if p.get("identity"):
+        lines.append(f"\n[固定身份]\n{p['identity']}")
+    if not any(p.values()):
+        lines.append("(空)")
+    return "\n".join(lines)
+
+
+_PERSONA_HELP = (
+    "【人格切换用法】\n"
+    "  /~persona                    — 查看当前\n"
+    "  /~persona help               — 显示本帮助\n"
+    "  /~persona <文本>             — 设置核心人格（兼容旧用法）\n"
+    "  /~persona core <文本>        — 设置核心人格\n"
+    "  /~persona side <文本>        — 设置侧面人格\n"
+    "  /~persona identity <文本>    — 设置固定身份\n"
+    "  /~persona show               — 查看当前\n"
+    "  /~persona reset              — 清除整个 persona（恢复默认人格）\n"
+    "  /~persona memory reset       — 清空当前人格的专属记忆\n\n"
+    "三段说明:\n"
+    "  core     — 性格核心，语气/口癖/说话方式（必填，最能影响回复风格）\n"
+    "  side     — 侧面人格，情感倾向/情绪反应（可选，补充细节）\n"
+    "  identity — 固定身份，名字/年龄/职业/与你的关系（可选，背景设定）\n\n"
+    "建议: 详细描述性格/语气/口癖/与你的关系，每段上限2000字。\n"
+    "例如: /~persona core 你是高冷的御姐，说话简洁带刺，但会偷偷关心我"
+)
+
+
 async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """私聊人格切换 /~persona <文本|reset|show>"""
+    """私聊人格切换"""
     if is_group:
         return "人格切换仅支持私聊喵~"
 
+    from core.config import get_config
+    cfg = get_config()
+    cur_ver = cfg.private_persona_version
+
+    # 无参数：显示当前
     if not args:
-        current = get_persona(user_id)
+        current = get_persona(user_id, cur_ver)
         if current:
-            return f"当前人格:\n{current}\n\n使用 /~persona reset 恢复默认"
-        return "当前使用默认人格。\n用法: /~persona <人格描述>\n例如: /~persona 你是高冷的御姐，说话简洁"
+            return _format_persona_display(current) + "\n\n使用 /~persona reset 恢复默认\n使用 /~persona help 查看完整用法"
+        return _PERSONA_HELP
 
     sub = args[0].lower()
 
+    # help 子命令
+    if sub == "help":
+        return _PERSONA_HELP
+
+    # memory reset 子命令
+    if sub == "memory" and len(args) >= 2 and args[1].lower() == "reset":
+        memory_id = clear_persona_memory(user_id)
+        if memory_id:
+            return f"已清空当前人格的专属记忆喵~ (id: {memory_id})"
+        return "当前未设置自定义人格，无独立记忆可清空"
+
+    # reset 子命令
     if sub == "reset":
         clear_persona(user_id)
-        return "已恢复默认人格喵~"
+        return "已恢复默认人格喵~（记忆文件保留，下次设回同人格仍可召回）"
 
+    # show 子命令
     if sub == "show":
-        current = get_persona(user_id)
-        return f"当前人格:\n{current}" if current else "当前使用默认人格"
+        current = get_persona(user_id, cur_ver)
+        if current:
+            return _format_persona_display(current) + "\n\n使用 /~persona reset 恢复默认"
+        return "当前使用默认人格"
 
-    # 设置人格
+    # core/side/identity 子命令
+    if sub in ("core", "side", "identity") and len(args) >= 2:
+        value = " ".join(args[1:])
+        if len(value) > 2000:
+            return f"{sub} 描述过长（上限2000字），请精简后重试喵~"
+        set_persona_field(user_id, sub, value, cur_ver)
+        logger.info("用户 %d 设置 persona.%s: %s...", user_id, sub, value[:40])
+        return f"{sub} 已设置喵～\n\n如需恢复默认: /~persona reset\n如需清空记忆: /~persona memory reset"
+
+    # 默认：单文本设 core（兼容旧用法 /~persona <text>）
     persona = " ".join(args)
-    set_persona(user_id, persona)
-    logger.info("用户 %d 设置人格: %s...", user_id, persona[:40])
-    return f"人格已切换喵～\n\n当前人格:\n{persona}"
+    if len(persona) > 2000:
+        return "人格描述过长（上限2000字），请精简后重试喵~"
+    set_persona_field(user_id, "core", persona, cur_ver)
+    logger.info("用户 %d 设置 persona.core: %s...", user_id, persona[:40])
+    return f"核心人格已设置喵～\n\n当前人格:\n{persona[:2000]}\n\n如需恢复默认: /~persona reset"
 
 
 async def cmd_master(args, user_id, group_id, sender_name, is_group, bot_qq):
