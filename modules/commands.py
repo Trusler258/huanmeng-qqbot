@@ -805,7 +805,7 @@ async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~whois <域名> — 查询域名注册信息（注册商/注册时间/到期时间/NS/状态）"""
     if not args:
-        return "用法: /~whois <域名>  例如 /~whois 01240820.xyz"
+        return "用法: /~whois <域名>  例如 /~whois example.com"
     domain = " ".join(args)
     logger.info("指令 /~whois 触发 domain=%s user=%d", domain, user_id)
     loop = asyncio.get_running_loop()
