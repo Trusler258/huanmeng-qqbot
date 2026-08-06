@@ -274,6 +274,12 @@ class EventDispatcher:
 
         # ═══ 以下：白名单通过 / 指令消息 — 正常处理 ═══
 
+        # ★ 全群忽略检查（admin 豁免）
+        from modules.ignore_users import is_ignored
+        if is_ignored(user_id) and user_id != cfg.admin_qq:
+            logger.debug("忽略用户: uid=%d (在忽略列表)", user_id)
+            return
+
         # ★ 主动录制消息到撤回缓冲区（仅白名单群）
         message_id = int(event.get("message_id", 0))  # 防止字符串/整数类型不匹配
         if is_group and chat_id in cfg.group_list and message_id:
@@ -363,9 +369,9 @@ class EventDispatcher:
             quoted_text = await self._fetch_quoted_msg(reply_id)
             
             # ★ 检查引用消息中是否包含文件（错误报告）
+            # 私聊无条件检查，群聊需 @机器人
             is_mentioned = bool(re.search(rf'@{bot_qq}(?!\d)', msg_content))
-            
-            if is_mentioned:
+            if not is_group or is_mentioned:
                 logger.info("📎 检测到@机器人 + 引用消息，检查是否包含错误报告文件...")
                 file_info = await self._fetch_quoted_file(reply_id)
                 

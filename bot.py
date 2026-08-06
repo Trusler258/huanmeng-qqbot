@@ -121,6 +121,8 @@ class HuanmengBot:
         _asyncio.ensure_future(self._bg_log_server())
         _asyncio.ensure_future(self._bg_wdsj_collector())
         _asyncio.ensure_future(self._bg_pc_status_server())
+        _asyncio.ensure_future(self._bg_tts_server())
+        _asyncio.ensure_future(self._bg_holiday())
         info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890")
 
         # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
@@ -190,6 +192,10 @@ class HuanmengBot:
             cache.flush()
         except Exception:
             pass
+
+        # 持久化瞬时上下文（重启不丢记忆）
+        from core.context_manager import save_context
+        save_context()
 
         info("👋 再见！")
         print("")  # 空行让日志更清晰
@@ -373,6 +379,11 @@ class HuanmengBot:
         from services.pc_status import start_pc_server
         await start_pc_server(58890)
 
+    async def _bg_tts_server(self):
+        """TTS 节点接收服务 (端口 58891)"""
+        from services.tts import start_tts_server
+        await start_tts_server(58891)
+
     async def _bg_eq_poller(self):
         """后台任务：地震速报自动轮询"""
         from modules.earthquake import start_polling
@@ -382,6 +393,11 @@ class HuanmengBot:
         """后台任务：Web 实时日志控制台端口 58888"""
         from core.log_server import start
         await start(58888)
+
+    async def _bg_holiday(self):
+        """后台任务：每日节假日自动刷新"""
+        from modules.holiday import start_holiday_service
+        await start_holiday_service()
 
     async def _send_reload_done(self):
         """发送重载完成回执（如果是从 /~reload 触发的重启）"""

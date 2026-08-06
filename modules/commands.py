@@ -29,7 +29,7 @@ from services.sender import send_group_msg, send_private_msg, send_raw_group, se
 from modules.search import perform_search
 from modules.earthquake import cmd_eq
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
-# from modules.voice import cmd_voice
+from modules.voice import cmd_voice
 try:
     from modules.ping import cmd_ping
 except ImportError:
@@ -45,6 +45,7 @@ except ImportError:
     query_weather = build_weather_report = None
 
 from modules.changelog import send_changelog_card, send_weather_card, send_box_card
+from modules.whois_lookup import lookup_domain   # ★ WHOIS 域名查询
 
 try:
     from modules.tuf_commands import cmd_tuflevel, cmd_tuf_search, cmd_tufd, cmd_tufpage
@@ -797,6 +798,76 @@ async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
     except Exception as e:
         logger.warning("页面读取失败: %s", e)
         return f"读取页面失败: {e}"
+
+
+# ─── WHOIS 指令 ──────────────────────────────────────────────
+
+async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~whois <域名> — 查询域名注册信息（注册商/注册时间/到期时间/NS/状态）"""
+    if not args:
+        return "用法: /~whois <域名>  例如 /~whois 01240820.xyz"
+    domain = " ".join(args)
+    logger.info("指令 /~whois 触发 domain=%s user=%d", domain, user_id)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, lookup_domain, domain)
+    return result
+
+
+async def cmd_write_code(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~write_code <描述> — 生成代码文件并发送"""
+    if not args:
+        return "用法: /~write_code <描述>  例如 /~write_code 用HTML写一个2048游戏"
+    desc = " ".join(args)
+    lang = "html" if any(kw in desc.lower() for kw in ("html", "网页", "web", "css", "javascript", "js")) else "python"
+    from core.tools import _write_code
+    return await _write_code(
+        language=lang, description=desc,
+        user_id=user_id, group_id=group_id, sender_name=sender_name,
+        is_group=is_group, bot_qq=bot_qq,
+    )
+
+
+# ─── 忽略/解除忽略指令 ──────────────────────────────────────
+
+async def cmd_ignore(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~ignore <QQ> — 全群忽略该用户（仅 admin）"""
+    cfg = get_config()
+    if user_id != cfg.admin_qq:
+        return "只有管理员能操作喵~"
+    if not args:
+        return "用法: /~ignore <QQ号>  例如 /~ignore 123456789"
+    try:
+        target = int(args[0])
+    except ValueError:
+        return "QQ 号不对喵~"
+    from modules.ignore_users import add_ignored
+    add_ignored(target)
+    return f"已忽略 {target}，所有群都不会再收到他的消息"
+
+
+async def cmd_unignore(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~unignore <QQ> — 解除全群忽略（仅 admin）"""
+    cfg = get_config()
+    if user_id != cfg.admin_qq:
+        return "只有管理员能操作喵~"
+    if not args:
+        return "用法: /~unignore <QQ号> / all  例如 /~unignore 123456789"
+    arg = args[0].lower()
+    from modules.ignore_users import remove_ignored, list_ignored
+    if arg == "all":
+        ids = list_ignored()
+        count = 0
+        for uid in ids:
+            remove_ignored(uid)
+            count += 1
+        return f"已解除所有忽略（共 {count} 人）"
+    try:
+        target = int(args[0])
+    except ValueError:
+        return "QQ 号不对喵~"
+    if remove_ignored(target):
+        return f"已解除忽略 {target}"
+    return f"{target} 不在忽略列表中喵~"
 
 
 # ─── 天气指令 ──────────────────────────────────────────────
@@ -2885,27 +2956,52 @@ async def cmd_restart(args, user_id, group_id, sender_name, is_group, bot_qq):
 # ════════════════════════════════════════════════════════════
 
 async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """查看主人 PC 状态: 系统资源 + 窗口 + 音乐 (HTML 卡片)"""
-    from services.pc_status import build_sys_card_html, format_pc_status
+    """/~sys [card|shot|shotdesk] — PC 状态/截屏"""
+    from services.pc_status import build_sys_card_html, format_pc_status, request_screenshot
     from modules.changelog import render_card_to_image
     from services.sender import send_group_msg, send_private_msg
-    import uuid
+    import uuid, base64, tempfile
 
-    # 尝试生成 HTML 卡片
-    html = build_sys_card_html(owner="Trusler", bot_name="幻梦")
-    if html:
-        filename = f"sys_{uuid.uuid4().hex[:8]}.jpg"
-        img_path = await render_card_to_image(html, filename, width=760)
-        if img_path:
-            normalized = img_path.replace("\\", "/")
-            cq = f"[CQ:image,file=file:///{normalized}]"
-            if is_group:
-                await send_group_msg(cq, group_id)
-            else:
-                await send_private_msg(cq, user_id)
-            return None
+    sub = (args[0].lower() if args else "")
 
-    # 兜底：纯文本
+    # 截屏
+    if sub in ("shot", "shotdesk"):
+        b64 = await request_screenshot(timeout=30.0)
+        if not b64:
+            return "截屏失败（PC 客户端未连接或超时）"
+        from pathlib import Path as _Path
+        tmp = _Path(__file__).resolve().parent.parent / "data" / "img_temp" / f"shot_{uuid.uuid4().hex[:8]}.jpg"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        import binascii
+        try:
+            data = binascii.a2b_base64(b64)
+        except Exception as e:
+            return f"截屏数据解码失败: {e}"
+        tmp.write_bytes(data)
+        cq = f"[CQ:image,file=file://{tmp.as_posix()}]"
+        if is_group:
+            await send_group_msg(cq, group_id)
+        else:
+            await send_private_msg(cq, user_id)
+        return None
+
+    # HTML 卡片
+    if sub == "card":
+        html = build_sys_card_html(owner="Trusler", bot_name="幻梦")
+        if html:
+            filename = f"sys_{uuid.uuid4().hex[:8]}.jpg"
+            img_path = await render_card_to_image(html, filename, width=760)
+            if img_path:
+                normalized = img_path.replace("\\", "/")
+                cq = f"[CQ:image,file=file:///{normalized}]"
+                if is_group:
+                    await send_group_msg(cq, group_id)
+                else:
+                    await send_private_msg(cq, user_id)
+                return None
+        return format_pc_status(owner="Trusler")
+
+    # 默认：纯文字
     return format_pc_status(owner="Trusler")
 
 COMMAND_MAP: dict[str, callable] = {
@@ -2915,8 +3011,14 @@ COMMAND_MAP: dict[str, callable] = {
     "favlist":    cmd_favlist,
     "info":       cmd_info,
     "search":     cmd_search,  # LLM CALL 调用用
+    "search_web":  cmd_search,  # FC 工具名别名
     "s":          cmd_search,  # 兼容 lang.toml 帮助文本中的 /~s 用法
     "read":       cmd_read,
+    "whois":      cmd_whois,   # ★ 域名 WHOIS 查询
+    "域名":        cmd_whois,
+    "write_code":  cmd_write_code,  # ★ 代码生成
+    "ignore":      cmd_ignore,      # ★ 忽略用户
+    "unignore":    cmd_unignore,    # ★ 解除忽略
     "天气":       cmd_weather,
     "weather":    cmd_weather,
     "reload":     cmd_reload,
@@ -2936,8 +3038,8 @@ COMMAND_MAP: dict[str, callable] = {
     "绘画":       cmd_draw,
     "video":      cmd_video,
     "视频":       cmd_video,
-    # "voice":      cmd_voice,
-    # "语音":       cmd_voice,
+    "voice":      cmd_voice,
+    "语音":       cmd_voice,
     "img2video":  cmd_img2video,
     "图生视频":   cmd_img2video,
     "eq":         cmd_eq,

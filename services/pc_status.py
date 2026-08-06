@@ -12,11 +12,13 @@ logger = get_logger("pc_status")
 _PC_DATA: dict = {}
 _LAST_UPDATE: float = 0
 _AUTH_KEY = os.environ.get("BOT_PC_KEY", "")
+_client_writer: asyncio.StreamWriter | None = None
+_shots_pending: dict[str, asyncio.Future] = {}  # SHOT 请求的 future
 
 
 async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    """TCP 客户端处理：读 AUTH + JSON 行"""
-    global _PC_DATA, _LAST_UPDATE
+    """TCP 客户端处理：读 AUTH + JSON 行 + 响应 SHOT_RESULT"""
+    global _PC_DATA, _LAST_UPDATE, _client_writer
 
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=5)
@@ -26,12 +28,29 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         if not line.startswith("AUTH ") or line[5:] != _AUTH_KEY:
             writer.close(); return
 
+        _client_writer = writer
+        logger.info("PC 客户端已连接")
+
         while True:
             line = await reader.readline()
             if not line:
                 break
+            line_str = line.decode().strip()
+            if line_str.startswith("SHOT:"):
+                # 长度前缀协议: SHOT:<len>\n<data>
+                try:
+                    data_len = int(line_str[5:])
+                except ValueError:
+                    continue
+                b64_data = await reader.readexactly(data_len)
+                b64 = b64_data.decode()
+                shot_id = "latest"
+                fut = _shots_pending.pop(shot_id, None)
+                if fut and not fut.done():
+                    fut.set_result(b64)
+                continue
             try:
-                data = json.loads(line.decode().strip())
+                data = json.loads(line_str)
                 _PC_DATA = data
                 _LAST_UPDATE = time.time()
             except json.JSONDecodeError:
@@ -41,6 +60,8 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
     except Exception:
         pass
     finally:
+        if _client_writer is writer:
+            _client_writer = None
         writer.close()
 
 
@@ -419,7 +440,25 @@ def format_pc_status(owner: str = "Trusler") -> str:
     return "\n".join(lines)
 
 
+async def request_screenshot(timeout: float = 30.0) -> str | None:
+    """向 PC 客户端请求截屏，返回 base64 JPEG。无连接返回 None"""
+    if _client_writer is None:
+        return None
+    shot_id = "latest"
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    _shots_pending[shot_id] = fut
+    try:
+        _client_writer.write(b"CMD:SHOT\n")
+        await _client_writer.drain()
+        b64 = await asyncio.wait_for(fut, timeout=timeout)
+        return b64 if b64 else None
+    except asyncio.TimeoutError:
+        return None
+    except Exception:
+        return None
+
+
 async def start_pc_server(port: int = 58890):
-    server = await asyncio.start_server(_handle_client, "0.0.0.0", port)
+    server = await asyncio.start_server(_handle_client, "0.0.0.0", port, limit=4_194_304)
     logger.info("PC 状态 TCP 接收端: 0.0.0.0:%d", port)
     return server

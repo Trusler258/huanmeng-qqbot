@@ -1,8 +1,9 @@
 """
 搜索模块（从 commands.py 抽离）
-- 本地多源搜索 + 缓存集成
-- 关键词触发 + 实时查询检测
-- 三数据源：百度百科 / 百度网页 / 必应
+- DeepSeek Responses API 原生搜索（优先）
+- Agent 多源搜索（百度+Bing+深度抓取，回退）
+- 本地搜索器（终版回退）
+- 搜索缓存集成
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ import httpx
 
 from core.logger import get_logger
 from modules.judge import get_cached_search, set_search_cache, is_realtime_query, keyword_need_search
-from modules.memory import save_search_memory
 from utils.format_lang import format_lang
 
 logger = get_logger("search")
@@ -31,17 +31,7 @@ async def perform_search(
     is_group: bool = False,
 ) -> Optional[str]:
     """
-    执行搜索：缓存 → DDG → 格式化 → 写缓存/记忆。
-    
-    Args:
-        query: 搜索关键词
-        sender_name: 触发搜索的用户名
-        user_id: 用户 QQ 号
-        chat_id: 对话 ID
-        is_group: 是否群聊（用于发送进度提示）
-        
-    Returns:
-        搜索结果文本；无结果或失败返回 None
+    执行搜索：缓存 → Agent级搜索（百度+bing+百科并行）→ 格式化 → 写缓存/记忆。
     """
     # ── Step 1: 缓存命中检查 ──
     cached = get_cached_search(query)
@@ -49,46 +39,63 @@ async def perform_search(
         logger.info("搜索缓存命中: '%s...'", query[:30])
         return cached
 
-    # ★ 缓存未命中 → 真正要搜索了，发进度提示（异步不阻塞）
     from services.sender import send_by_chat_type
-    search_tip = "🔍 正在搜索中喵~" if is_group else "🔍 正在搜喵~"
-    asyncio.create_task(send_by_chat_type(
-        search_tip, chat_id, is_group,
-        user_id=user_id if not is_group else None
-    ))
+    search_tip = f"🔍 web_search ['{query[:60]}{'…' if len(query)>60 else ''}']"
 
-    # ── Step 2: 执行搜索（本地多源：百科→百度→必应）──
-    logger.info("执行搜索: '%s...' (user=%s)", query[:40], sender_name)
+    # ── Step 2: DeepSeek Responses API 原生搜索（优先）──
+    logger.info("执行 DeepSeek 原生搜索: '%s...' (user=%s)", query[:40], sender_name)
+    result_text = None
     try:
-        from modules.local_search import get_searcher
-        loop = asyncio.get_running_loop()
-        searcher = get_searcher()
-        result_text = await loop.run_in_executor(
-            None,
-            lambda: searcher.run_search(query, source=source, limit=limit),
-        )
+        from modules.web_search import ds_native_search
+        result_text = await asyncio.wait_for(ds_native_search(query), timeout=45.0)
+    except asyncio.TimeoutError:
+        logger.warning("DeepSeek 原生搜索超时，回退 Agent 搜索")
     except Exception as e:
-        logger.error("搜索异常: %s", e)
-        return None
+        logger.warning("DeepSeek 原生搜索异常: %s，回退 Agent 搜索", e)
+
+    # ── Step 3: Agent 搜索（回退）──
+    if result_text is None:
+        logger.info("回退 Agent 搜索: '%s...'", query[:40])
+        try:
+            from modules.web_search import agent_search
+            loop = asyncio.get_running_loop()
+            result_text = await loop.run_in_executor(
+                None,
+                lambda: agent_search(query, limit=max(limit, 5), deep_fetch=True),
+            )
+        except Exception as e:
+            logger.error("Agent 搜索异常: %s，回退旧搜索器", e)
+        try:
+            from modules.local_search import get_searcher
+            loop = asyncio.get_running_loop()
+            searcher = get_searcher()
+            result_text = await loop.run_in_executor(
+                None,
+                lambda: searcher.run_search(query, source=source, limit=limit),
+            )
+        except Exception as e2:
+            logger.error("回退搜索也失败: %s", e2)
+            return None
 
     if not result_text:
         logger.info("搜索无结果: '%s...'", query[:30])
         return None
 
-    # 截断（按请求条数弹性调整）
-    max_len = min(limit * 250, 2000)
+    # 截断保护
+    max_len = min(limit * 400, 3000)
     if len(result_text) > max_len:
         result_text = result_text[:max_len] + "..."
 
-    result_text = f"【搜索结果】\n{result_text}"
+    result_text = f"{search_tip}\n\n{result_text}"
     logger.info("搜索完成: '%s...' → %d字符", query[:30], len(result_text))
 
-    # ── Step 4: 写入缓存 + 记忆 ──
+    # ── Step 3: 写入缓存 + 记忆 ──
     realtime = is_realtime_query(query)
     set_search_cache(query, result_text, realtime=realtime)
 
     if sender_name and chat_id:
         try:
+            from modules.memory import save_search_memory
             await asyncio.to_thread(
                 save_search_memory, query, result_text, sender_name, user_id, chat_id,
             )
@@ -96,7 +103,6 @@ async def perform_search(
             logger.warning("写入搜索记忆失败: %s", e)
 
     return result_text
-
 
 async def auto_search_if_needed(
     msg: str,

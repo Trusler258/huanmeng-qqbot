@@ -71,6 +71,12 @@ class BotConfig:
     personality_side: str = ""
     identity: str = ""
     system_prompt: str = ""           # 组装后的完整提示词
+
+    # ── 私聊专属人格基底（仅私聊生效，群聊用 personality_*）──
+    private_persona_version: int = 0   # 全局版本号，递增后旧 per-user persona 自动失效
+    private_persona_core: str = ""     # 私聊人格核心（留空回退 personality_core）
+    private_persona_side: str = ""     # 私聊人格侧面（留空回退 personality_side）
+    private_identity: str = ""         # 私聊身份设定（留空回退 identity）
     
     # ── 群白名单 ──
     group_list: list[int] = field(default_factory=list)
@@ -388,6 +394,11 @@ def load_bot_config() -> BotConfig:
         personality_core=personality.get("personality_core", ""),
         personality_side=personality.get("personality_side", ""),
         identity=personality.get("identity", ""),
+        # ── 私聊专属人格基底 ──
+        private_persona_version=int(bot_toml.get("private_persona", {}).get("version", 0)),
+        private_persona_core=bot_toml.get("private_persona", {}).get("core", ""),
+        private_persona_side=bot_toml.get("private_persona", {}).get("side", ""),
+        private_identity=bot_toml.get("private_persona", {}).get("identity", ""),
     )
     
     # ── 模型配置 ──

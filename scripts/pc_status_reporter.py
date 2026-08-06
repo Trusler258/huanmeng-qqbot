@@ -7,7 +7,7 @@ import json, time, os, socket, threading, traceback, sys
 
 SERVER = os.environ.get("BOT_SERVER", "01240820.xyz")
 PORT = int(os.environ.get("BOT_PC_PORT", "58890"))
-AUTH_KEY = os.environ.get("BOT_PC_KEY", "")
+AUTH_KEY = os.environ.get("BOT_PC_KEY", "huanmeng_pc_2026")
 
 def log(msg):
     ts = time.strftime("%H:%M:%S")
@@ -459,11 +459,11 @@ def run():
                         log("收到截屏命令")
                         shot_b64 = _take_screenshot()
                         if shot_b64:
-                            result = f"SHOT_RESULT:{shot_b64}\n"
-                            sock.sendall(result.encode("utf-8"))
-                            log("截屏结果已回传")
+                            header = f"SHOT:{len(shot_b64)}\n"
+                            sock.sendall(header.encode("utf-8") + shot_b64.encode("utf-8"))
+                            log(f"截屏结果已回传 ({len(shot_b64)} chars)")
                         else:
-                            sock.sendall(b"SHOT_RESULT:\n")
+                            sock.sendall(b"SHOT:0\n")
                             log("截屏失败, 已回传空结果")
                 except Exception as e:
                     log(f"处理命令错误: {e}")

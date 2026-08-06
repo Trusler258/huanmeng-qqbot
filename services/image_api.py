@@ -171,9 +171,10 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
         client = OpenAI(api_key=image_model.key, base_url=image_model.url, timeout=20.0)
         
         # 构建提示词（支持 i18n）
+        # ★ 明确要求直接输出，禁推理过程（Qwen3.5-4B 等推理模型会把内容塞 reasoning_content）
         prompt_text = format_lang(
             "image.recognition_prompt",
-            default="请描写图片中的内容。若你认为这张图片可能是用于表达情绪的表情包，这时请着重输出他表达的情绪元素（其他的也要有，但是情绪元素至少有4点）。输出要少于70token，直截了当。",
+            default="请直接描写图片中的内容，不要输出任何推理或思考过程。若你认为这张图片可能是用于表达情绪的表情包，这时请着重输出他表达的情绪元素（其他的也要有，但是情绪元素至少有4点）。直接输出描述，不超过70字。",
         )
         
         # ── 图片预处理：PIL 转 PNG + 大图压缩 ──
@@ -241,10 +242,22 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
             description = think_stripped
         if reasoning:
             logger.debug("[chat=%d] 推理链 reasoning_content (%d chars): %s...", chat_id, len(reasoning), reasoning[:100])
-        logger.info("[chat=%d] 图片识别成功: %s...", chat_id, description[:50])
+            # ★ 兜底：content 空但 reasoning 有内容时（推理模型），从 reasoning 提取描述
+            if not description.strip():
+                import re as _re2
+                _cleaned = _re2.sub(r'^\s*\d+\.\s*\*\*[^*]*\*\*：?\s*', '', reasoning)
+                _cleaned = _re2.sub(r'^\s*[\-\*]\s*', '', _cleaned, flags=_re2.MULTILINE)
+                _cleaned = _cleaned.strip().replace("\n", " ")
+                if _cleaned:
+                    description = _cleaned[:200]
+                    logger.info("[chat=%d] 从推理链提取描述 (model=%s): %s...", chat_id, image_model.name, description[:50])
+        logger.info("[chat=%d] 图片识别成功 (model=%s): %s...", chat_id, image_model.name, description[:50])
 
+    except asyncio.TimeoutError:
+        logger.error("图片识别超时(25s), model=%s, MD5=%s...", image_model.name, md5_hex[:12])
+        raise Exception(f"图片识别超时(25s), model={image_model.name}")
     except Exception as e:
-        logger.error("图片识别失败: %s", e)
+        logger.error("图片识别失败: %s (model=%s)", e, image_model.name)
         raise Exception(f"图片识别失败: {e}")
 
     # ── Step 4: 写入缓存（空描述不缓存）──
@@ -253,7 +266,7 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
         # ★ 写入图片仓库
         _save_to_repo(md5_hex, description.strip(), author="", chat_id=0)
     else:
-        logger.warning("图片识别结果为空，不缓存 (MD5=%s...)", md5_hex[:12])
+        logger.warning("图片识别结果为空，不缓存 (MD5=%s... model=%s)", md5_hex[:12], image_model.name)
     return description
 
 
