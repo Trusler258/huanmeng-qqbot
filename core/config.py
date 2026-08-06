@@ -364,7 +364,7 @@ def load_bot_config() -> BotConfig:
             "at_only": v.get("at_only", False),
             "welcome_msg": v.get("welcome_msg", "").strip() if isinstance(v.get("welcome_msg"), str) else "",
             "cmd_whitelist": v.get("cmd_whitelist", None),
-            # ★ 分群昵称：{"3483585417": "trusler", ...}
+            # ★ 分群昵称：{"123456789": "trusler", ...}
             "nicknames": {str(qq): name for qq, name in v.get("nicknames", {}).items()},
         }
 
