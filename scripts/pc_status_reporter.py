@@ -5,9 +5,9 @@ PC 状态上报 v3 — TCP 长连接 + 详细系统信息
 """
 import json, time, os, socket, threading, traceback, sys
 
-SERVER = os.environ.get("BOT_SERVER", "01240820.xyz")
+SERVER = os.environ.get("BOT_SERVER", "your-server.example.com")
 PORT = int(os.environ.get("BOT_PC_PORT", "58890"))
-AUTH_KEY = os.environ.get("BOT_PC_KEY", "huanmeng_pc_2026")
+AUTH_KEY = os.environ.get("BOT_PC_KEY", "your-auth-key")
 
 def log(msg):
     ts = time.strftime("%H:%M:%S")
