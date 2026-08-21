@@ -765,10 +765,19 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 ctx.append_to_context(chat_id, f"[系统] 调用结果: {ctx_text}")
                 try:
                     from services.llm import call_llm as raw_llm, _build_system_text
-                    follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group)
+                    # ★ 私聊 follow-up 也要注入 persona（修复人设割裂：搜索后回复不能变回默认猫娘）
+                    custom_persona = None
+                    if not is_group:
+                        try:
+                            from modules.op import get_persona
+                            custom_persona = get_persona(user_id, cfg.private_persona_version)
+                        except ImportError:
+                            pass
+                    follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group,
+                                                    custom_persona=custom_persona)
                     if is_search_or_read:
                         # 保留人格 → 用主 system prompt，搜索结果当素材
-                        pass  # follow_sys 已经是 persona 注入过的
+                        pass  # follow_sys 已带 persona（custom_persona 注入）
                     if is_call_error:
                         err_detail = effective_result.replace("[CALL错误]", "").strip()
                         prompt = (
