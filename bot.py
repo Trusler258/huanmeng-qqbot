@@ -383,13 +383,9 @@ class HuanmengBot:
         await nickname_sync_loop()
 
     async def _bg_pc_status_server(self):
-        """PC 状态接收服务器 (端口 58890 + 62002 KOOK)"""
+        """PC 状态接收服务器 (端口 58890；62002 归 KOOK bot 使用，不监听)"""
         from services.pc_status import start_pc_server
-        import asyncio as _asyncio
-        await _asyncio.gather(
-            start_pc_server(58890),
-            start_pc_server(62002),
-        )
+        await start_pc_server(58890)
 
     async def _bg_tts_server(self):
         """TTS 节点接收服务 (端口 58891)"""
