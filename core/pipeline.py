@@ -628,7 +628,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     await send_by_chat_type(err_msg, chat_id if is_group else chat_id,
                                            is_group=True, user_id=None)
                     call_results.append(f"[CALL错误] {e}")
-            executed_calls.append(call_text.split(" ")[0])
+            executed_calls.append((cmd_name, cmd_args))
 
     is_at_me = raw_message and f"[CQ:at,qq={bot_qq}]" in raw_message
     combined_reply = " || ".join(sentences)
@@ -645,18 +645,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     combined_reply = re.sub(r'\[CALL:[^\]]+\]', '', combined_reply).strip()
     if executed_calls:
         hints = []
-        for i, c in enumerate(set(executed_calls)):
-            name = c.lstrip("/~")
-            if name == "search" and i < len(call_results) and call_results[i]:
-                r = call_results[i]
-                count = len(r.split("\n")) if r else 0
-                hints.append(f"搜索:{count}结果")
-            elif name == "read" and i < len(call_results) and call_results[i]:
-                r = call_results[i]
-                l = len(r) if r else 0
-                hints.append(f"读取:{l}字")
-            else:
-                hints.append(c.lstrip("/~"))
+        for c in set(name for name, _ in executed_calls):
+            hints.append(c)
         call_hint = "、".join(hints)
         logger.info("CALL执行: %s", call_hint)
         ctx.append_to_context(chat_id, f"[系统] 已调用: {call_hint}")
@@ -719,6 +709,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if old_task:
         logger.debug("取消旧发送任务 chat=%d", chat_id)
 
+    # 工具调用通知 → 追加到最后
+    if executed_calls:
+        call_hints = []
+        for name, args_str in executed_calls:
+            call_hints.append(f"[工具调用: {name} {args_str}]")
+        sentences.append("\n".join(call_hints))
+
     task = asyncio.create_task(send_sentences(
         sentences, chat_id, is_group,
         user_id=user_id if not is_group else None,
@@ -745,7 +742,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 except Exception as e:
                     logger.warning("延迟CALL执行失败: %s", e)
                     call_results[idx] = f"[CALL错误] {e}"
-            is_search_or_read = any(c.lstrip("/~") in ("search", "read") for c in executed_calls)
+            is_search_or_read = any(name in ("search", "read") for name, _ in executed_calls)
             for i, r in enumerate(call_results):
                 if not r:
                     continue
@@ -769,9 +766,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 try:
                     from services.llm import call_llm as raw_llm, _build_system_text
                     follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group)
-                    # 搜索总结 → 用事实型 prompt，避免猫娘人设的"每句≤40字"压缩摘要
                     if is_search_or_read:
-                        follow_sys = "你是一个信息总结助手。请把搜索结果按事件分段完整列出时间线、数据、影响，不要遗漏细节。禁止使用 Markdown 格式（不要 ## ** 表格 | 等标记），纯文本输出。"
+                        # 保留人格 → 用主 system prompt，搜索结果当素材
+                        pass  # follow_sys 已经是 persona 注入过的
                     if is_call_error:
                         err_detail = effective_result.replace("[CALL错误]", "").strip()
                         prompt = (
@@ -782,10 +779,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         max_t = 120
                     elif is_search_or_read:
                         prompt = (
-                            "你刚才搜索了以下内容，请按时间线或主题分段总结给用户。\n"
-                            "规则：纯文本输出，不要JSON，不要Markdown（禁止 ## ** | 表格等标记）。\n"
-                            "按事件分段列出，每个事件写时间+地点+经过+影响。\n"
-                            "禁止只说感想、禁止只给一句话、禁止用'好家伙'等感叹代替事实。把具体数据全部列出来。\n"
+                            "你刚才搜索了以下内容。输出严格按照 cfg.reply_schema JSON 格式，包含 replies/fav/calls/face/mood/action 字段。\n"
+                            "replies 数组 4-8 句，每句讲一个事实要点，按时间顺序从早到晚排列，不要跳来跳去。\n"
+                            "禁止每句都用'喵~'结尾，可以穿插波浪号~、感叹句、颜文字（＾ω＾）等让语气自然丰富。\n"
+                            "用你的正常语气和人设回复。\n"
                             f"搜索结果:\n{effective_result[:4000]}"
                         )
                         max_t = None  # 不限 token
@@ -801,23 +798,34 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     ], max_tokens=max_t, temperature=0.7, timeout=15.0)
                     if follow and follow.strip():
                         f_text = follow.strip()
-                        # 兜底：如果 LLM 仍然输出 JSON，提取文本
+                        # JSON 回复 → 解析并分段发送
                         if f_text.startswith('{') and '"replies"' in f_text:
                             try:
                                 import json
-                                extracted = json.loads(f_text)
-                                if isinstance(extracted, dict) and "replies" in extracted:
-                                    f_text = "。".join(extracted["replies"])
+                                parsed = json.loads(f_text)
+                                if isinstance(parsed, dict) and "replies" in parsed:
+                                    for sentence in parsed["replies"]:
+                                        sentence = sentence[:3000].strip()
+                                        if sentence:
+                                            ctx.append_to_context(chat_id, f"{cfg.bot_name}: {sentence[:200]}")
+                                            await send_by_chat_type(sentence, chat_id if is_group else chat_id,
+                                                                   is_group=True if is_group else False,
+                                                                   user_id=user_id if not is_group else None)
+                                    return  # 已处理，跳过下面
+                                else:
+                                    f_text = str(parsed)
                             except Exception:
                                 pass
-                        f_text = f_text[:300]
+                        # 纯文本回退
+                        f_text = f_text[:3000]
                         f_text = re.sub(r'[\[［]fav:\s*[+-]?\d+[\]］]', '', f_text).strip()
-                        ctx.append_to_context(chat_id, f"{cfg.bot_name}: {f_text}")
+                        ctx.append_to_context(chat_id, f"{cfg.bot_name}: {f_text[:200]}")
                         await send_by_chat_type(f_text, chat_id if is_group else chat_id,
                                                is_group=True if is_group else False,
                                                user_id=user_id if not is_group else None)
                 except Exception as e:
-                    logger.debug("追加回复失败: %s", e)
+                    import traceback
+                    logger.error("追加回复失败:\n%s", traceback.format_exc())
         asyncio.create_task(_send_call_results())
 
     # ------好感度------

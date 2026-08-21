@@ -27,7 +27,9 @@ from utils.format_lang import format_lang
 from modules.fav import get_all_fav, FAV_FILE as FAV_FILE_REF, reset_all_fav
 from services.sender import send_group_msg, send_private_msg, send_raw_group, send_raw_user
 from modules.search import perform_search
+from modules.pgr import cmd_pgr
 from modules.earthquake import cmd_eq
+from modules.nasa import cmd_nasa
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
 from modules.voice import cmd_voice
 try:
@@ -53,6 +55,19 @@ except ImportError:
     cmd_tuflevel = cmd_tuf_search = cmd_tufd = cmd_tufpage = None
 
 from core.token_tracker import cmd_cost, cmd_tokens
+
+# ★ 经济系统（积分/库存/签到/商店）
+try:
+    from modules.economy import (
+        get_points, add_points, set_points, transfer_points,
+        get_inventory, add_inventory, consume_inventory,
+        get_last_sign, mark_signed, get_top_points, ITEMS,
+    )
+except ImportError:
+    get_points = add_points = set_points = transfer_points = None
+    get_inventory = add_inventory = consume_inventory = None
+    get_last_sign = mark_signed = get_top_points = None
+    ITEMS = {}
 
 logger = get_logger("commands")
 
@@ -139,6 +154,10 @@ async def cmd_help(args, user_id, group_id, sender_name, is_group, bot_qq):
 # ════════════════════════════════════════════════════════════
 
 _HELP_DETAIL = {
+    "nasa": "【NASA 每日天文图 /~nasa】\n"
+          "  nasa [日期]  查看 NASA 每日天文图片，如 /~nasa 2025-06-01\n",
+    "pgr": "【Phigros 查询 /~pgr】\n"
+          "  pgr login / me / top / song / new\n",
     "wzq": "【五子棋 /~wzq】\n"
            "  duel @某人    发起挑战\n"
             "  accept        接受挑战\n"
@@ -246,6 +265,34 @@ _HELP_DETAIL = {
 
     "balance": "【余额查询 /~balance】\n"
                "  查询 DeepSeek API 余额\n",
+
+    "points": "【积分 /~points】\n"
+              "  查看自己的积分和全服排行榜\n"
+              "  每天用 /~sign 签到攒积分",
+    "sign": "【签到 /~sign】\n"
+            "  每天首次签到获得随机积分（5~15 点）\n"
+            "  积分可在 /~shop 购买权益",
+    "gift": "【赠送 /~gift】\n"
+            "  /~gift <对方QQ> <数量>  把自己的积分转给对方",
+    "shop": "【商店 /~shop】\n"
+            "  列出可购买的权益物品\n"
+            "  /~buy <物品> 购买，/~bag 看背包，/~use <物品> 使用",
+    "buy": "【购买 /~buy】\n"
+           "  /~buy <物品名>  花费积分购买（先用 /~shop 查看）",
+    "bag": "【背包 /~bag】\n"
+           "  查看自己拥有的权益库存",
+    "use": "【使用 /~use】\n"
+           "  /~use <物品名>  消耗背包里的权益（如好感券 +10 好感度）",
+
+    "plugin": "【插件管理 /~plugin (主人)】\n"
+              "  /~plugin             插件列表/状态\n"
+              "  /~plugin install <名|url>  安装插件（支持插件库名或 .hmp 直链）\n"
+              "  /~plugin unload <名>  卸载插件\n"
+              "  /~plugin reload <名>  热重载插件\n"
+              "  /~plugin pack <名>    把插件打包成 .hmp 分享\n"
+              "  /~plugin update [名]  从插件库一键更新",
+    "apy": "【审批 /~apy (主人)】\n"
+           "  /~apy <token> 同意|拒绝  响应插件发起的人工审批",
 
     "voice": "【语音 /~voice】\n"
              "  /~voice <文本>           Edge TTS 合成语音\n"
@@ -3004,6 +3051,319 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     # 默认：纯文字
     return format_pc_status(owner="Trusler")
 
+# ─── 经济系统指令 ─────────────────────────────────────────
+
+async def cmd_points(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """积分查询 /~points — 查看自己的积分与全群/全服排行榜"""
+    if get_points is None:
+        return "经济系统未启用喵~"
+    cfg = get_config()
+    my_pts = get_points(user_id)
+    lines = [f"【{sender_name} 的积分】{my_pts} 点"]
+
+    # 自己的排名
+    top = get_top_points(limit=20)
+    for idx, (uid, pts) in enumerate(top, 1):
+        if str(uid) == str(user_id):
+            lines.append(f"你的排名: 第 {idx} 名")
+            break
+
+    # 排行榜（只显示积分>0 的前 10）
+    if top:
+        lines.append("")
+        lines.append("【积分排行榜】")
+        for idx, (uid, pts) in enumerate(top, 1):
+            name = cfg.qq_name_map.get(str(uid), str(uid))
+            lines.append(f"  {idx}. {name}: {pts} 点")
+    else:
+        lines.append("（还没有人攒下积分喵~ 用 /~sign 每日签到吧）")
+    return "\n".join(lines)
+
+
+async def cmd_sign(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """每日签到 /~sign — 每天首次签到获得随机积分"""
+    if mark_signed is None:
+        return "经济系统未启用喵~"
+    from datetime import date
+    today = date.today().isoformat()
+    if get_last_sign(user_id) == today:
+        return f"你今天已经签到过啦喵~ 明天再来（当前 {get_points(user_id)} 点）"
+    reward = mark_signed(user_id, today)
+    return f"[CQ:at,qq={user_id}] 签到成功！获得 {reward} 积分（当前 {get_points(user_id)} 点）٩(ˊᗜˋ*)و"
+
+
+async def cmd_gift(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """赠送积分 /~gift <QQ> <数量> — 把自己的积分转给别人"""
+    if transfer_points is None:
+        return "经济系统未启用喵~"
+    if len(args) < 2:
+        return "用法: /~gift <对方QQ> <数量>\n例如 /~gift 123456789 50"
+    try:
+        target = int(args[0])
+        amount = int(args[1])
+    except ValueError:
+        return "QQ 号和数量都要是数字喵~"
+    if target == user_id:
+        return "不能给自己转账喵~"
+    ok, msg = transfer_points(user_id, target, amount)
+    return f"[CQ:at,qq={user_id}] {msg}"
+
+
+async def cmd_shop(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """商店 /~shop — 列出可购买的权益物品"""
+    if not ITEMS:
+        return "商店暂时没有上架商品喵~"
+    lines = ["【积分商店】用 /~buy <物品> 购买"]
+    for key, item in ITEMS.items():
+        lines.append(f"  {key} — {item['name']}（{item['price']} 点）: {item['desc']}")
+    return "\n".join(lines)
+
+
+async def cmd_buy(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """购买 /~buy <物品> — 花费积分购买权益库存"""
+    if add_inventory is None or not ITEMS:
+        return "商店未启用喵~"
+    if not args:
+        return "用法: /~buy <物品名>\n先用 /~shop 查看商品"
+    item_key = args[0].lower()
+    item = ITEMS.get(item_key)
+    if not item:
+        return f"没有这个商品喵~ 用 /~shop 看看"
+    price = item["price"]
+    if get_points(user_id) < price:
+        return f"积分不足，{item['name']} 需要 {price} 点，你只有 {get_points(user_id)} 点喵~"
+    add_points(user_id, -price)
+    add_inventory(user_id, item_key, 1)
+    return f"购买成功！{item['name']} 已放入背包（剩余 {get_points(user_id)} 点）。用 /~use {item_key} 使用"
+
+
+async def cmd_bag(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """背包 /~bag — 查看自己的权益库存"""
+    if get_inventory is None:
+        return "经济系统未启用喵~"
+    inv = get_inventory(user_id)
+    if not inv:
+        return "你的背包是空的喵~ 去 /~shop 逛逛？"
+    lines = ["【背包】"]
+    for key, qty in inv.items():
+        name = ITEMS.get(key, {}).get("name", key)
+        lines.append(f"  {name} x{qty}")
+    return "\n".join(lines)
+
+
+async def cmd_use(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """使用 /~use <物品> — 消耗背包里的权益"""
+    if consume_inventory is None or not ITEMS:
+        return "经济系统未启用喵~"
+    if not args:
+        return "用法: /~use <物品名>\n先用 /~bag 查看背包"
+    item_key = args[0].lower()
+    item = ITEMS.get(item_key)
+    if not item:
+        return f"背包里没有 {item_key} 喵~"
+    if not consume_inventory(user_id, item_key):
+        return f"你没有 {item['name']} 喵~ 去 /~shop 买一个？"
+
+    effect = item.get("effect")
+    if effect == "fav":
+        try:
+            from modules.fav import update_fav
+            chat_id = group_id if is_group else user_id
+            new_fav = update_fav(chat_id, user_id, 10, is_group)
+            return f"使用 {item['name']}！好感度 +10（当前 {new_fav}）(๑•̀ㅂ•́)و✧"
+        except Exception as e:
+            # 好感度更新失败，退还库存
+            add_inventory(user_id, item_key, 1)
+            logger.warning("使用好感券失败，已退还: %s", e)
+            return "好感度更新失败，已退回背包喵~"
+    return f"使用了 {item['name']}！"
+
+
+async def cmd_dbsearch(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """检索聊天历史 /~回顾 <关键词> — 基于 SQLite 全文索引（ADDITIVE）"""
+    try:
+        from db.store import get_search_store
+    except Exception:
+        return "检索模块未启用喵~"
+    store = get_search_store()
+    if not store.available:
+        return "检索数据库未就绪（FTS5 缺失或初始化失败）喵~"
+    if not args:
+        c = store.count()
+        return f"用法: /~回顾 <关键词>\n当前已索引 {c} 条消息"
+    query = " ".join(args)
+    chat_id = group_id if is_group else None
+    rows = store.search_messages(query, chat_id=chat_id, limit=8)
+    if not rows:
+        return f"没找到和「{query}」相关的历史消息喵~"
+    lines = [f"【聊天回溯】关键词「{query}」命中 {len(rows)} 条:"]
+    for r in rows:
+        name = r.get("name") or str(r.get("user_id", "?"))
+        ts = r.get("ts") or 0
+        try:
+            tstr = time.strftime("%m-%d %H:%M", time.localtime(ts))
+        except Exception:
+            tstr = ""
+        content = str(r.get("content", ""))[:80].replace("\n", " ")
+        lines.append(f"  [{tstr}] {name}: {content}")
+    return "\n".join(lines)
+
+
+async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~plugin — 插件管理：list/status/install/unload/reload/pack/import/update"""
+    try:
+        from core.plugin import get_plugin_manager
+        from modules import plugin_share as ps
+    except Exception as e:
+        return f"插件系统未启用喵~ ({e})"
+    mgr = get_plugin_manager()
+
+    if not args or args[0].lower() in ("list", "ls", "status"):
+        mgr.discover()
+        rows = mgr.list()
+        if not rows:
+            lines = ["【插件列表】暂无插件"]
+        else:
+            lines = ["【插件列表】"]
+            for r in rows:
+                mark = {"enabled": "✅", "disabled": "⏸️", "error": "❌", "loaded": "📦", "discovered": "🗂️"}.get(r["state"], "•")
+                line = f"  {mark} {r['name']}@{r['version']} [{r['state']}]"
+                if r.get("error"):
+                    line += f" err={r['error']}"
+                lines.append(line)
+        lines.append("子命令: list | install <名|url> | unload <名> | reload <名> | pack <名> | import <url> | update [名]")
+        return "\n".join(lines)
+
+    sub = args[0].lower()
+    rest = args[1:]
+
+    async def _install_from(hmp_path, overwrite: bool) -> str:
+        ok, msg, conflict = ps.unpack_hmp(hmp_path, overwrite=overwrite)
+        if not ok:
+            if conflict:
+                name = conflict.get("name")
+                await mgr.unload(name) if name else None
+                ok2, msg2, _ = ps.unpack_hmp(hmp_path, overwrite=True)
+                if not ok2:
+                    return msg2
+                ok3, msg3 = await ps.load_local_plugin(name)
+                return msg3
+            return msg
+        name = conflict["name"] if conflict else ps.peek_hmp_name(hmp_path)
+        if not name:
+            return "无法识别插件名"
+        ok3, msg3 = await ps.load_local_plugin(name)
+        return msg3
+
+    if sub in ("install", "装"):
+        if not rest:
+            return "用法: /~plugin install <插件名|.hmp直链>"
+        target = rest[0]
+        if ps.is_hmp_url(target):
+            ok, msg = ps.download_hmp(target)
+            if not ok:
+                return msg
+            target = str(ps._down_dir() / ps.local_filename_for(target))
+            return await _install_from(ps._down_dir() / ps.local_filename_for(target), overwrite=False)
+        # 本地 _down 已有同名包？
+        local = ps._down_dir() / f"{target}{ps.HMP_EXT}"
+        if local.is_file():
+            return await _install_from(local, overwrite=False)
+        # 走插件库
+        ok, info, err = ps.lib_latest(target)
+        if not ok:
+            return f"插件库查询失败: {err}"
+        url = ps.lib_download_url(target)
+        ok, msg = ps.download_hmp(url)
+        if not ok:
+            return msg
+        return await _install_from(ps._down_dir() / ps.local_filename_for(url), overwrite=False)
+
+    if sub in ("import", "导入"):
+        if not rest or not ps.is_hmp_url(rest[0]):
+            return "用法: /~plugin import <.hmp直链>"
+        url = rest[0]
+        ok, msg = ps.download_hmp(url)
+        if not ok:
+            return msg
+        return await _install_from(ps._down_dir() / ps.local_filename_for(url), overwrite=False)
+
+    if sub in ("unload", "卸"):
+        if not rest:
+            return "用法: /~plugin unload <插件名>"
+        ok, msg = await mgr.unload(rest[0])
+        return msg if ok else f"卸载失败: {msg}"
+
+    if sub in ("reload", "重载"):
+        if not rest:
+            return "用法: /~plugin reload <插件名>"
+        ok, msg = await mgr.reload(rest[0])
+        return msg if ok else f"重载失败: {msg}"
+
+    if sub in ("pack", "打包"):
+        if not rest:
+            return "用法: /~plugin pack <插件名>"
+        ok, msg, path = ps.pack_plugin(rest[0])
+        if ok and path:
+            try:
+                from services.sender import send_file
+                await send_file(str(path), group_id if is_group else user_id, is_group)
+                return f"{msg}\n已发送 .hmp 包到本聊天"
+            except Exception:
+                return msg
+        return msg
+
+    if sub in ("update", "更新"):
+        if not rest:
+            # 列出可更新项
+            mgr.discover()
+            lines = ["【插件更新检查】"]
+            for r in mgr.list():
+                ok, info, err = ps.lib_latest(r["name"])
+                if ok:
+                    remote = str(info.get("version") or "0.0.0")
+                    local = r.get("version") or "0.0.0"
+                    if ps.compare_versions(remote, local) > 0:
+                        lines.append(f"  ⬆️ {r['name']}: {local} → {remote}（/~plugin update {r['name']}）")
+                    else:
+                        lines.append(f"  ✅ {r['name']}: 已是最新 v{local}")
+                else:
+                    lines.append(f"  ❓ {r['name']}: 库查询失败 {err}")
+            return "\n".join(lines)
+        name = rest[0]
+        ok, info, err = ps.lib_latest(name)
+        if not ok:
+            return f"插件库查询失败: {err}"
+        url = ps.lib_download_url(name)
+        ok, msg = ps.download_hmp(url)
+        if not ok:
+            return msg
+        hmp = ps._down_dir() / ps.local_filename_for(url)
+        await mgr.unload(name)
+        ok, msg, _ = ps.unpack_hmp(hmp, overwrite=True)
+        if not ok:
+            return msg
+        ok, msg = await ps.load_local_plugin(name)
+        return msg
+
+    return f"未知子命令: {sub}\n可用: list | install | unload | reload | pack | import | update"
+
+
+async def cmd_apy(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~apy <token> 同意|拒绝 — 响应插件人工审批"""
+    try:
+        from core.config import get_config
+        if not get_config().is_admin(user_id, group_id):
+            return "只有管理员可以审批喵~"
+        if len(args) < 2:
+            return "用法: /~apy <token> 同意|拒绝"
+        from core.plugin.api import resolve_approval
+        approved = args[1] in ("同意", "yes", "y", "1", "approve", "ok")
+        return resolve_approval(args[0], approved)
+    except Exception as e:
+        return f"审批失败: {e}"
+
+
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
     "ping":       cmd_ping,
@@ -3069,6 +3429,8 @@ COMMAND_MAP: dict[str, callable] = {
     "添加":       cmd_friend_add,
     "拒绝":       cmd_friend_reject,
     "好友列表":   cmd_friend_list,
+    "nasa":       cmd_nasa,
+    "pgr":        cmd_pgr,
     "wzq":        cmd_wzq,
     "五子棋":     cmd_wzq,
     "xq":         cmd_xq,
@@ -3088,6 +3450,28 @@ COMMAND_MAP: dict[str, callable] = {
     "tufpage":    cmd_tufpage,
     "sys":        cmd_sys,
     "pc":         cmd_sys,
+    # ── 经济系统 ──
+    "points":     cmd_points,
+    "积分":       cmd_points,
+    "sign":       cmd_sign,
+    "签到":       cmd_sign,
+    "gift":       cmd_gift,
+    "赠送":       cmd_gift,
+    "shop":       cmd_shop,
+    "商店":       cmd_shop,
+    "buy":        cmd_buy,
+    "购买":       cmd_buy,
+    "bag":        cmd_bag,
+    "背包":       cmd_bag,
+    "use":        cmd_use,
+    "使用":       cmd_use,
+    # ── SQLite 全文检索（聊天回溯）──
+    "dbsearch":   cmd_dbsearch,
+    "回顾":       cmd_dbsearch,
+    # ── 插件系统 ──
+    "plugin":     cmd_plugin,
+    "插件":       cmd_plugin,
+    "apy":        cmd_apy,          # 插件审批回执
 }
 
 

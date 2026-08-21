@@ -55,27 +55,9 @@ async def perform_search(
 
     # ── Step 3: Agent 搜索（回退）──
     if result_text is None:
-        logger.info("回退 Agent 搜索: '%s...'", query[:40])
-        try:
-            from modules.web_search import agent_search
-            loop = asyncio.get_running_loop()
-            result_text = await loop.run_in_executor(
-                None,
-                lambda: agent_search(query, limit=max(limit, 5), deep_fetch=True),
-            )
-        except Exception as e:
-            logger.error("Agent 搜索异常: %s，回退旧搜索器", e)
-        try:
-            from modules.local_search import get_searcher
-            loop = asyncio.get_running_loop()
-            searcher = get_searcher()
-            result_text = await loop.run_in_executor(
-                None,
-                lambda: searcher.run_search(query, source=source, limit=limit),
-            )
-        except Exception as e2:
-            logger.error("回退搜索也失败: %s", e2)
-            return None
+        set_search_cache(query, result_text)
+        logger.info("DeepSeek 搜索无结果: '%s...'", query[:40])
+        return f"{search_tip}\n\n暂无搜索结果。"
 
     if not result_text:
         logger.info("搜索无结果: '%s...'", query[:30])
@@ -87,7 +69,7 @@ async def perform_search(
         result_text = result_text[:max_len] + "..."
 
     result_text = f"{search_tip}\n\n{result_text}"
-    logger.info("搜索完成: '%s...' → %d字符", query[:30], len(result_text))
+    logger.info("搜索完成: '%s...' → %d字符\n%s", query[:30], len(result_text), result_text[:800])
 
     # ── Step 3: 写入缓存 + 记忆 ──
     realtime = is_realtime_query(query)
