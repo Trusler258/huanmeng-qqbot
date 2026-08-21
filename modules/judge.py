@@ -323,5 +323,6 @@ async def needs_search(msg: str, context_str: str) -> bool:
 
 
 # ── 启动时自动初始化 ────────────────────────────────────────
-_load_search_cache_from_disk()
+# 不再加载磁盘缓存，每次启动清空保证时效性
+_search_cache = {}
 init_keywords()

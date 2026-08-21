@@ -308,6 +308,12 @@ class EventDispatcher:
         if is_group and chat_id in cfg.group_list and not is_command:
             from modules.stats import record_message
             record_message(chat_id, user_id, msg_content, sender_name)
+            # ★ SQLite 全文检索索引（ADDITIVE，失败不影响主流程）
+            try:
+                from db.store import get_search_store
+                get_search_store().index_message(chat_id, user_id, sender_name, msg_content)
+            except Exception as _e:
+                logger.debug("群消息索引入库失败(忽略): %s", _e)
 
         # ── 合并转发处理 ──
         if msg_type == "转发":
@@ -405,6 +411,14 @@ class EventDispatcher:
                 logger.info("📎 引用原文 (%d字): '%s...'", len(quoted_text), quoted_text[:50])
             elif not quoted_text and not error_report_content:
                 logger.warning("📎 无法获取引用消息内容 (id=%s)", reply_id)
+
+        # ★ 私聊消息也索引到 SQLite（ADDITIVE，失败不影响主流程）
+        if not is_group and not is_command:
+            try:
+                from db.store import get_search_store
+                get_search_store().index_message(chat_id, user_id, sender_name, msg_content)
+            except Exception as _e:
+                logger.debug("私聊消息索引入库失败(忽略): %s", _e)
 
         # 调用消息处理管道（通过队列，不阻塞当前消息接收）
         from core.queues import enqueue_message

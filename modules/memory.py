@@ -325,7 +325,7 @@ def search_long_memory(chat_id: int, keyword: str, limit: int = 5) -> str:
 _MSGLOG_DIR = MEMORY_DIR / "msglog"
 
 
-def search_msglog(chat_id: int, query: str, limit: int = 8, max_scan: int = 500) -> str:
+def search_msglog(chat_id: int, query: str, limit: int = 8, max_scan: int = 5000) -> str:
     """
     从 msglog JSONL 中搜索与 query 相关的近期聊天记录。
 
@@ -333,7 +333,7 @@ def search_msglog(chat_id: int, query: str, limit: int = 8, max_scan: int = 500)
         chat_id: 群号/私聊 ID
         query: 搜索关键词（如当前消息内容）
         limit: 最多返回条数
-        max_scan: 最多扫描最近 N 条消息
+        max_scan: 最多扫描最近 N 条消息（500→5000，移植 kook dcb9ba3 提升召回）
 
     Returns:
         格式化的聊天记录文本，或空字符串
