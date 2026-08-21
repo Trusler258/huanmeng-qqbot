@@ -181,7 +181,7 @@ TOOLS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "domain": {"type": "string", "description": "域名，如 01240820.xyz、google.com"},
+                    "domain": {"type": "string", "description": "域名，如 example.com、google.com"},
                 },
                 "required": ["domain"],
             },

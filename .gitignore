@@ -86,3 +86,4 @@ Thumbs.db
 .bot_protect
 docs/fix_change.md
 test_fc_sim.py
+services/wdsj_*.py
