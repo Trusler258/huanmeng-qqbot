@@ -3373,10 +3373,14 @@ async def handle_command(
             result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message=raw_message)
         else:
             result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq)
+        # 来源标注：插件注册的指令（bridge 带 __plugin__ 属性）
+        src = ""
+        if getattr(handler, "__plugin__", None):
+            src = f" (插件: {handler.__plugin__})"
         if result is not None:
-            logger.info("指令执行完成 [%s]: 返回%d字符", cmd_name, len(str(result)))
+            logger.info("指令执行完成 [%s]%s: 返回%d字符", cmd_name, src, len(str(result)))
         else:
-            logger.info("指令执行完成 [%s]: 无返回值（已自行发送）", cmd_name)
+            logger.info("指令执行完成 [%s]%s: 无返回值（已自行发送）", cmd_name, src)
         return result
     except Exception as e:
         err_type = type(e).__name__
