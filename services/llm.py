@@ -160,10 +160,64 @@ def _load_skill_sections() -> dict[str, str]:
     if current_key:
         sections[current_key] = "\n".join(current_lines).strip()
 
+    # ★ 叠加 data/skills/ 下的模块化提示词文件（与 kook bot 的 skills/ 体系对齐）。
+    #    skills 文件可覆盖 main_skill.md 中同名章节，或新增额外章节。
+    _merge_skills_dir(sections)
+
     _skill_sections = sections
     _skill_loaded = True
-    logger.info("main_skill.md 已加载: %d 个章节", len(sections))
+    logger.info("main_skill.md 已加载: %d 个章节（含 skills 叠加）", len(sections))
     return sections
+
+
+_SKILLS_DIR = Path(__file__).resolve().parent.parent / "data" / "skills"
+
+
+def _parse_md_sections(text: str) -> dict[str, str]:
+    """按 ## 节名切割 markdown，返回 {节名: 内容}（与 main_skill.md 同解析规则）。"""
+    sections: dict[str, str] = {}
+    current_key = ""
+    current_lines: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped == "" or (stripped.startswith("#") and not stripped.startswith("## ")):
+            continue
+        if stripped.startswith("## "):
+            if current_key:
+                sections[current_key] = "\n".join(current_lines).strip()
+            current_key = stripped[3:].strip()
+            current_lines = []
+        elif current_key:
+            current_lines.append(line)
+    if current_key:
+        sections[current_key] = "\n".join(current_lines).strip()
+    return sections
+
+
+def _merge_skills_dir(sections: dict[str, str]) -> None:
+    """扫描 data/skills/*.md，把每个文件解析为章节并并入 sections（同名覆盖）。"""
+    if not _SKILLS_DIR.exists():
+        return
+    try:
+        files = sorted(_SKILLS_DIR.glob("*.md"))
+    except Exception as e:
+        logger.warning("扫描 skills 目录失败: %s", e)
+        return
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.warning("读取 skill 文件失败 %s: %s", f.name, e)
+            continue
+        parsed = _parse_md_sections(text)
+        if parsed:
+            # 文件内含 ## 分节：逐节并入
+            for k, v in parsed.items():
+                sections[k] = v
+        else:
+            # 整个文件作为一个章节，key 为文件名（去扩展名）
+            sections[f.stem] = text.strip()
+        logger.info("已叠加 skill 文件: %s", f.name)
 
 
 def reload_skill_cache():
@@ -213,9 +267,17 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
     # 动态注入 COMMAND_MAP 全部指令
     cmd_list = _build_dynamic_command_list()
 
+    # 追加 main_skill.md / skills 中未被显式引用的额外章节（如用户自定义的技能片段）
+    used_keys = {
+        "prompt_header", "group_format", "private_format",
+        "command_tools", "face_lib", "private_tone",
+        "anti_repeat", "fav_format", "fav_tiers", "play_mode",
+    }
+    extra = [v for k, v in sec.items() if k not in used_keys and v]
+
     return "\n\n".join(
         p for p in [header, format_rules, command_tools, cmd_list,
-                     face_lib, private_tone, anti_repeat, fav_format, fav_tiers, play_mode]
+                     face_lib, private_tone, anti_repeat, fav_format, fav_tiers, play_mode, *extra]
         if p
     )
 
@@ -263,6 +325,14 @@ _CMD_DESC = {
     # 记忆 / 上下文
     "memory":  "显示当前群聊的记忆（管理员）",
     "recall":  "召回历史聊天中与当前话题相关的记忆",
+    # 经济系统
+    "points":  "查看自己的积分和全服排行榜",
+    "sign":    "每日签到领取随机积分",
+    "gift":    "把自己的积分转赠给其他用户",
+    "shop":    "查看积分商店里的权益物品",
+    "buy":     "用积分购买权益物品",
+    "bag":     "查看自己的权益背包",
+    "use":     "使用背包里的权益（如好感券）",
     "persona": "查看机器人的性格描述/adoptable persona",
     # 群管理
     "op":      "移交特权/管理员",
@@ -314,6 +384,7 @@ _CMD_DESC = {
     "tufsearch":"搜索 TUFD 谱面",
     "tuf谱面":  "同 tufsearch",
     "analyze": "分析谱面数据",
+    "calc":    "执行Python代码进行数学计算（方程/方程组/计算题），用代码精确求解",
     # 系统
     "help":    "显示帮助信息",
     "ping":    "检查机器人是否在线",
@@ -358,6 +429,10 @@ async def call_llm(
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
     
+    # ★ max_tokens<=0 视为不设上限（DeepSeek 对 max_tokens=0 报 400 Invalid）
+    if max_tokens is not None and max_tokens <= 0:
+        max_tokens = None
+
     logger.info("调用LLM [%s] url=%s tokens=%s temp=%.1f timeout=%.1fs",
                  model_cfg.name[:20], model_cfg.url.split('/')[-2] if '/' in model_cfg.url else model_cfg.url[:20],
                  str(max_tokens), temperature, timeout)
@@ -448,6 +523,10 @@ async def call_llm_with_tools(
 
     client = _create_client(model_cfg)
     loop = asyncio.get_running_loop()
+
+    # ★ max_tokens<=0 视为不设上限（DeepSeek 对 max_tokens=0 报 400 Invalid）
+    if max_tokens is not None and max_tokens <= 0:
+        max_tokens = None
 
     req_params = {
         "model": model_cfg.model if hasattr(model_cfg, 'model') else model_cfg.name,
@@ -617,15 +696,18 @@ async def generate_multi_reply_with_tools(
     tools = get_tool_schemas()
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
 
-    # 长消息（题目/长文）→ 扩大输出 token
-    if len(current_msg) > 2000:
+    # 长消息（题目/长文/网页阅读）→ 扩大输出 token
+    has_long_context = len(current_msg) > 2000
+    if max_tokens and has_long_context:
         max_tokens = max(max_tokens, 8000)
 
-    # 多轮 FC Agent 循环：最多 5 轮，LLM 可以连续调多个工具
-    MAX_ROUNDS = 2
+    # 多轮 FC Agent 循环：LLM 可连续调多个工具；errors/data/action 结果出现即提前退出
+    # （移植 kook 5fcab40：轮数由 LLM 决定，MAX_ROUNDS 仅作防死循环保险上限）
+    MAX_ROUNDS = 6
     errors = []
     data_results = []
     action_results = []
+    _prev_call_set: frozenset[str] | None = None  # 防死循环：连续两轮相同调用集则停
 
     for round_idx in range(MAX_ROUNDS):
         result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4)
@@ -641,7 +723,7 @@ async def generate_multi_reply_with_tools(
                 logger.warning("LLM 连续返回空内容，用 json_mode 兜底...")
                 json_raw = await call_llm(
                     reply_model, msgs,
-                    max_tokens=min(max_tokens, 800),
+                    max_tokens=min(max_tokens or 800, 800),
                     temperature=0.3, json_mode=True,
                 )
                 if json_raw and json_raw.strip():
@@ -659,9 +741,41 @@ async def generate_multi_reply_with_tools(
                     extracted = raw[json_pos:]
                     logger.info("从混合文本提取 JSON: pos=%d", json_pos)
                     result.content = extracted
+                    # 从 JSON 解析 calls 转为原生 tool_calls 格式（触发FC循环执行）
+                    # 兼容 tool/name、arguments/args 多形态（移植 kook a101954）
+                    try:
+                        parsed = json.loads(extracted)
+                        calls = parsed.get("calls", [])
+                        if calls and isinstance(calls, list):
+                            result.tool_calls = []
+                            for i, c in enumerate(calls):
+                                if not isinstance(c, dict):
+                                    continue
+                                name = str(c.get("name") or c.get("tool") or "").strip()
+                                if not name:
+                                    continue
+                                args_raw = c.get("args", c.get("arguments", {}))
+                                if isinstance(args_raw, str):
+                                    try:
+                                        args_raw = json.loads(args_raw)
+                                    except Exception:
+                                        args_raw = {"args": args_raw}
+                                if not isinstance(args_raw, dict):
+                                    args_raw = {"args": args_raw}
+                                result.tool_calls.append(
+                                    {"id": f"call_{i}", "name": name, "arguments": args_raw}
+                                )
+                            logger.info("混合文本中提取到 %d 个工具调用", len(result.tool_calls))
+                    except Exception:
+                        pass
+                    # 提取成功但无 calls → json_mode 确保 JSON 完整
+                    if not result.tool_calls:
+                        json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.4, json_mode=True)
+                        if json_raw and json_raw.startswith("{"):
+                            result.content = json_raw
                 else:
                     logger.info("LLM 输出非 JSON，强制重试...")
-                    json_raw = await call_llm(reply_model, msgs, max_tokens=min(max_tokens, 800), temperature=0.3, json_mode=True)
+                    json_raw = await call_llm(reply_model, msgs, max_tokens=min(max_tokens or 800, 800), temperature=0.3, json_mode=True)
                     if json_raw and json_raw.startswith("{"):
                         result.content = json_raw
                         logger.info("json_mode 重试成功: %s...", json_raw[:80])
@@ -679,22 +793,38 @@ async def generate_multi_reply_with_tools(
 
         # 并行执行本轮所有工具
         async def run_one(tc):
-            r = await execute_tool(
-                tc["name"], tc["arguments"],
-                user_id=user_id, group_id=group_id,
-                sender_name=speaker_name, is_group=is_group, bot_qq=bot_qq,
-                original_msg=current_msg,
-            )
+            # 单工具超时（移植 kook 67dd501：工具级超时表，防止慢工具拖死整轮）
+            try:
+                from core.tools import get_tool_timeout
+                timeout = get_tool_timeout(tc["name"])
+            except Exception:
+                timeout = 60.0
+            try:
+                r = await asyncio.wait_for(
+                    execute_tool(
+                        tc["name"], tc["arguments"],
+                        user_id=user_id, group_id=group_id,
+                        sender_name=speaker_name, is_group=is_group, bot_qq=bot_qq,
+                        original_msg=current_msg,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("FC: 工具 %s 执行超时(%.0fs)", tc["name"], timeout)
+                r = f"[超时] 工具 {tc['name']} 执行超过 {timeout:.0f} 秒"
             return tc, r or ""
 
         tool_results = await asyncio.gather(*(run_one(tc) for tc in result.tool_calls))
         for tc, tool_text in tool_results:
             msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": tool_text})
             logger.info("FC: 工具 %s 返回 %d 字符", tc["name"], len(tool_text))
+            # 工具返回长内容时扩大 max_tokens
+            if len(tool_text) > 500:
+                max_tokens = max(max_tokens or 0, 8000)
 
             if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text:
                 errors.append(tool_text)
-            elif tc["name"] in ("wdsj_query", "weather", "search_web", "earthquake", "sys", "pc"):
+            elif tc["name"] in ("calc", "wdsj_query", "weather", "search_web", "earthquake", "sys", "pc"):
                 data_results.append(tool_text)
             elif tool_text:
                 action_results.append(tool_text)
@@ -702,6 +832,26 @@ async def generate_multi_reply_with_tools(
         # 遇到错误或数据结果 → 停止循环
         if errors or data_results:
             break
+        # 已执行过工具 → 跳出，走 json_mode 生成最终回复
+        if action_results:
+            break
+
+        # 防死循环：连续两轮发起相同的工具调用集则停（移植 kook LoopDetector 思路）
+        cur_set = frozenset((tc["name"], json.dumps(tc.get("arguments", {}), ensure_ascii=False, sort_keys=True)) for tc in result.tool_calls)
+        if cur_set and cur_set == _prev_call_set:
+            logger.warning("FC: 检测到连续两轮相同工具调用，终止循环防止死循环")
+            break
+        _prev_call_set = cur_set
+
+    # ── 如果工具已执行，强制 json_mode 回复 ──
+    if errors or data_results or action_results:
+        json_raw = await call_llm(
+            reply_model, msgs,
+            max_tokens=max(max_tokens or 0, 8000),
+            temperature=0.4, json_mode=True,
+        )
+        if json_raw and json_raw.strip():
+            return _parse_reply(json_raw, speaker_name)
 
     # ── 处理结果 ──
     if errors:
@@ -809,6 +959,32 @@ def _parse_reply(
         if not quiet:
             logger.warning("JSON解析失败，尝试修复: %s...", raw[:80])
         try:
+            # 先尝试补全截断的 JSON（加缺失的 }]）
+            fixed = raw.rstrip()
+            # 找到最后一个完整的字符串结尾
+            last_complete = fixed.rfind('",')
+            if last_complete > 0:
+                fixed = fixed[:last_complete] + '"],"fav":0,"calls":[]}'
+                try:
+                    data = json.loads(fixed)
+                    replies = data.get("replies", [])
+                    if isinstance(replies, list) and replies:
+                        fav_change = safe_fav(data.get("fav", 0))
+                        calls = data.get("calls") or []
+                        face_cq = data.get("face")
+                        mood = data.get("mood", "")
+                        mood_detail = data.get("mood_detail")
+                        action = data.get("action", "")
+                        at_qq = data.get("at")
+                        mode_switch = data.get("mode")
+                        origin = data.get("origin", "user")
+                        actor = data.get("actor") or {}
+                        instructs = data.get("instructs")
+                        logger.info("JSON截断修复: %d句", len(replies))
+                        return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, instructs
+                except Exception:
+                    pass
+
             m = re.search(r'"replies"\s*:\s*\[', raw)
             if m:
                 inner = raw[m.end():]
@@ -898,6 +1074,7 @@ def _build_messages(
         "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
         f"{ctx_hint}\n"
         "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
+        "数学题/方程/方程组/计算题必须调用 calc 工具用代码精确求解，不要心算。"
         "★ 搜索规则：用户没说'搜/查/找/介绍一下'就绝对不要搜，用你自己的知识回答。不用工具就直接输出 JSON。\n"
         f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
         f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。严格按照这个 JSON 格式输出！"

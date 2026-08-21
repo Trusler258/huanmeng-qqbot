@@ -38,7 +38,7 @@ class HuanmengBot:
     5. 支持优雅关闭
     """
 
-    VERSION = "1.4.2"
+    VERSION = "2.0.0"
 
     def __init__(self):
         self.cfg: object = None          # type: ignore (BotConfig)
@@ -124,6 +124,14 @@ class HuanmengBot:
         _asyncio.ensure_future(self._bg_tts_server())
         _asyncio.ensure_future(self._bg_holiday())
         info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890")
+
+        # ★ 启动插件系统（ADDITIVE：单个插件失败不影响主流程）
+        try:
+            from core.plugin import get_plugin_manager
+            ok_names = await get_plugin_manager().load_all()
+            info("插件系统已启动: 加载 %d 个插件 %s", len(ok_names), ok_names)
+        except Exception as e:
+            warning("插件系统启动失败(忽略): %s", e)
 
         # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
         try:
@@ -375,9 +383,13 @@ class HuanmengBot:
         await nickname_sync_loop()
 
     async def _bg_pc_status_server(self):
-        """PC 状态接收服务器 (端口 58890)"""
+        """PC 状态接收服务器 (端口 58890 + 62002 KOOK)"""
         from services.pc_status import start_pc_server
-        await start_pc_server(58890)
+        import asyncio as _asyncio
+        await _asyncio.gather(
+            start_pc_server(58890),
+            start_pc_server(62002),
+        )
 
     async def _bg_tts_server(self):
         """TTS 节点接收服务 (端口 58891)"""

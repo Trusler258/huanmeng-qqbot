@@ -5,9 +5,9 @@ PC 状态上报 v3 — TCP 长连接 + 详细系统信息
 """
 import json, time, os, socket, threading, traceback, sys
 
-SERVER = os.environ.get("BOT_SERVER", "your-server.example.com")
+SERVER = os.environ.get("BOT_SERVER", "01240820.xyz")
 PORT = int(os.environ.get("BOT_PC_PORT", "58890"))
-AUTH_KEY = os.environ.get("BOT_PC_KEY", "your-auth-key")
+AUTH_KEY = os.environ.get("BOT_PC_KEY", "huanmeng_pc_2026")
 
 def log(msg):
     ts = time.strftime("%H:%M:%S")
@@ -22,15 +22,126 @@ except ImportError:
     log("WARN: pywin32/psutil 未安装，无窗口信息")
 
 def get_window_title():
-    if not HAS_WIN32: return "", ""
+    if not HAS_WIN32: return {}, "", ""
     try:
         hwnd = win32gui.GetForegroundWindow()
         title = win32gui.GetWindowText(hwnd)
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
         proc = psutil.Process(pid) if pid else None
-        return title or "", proc.name() if proc else ""
+        info = {}
+        if proc:
+            try:
+                mem = proc.memory_info()
+                info["proc_handle_count"] = proc.num_handles()
+                info["proc_mem_rss"] = mem.rss
+                info["proc_mem_vms"] = mem.vms
+                info["proc_cpu_percent"] = round(proc.cpu_percent(interval=0), 1)
+                info["proc_pid"] = pid
+            except Exception:
+                pass
+        return info, title or "", proc.name() if proc else ""
     except Exception:
-        return "", ""
+        return {}, "", ""
+
+# ── FPS 检测 (DWM 帧计时) ──
+_fps_history = []  # 最近 5 次帧时间
+
+def get_fps():
+    """DXGI 帧统计 — 读取实际渲染帧率（非显示器刷新率）"""
+    try:
+        import ctypes
+        from ctypes import wintypes, byref, sizeof, POINTER, c_void_p
+        
+        # ── DXGI 接口定义 ──
+        dxgi = ctypes.windll.dxgi
+        
+        IID_IDXGIFactory = ctypes.c_ubyte * 16
+        IID_IDXGISwapChain = ctypes.c_ubyte * 16
+        
+        # IDXGISwapChain::GetFrameStatistics 结构
+        class DXGI_FRAME_STATISTICS(ctypes.Structure):
+            _fields_ = [
+                ("PresentCount", ctypes.c_uint),
+                ("PresentRefreshCount", ctypes.c_uint),
+                ("SyncRefreshCount", ctypes.c_uint),
+                ("SyncQPCTime", ctypes.c_longlong),
+                ("SyncGPUTime", ctypes.c_longlong),
+            ]
+        
+        class DXGI_RATIONAL(ctypes.Structure):
+            _fields_ = [("Numerator", ctypes.c_uint), ("Denominator", ctypes.c_uint)]
+        
+        class DXGI_MODE_DESC(ctypes.Structure):
+            _fields_ = [
+                ("Width", ctypes.c_uint), ("Height", ctypes.c_uint),
+                ("RefreshRate", DXGI_RATIONAL),
+                ("Format", ctypes.c_uint),
+                ("ScanlineOrdering", ctypes.c_uint),
+                ("Scaling", ctypes.c_uint),
+            ]
+        
+        # CreateDXGIFactory
+        factory = c_void_p()
+        hr = dxgi.CreateDXGIFactory(
+            ctypes.c_char_p(b"\x7b\x71\x66\x3c\xb0\x60\x4f\x70\xb7\xd7\x05\x7a\xb0\x4e\x85\xee"),
+            byref(factory)
+        )
+        if hr != 0:
+            return 0
+        
+        # EnumAdapters → 第一个显卡
+        adapter = c_void_p()
+        vtbl_adapter = POINTER(c_void_p)()
+        
+        vtable = ctypes.cast(factory, POINTER(POINTER(c_void_p))).contents
+        _EnumAdapters = ctypes.cast(vtable[7], ctypes.CFUNCTYPE(ctypes.c_long, c_void_p, ctypes.c_uint, POINTER(c_void_p)))
+        hr = _EnumAdapters(factory, 0, byref(adapter))
+        if hr != 0:
+            return 0
+            
+        # EnumOutputs → 显示器 0
+        vtable_a = ctypes.cast(adapter, POINTER(POINTER(c_void_p))).contents
+        _EnumOutputs = ctypes.cast(vtable_a[7], ctypes.CFUNCTYPE(ctypes.c_long, c_void_p, ctypes.c_uint, POINTER(c_void_p)))
+        output = c_void_p()
+        hr = _EnumOutputs(adapter, 0, byref(output))
+        if hr != 0:
+            return 0
+            
+        # GetFrameStatistics
+        vtable_o = ctypes.cast(output, POINTER(POINTER(c_void_p))).contents
+        _GetFrameStatistics = ctypes.cast(vtable_o[16], ctypes.CFUNCTYPE(ctypes.c_long, c_void_p, POINTER(DXGI_FRAME_STATISTICS)))
+        
+        stats = DXGI_FRAME_STATISTICS()
+        hr = _GetFrameStatistics(output, byref(stats))
+        
+        # 释放 COM 对象
+        _Release = ctypes.cast(vtable_o[2], ctypes.CFUNCTYPE(ctypes.c_ulong, c_void_p))
+        _Release(output)
+        _Release_a = ctypes.cast(vtable_a[2], ctypes.CFUNCTYPE(ctypes.c_ulong, c_void_p))
+        _Release_a(adapter)
+        _Release_f = ctypes.cast(vtable[2], ctypes.CFUNCTYPE(ctypes.c_ulong, c_void_p))
+        _Release_f(factory)
+        
+        if hr != 0 or stats.SyncRefreshCount == 0:
+            return 0
+            
+        global _fps_history
+        now = time.time()
+        _fps_history.append((now, stats.SyncRefreshCount))
+        if len(_fps_history) > 5:
+            _fps_history = _fps_history[-5:]
+
+        if len(_fps_history) >= 2:
+            t0, f0 = _fps_history[0]
+            t1, f1 = _fps_history[-1]
+            dt = t1 - t0
+            if dt > 0.5 and f1 > f0:
+                fps = (f1 - f0) / dt
+                return round(fps)
+
+        return 0
+    except Exception:
+        return 0
 
 # ── GPU (NVIDIA) ──
 try:
@@ -307,55 +418,45 @@ _shared = {
     "playing":False,"hasSong":False,"lyric_line":"","timeline":[],
 }
 _shared_lock=threading.Lock()
-_ws_ok=False
+_last_music_query=0
 
-def _ws_loop():
-    global _ws_ok
+def _query_music():
+    """按需连接 WS 获取当前歌曲（不常驻）"""
     try:
         from websocket import create_connection
     except ImportError:
-        log("ERROR: websocket-client 未安装")
-        return
-    while True:
-        try:
-            log("WS: 连接 localhost:9863/api/ws/lyric ...")
-            ws=create_connection("ws://localhost:9863/api/ws/lyric", timeout=5)
-            log("WS: 已连接")
-            while True:
-                raw=ws.recv()
-                msg=json.loads(raw)
-                ev=msg.get("event",""); d=msg.get("data",{})
-                with _shared_lock:
-                    if ev=="Track":
-                        au=d.get("author","") or d.get("artist","") or ""
-                        ti=d.get("title","") or ""
-                        _shared["song"]=f"{au} - {ti}" if au and ti else (ti or "")
-                        _shared["cover"]=d.get("cover","") or ""
-                        _shared["duration"]=d.get("durationHuman","") or ""
-                        log(f"WS Track: {_shared['song']}")
-                    elif ev=="Lyric":
-                        lrc=d.get("lrc","") or d.get("karaokeLyric","") or ""
-                        if lrc:
-                            if lrc.startswith("{") and "[" in lrc:
-                                lrc=lrc[lrc.index("["):]
-                            _shared["timeline"]=_parse_lrc(lrc)
-                            log(f"WS Lyric: {len(_shared['timeline'])} lines")
-                    elif ev=="PlayerPauseState":
-                        _shared["hasSong"]=d.get("hasSong",_shared["hasSong"])
-                        _shared["playing"]=not d.get("isPaused",True)
-                        log(f"WS State: hasSong={_shared['hasSong']} playing={_shared['playing']}")
-                    elif ev=="PlayerProgress":
-                        _shared["progress_ms"]=d.get("progress",_shared["progress_ms"])
-                if not _ws_ok and _shared["song"]:
-                    _ws_ok=True; log("WS: 就绪，开始上报")
-                with _shared_lock:
-                    _shared["lyric_line"]=_current_lyric(_shared["timeline"], _shared["progress_ms"])
-        except Exception as e:
-            _ws_ok=False
-            log(f"WS 断开: {e}，3s 后重连...")
-        time.sleep(3)
+        return {}
+    try:
+        ws=create_connection("ws://localhost:9863/api/ws/lyric", timeout=3)
+        ws.settimeout(2)
+        result={}
+        start=time.time()
+        while time.time()-start < 2:
+            raw=ws.recv()
+            msg=json.loads(raw)
+            ev=msg.get("event",""); d=msg.get("data",{})
+            ev=ev.lower()
+            if ev=="track":
+                au=d.get("author","") or d.get("artist","") or ""
+                ti=d.get("title","") or ""
+                result["song"]=f"{au} - {ti}" if au and ti else (ti or "")
+                result["cover"]=d.get("cover","") or ""
+                result["duration"]=d.get("durationHuman","") or d.get("duration","")
+            elif ev=="state":
+                result["playing"]=d.get("playing",False)
+                result["hasSong"]=d.get("hasSong",False)
+                result["progress_ms"]=d.get("progress",0)
+            elif ev=="lyric":
+                lrc=d.get("lrc","") or d.get("karaokeLyric","") or ""
+                result["timeline"]=parse_lyric_lines(lrc) if lrc else []
+                result["lyric_line"]=get_lyric_line(result["timeline"], result.get("progress_ms",0))
+            if result.get("song") and result.get("playing") is not False:
+                break
+        ws.close()
+        return result
+    except Exception:
+        return {}
 
-threading.Thread(target=_ws_loop, daemon=True).start()
 
 # ── TCP 上报 ──
 # ── 截屏功能 (需要 Pillow) ──
@@ -394,11 +495,23 @@ def _take_screenshot() -> str:
 _last_good_music={}
 
 def connect_tcp():
+    # 先解析 IP，避免 getaddrinfo 在循环中反复失败
+    ip = None
+    for i in range(10):
+        try:
+            ip = socket.getaddrinfo(SERVER, PORT, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+            break
+        except Exception:
+            time.sleep(3)
+    if not ip:
+        log(f"TCP: DNS 解析失败 {SERVER}，退出")
+        sys.exit(1)
+
     while True:
         try:
             sock=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5)
-            sock.connect((SERVER, PORT))
+            sock.connect((ip, PORT))
             log(f"TCP: 已连接 {SERVER}:{PORT}")
             sock.sendall(f"AUTH {AUTH_KEY}\n".encode())
             return sock
@@ -413,23 +526,55 @@ def run():
     if HAS_VOLT: log("电压监控: 启用 (OpenHardwareMonitor WMI)")
     if not HAS_WIN32: log("WARN: pywin32/psutil 未安装，仅基础信息")
     sock=connect_tcp()
+    # KOOK: 第二路 TCP → 62002
+    KOOK_PORT = 62002
+    sock_kook = None
+    try:
+        sock_kook = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock_kook.settimeout(5)
+        kook_ip = socket.getaddrinfo(SERVER, KOOK_PORT, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+        sock_kook.connect((kook_ip, KOOK_PORT))
+        sock_kook.sendall(f"AUTH {AUTH_KEY}\n".encode())
+        log(f"TCP: 已连接 {SERVER}:{KOOK_PORT} (KOOK)")
+    except Exception as e:
+        log(f"TCP: KOOK 端口 {KOOK_PORT} 连接失败 {e}，跳过")
+        sock_kook = None
+
+    def send_both(data: bytes):
+        """同时发给 QQ 和 KOOK"""
+        try:
+            sock.sendall(data)
+        except: pass
+        if sock_kook:
+            try:
+                sock_kook.sendall(data)
+            except: pass
 
     while True:
         try:
             # 采集窗口
-            title,proc=get_window_title()
+            proc_info, title, proc = get_window_title()
+            fps = get_fps()
             player=detect_music_player()
+            # 音乐：每 30s 轮询一次 WS，用缓存
+            global _last_music_query
             music={}
-            if _ws_ok:
+            if time.time()-_last_music_query > 30:
+                raw=_query_music()
                 with _shared_lock:
+                    if raw: _shared.update(raw)
+                _last_music_query=time.time()
+            with _shared_lock:
+                if _shared.get("song"):
                     music={
                         "song":_shared["song"],"cover":_shared["cover"],
                         "duration":_shared["duration"],"progress_ms":_shared["progress_ms"],
                         "playing":_shared["playing"],"hasSong":_shared["hasSong"],
                         "lyric_line":_shared["lyric_line"],
+                        "player":player,
                     }
-                music["player"]=player
 
+            # 有歌就更新缓存
             if music.get("song"):
                 _last_good_music=music.copy()
             elif _last_good_music:
@@ -439,6 +584,11 @@ def run():
             data={"hostname":socket.gethostname()}
             if title: data["window"]=title
             if proc: data["app"]=proc
+            if proc_info: 
+                data["app_detail"]=proc_info
+                data["app_handles"]=proc_info.get("proc_handle_count", 0)
+                data["app_mem_mb"]=round(proc_info.get("proc_mem_rss", 0) / 1048576, 1)
+            if fps: data["fps"]=fps
             if music: data["music"]=music
 
             # 系统信息
@@ -447,7 +597,7 @@ def run():
 
             # TCP 发送
             payload=json.dumps(data, ensure_ascii=False)+"\n"
-            sock.sendall(payload.encode("utf-8"))
+            send_both(payload.encode("utf-8"))
 
             # 检查服务器是否下发命令 (非阻塞, 1s 内检查)
             import select
@@ -465,6 +615,14 @@ def run():
                         else:
                             sock.sendall(b"SHOT:0\n")
                             log("截屏失败, 已回传空结果")
+                    elif cmd == "CMD:MUSIC":
+                        log("收到音乐查询命令")
+                        raw = _query_music()
+                        if raw:
+                            resp = json.dumps(raw, ensure_ascii=False) + "\n"
+                            sock.sendall(f"MUSIC:{len(resp)}\n".encode() + resp.encode())
+                        else:
+                            sock.sendall(b"MUSIC:0\n")
                 except Exception as e:
                     log(f"处理命令错误: {e}")
             else:

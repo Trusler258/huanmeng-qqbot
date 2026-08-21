@@ -1,5 +1,111 @@
 # 更新日志
 
+## v2.0.0 — Huanmeng 2.0 架构升级 — 2026.8.21
+
+从 v1.4.2 直接升到 **2.0.0**：本轮移植 huanmeng-kook-bot（同作者）的完整 2.0 架构与全部优化。
+版本号与 KOOK 端对齐（kook 已升级为 Huanmeng 2.0.0）。
+
+**v2.0.0 包含**：
+1. **三大功能模块移植**：经济系统（积分/库存）、SQLite+FTS5 全文检索数据层、skills/ 模块化提示词
+2. **完整插件系统（kook Phase 13/14）**：eventbus + capability 能力注册表 + core/plugin 运行时（manifest/loader/manager/api）+ sandbox + .hmp 打包/插件库一键更新 + `/~plugin` 指令
+3. **KOOK 生态兼容**：`.hmp` 插件加载时自动 stub `khl` 等 KOOK 模块、剥离 KMarkdown 格式
+4. **168 commits 优化移植**：单工具超时、输出截断保头尾、calls 多形态解析、FC 轮数放宽+防死循环、max_tokens 保护、msglog 回溯 5000、事实断言强制搜索等
+
+下方 v1.5.x 条目为本轮各阶段移植记录，均属 v2.0.0 内容。
+
+## v1.5.5 — KOOK 生态兼容 + 168 commits 优化移植 — 2026.8.21
+
+### 🔄 .hmp 插件 KOOK 格式自动剥离
+- 新增 `core/plugin/kook_compat.py`：加载插件时向 `sys.modules` 注入 `khl`/`kook`/`kaiheila` 假模块（含 `khl.api`、`Card`、`MessageTypes` 等），KOOK 生态 `.hmp` 插件无需改动即可在 qqbot 加载运行，KOOK 专属调用安全降级
+- `strip_kook_text()`：剥离 `(met)/(rol)/(chn)/(emj)/(file)` 等 KMarkdown 标记
+- `loader.py` 类定位改严格判定（`vars()` 检查钩子 + `_kook_stub` 标记跳过），修复 stub 类被误判为 Plugin 类的问题
+- 纯内存注入、不改源不落盘；插件真实能力走 ctx.* 与 qqbot 原生一致
+
+### ⚡ 通读 kook 168 commits 筛选的运行时优化
+- **单工具超时**（kook 67dd501）：`core/tools.py` 新增 `TOOL_TIMEOUTS` 工具级超时表 + `get_tool_timeout()`，FC 循环 `run_one` 用 `asyncio.wait_for` 包裹，防慢工具拖死整轮
+- **输出截断保头尾**（kook 6cda8e0）：`_python_eval` 用 `_fold_truncate` 保留头尾折叠中间，防 LLM 编造被截断的尾部结果
+- **calls 多形态解析**（kook a101954）：LLM 回复 JSON 的 calls 兼容 `tool/name` + `arguments/args`（含字符串 JSON 参数）
+- **FC 轮数 2→6 + 防死循环**（kook 5fcab40）：MAX_ROUNDS 放宽为保险上限，连续两轮相同工具调用集自动终止
+- **max_tokens<=0 保护**（kook 900125e）：`call_llm`/`call_llm_with_tools` 将 `max_tokens<=0` 视为不设上限，防 DeepSeek 400
+- **msglog 回溯 500→5000**（kook dcb9ba3）：`search_msglog` 默认扫描上限提升，提升记忆召回
+
+### 验证
+- KOOK 插件（import khl / Card / MessageTypes / api.fetch）+ 原生插件共存加载、命令/工具分发、卸载清理全通过
+- 全部修改文件 py_compile 通过
+
+## v1.5.4 — 完整移植插件系统（kook Phase 13/14）— 2026.8.21
+
+把 huanmeng-kook-bot 的插件体系整体移植到 qqbot，架构对齐。
+
+### 🧩 插件运行时
+- `core/plugin/` 四件套：`manifest.py`（PluginManifest 校验）/ `loader.py`（发现+动态导入）/ `manager.py`（discover→load→init→enable→disable→reload→unload→health 生命周期机，单插件崩溃隔离）/ `api.py`（PluginContext 公开 API）
+- `core/eventbus.py`：统一事件总线（订阅/发布/通配/异步隔离，插件协作基础设施）
+- `core/capability/`：能力注册表（Capability 统一 Command/Tool/Plugin 抽象 + registry/router/loader）
+- 插件写法：`plugins/<name>/manifest.json` + `main.py`，类名 `Plugin(ctx)`，可选 `on_load/on_enable/on_disable/on_unload`，reload 自动清理事件/定时器/能力注册
+
+### 🎛 插件能力（ctx.*，惰性解耦）
+- `message.send/send_file`、`memory.remember/recall`、`event`、`timer.every`、`capability.register_command/register_tool(always_on)`、`config`、`economy`、`vision.describe`、`identity.is_admin`、`llm.generate`、`approval.request`（私聊管理员 + /~apy 回执）、`sandbox.run_python/cpp/shell`、`logger`
+
+### 📦 分享与插件库
+- `modules/plugin_share.py`：`.hmp` 打包/解包（防 zip-slip）、聊天下载、插件库客户端（`PLUGIN_LIB_BASE`，默认 `01240820.xyz:20030`，实测可连、库内 13 个插件）
+- `/~plugin` 指令：list / install / unload / reload / pack / import / update（一键更新）
+- `/~apy <token> 同意|拒绝`：审批回执
+
+### 🔌 FC 集成
+- `core/tools.py`：`get_tool_schemas()` 合并插件动态注册工具 Schema（内置同名优先）；`execute_tool` 增加插件 handler 分发回退
+- 插件命令经 `register_command` 自动挂进 COMMAND_MAP，`/~name` 直接可调，卸载自动移除
+
+### 🚀 启动
+- `bot.py` 启动时 `get_plugin_manager().load_all()`，单插件失败不影响主流程
+- 新增示例插件 `plugins/dice/`：`/~dice` 掷骰 + `roll_dice` 常驻工具 + 掷骰奖励 1 积分（联动经济系统）
+
+## v1.5.3 — 移植 huanmeng-kook-bot 三大功能模块 — 2026.8.21
+
+从 KOOK 机器人 `huanmeng-kook-bot`（同作者）移植三块 qqbot 原本缺失的能力。
+经比对，qqbot 已是 kook bot 的超集（多中国象棋/好友请求/退群/昵称同步/撤回记录），
+故仅精准补齐以下三块。
+
+### 💰 经济系统（积分 / 库存）
+- 新增 `modules/economy.py`：积分增减、转增、签到、商店、背包、物品使用
+- 数据落 `data/economy.json`（全局 RLock + 临时文件原子写，沿用 kook 设计）
+- 新增指令：`/~points /~sign /~gift /~shop /~buy /~bag /~use`（含中文别名 积分/签到/赠送/商店/购买/背包/使用）
+- 示例物品「好感券」：使用后给当前聊天中的自己 +10 好感度（联动 `modules/fav.py`）
+- 所有经济函数以 try/except 优雅降级，模块缺失不影响聊天主流程
+
+### 🗄️ SQLite + FTS5 全文检索数据层
+- 新增 `db/store.py`（`SearchStore`）：聊天记录 / 记忆结构化存储 + 全文检索
+- FTS5(trigram) 中文子串匹配；不可用时自动降级为 SQL LIKE
+- `dispatcher` 在 `record_message` 钩子后自动索引群消息，私聊消息单独索引
+- 新增 `/~回顾 <关键词>` 指令直接查询索引；`db/migrate.py` 一键回溯 `data/msglog/*.jsonl`
+- 完全 ADDITIVE：不破坏现有 JSON 存储，写入失败静默降级
+
+### 📦 skills/ 模块化提示词体系
+- `services/llm.py` 的 `_load_skill_sections()` 新增 `_merge_skills_dir()`，
+  自动把 `data/skills/*.md` 按 `## 章节` 叠加到 `main_skill.md`，未显式引用的章节兜底追加
+- 新增示例 `data/skills/20_economy.md`，让 bot 主动知晓积分系统
+
+## v1.5.2 — 数学计算沙箱 — 2026.8.9
+
+### 🧮 calc 工具：Python 代码精确求解
+
+**新增 `calc` Function Calling 工具**
+- 用户发数学题/方程/方程组时，LLM 自动生成 Python 代码调用 `calc` 工具
+- 代码在沙箱子进程中执行（5秒超时、2000字符输出限制）
+- 执行结果喂回 LLM，再生成自然聊天回复
+- 彻底解决 LLM 心算出错的问题（如：忽略方程矛盾、算错代数式）
+
+**安全沙箱**
+- 静态正则拦截：禁止 `import os/sys/subprocess/socket` 等危险模块
+- 禁止 `open()`/`exec()`/`eval()`/`__import__()` 等危险调用
+- 禁止 `__class__`/`__subclasses__`/`__mro__` 等沙箱逃逸向量
+- 最小化环境变量，子进程隔离
+- 可用模块：math, fractions, decimal, statistics, sympy（如已安装）
+
+**FC 管道集成**
+- `calc` 结果归类为 `data_results`，走 json_mode 生成最终回复
+- 执行失败（含"失败"关键字）归类为 `errors`，LLM 可解释错误
+- `_CMD_DESC` 和 `_build_messages` 格式提醒同步更新
+
 ## v1.5.1 — 搜索革命 + 人格解放 + 基建加固 — 2026.8.6
 
 ### 🔍 搜索全面重构

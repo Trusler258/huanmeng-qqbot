@@ -1,0 +1,185 @@
+"""
+Capability System：CapabilityRegistry（移植自 huanmeng-kook-bot core/capability/registry.py）
+
+统一登记 Skill / Command / Tool / Plugin 的能力元数据（metadata 级，不加载正文）。
+- discover()：从 core.tools、modules.commands、skills/ 目录收集能力。
+- 去重：同一能力（如 tool weather 与 command weather/天气）合并为单一 id。
+- register()：供 Plugin 动态注册新能力（插件 register_command / register_tool 的落点）。
+- 惰性导入，避免 capability ↔ 业务模块循环依赖。
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from core.logger import get_logger
+from core.capability.metadata import (
+    Capability,
+    CATEGORY_TOOL, CATEGORY_COMMAND, CATEGORY_SKILL, CATEGORY_PLUGIN,
+    RUNTIME_FC, RUNTIME_COMMAND, RUNTIME_SKILL,
+)
+
+logger = get_logger("capability.registry")
+
+# 核心常驻能力：普通聊天也保留，避免完全空上下文
+CORE_ALWAYS_ON: frozenset[str] = frozenset({
+    "help", "ping", "weather", "search_web", "search", "read_url", "calc",
+})
+
+
+class CapabilityRegistry:
+    """Capability 注册表：发现 + 登记 + 查询（metadata 级）。"""
+
+    def __init__(self) -> None:
+        self._caps: dict[str, Capability] = {}
+        self._handlers: dict[str, object] = {}
+        self._tool_schemas: dict[str, dict] = {}
+        self._loaded = False
+
+    # ── 发现 ──────────────────────────────────────────────
+    def discover(self) -> None:
+        """从各来源收集并合并能力元数据。"""
+        if self._loaded:
+            return
+        merged: dict[str, Capability] = {}
+        for cap in self._discover_tools() + self._discover_commands() + self._discover_skills():
+            old = merged.get(cap.id)
+            if old is None:
+                merged[cap.id] = cap
+                continue
+            # 合并：补全运行时/来源/别名，保留更完整的 description
+            if old.category == CATEGORY_COMMAND and cap.category == CATEGORY_TOOL:
+                # 命令优先（保留命令运行时），补充工具来源
+                old.source = cap.source
+                old.runtime = f"{RUNTIME_COMMAND}+{RUNTIME_FC}"
+                old.permissions = cap.permissions or old.permissions
+                if not old.description:
+                    old.description = cap.description
+            elif cap.category == CATEGORY_TOOL and cap.runtime == RUNTIME_FC:
+                old.runtime = f"{old.runtime}+{RUNTIME_FC}"
+                old.permissions = cap.permissions or old.permissions
+            # 别名并入
+            for a in cap.aliases:
+                if a not in old.aliases:
+                    old.aliases.append(a)
+        self._caps = merged
+        self._loaded = True
+        logger.info("CapabilityRegistry 发现 %d 个能力", len(self._caps))
+
+    def _discover_tools(self) -> list[Capability]:
+        try:
+            from core.tools import TOOLS
+        except Exception:
+            return []
+        out: list[Capability] = []
+        for t in TOOLS:
+            fn = (t or {}).get("function", {})
+            name = fn.get("name", "")
+            if not name:
+                continue
+            out.append(Capability(
+                id=name, name=name,
+                description=fn.get("description", ""),
+                category=CATEGORY_TOOL, runtime=RUNTIME_FC,
+                source=f"tool:{name}",
+                always_on=name in CORE_ALWAYS_ON,
+            ))
+        return out
+
+    def _discover_commands(self) -> list[Capability]:
+        try:
+            from modules.commands import COMMAND_MAP
+        except Exception:
+            return []
+        # 命令描述优先复用 llm 的 _CMD_DESC（惰性导入，避免顶层循环）
+        try:
+            from services.llm import _CMD_DESC
+        except Exception:
+            _CMD_DESC = {}
+        out: list[Capability] = []
+        for name in sorted(set(COMMAND_MAP)):
+            out.append(Capability(
+                id=name, name=name,
+                description=_CMD_DESC.get(name, ""),
+                category=CATEGORY_COMMAND, runtime=RUNTIME_COMMAND,
+                source=f"command:{name}",
+                always_on=name in CORE_ALWAYS_ON,
+            ))
+        return out
+
+    def _discover_skills(self) -> list[Capability]:
+        # qqbot 无独立 skill_registry；skills/ 由 services.llm 的 _merge_skills_dir 直接
+        # 叠加进 system 提示词，无需在这里登记。保留空实现供未来扩展。
+        return []
+
+    # ── 查询 ──────────────────────────────────────────────
+    def all(self) -> list[Capability]:
+        self.discover()
+        return list(self._caps.values())
+
+    def get(self, cap_id: str) -> Optional[Capability]:
+        self.discover()
+        return self._caps.get(cap_id)
+
+    def by_category(self, category: str) -> list[Capability]:
+        return [c for c in self.all() if c.category == category]
+
+    def always_on(self) -> list[Capability]:
+        return [c for c in self.all() if c.always_on]
+
+    # ── 登记（Plugin 用）──────────────────────────────────
+    def register(self, cap: Capability) -> None:
+        """注册（或覆盖）一个能力。供 Plugin 动态扩展。"""
+        self._caps[cap.id] = cap
+        self._loaded = True
+        logger.info("CapabilityRegistry 注册能力: %s (%s)", cap.id, cap.category)
+
+    def unregister(self, cap_id: str) -> None:
+        """移除一个动态注册的能力（Plugin 卸载时调用）。core 发现的能力不删。"""
+        if cap_id.startswith("plugin."):
+            self._caps.pop(cap_id, None)
+            self._handlers.pop(cap_id, None)
+            self._tool_schemas.pop(cap_id, None)
+
+    def bind_handler(self, cap_id: str, handler) -> None:
+        """为 command 能力绑定实际处理器（异步函数）。"""
+        self._handlers[cap_id] = handler
+
+    def get_handler(self, cap_id: str):
+        return self._handlers.get(cap_id)
+
+    # ── 插件工具 Schema（Plugin 用）────────────────────────
+    def bind_tool_schema(self, cap_id: str, schema: dict) -> None:
+        """为 tool 能力绑定完整 OpenAI Schema（插件 register_tool 用）。"""
+        if schema is not None:
+            self._tool_schemas[cap_id] = schema
+
+    def get_tool_schema(self, cap_id: str):
+        return self._tool_schemas.get(cap_id)
+
+    def find_plugin_tool(self, tool_name: str) -> Optional[Capability]:
+        """按工具名查找插件动态注册的 tool 能力（未找到返回 None）。
+
+        供工具执行路由 / 权限层按 LLM 调用名定位插件 handler。
+        只遍历动态注册的能力，不触发 discover()，避免拉起重量级导入。
+        """
+        for cap in self._caps.values():
+            if (cap.category == CATEGORY_TOOL
+                    and cap.source.startswith("plugin:")
+                    and cap.name == tool_name):
+                return cap
+        return None
+
+    def reload(self) -> None:
+        self._loaded = False
+        self._caps.clear()
+
+
+# ── 全局单例 ───────────────────────────────────────────────
+_registry: Optional[CapabilityRegistry] = None
+
+
+def get_capability_registry() -> CapabilityRegistry:
+    global _registry
+    if _registry is None:
+        _registry = CapabilityRegistry()
+    return _registry

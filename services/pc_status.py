@@ -402,8 +402,29 @@ def format_pc_status(owner: str = "Trusler") -> str:
         parts = [f"前台: {window}"]
         if app: parts.append(f"({app})")
         lines.append(" ".join(parts))
+        # 新字段：句柄数 + 内存 + FPS
+        handles = data.get("app_handles", 0)
+        mem_mb = data.get("app_mem_mb", 0)
+        fps = data.get("fps", 0)
+        if handles or mem_mb or fps:
+            detail_parts = []
+            if handles: detail_parts.append(f"句柄{handles}")
+            if mem_mb: detail_parts.append(f"内存{mem_mb}MB")
+            if fps: detail_parts.append(f"{fps}FPS")
+            lines.append(f"进程: {' '.join(detail_parts)}")
     else:
         lines.append("前台: (无)")
+
+    # 开机时长
+    boot = data.get("boot_time", 0)
+    uptime = data.get("uptime", 0)
+    if uptime:
+        d = uptime // 86400; h = (uptime % 86400) // 3600; m = (uptime % 3600) // 60
+        parts = []
+        if d: parts.append(f"{d}d")
+        if h: parts.append(f"{h}h")
+        parts.append(f"{m}m")
+        lines.append(f"开机: {''.join(parts)}")
 
     if music:
         song = music.get("song", "")

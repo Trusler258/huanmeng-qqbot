@@ -10,6 +10,11 @@ data/fav.json
 data/luck.json
 data/search_cache.json
 data/Image_description_cache.txt
+data/economy.json
+data/search.db
+data/msglog/
+data/stats_*.json
+data/stats_archive/
 data/Group_members_name.txt
 data/recall.json
 data/memory_*.md
@@ -19,6 +24,9 @@ data/Message_frequency_cache.txt
 # === 日志 ===
 logs/
 *.log
+
+# === 插件下载缓存 ===
+plugins/_down/
 
 # === 私有模块源码 ===
 modules/gh.py

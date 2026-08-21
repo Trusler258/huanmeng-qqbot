@@ -8,7 +8,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.1-ff69b4)](https://github.com)
+[![Version](https://img.shields.io/badge/version-v2.0.0-ff69b4)](https://github.com)
 [![Stars](https://img.shields.io/github/stars/Trusler258/huanmeng-qqbot?style=flat)](https://github.com)
 [![Language](https://img.shields.io/github/languages/top/Trusler258/huanmeng-qqbot)](https://github.com)
 [![Downloads](https://img.shields.io/github/downloads/Trusler258/huanmeng-qqbot/total)](https://github.com)
@@ -64,7 +64,71 @@
 /~memory           记忆查询
 /~owner            配置管理（主人）
 /~reload           热重载配置
+
+# 移植自 huanmeng-kook-bot 的新模块
+/~points           积分查询（经济系统）
+/~sign             每日签到（连续签到加成）
+/~gift <qq> <数>   赠送积分给好友
+/~shop             积分商店（好感券等）
+/~buy <物品>       用积分购买物品
+/~bag              查看背包
+/~use <物品>       使用背包物品（如好感券 +10 好感）
+/~回顾 <关键词>    聊天历史全文检索（SQLite FTS5）
+
+# 插件系统（移植自 huanmeng-kook-bot Phase 13/14）
+/~plugin            插件管理（主人）：list/install/unload/reload/pack/update
+/~apy <token> 同意|拒绝   响应插件人工审批
+/~dice [面数]      示例插件：掷骰子（奖励 1 积分，插件加载后才有）
 ```
+
+> 经济系统数据存 `data/economy.json`；聊天全文检索存 `data/search.db`。
+> 模块化提示词放 `data/skills/*.md`，会被 `data/main_skill.md` 自动叠加到 system 提示词。
+> 以上均为 **ADDITIVE 层**：模块缺失/失败不影响聊天主流程。
+
+## 🧩 插件系统（huanmeng-kook-bot Phase 13 完整移植）
+
+插件 = `plugins/<name>/manifest.json` + `main.py`（类名 `Plugin`，构造接收 `ctx`）。
+
+```
+plugins/
+├── dice/                  # 示例插件
+│   ├── manifest.json      # name/version/runtime/entrypoint/permissions/config
+│   └── main.py            # class Plugin(ctx) + on_load/on_enable/on_disable/on_unload
+└── _down/                 # .hmp 下载临时目录（自动跳过加载）
+```
+
+**插件可用能力（`ctx.*`，全部惰性解耦）**
+
+| 能力 | 说明 |
+|---|---|
+| `ctx.message.send/send_file` | 发文本/文件（群聊/私聊） |
+| `ctx.memory.remember/recall` | 记忆写入/检索（SQLite 检索层优先） |
+| `ctx.event.on/subscribe/publish` | 事件总线订阅/发布 |
+| `ctx.timer.every(秒)` | 周期定时器（卸载自动取消） |
+| `ctx.capability.register_command` | 注册指令，自动挂进 COMMAND_MAP（/~name 可调） |
+| `ctx.capability.register_tool` | 注册 FC 工具（`always_on=True` 常驻，LLM 普通聊天可用） |
+| `ctx.config(key)` | 读 manifest.config |
+| `ctx.economy` | 积分/库存（modules.economy，唯一锁+原子写） |
+| `ctx.vision.describe` | 图片识别 |
+| `ctx.identity.is_admin` | 权限判定 |
+| `ctx.llm.generate` | 文本生成（reply_model） |
+| `ctx.approval.request` | 人工审批（私聊管理员 + /~apy 回执） |
+| `ctx.sandbox.run_python/cpp/shell` | 沙箱真实执行（黑名单+超时+输出截断） |
+| `ctx.logger` | 插件命名空间日志 |
+
+**架构组件**（与 kook 对齐）：`core/eventbus.py` 事件总线、`core/capability/` 能力注册表（Capability→Command/Tool/Plugin 统一抽象）、`core/plugin/`（manifest/loader/manager/api）、`core/sandbox.py`、`modules/plugin_share.py`（.hmp 打包/解包/插件库客户端）。
+
+**插件库一键更新**：`/~plugin update` 从 `PLUGIN_LIB_BASE`（默认 `http://01240820.xyz:20030`）拉取插件列表与更新，`/~plugin install <名|url>` 安装，`/~plugin pack <名>` 打包 `.hmp` 分享。
+
+### 🔄 KOOK 生态插件自动兼容（加载时剥离 KOOK 格式）
+
+插件库里的 `.hmp` 插件是为 KOOK 机器人写的，qqbot 加载时自动兼容：
+
+- **KOOK 模块 stub**：加载前向 `sys.modules` 注入 `khl` / `kook` / `kaiheila` 假模块（含 `khl.api`、`Card`、`MessageTypes` 等），`import khl` 不再报错，KOOK 专属调用（发卡片、khl API）安全降级，插件照常加载运行。
+- **KMarkdown 剥离**：`core/plugin/kook_compat.py` 的 `strip_kook_text()` 自动去除 `(met)/(rol)/(chn)/(emj)/(file)` 等 KOOK 专属标记，插件返回的文本转成 QQ 可读纯文本。
+- **不落盘不改源**：纯内存注入，插件卸载不影响；真实能力走 `ctx.*`（message/economy/vision/sandbox 等）与 qqbot 原生一致。
+
+**从 kook 移植的运行时优化**（168 commits 通读筛选）：单工具超时表（`TOOL_TIMEOUTS`，防慢工具拖死整轮）、工具输出截断保头尾折叠中间（防 LLM 编造尾部结果）、LLM 回复 `calls` 多形态解析（tool/name + arguments/args）、FC 轮数放宽至 6 + 连续相同调用防死循环、`max_tokens<=0` 视为不设上限（防 400）、msglog 回溯上限 500→5000 提升召回。
 
 ---
 

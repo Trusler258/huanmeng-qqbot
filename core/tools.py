@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import asyncio
 import logging
 from typing import Any
@@ -70,7 +71,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "搜索互联网。用户问实时信息（新闻/事实/不懂的概念）时调用。日常聊天不需要调用。",
+            "description": "搜索互联网获取权威信息。必须调用的场景：① 用户问实时/会变化的事实（新闻/行情/股价/市值/汇率/最新事件）；② 用户提出一个需要核实的断言（如\"长鑫存储市值已超过Intel\"\"某公司上市3周干翻XX\"）——“X是不是真的/真的假的/属实吗”这类事实核实必须搜索后回答，禁止仅凭模型内在知识直接下结论；③ 模型不确定或不懂的概念。日常闲聊（问候/吐槽/无事实内容）不需要调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -186,6 +187,46 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "pgr",
+            "description": "查询 Phigros 玩家存档数据：RKS值、Best30曲目、各难度评级统计。需要 sessionToken（通过 /~pgr login 获取）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "token": {
+                        "type": "string",
+                        "description": "玩家的 sessionToken（登录后获取）",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["me", "top", "song", "new"],
+                        "description": "me=查存档, top=排行榜, song=搜曲, new=新曲",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calc",
+            "description": (
+                "执行Python代码进行数学计算。用户给出数学题、方程、方程组、计算题时必须调用此工具用代码精确求解，不要心算。"
+                "可用模块: math, fractions, decimal, statistics, sympy(如已安装)。"
+                "代码中用print()输出最终答案。对于方程组，检查是否有解/是否矛盾。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python代码，用print()输出最终答案"},
+                },
+                "required": ["code"],
+            },
+        },
+    },
 ]
 
 # ── 工具名 → 命令名 映射 ──────────────────────────────────
@@ -204,12 +245,74 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "agent_think": "",  # 自有实现
     "system_status": "",  # 自有实现
     "whois":       "whois",  # ★ 域名查询
+    "pgr":         "pgr",
+    "calc":        "",  # 自有实现（沙箱 Python 执行）
 }
 
 
 def get_tool_schemas() -> list[dict]:
-    """返回 DeepSeek/OpenAI 格式的工具定义列表"""
-    return TOOLS
+    """返回 DeepSeek/OpenAI 格式的工具定义列表（内置 + 插件动态注册的工具）。
+
+    插件经 ctx.capability.register_tool 注册后，其 OpenAI Schema 自动并入，
+    让 LLM 在普通聊天中也能发现并调用插件能力（always_on 常驻）。
+    """
+    schemas = list(TOOLS)
+    try:
+        from core.capability import get_capability_registry, CATEGORY_TOOL
+        registry = get_capability_registry()
+        builtin_names = {
+            (t or {}).get("function", {}).get("name", "") for t in TOOLS if t
+        }
+        for cap in registry.all():
+            if cap.category != CATEGORY_TOOL or not cap.source.startswith("plugin:"):
+                continue
+            if cap.name in builtin_names:
+                continue  # 与内置工具同名 → 内置优先
+            schema = registry.get_tool_schema(cap.id)
+            if schema and schema not in schemas:
+                schemas.append(schema)
+    except Exception:
+        pass
+    return schemas
+
+
+# ── 单工具超时（移植 kook 67dd501：工具级超时表，防止慢工具拖死整轮）──
+DEFAULT_TOOL_TIMEOUT: float = 60.0
+TOOL_TIMEOUTS: dict[str, float] = {
+    "search_web":  30.0,
+    "read_url":    30.0,
+    "write_code":  120.0,
+    "agent_think": 90.0,
+    "weather":     15.0,
+    "wdsj":        20.0,
+    "wdsj_query":  20.0,
+    "wzq":         10.0,
+    "earthquake":  15.0,
+    "draw_card":   10.0,
+    "chess":       10.0,
+    "whois":       15.0,
+    "pgr":         20.0,
+    "calc":        10.0,
+    "system_status": 10.0,
+}
+
+
+def get_tool_timeout(tool_name: str, default: float = DEFAULT_TOOL_TIMEOUT) -> float:
+    """解析工具超时：工具默认 > 全局默认。插件工具未配置则用全局默认。"""
+    return TOOL_TIMEOUTS.get(tool_name, default)
+
+
+def _find_plugin_tool_handler(tool_name: str):
+    """按工具名查找插件动态注册的工具 handler（未注册返回 None）。"""
+    try:
+        from core.capability.registry import get_capability_registry
+        registry = get_capability_registry()
+        cap = registry.find_plugin_tool(tool_name)
+        if cap is None:
+            return None
+        return registry.get_handler(cap.id)
+    except Exception:
+        return None
 
 async def _write_code(
     language: str, description: str,
@@ -477,6 +580,83 @@ async def _system_status() -> str:
         return "PC 状态模块未加载"
 
 
+# ── Python 沙箱计算 ──────────────────────────────────────
+
+def _fold_truncate(text: str, max_len: int) -> str:
+    """截断时保留头尾、折叠中间（移植 kook 6cda8e0：只保头会丢尾部结果）。"""
+    if len(text) <= max_len:
+        return text
+    head = max_len // 2
+    tail = max_len - head
+    return text[:head] + f"\n...[中间省略 {len(text) - max_len} 字符]...\n" + text[-tail:]
+
+
+_FORBIDDEN_RE = re.compile(
+    r'\b(?:import|from)\s+(?:os|sys|subprocess|shutil|socket|urllib|http'
+    r'|pathlib|ctypes|pickle|marshal|tempfile|glob|platform|inspect'
+    r'|importlib|threading|multiprocessing|asyncio|signal|resource'
+    r'|pty|builtins)\b'
+    r'|\b(?:__import__|exec|eval|compile|open|globals|locals|vars|input'
+    r'|getattr|setattr|delattr)\s*\('
+    r'|os\.system\s*\('
+    r'|subprocess\.'
+    r'|__class__|__subclasses__|__bases__|__mro__'
+    r'|__globals__|__builtins__|__code__|__func__',
+    re.MULTILINE,
+)
+
+
+async def _python_eval(code: str) -> str:
+    """沙箱执行 Python 代码，返回 stdout 输出。限时 5 秒，禁止文件/系统/网络操作。"""
+    import sys
+    import os
+
+    # 安全检查
+    if _FORBIDDEN_RE.search(code):
+        return "[执行失败] 代码包含禁止操作（文件/系统/网络访问被禁止）"
+
+    if len(code) > 5000:
+        return "[执行失败] 代码过长，最大 5000 字符"
+
+    # 最小化环境变量
+    safe_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+    }
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", code,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=safe_env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        # 保头尾折叠中间（移植 kook 6cda8e0：只保头会丢尾部结果致 LLM 编造）
+        out = _fold_truncate(stdout.decode(errors="replace").strip(), 2000)
+        err = stderr.decode(errors="replace")[:500].strip()
+
+        if proc.returncode != 0:
+            if err:
+                return f"[执行失败] {err}"
+            return "[执行失败] 程序异常退出"
+
+        if not out and err:
+            return f"[执行失败] {err}"
+
+        return out or "[无输出]"
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return "[执行失败] 执行超时（超过 5 秒）"
+    except Exception as e:
+        return f"[执行失败] {e}"
+
+
 async def _read_url(url: str) -> str | None:
     """抓取网页正文，提取纯文本内容（统一用 PageScraper + LLM 摘要）"""
     if not url.startswith("http"):
@@ -609,8 +789,19 @@ async def execute_tool(
         return await _agent_think(arguments.get("question", ""), group_id if is_group else user_id, is_group)
     if tool_name == "system_status":
         return await _system_status()
+    if tool_name == "calc":
+        return await _python_eval(arguments.get("code", ""))
 
     if not cmd_name:
+        # 插件动态注册的工具：LLM 对话自动发现并调用，回退到插件 handler
+        plugin_handler = _find_plugin_tool_handler(tool_name)
+        if plugin_handler:
+            try:
+                return await plugin_handler(
+                    arguments, user_id, group_id, sender_name, is_group, bot_qq)
+            except Exception as e:
+                logger.error("插件工具 %s 执行失败: %s", tool_name, e)
+                return f"插件工具 {tool_name} 执行出错: {e}"
         logger.warning("未知工具调用: %s args=%s", tool_name, arguments)
         return None
 

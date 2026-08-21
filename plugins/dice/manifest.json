@@ -1,0 +1,13 @@
+{
+  "name": "dice",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entrypoint": "main.py",
+  "description": "骰子插件：/~dice 掷骰子 + roll_dice 常驻工具，掷骰奖励 1 积分",
+  "author": "trusler",
+  "permissions": ["message.read", "message.send"],
+  "config": {
+    "max_sides": 100,
+    "point_reward": 1
+  }
+}
