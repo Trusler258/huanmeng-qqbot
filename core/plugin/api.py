@@ -30,6 +30,7 @@ import asyncio
 import re
 import time
 import secrets
+import types
 from typing import Any, Awaitable, Callable, Optional
 
 from core.logger import get_logger
@@ -238,7 +239,12 @@ class PluginCapability:
         self._registered.append(cap.id)
 
     def _bind_command(self, name: str, handler: Callable) -> None:
-        """把插件命令挂进 qqbot COMMAND_MAP（/~name 直接可调）。"""
+        """把插件命令挂进 qqbot COMMAND_MAP（/~name 直接可调）。
+
+        兼容两种 handler 签名：
+        - qqbot 风格: async (args: list, user_id, group_id, sender_name, is_group, bot_qq)
+        - KOOK 风格:  async (msg: dict)  msg 含 args/author/sender/chat_id/is_group
+        """
         try:
             from modules.commands import COMMAND_MAP
             async def _bridge(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -246,7 +252,16 @@ class PluginCapability:
                     return await handler(args, user_id, group_id, sender_name, is_group, bot_qq)
                 except TypeError:
                     try:
-                        return await handler(args)
+                        # KOOK 风格：handler 只收一个 msg 字典
+                        return await handler({
+                            "args": list(args or []),
+                            "author": user_id,
+                            "sender": sender_name,
+                            "chat_id": group_id if is_group else user_id,
+                            "is_group": bool(is_group),
+                            "bot_qq": bot_qq,
+                            "raw": " ".join(args or []),
+                        })
                     except TypeError:
                         return await handler()
             COMMAND_MAP[name] = _bridge
@@ -456,9 +471,23 @@ class PluginContext:
 
     @property
     def economy(self):
-        """经济系统（积分/库存）：惰性导入 modules.economy（与 qqbot 存储一致）。"""
-        from modules import economy as _m
-        return _m
+        """经济系统（积分/库存）：惰性导入 modules.economy。
+
+        自 v2.0.1 起内置经济已迁移为插件（points/shop），modules.economy 可能不存在，
+        此处返回空模块（所有函数 no-op），让旧插件（如 dice 积分奖励）不崩溃。
+        """
+        try:
+            from modules import economy as _m
+            return _m
+        except ImportError:
+            _empty = types.ModuleType("economy_stub")
+            def _noop(*a, **k): return None
+            for fn in ("get_points", "add_points", "set_points", "transfer_points",
+                       "get_inventory", "add_inventory", "consume_inventory",
+                       "get_last_sign", "mark_signed", "get_top_points"):
+                setattr(_empty, fn, _noop)
+            _empty.ITEMS = {}
+            return _empty
 
     def config(self, key: str, default: Any = None) -> Any:
         """读取本插件 manifest.config 里的静态配置。"""
