@@ -56,18 +56,7 @@ except ImportError:
 
 from core.token_tracker import cmd_cost, cmd_tokens
 
-# ★ 经济系统（积分/库存/签到/商店）
-try:
-    from modules.economy import (
-        get_points, add_points, set_points, transfer_points,
-        get_inventory, add_inventory, consume_inventory,
-        get_last_sign, mark_signed, get_top_points, ITEMS,
-    )
-except ImportError:
-    get_points = add_points = set_points = transfer_points = None
-    get_inventory = add_inventory = consume_inventory = None
-    get_last_sign = mark_signed = get_top_points = None
-    ITEMS = {}
+# ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
 
 logger = get_logger("commands")
 
@@ -265,24 +254,6 @@ _HELP_DETAIL = {
 
     "balance": "【余额查询 /~balance】\n"
                "  查询 DeepSeek API 余额\n",
-
-    "points": "【积分 /~points】\n"
-              "  查看自己的积分和全服排行榜\n"
-              "  每天用 /~sign 签到攒积分",
-    "sign": "【签到 /~sign】\n"
-            "  每天首次签到获得随机积分（5~15 点）\n"
-            "  积分可在 /~shop 购买权益",
-    "gift": "【赠送 /~gift】\n"
-            "  /~gift <对方QQ> <数量>  把自己的积分转给对方",
-    "shop": "【商店 /~shop】\n"
-            "  列出可购买的权益物品\n"
-            "  /~buy <物品> 购买，/~bag 看背包，/~use <物品> 使用",
-    "buy": "【购买 /~buy】\n"
-           "  /~buy <物品名>  花费积分购买（先用 /~shop 查看）",
-    "bag": "【背包 /~bag】\n"
-           "  查看自己拥有的权益库存",
-    "use": "【使用 /~use】\n"
-           "  /~use <物品名>  消耗背包里的权益（如好感券 +10 好感度）",
 
     "plugin": "【插件管理 /~plugin (主人)】\n"
               "  /~plugin             插件列表/状态\n"
@@ -3051,133 +3022,6 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     # 默认：纯文字
     return format_pc_status(owner="Trusler")
 
-# ─── 经济系统指令 ─────────────────────────────────────────
-
-async def cmd_points(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """积分查询 /~points — 查看自己的积分与全群/全服排行榜"""
-    if get_points is None:
-        return "经济系统未启用喵~"
-    cfg = get_config()
-    my_pts = get_points(user_id)
-    lines = [f"【{sender_name} 的积分】{my_pts} 点"]
-
-    # 自己的排名
-    top = get_top_points(limit=20)
-    for idx, (uid, pts) in enumerate(top, 1):
-        if str(uid) == str(user_id):
-            lines.append(f"你的排名: 第 {idx} 名")
-            break
-
-    # 排行榜（只显示积分>0 的前 10）
-    if top:
-        lines.append("")
-        lines.append("【积分排行榜】")
-        for idx, (uid, pts) in enumerate(top, 1):
-            name = cfg.qq_name_map.get(str(uid), str(uid))
-            lines.append(f"  {idx}. {name}: {pts} 点")
-    else:
-        lines.append("（还没有人攒下积分喵~ 用 /~sign 每日签到吧）")
-    return "\n".join(lines)
-
-
-async def cmd_sign(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """每日签到 /~sign — 每天首次签到获得随机积分"""
-    if mark_signed is None:
-        return "经济系统未启用喵~"
-    from datetime import date
-    today = date.today().isoformat()
-    if get_last_sign(user_id) == today:
-        return f"你今天已经签到过啦喵~ 明天再来（当前 {get_points(user_id)} 点）"
-    reward = mark_signed(user_id, today)
-    return f"[CQ:at,qq={user_id}] 签到成功！获得 {reward} 积分（当前 {get_points(user_id)} 点）٩(ˊᗜˋ*)و"
-
-
-async def cmd_gift(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """赠送积分 /~gift <QQ> <数量> — 把自己的积分转给别人"""
-    if transfer_points is None:
-        return "经济系统未启用喵~"
-    if len(args) < 2:
-        return "用法: /~gift <对方QQ> <数量>\n例如 /~gift 123456789 50"
-    try:
-        target = int(args[0])
-        amount = int(args[1])
-    except ValueError:
-        return "QQ 号和数量都要是数字喵~"
-    if target == user_id:
-        return "不能给自己转账喵~"
-    ok, msg = transfer_points(user_id, target, amount)
-    return f"[CQ:at,qq={user_id}] {msg}"
-
-
-async def cmd_shop(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """商店 /~shop — 列出可购买的权益物品"""
-    if not ITEMS:
-        return "商店暂时没有上架商品喵~"
-    lines = ["【积分商店】用 /~buy <物品> 购买"]
-    for key, item in ITEMS.items():
-        lines.append(f"  {key} — {item['name']}（{item['price']} 点）: {item['desc']}")
-    return "\n".join(lines)
-
-
-async def cmd_buy(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """购买 /~buy <物品> — 花费积分购买权益库存"""
-    if add_inventory is None or not ITEMS:
-        return "商店未启用喵~"
-    if not args:
-        return "用法: /~buy <物品名>\n先用 /~shop 查看商品"
-    item_key = args[0].lower()
-    item = ITEMS.get(item_key)
-    if not item:
-        return f"没有这个商品喵~ 用 /~shop 看看"
-    price = item["price"]
-    if get_points(user_id) < price:
-        return f"积分不足，{item['name']} 需要 {price} 点，你只有 {get_points(user_id)} 点喵~"
-    add_points(user_id, -price)
-    add_inventory(user_id, item_key, 1)
-    return f"购买成功！{item['name']} 已放入背包（剩余 {get_points(user_id)} 点）。用 /~use {item_key} 使用"
-
-
-async def cmd_bag(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """背包 /~bag — 查看自己的权益库存"""
-    if get_inventory is None:
-        return "经济系统未启用喵~"
-    inv = get_inventory(user_id)
-    if not inv:
-        return "你的背包是空的喵~ 去 /~shop 逛逛？"
-    lines = ["【背包】"]
-    for key, qty in inv.items():
-        name = ITEMS.get(key, {}).get("name", key)
-        lines.append(f"  {name} x{qty}")
-    return "\n".join(lines)
-
-
-async def cmd_use(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """使用 /~use <物品> — 消耗背包里的权益"""
-    if consume_inventory is None or not ITEMS:
-        return "经济系统未启用喵~"
-    if not args:
-        return "用法: /~use <物品名>\n先用 /~bag 查看背包"
-    item_key = args[0].lower()
-    item = ITEMS.get(item_key)
-    if not item:
-        return f"背包里没有 {item_key} 喵~"
-    if not consume_inventory(user_id, item_key):
-        return f"你没有 {item['name']} 喵~ 去 /~shop 买一个？"
-
-    effect = item.get("effect")
-    if effect == "fav":
-        try:
-            from modules.fav import update_fav
-            chat_id = group_id if is_group else user_id
-            new_fav = update_fav(chat_id, user_id, 10, is_group)
-            return f"使用 {item['name']}！好感度 +10（当前 {new_fav}）(๑•̀ㅂ•́)و✧"
-        except Exception as e:
-            # 好感度更新失败，退还库存
-            add_inventory(user_id, item_key, 1)
-            logger.warning("使用好感券失败，已退还: %s", e)
-            return "好感度更新失败，已退回背包喵~"
-    return f"使用了 {item['name']}！"
-
 
 async def cmd_dbsearch(args, user_id, group_id, sender_name, is_group, bot_qq):
     """检索聊天历史 /~回顾 <关键词> — 基于 SQLite 全文索引（ADDITIVE）"""
@@ -3450,21 +3294,6 @@ COMMAND_MAP: dict[str, callable] = {
     "tufpage":    cmd_tufpage,
     "sys":        cmd_sys,
     "pc":         cmd_sys,
-    # ── 经济系统 ──
-    "points":     cmd_points,
-    "积分":       cmd_points,
-    "sign":       cmd_sign,
-    "签到":       cmd_sign,
-    "gift":       cmd_gift,
-    "赠送":       cmd_gift,
-    "shop":       cmd_shop,
-    "商店":       cmd_shop,
-    "buy":        cmd_buy,
-    "购买":       cmd_buy,
-    "bag":        cmd_bag,
-    "背包":       cmd_bag,
-    "use":        cmd_use,
-    "使用":       cmd_use,
     # ── SQLite 全文检索（聊天回溯）──
     "dbsearch":   cmd_dbsearch,
     "回顾":       cmd_dbsearch,
