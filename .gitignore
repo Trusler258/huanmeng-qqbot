@@ -28,29 +28,8 @@ logs/
 # === 插件下载缓存 ===
 plugins/_down/
 
-# === 私有模块源码 ===
-modules/gh.py
-modules/wdsj.py
-modules/tuf_commands.py
-modules/weather.py
-modules/chinese_chess.py
-modules/box.py
-modules/leave.py
-modules/local_search.py
-modules/ping.py
-services/wdsj_api.py
-services/tuf_api.py
+# === 私有实现备份（未引用，勿删） ===
 modules_private/
-seed_collect.py
-
-# === 私有模块模板/数据 ===
-data/templates/box_card.html
-data/templates/cchess_board.html
-data/templates/tuf_level_card.html
-data/templates/tuf_search_results.html
-data/templates/wdsj_card.html
-data/templates/weather_card.html
-data/wdsj_help.md
 
 # === 临时脚本/测试/调试图 ===
 _check_all.py
@@ -86,4 +65,3 @@ Thumbs.db
 .bot_protect
 docs/fix_change.md
 test_fc_sim.py
-services/wdsj_*.py
