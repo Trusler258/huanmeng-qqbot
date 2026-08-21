@@ -1,5 +1,17 @@
 # 更新日志
 
+## v2.0.1 — 经济系统插件化 + KOOK 插件兼容 — 2026.8.21
+
+### 经济系统迁移为插件
+- 主仓库移除 `modules/economy.py` 及 `/~points /~sign /~gift /~shop /~buy /~bag /~use` 内置指令
+- 积分/签到/商店改由插件库 `points` / `shop` 插件提供（`/~plugin install points shop`）
+- 数据独立存 `plugins/points/data.json`，与内置版 economy.json 不互通
+- `ctx.economy` 优雅降级：模块不存在时返回 no-op 空对象，旧插件（dice 积分奖励）不崩溃
+
+### KOOK 生态插件兼容
+- `core/plugin/api.py` 的 `_bind_command` 支持 KOOK 风格 handler（收 msg 字典：args/author/sender/chat_id/is_group），配合 kook_compat 可加载插件库 KOOK 生态插件
+- 实测 points/shop 插件加载 + 签到通过
+
 ## v2.0.0 — Huanmeng 2.0 架构升级 — 2026.8.21
 
 从 v1.4.2 直接升到 2.0.0：本轮移植 huanmeng-kook-bot（同作者）的完整 2.0 架构与全部优化，版本号与 KOOK 端对齐（kook 已升级为 Huanmeng 2.0.0）。
