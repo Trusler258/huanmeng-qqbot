@@ -243,7 +243,7 @@ def luck_list() -> str:
 
 
 def luck_set(qq: str, value: str) -> str:
-    """设置今天的 luck 值: luck_set("3483585417", "85")"""
+    """设置今天的 luck 值: luck_set("123456789", "85")"""
     from datetime import date as _date
     today = _date.today().isoformat()
     data = _read_json(_DATA_DIR / "luck.json")
@@ -259,7 +259,7 @@ def luck_set(qq: str, value: str) -> str:
 
 
 def luck_del(qq: str) -> str:
-    """删除今天的 luck 值: luck_del("3483585417")"""
+    """删除今天的 luck 值: luck_del("123456789")"""
     from datetime import date as _date
     today = _date.today().isoformat()
     data = _read_json(_DATA_DIR / "luck.json")

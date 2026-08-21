@@ -852,7 +852,7 @@ async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~whois <域名> — 查询域名注册信息（注册商/注册时间/到期时间/NS/状态）"""
     if not args:
-        return "用法: /~whois <域名>  例如 /~whois 01240820.xyz"
+        return "用法: /~whois <域名>  例如 /~whois example.com"
     domain = " ".join(args)
     logger.info("指令 /~whois 触发 domain=%s user=%d", domain, user_id)
     loop = asyncio.get_running_loop()
@@ -2794,7 +2794,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
             if mode == "default":
                 return admin.group_set(gid, "at_only", "false")
             return f"设置: group={gid} mode={mode}\n支持: atonly, default"
-        return "格式: wl add|remove group|private <ID>\n      wl gset <群号> atonly|default\n例: wl add group 1058782600 atonly"
+        return "格式: wl add|remove group|private <ID>\n      wl gset <群号> atonly|default\n例: wl add group 123456789 atonly"
 
     # ── wdsj 推送群管理 ──
     if action == "wdsj":
@@ -2802,7 +2802,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
         from pathlib import Path
         _cfg_path = Path(__file__).resolve().parent.parent / "config" / "bot_config.toml"
         if len(args) < 2:
-            return "用法: /~owner wdsj groups <show|set|clear>\n  show  查看推送群\n  set 1058782600,247478659  设推送群\n  clear  清除(发全群)"
+            return "用法: /~owner wdsj groups <show|set|clear>\n  show  查看推送群\n  set 123456789,987654321  设推送群\n  clear  清除(发全群)"
         sub = args[1].lower()
         if sub == "show" or sub == "groups":
             data = toml.load(_cfg_path) if _cfg_path.exists() else {}

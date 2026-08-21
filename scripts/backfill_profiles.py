@@ -41,7 +41,7 @@ def main():
                 if not uid or not content or len(content) < 4:
                     continue
                 # 跳过 bot 自己
-                if uid in (3682248514,):
+                if uid in (987654321,):
                     continue
 
                 total_msgs += 1

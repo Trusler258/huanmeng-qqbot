@@ -56,7 +56,7 @@ def lookup_domain(domain: str) -> str:
     """
     domain = _extract_domain(domain)
     if not domain:
-        return "请输入有效域名，如 01240820.xyz"
+        return "请输入有效域名，如 example.com"
     if '.' not in domain:
         return f"'{domain}' 不是有效域名格式，请包含顶级域（如 .com、.xyz）"
 
