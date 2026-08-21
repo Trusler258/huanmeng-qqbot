@@ -264,6 +264,9 @@ class PluginCapability:
                         })
                     except TypeError:
                         return await handler()
+            # 标注来源：日志/调试用，handle_command 检测 __plugin__ 显示插件名
+            _bridge.__plugin__ = self._plugin
+            _bridge.__cmd_name__ = name
             COMMAND_MAP[name] = _bridge
         except Exception as e:
             logger.warning("插件 %s 命令 %s 挂接 COMMAND_MAP 失败: %s", self._plugin, name, e)
