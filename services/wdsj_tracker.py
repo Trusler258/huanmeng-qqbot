@@ -103,18 +103,21 @@ async def daily_stats_collect():
 
 
 # ------趋势数据------
-def get_player_trend(player, metric, days=14):
+def get_player_trend(player, metric, days=None):
+    """取趋势序列；days=None 表示从首次记录到最新一条"""
     history = _load_history()
     entry = history.get(player, {})
     for mid, tid, fn, lb in _TREND_METRICS:
         if mid == metric:
             series = entry.get(tid, [])
-            return [{"ts": s["ts"], "val": int(s["values"].get(fn, 0))} for s in series[-days:]]
+            if days is not None and days > 0:
+                series = series[-days:]
+            return [{"ts": s["ts"], "val": int(s["values"].get(fn, 0))} for s in series]
     return []
 
 
 # ------趋势图------
-def generate_trend_chart(player, metric, days=14):
+def generate_trend_chart(player, metric, days=None):
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -168,11 +171,16 @@ def generate_trend_chart(player, metric, days=14):
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
 
-    for d, v in zip(dates, vals):
+    # 数值标注：点太多时只标最近 MAX_LABELS 个，避免挤成一团
+    MAX_LABELS = 24
+    label_dates = dates[-MAX_LABELS:] if len(dates) > MAX_LABELS else dates
+    label_vals = vals[-MAX_LABELS:] if len(vals) > MAX_LABELS else vals
+    for d, v in zip(label_dates, label_vals):
         ax.annotate(str(v), (d, v), textcoords="offset points", xytext=(0, 10),
                     ha="center", fontsize=8, color=line_color)
 
-    ax.set_title(f"{player} - {label} 趋势 ({len(series)}天)", fontsize=13, fontweight="bold", color="#e0e0e0")
+    span = f"{dates[0]:%m/%d %H:%M} ~ {dates[-1]:%m/%d %H:%M}"
+    ax.set_title(f"{player} - {label} 趋势 ({len(dates)}点, {span})", fontsize=13, fontweight="bold", color="#e0e0e0")
     ax.tick_params(colors="#999")
     ax.grid(True, alpha=0.2, color="#555")
     fig.patch.set_facecolor("#1a1a2e")
