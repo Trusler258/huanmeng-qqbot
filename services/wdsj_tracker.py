@@ -104,15 +104,21 @@ async def daily_stats_collect():
 
 # ------趋势数据------
 def get_player_trend(player, metric, days=None):
-    """取趋势序列；days=None 表示从首次记录到最新一条"""
+    """取趋势序列；每天只保留最后一条记录（按日期去重取最新）
+    days=None 表示从首次记录到最新一条"""
     history = _load_history()
     entry = history.get(player, {})
     for mid, tid, fn, lb in _TREND_METRICS:
         if mid == metric:
-            series = entry.get(tid, [])
+            raw = entry.get(tid, [])
             if days is not None and days > 0:
-                series = series[-days:]
-            return [{"ts": s["ts"], "val": int(s["values"].get(fn, 0))} for s in series]
+                raw = raw[-days:]
+            # 按日期分组，每天只取最后一条
+            by_day = {}
+            for s in raw:
+                day = s["ts"][:10]  # YYYY-MM-DD
+                by_day[day] = {"ts": s["ts"], "val": int(s["values"].get(fn, 0))}
+            return [by_day[k] for k in sorted(by_day)]
     return []
 
 
@@ -129,15 +135,6 @@ def generate_trend_chart(player, metric, days=None):
     series = get_player_trend(player, metric, days)
     if not series:
         return None
-
-    # 去重（按时间戳）
-    seen = {}
-    for s in series:
-        seen[s["ts"]] = s["val"]
-    unique = [{"ts": t, "val": v} for t, v in sorted(seen.items())]
-    if not unique:
-        return None
-    series = unique
 
     label = metric
     for mid, tid, fn, lb in _TREND_METRICS:
@@ -168,19 +165,16 @@ def generate_trend_chart(player, metric, days=None):
     vmin, vmax = min(vals), max(vals)
     margin = max((vmax - vmin) * 0.15, 1)
     ax.set_ylim(vmin - margin, vmax + margin)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates) // 10)))
 
-    # 数值标注：点太多时只标最近 MAX_LABELS 个，避免挤成一团
-    MAX_LABELS = 24
-    label_dates = dates[-MAX_LABELS:] if len(dates) > MAX_LABELS else dates
-    label_vals = vals[-MAX_LABELS:] if len(vals) > MAX_LABELS else vals
-    for d, v in zip(label_dates, label_vals):
+    # 每天一个点，全部标注
+    for d, v in zip(dates, vals):
         ax.annotate(str(v), (d, v), textcoords="offset points", xytext=(0, 10),
                     ha="center", fontsize=8, color=line_color)
 
-    span = f"{dates[0]:%m/%d %H:%M} ~ {dates[-1]:%m/%d %H:%M}"
-    ax.set_title(f"{player} - {label} 趋势 ({len(dates)}点, {span})", fontsize=13, fontweight="bold", color="#e0e0e0")
+    span = f"{dates[0]:%m/%d} ~ {dates[-1]:%m/%d}"
+    ax.set_title(f"{player} - {label} 趋势 ({len(dates)}天, {span})", fontsize=13, fontweight="bold", color="#e0e0e0")
     ax.tick_params(colors="#999")
     ax.grid(True, alpha=0.2, color="#555")
     fig.patch.set_facecolor("#1a1a2e")
