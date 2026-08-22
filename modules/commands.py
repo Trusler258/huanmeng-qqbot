@@ -2228,8 +2228,11 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             if not bindings:
                 return "还没有人绑定喵~"
             lines = ["绑定玩家列表:"]
+            seen = set()
             for qq, name in sorted(bindings.items(), key=lambda x: x[1].lower()):
-                lines.append(f"  {name}")
+                if name not in seen:
+                    seen.add(name)
+                    lines.append(f"  {name}")
             return "\n".join(lines)
         return await _handle_wdsj_bind(args[1:], user_id)
 
@@ -3023,6 +3026,14 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     return format_pc_status(owner="Trusler")
 
 
+async def cmd_phone(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~phone [status] — 手机实时状态（由配套 App 经 TCP 长连接上报）"""
+    from services.phone_status import format_phone_status
+    sub = (args[0].lower() if args else "")
+    # 预留子命令扩展（如 card 卡片），当前仅返回文本
+    return format_phone_status()
+
+
 async def cmd_dbsearch(args, user_id, group_id, sender_name, is_group, bot_qq):
     """检索聊天历史 /~回顾 <关键词> — 基于 SQLite 全文索引（ADDITIVE）"""
     try:
@@ -3294,6 +3305,7 @@ COMMAND_MAP: dict[str, callable] = {
     "tufpage":    cmd_tufpage,
     "sys":        cmd_sys,
     "pc":         cmd_sys,
+    "phone":      cmd_phone,
     # ── SQLite 全文检索（聊天回溯）──
     "dbsearch":   cmd_dbsearch,
     "回顾":       cmd_dbsearch,
