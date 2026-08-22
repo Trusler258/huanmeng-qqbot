@@ -191,6 +191,65 @@ def generate_trend_chart(player, metric, days=None):
     return out_path
 
 
+# ------群内总排名------
+async def build_group_rank(group_id, mode_key="bw_kills"):
+    """取所有绑定玩家的最新指标值，排序生成排名卡片图片"""
+    from modules.commands import _load_wdsj_bindings
+    bindings = _load_wdsj_bindings()
+
+    # 指标中文名
+    label = mode_key
+    for mid, tid, fn, lb in _TREND_METRICS:
+        if mid == mode_key:
+            label = lb
+            break
+
+    # 取每个玩家最新一条记录的值
+    rows = []
+    for qq, name in bindings.items():
+        series = get_player_trend(name, mode_key)
+        if series:
+            rows.append((name, series[-1]["val"]))
+    rows.sort(key=lambda x: -x[1])
+
+    if not rows:
+        return "暂无排名数据喵~ 需要先采集几天数据", None
+
+    # 生成 HTML 卡片
+    medal = ["🥇", "🥈", "🥉"]
+    body_rows = []
+    for i, (name, val) in enumerate(rows):
+        rank_icon = medal[i] if i < 3 else f"#{i+1}"
+        body_rows.append(
+            f'<tr><td class="rank">{rank_icon}</td>'
+            f'<td class="name">{name}</td>'
+            f'<td class="val">{val}</td></tr>'
+        )
+
+    html = f"""<div class="rank-card">
+      <div class="rank-header">
+        <h2>群内排名 - {label}</h2>
+        <div class="sub">{len(rows)} 名玩家</div>
+      </div>
+      <table>
+        <thead><tr><th>#</th><th>玩家</th><th>{label}</th></tr></thead>
+        <tbody>
+          {''.join(body_rows)}
+        </tbody>
+      </table>
+    </div>"""
+
+    tmpl_path = Path(__file__).resolve().parent.parent / "data" / "templates" / "wdsj_card.html"
+    tmpl = tmpl_path.read_text(encoding="utf-8")
+    full_html = tmpl.replace("${CARD_CONTENT}", html)
+
+    from modules.changelog import render_card_to_image
+    import uuid
+    filename = f"wdsj_rank_{mode_key}_{uuid.uuid4().hex[:8]}.jpg"
+    img_path = await render_card_to_image(full_html, filename, width=680)
+    return None, img_path
+
+
 # ------每日排名数据------
 def build_daily_rankings(label_date=None, cross_day=False):
     """
