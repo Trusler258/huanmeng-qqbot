@@ -26,6 +26,7 @@ def _clean_reply(text: str) -> str:
 
 from core.logger import get_logger
 from core.config import get_config
+from core.plugin import get_pipeline_hooks
 from utils.format_lang import format_lang
 from modules.judge import should_respond
 from modules.memory import (
@@ -137,12 +138,38 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
 # ------消息处理主入口------
 async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
-                          raw_event=None, raw_message="", quoted_msg="", error_report=None):
+                          raw_event=None, raw_message="", quoted_msg="", error_report=None,
+                          **extra_kwargs):
+    """消息处理主管道。
+    **extra_kwargs 用于前向兼容：避免未来 dispatcher/enqueue 新增参数时
+    process_message 签名不匹配直接抛出 TypeError 导致全量消息静默（P0 事故）。
+    """
+    if extra_kwargs:
+        logger.debug("process_message 收到未识别扩展参数: %s", list(extra_kwargs.keys()))
     from core.context_manager import get_context_mgr
     cfg = get_config()
     ctx = get_context_mgr()
 
     sender_name = _clean_name(sender_name)
+
+    # ------插件管道预钩子（on_message）------
+    _pre_hooks = get_pipeline_hooks().all_pre_hooks()
+    if _pre_hooks:
+        _msg_dict = {
+            "msg_type": msg_type, "msg_content": msg_content,
+            "chat_id": chat_id, "sender_name": sender_name,
+            "user_id": user_id, "is_group": is_group,
+            "bot_qq": bot_qq, "raw_message": raw_message,
+            "quoted_msg": quoted_msg,
+        }
+        for hook in _pre_hooks:
+            try:
+                result = await hook(_msg_dict)
+                if result is not None and isinstance(result, str):
+                    await send_by_chat_type(result, chat_id, is_group, user_id if not is_group else None)
+                    return
+            except Exception:
+                pass
 
     # 首次对话自动注册好感度
     from modules.fav import ensure_fav
@@ -703,6 +730,37 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             logger.info("LLM主动切换模式: chat=%d → %s", chat_id, mode_switch)
         except Exception:
             pass
+
+    # ------插件管道后钩子（on_reply）------
+    _post_hooks = get_pipeline_hooks().all_post_hooks()
+    if _post_hooks and sentences:
+        _msg_dict = {
+            "msg_type": msg_type, "msg_content": msg_content,
+            "chat_id": chat_id, "sender_name": sender_name,
+            "user_id": user_id, "is_group": is_group,
+            "bot_qq": bot_qq, "raw_message": raw_message,
+            "quoted_msg": quoted_msg,
+        }
+        _filtered = []
+        for s in sentences:
+            for hook in _post_hooks:
+                try:
+                    modified = await hook(s, _msg_dict)
+                    if modified is None:
+                        continue
+                    if modified == "":
+                        s = None
+                        break
+                    s = modified
+                except Exception:
+                    pass
+            if s is not None:
+                _filtered.append(s)
+        sentences = _filtered
+
+    if not sentences:
+        logger.info("插件后钩子拦截了全部回复 [chat=%d]", chat_id)
+        return
 
     # ------发送------
     old_task = ctx.cancel_old_task(chat_id)

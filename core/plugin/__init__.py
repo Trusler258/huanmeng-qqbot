@@ -14,7 +14,9 @@ Core 不因新增一个 Plugin 而修改。
 from core.plugin.manifest import (
     PluginManifest, validate_manifest, RUNTIME_PYTHON, RUNTIME_LUA,
 )
-from core.plugin.api import PluginContext
+from core.plugin.api import (
+    PluginContext, PluginPipeline, PluginBackground, get_pipeline_hooks,
+)
 from core.plugin.manager import (
     PluginManager, PluginRecord, get_plugin_manager,
     STATE_DISCOVERED, STATE_LOADED, STATE_ENABLED, STATE_DISABLED, STATE_ERROR,
@@ -22,7 +24,7 @@ from core.plugin.manager import (
 
 __all__ = [
     "PluginManifest", "validate_manifest", "RUNTIME_PYTHON", "RUNTIME_LUA",
-    "PluginContext",
+    "PluginContext", "PluginPipeline", "PluginBackground", "get_pipeline_hooks",
     "PluginManager", "PluginRecord", "get_plugin_manager",
     "STATE_DISCOVERED", "STATE_LOADED", "STATE_ENABLED", "STATE_DISABLED", "STATE_ERROR",
 ]
