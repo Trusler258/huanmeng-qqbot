@@ -1,5 +1,34 @@
 # 更新日志
 
+## v2.0.3 — 插件管道钩子 + 沙箱 OS 级隔离 + 优雅关闭 — 2026.8.23
+
+### 插件能力扩展（移植 KOOK 优化）
+- `core/plugin/api.py` 新增 `PluginPipeline`（on_message 预钩子 / on_reply 后钩子）、`PluginBackground`（后台任务注册，卸载自动取消）、`_HookRegistry` + `get_pipeline_hooks`
+- `core/plugin/loader.py` 新增 `drop_module()`：热重载时清 `sys.modules` 缓存，插件更新后 reload 生效
+- `core/plugin/manager.py` unload 时调用 `drop_module()`
+- `core/pipeline.py` 消息处理接入 pre/post hooks；签名加 `**extra_kwargs` 前向兼容，避免未来参数变更导致 TypeError 静默
+
+### 沙箱安全升级
+- `core/sandbox.py` 从正则黑名单改为 OS 级隔离：`resource.setrlimit` 限内存(256MB)/限 CPU，独立临时目录 + 超时强杀 + 产物收集
+- 新增 `run_python_str` / `run_shell_str` / `compile_and_run_cpp_str` 兼容旧接口
+
+### 其他
+- `main.py` 完全重写优雅关闭：15s 超时 + CancelledError 捕获 + 残留任务清理，v1.4.2 → v2.0.0
+- `bot.py` initialize 加 `init_db()` + 存量记忆回填；shutdown 加 Plugin Runtime / DB 关闭
+- `modules/search.py` 新增承接句检测 `_is_continuation`，搜索自动合并上下文补主题
+- `.gitignore` 增加 `*.key` / `*.pem` / `tmp/` / `temp/` / `backup/` / `.update_cache/` / `plugins/` / `*.db` / `*.sqlite`
+- 备份：`qqbot-backup/2026-08-23/`
+
+## v2.0.2 — 手机状态 TCP 接收 + /~phone 指令 — 2026.8.22
+
+### 新增手机状态长连接
+- 新增 `services/phone_status.py`：独立 TCP 接收端（端口 58892），复用 `BOT_PC_KEY` 鉴权，与 PC 状态服务（58890）同一套 JSON 行协议，存 `_PHONE_DATA` 快照（60s 超时）
+- `bot.py` 新增 `_bg_phone_status_server`，随启动拉起；后台任务清单补充「手机状态:58892」
+- `modules/commands.py` 新增 `cmd_phone` + `COMMAND_MAP["phone"]`，`/~phone` 返回手机实时状态文本（电量/CPU/内存/存储/网络/屏幕/开机时长）
+- 配套 Android App（本地 `AndroidStudioProjects`）作为 TCP 上报端，经 TCP 长连接持续上报本机状态
+- 设计决策：复用现有 TCP 长连接协议而非新建 WebSocket（等价「长连接」，零新依赖、对 PC 链路零侵入）
+- 备份：`qqbot-backup/2026-08-22/`
+
 ## v2.0.1 — 经济系统插件化 + KOOK 插件兼容 — 2026.8.21
 
 ### 经济系统迁移为插件

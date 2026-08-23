@@ -1,13 +1,16 @@
 """
-沙箱真实执行（移植自 huanmeng-kook-bot core/sandbox.py 的思路，适配 qqbot）
+core/sandbox.py — 沙箱代码执行（Huanmeng 2.0）
 
-供插件 ctx.sandbox 使用：py / cpp / shell 真实执行 + 产物收集 + 清理。
-安全策略沿用 qqbot core/tools.py 的 _python_eval 黑名单思路：
-- 静态正则拦截危险 import/调用（os/sys/subprocess/网络/文件等）
-- 最小化环境变量
-- 严格超时 + 输出截断（保头尾折叠中间，避免截断丢尾部结果）
+在服务器独立临时目录中真实执行用户/LLM 生成的代码，返回真实运行输出与产物文件。
+用于根治「声称已执行但实际只发文件」的幻觉：执行结果一律来自真实的子进程输出。
 
-所有函数失败返回结构化错误文本，不抛异常。
+安全边界（不依赖 Prompt 约束，全部做成硬限制）：
+- 独立临时目录：tempfile.mkdtemp(prefix="bot_sandbox_")，执行后清理
+- 超时强杀：asyncio.wait_for + proc.kill()
+- 限内存 / 限 CPU：Linux 用 resource.setrlimit 在 preexec_fn 中限制（Windows 降级跳过）
+- 输出截断：stdout/stderr 各截断到 MAX_OUTPUT，避免刷屏
+- 产物收集：执行后扫描目录，把生成的附件打包返回，脚本自身不返回
+- 默认不开放网络（无代理、无特权）；shell 命令仅管理员/审批后可用（由上层裁决）
 """
 from __future__ import annotations
 
@@ -15,7 +18,6 @@ import asyncio
 import os
 import re
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
@@ -23,153 +25,253 @@ from core.logger import get_logger
 
 logger = get_logger("sandbox")
 
-_FORBIDDEN_RE = re.compile(
-    r'\b(?:import|from)\s+(?:os|sys|subprocess|shutil|socket|urllib|http'
-    r'|pathlib|ctypes|pickle|marshal|tempfile|glob|platform|inspect'
-    r'|importlib|threading|multiprocessing|asyncio|signal|resource'
-    r'|pty|builtins)\b'
-    r'|\b(?:__import__|exec|eval|compile|open|globals|locals|vars|input'
-    r'|getattr|setattr|delattr)\s*\('
-    r'|os\.system\s*\('
-    r'|subprocess\.'
-    r'|__class__|__subclasses__|__bases__|__mro__'
-    r'|__globals__|__builtins__|__code__|__func__',
-    re.MULTILINE,
-)
-
-_SAFE_ENV = {
-    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-    "HOME": os.environ.get("HOME", "/tmp"),
-    "LANG": "en_US.UTF-8",
-    "LC_ALL": "en_US.UTF-8",
-}
+# 单次运行最大秒数
+DEFAULT_TIMEOUT: float = 10.0
+# 内存上限（MB），Linux 生效
+DEFAULT_MEM_MB: int = 256
+# 单路输出最大字符数（截断提示放在末尾）
+MAX_OUTPUT: int = 1500
+# 最大产物数 / 单个产物最大字节（避免把磁盘整个打包）
+MAX_ARTIFACTS: int = 10
+MAX_ARTIFACT_BYTES: int = 5 * 1024 * 1024
 
 
-def _truncate(text: str, max_output: int) -> str:
-    """保留头尾、折叠中间（避免只保头丢尾导致 LLM 编造末尾结果）。"""
-    if len(text) <= max_output:
+def _limit_preexec(mem_mb: int, cpu_sec: int) -> callable | None:
+    """构造限制子进程资源的 preexec_fn（仅 Linux；Windows 返回 None）。"""
+    if os.name != "posix":
+        return None
+    import resource
+
+    def _apply() -> None:
+        try:
+            # 地址空间上限（内存）
+            resource.setrlimit(resource.RLIMIT_AS,
+                               (mem_mb * 1024 * 1024, mem_mb * 1024 * 1024))
+        except Exception:
+            pass
+        try:
+            # CPU 时间上限（秒）
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_sec, cpu_sec + 5))
+        except Exception:
+            pass
+
+    return _apply
+
+
+async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
+                    stdin_data: str = "", max_output: int = MAX_OUTPUT) -> dict:
+    """通用子进程执行：限时、限资源、截断输出。返回 dict。
+
+    max_output: 单路输出截断长度（默认 MAX_OUTPUT=1500）。调用方（如沙箱插件）
+    可传更大值让 LLM 看到更完整输出（"输出全丢给 LLM"），仅调整截断上限，
+    不改变"保留头尾、中间折叠"的截断策略。
+    """
+    kwargs: dict = {
+        "cwd": str(cwd),
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+    }
+    if stdin_data:
+        kwargs["stdin"] = asyncio.subprocess.PIPE
+    preexec = _limit_preexec(mem_mb, int(timeout) + 5)
+    if preexec is not None:
+        kwargs["preexec_fn"] = preexec
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(stdin_data.encode("utf-8") if stdin_data else None),
+                timeout=timeout,
+            )
+            timed_out = False
+        except asyncio.TimeoutError:
+            timed_out = True
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+            stdout, stderr = b"", "[timeout] 运行超时，已强制终止".encode("utf-8")
+    except FileNotFoundError as e:
+        return {"returncode": -1, "stdout": "",
+                "stderr": f"运行环境缺失: {e}", "timed_out": False}
+    except Exception as e:
+        return {"returncode": -1, "stdout": "",
+                "stderr": f"执行异常: {e}", "timed_out": False}
+
+    def _cut(b: bytes, max_output: int = MAX_OUTPUT) -> str:
+        text = b.decode("utf-8", errors="replace")
+        if len(text) > max_output:
+            # 保留头尾：末尾常是最终结果（如 uptime / 退出信息 / 报错栈），不能整段丢
+            total = len(text)
+            head = max_output * 2 // 3
+            tail = max_output - head - 1
+            text = (text[:head] + f"\n…(输出过长，已截断 {total} 字符，末尾保留)…\n"
+                    + text[-tail:])
         return text
-    head = max_output // 2
-    tail = max_output - head
-    return text[:head] + f"\n...[中间省略 {len(text) - max_output} 字符]...\n" + text[-tail:]
+
+    return {
+        "returncode": getattr(proc, "returncode", -1) if not timed_out else -1,
+        "stdout": _cut(stdout or b"", max_output),
+        "stderr": _cut(stderr or b"", max_output),
+        "timed_out": timed_out,
+    }
 
 
-async def run_python(code: str, timeout: float = 15.0, max_output: int = 1500) -> str:
-    """执行 Python 代码，返回 stdout（失败返回错误文本）。"""
-    code = (code or "").strip()
-    if not code:
-        return "[错误] 代码为空"
-    if _FORBIDDEN_RE.search(code):
-        return "[错误] 代码包含禁止操作（文件/系统/网络访问被禁止）"
-    if len(code) > 8000:
-        return "[错误] 代码过长，最大 8000 字符"
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", code,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_SAFE_ENV,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        out = stdout.decode(errors="replace").strip()
-        err = stderr.decode(errors="replace").strip()
-        if proc.returncode != 0:
-            return f"[执行失败] {_truncate(err or '程序异常退出', max_output)}"
-        if not out and err:
-            return f"[执行失败] {_truncate(err, max_output)}"
-        return _truncate(out or "[无输出]", max_output)
-    except asyncio.TimeoutError:
-        proc.kill()
-        return f"[超时] 执行超过 {timeout:.0f} 秒"
-    except Exception as e:
-        return f"[错误] {e}"
+def _pick_python() -> str:
+    """选择可用的 Python 解释器：优先 python3（Linux 服务器），
+    Windows 商店别名 stub（WindowsApps）不可运行，跳过回退 python。"""
+    for name in ("python3", "python"):
+        path = shutil.which(name)
+        if not path:
+            continue
+        if os.name == "nt" and "WindowsApps" in path:
+            continue
+        return path
+    return "python3"
 
 
-async def run_shell(command: str, timeout: float = 15.0, max_output: int = 1500) -> str:
-    """执行 shell 命令，返回 stdout（失败返回错误文本）。"""
-    command = (command or "").strip()
-    if not command:
-        return "[错误] 命令为空"
-    # shell 是高风险通道，禁止明显危险的命令
-    if re.search(r'\b(?:rm\s+-rf|mkfs|dd\s+of=|shutdown|reboot|:\(\)\s*\{|curl|wget)\b', command):
-        return "[错误] 命令包含危险操作，已拦截"
-    if len(command) > 2000:
-        return "[错误] 命令过长"
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_SAFE_ENV,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        out = stdout.decode(errors="replace").strip()
-        err = stderr.decode(errors="replace").strip()
-        if proc.returncode != 0:
-            return f"[执行失败] {_truncate(err or '退出码 %d' % proc.returncode, max_output)}"
-        if not out and err:
-            return f"[执行失败] {_truncate(err, max_output)}"
-        return _truncate(out or "[无输出]", max_output)
-    except asyncio.TimeoutError:
-        proc.kill()
-        return f"[超时] 执行超过 {timeout:.0f} 秒"
-    except Exception as e:
-        return f"[错误] {e}"
+async def run_python(code: str, timeout: float = DEFAULT_TIMEOUT,
+                     mem_mb: int = DEFAULT_MEM_MB,
+                     stdin_data: str = "", cwd: Path | None = None,
+                     max_output: int = MAX_OUTPUT) -> dict:
+    """在沙箱目录执行 Python 代码，返回运行结果。"""
+    tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    script = tmp / "main.py"
+    script.write_text(code or "", encoding="utf-8")
+    cmd = [_pick_python(), str(script)]
+    result = await _run_proc(cmd, tmp, timeout, mem_mb, stdin_data, max_output)
+    result["tmp_dir"] = str(tmp)
+    return result
 
 
-async def compile_and_run_cpp(files: dict, timeout: float = 30.0,
-                              max_output: int = 1500, stdin_data: str = "") -> str:
-    """编译并运行 C++（files: {文件名: 源码}）。返回运行输出或错误。"""
-    if not files or not all(isinstance(files.get(k), str) and files[k].strip() for k in files):
-        return "[错误] C++ 源文件为空"
+async def compile_and_run_cpp(files: dict[str, str], timeout: float = DEFAULT_TIMEOUT,
+                              mem_mb: int = DEFAULT_MEM_MB,
+                              stdin_data: str = "", cwd: Path | None = None,
+                              max_output: int = MAX_OUTPUT) -> dict:
+    """在沙箱目录编译并运行 C++（g++）。files: {文件名: 内容}。"""
+    tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    for fname, content in files.items():
+        (tmp / fname).write_text(content or "", encoding="utf-8")
     if shutil.which("g++") is None:
-        return "[编译失败] 服务器未安装 g++"
-    tmp = Path(tempfile.mkdtemp(prefix="bot_cpp_"))
+        return {"returncode": -1, "stdout": "",
+                "stderr": "服务器未安装 g++，无法编译 C++", "timed_out": False,
+                "tmp_dir": str(tmp)}
+    exe = tmp / "a.out"
+    srcs = [str(tmp / f) for f in files]
+    comp = await _run_proc(
+        ["g++", "-std=c++14", "-O2", "-o", str(exe)] + srcs,
+        tmp, timeout, mem_mb, max_output=max_output)
+    if comp["returncode"] != 0:
+        comp["tmp_dir"] = str(tmp)
+        comp["stdout"] = "[编译失败]\n" + (comp["stderr"] or "")
+        return comp
+    run = await _run_proc([str(exe)], tmp, timeout, mem_mb, stdin_data, max_output)
+    run["tmp_dir"] = str(tmp)
+    return run
+
+
+async def run_shell(command: str, timeout: float = DEFAULT_TIMEOUT,
+                    mem_mb: int = DEFAULT_MEM_MB,
+                    cwd: Path | None = None,
+                    max_output: int = MAX_OUTPUT) -> dict:
+    """执行 shell 命令（终端模拟，如 `cd / && ls -l`）。仅管理员/审批后调用。"""
+    tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    if os.name == "posix":
+        cmd = ["bash", "-c", command]
+    else:
+        cmd = ["cmd", "/c", command]
+    result = await _run_proc(cmd, tmp, timeout, mem_mb, max_output=max_output)
+    result["tmp_dir"] = str(tmp)
+    return result
+
+
+# ── 产物收集 ──────────────────────────────────────────────
+
+_SKIP_NAMES = {"main.py", "a.out"}
+_SKIP_EXTS = {".pyc", ".o", ".obj"}
+
+
+def collect_artifacts(tmp_dir: str | Path) -> list[Path]:
+    """扫描沙箱目录中用户代码生成的文件（排除脚本自身/编译产物/缓存），按大小降序。"""
+    root = Path(tmp_dir)
+    out: list[Path] = []
+    if not root.is_dir():
+        return out
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if p.name in _SKIP_NAMES or p.suffix in _SKIP_EXTS:
+            continue
+        if "__pycache__" in rel.parts or rel.name.startswith("."):
+            continue
+        try:
+            if p.stat().st_size == 0:
+                continue
+            if p.stat().st_size > MAX_ARTIFACT_BYTES:
+                continue
+        except OSError:
+            continue
+        out.append(p)
+    out.sort(key=lambda p: p.stat().st_size, reverse=True)
+    return out[:MAX_ARTIFACTS]
+
+
+def cleanup(tmp_dir: str | Path) -> None:
+    """删除沙箱临时目录（执行后调用）。"""
     try:
-        for fname, code in files.items():
-            safe_name = re.sub(r'[^\w.\-]', '_', Path(fname).name)
-            (tmp / safe_name).write_text(code, encoding="utf-8")
-        sources = [str(p) for p in tmp.glob("*.cpp")]
-        exe = tmp / "a.out"
-        proc = await asyncio.create_subprocess_exec(
-            "g++", "-std=c++14", "-O2", "-o", str(exe), *sources,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=min(timeout, 20))
-        if proc.returncode != 0:
-            return f"[编译失败]\n{_truncate(stderr.decode(errors='replace').strip() or '编译错误', max_output)}"
-        run_proc = await asyncio.create_subprocess_exec(
-            str(exe), stdin=asyncio.subprocess.PIPE if stdin_data else None,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            run_proc.communicate(stdin_data.encode() if stdin_data else None),
-            timeout=min(timeout, 15),
-        )
-        out = stdout.decode(errors="replace").strip()
-        err = stderr.decode(errors="replace").strip()
-        if err:
-            return f"[运行输出]\n{_truncate(out, max_output)}\n\n[stderr]\n{_truncate(err, max_output)}"
-        return f"[运行输出]\n{_truncate(out or '[无输出]', max_output)}"
-    except asyncio.TimeoutError:
-        return f"[超时] 编译/运行超过 {timeout:.0f} 秒"
-    except Exception as e:
-        return f"[错误] {e}"
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+    except Exception:
+        pass
 
 
-def collect_artifacts(tmp_dir: str) -> list:
-    """收集沙箱临时目录里的产物文件路径。"""
-    p = Path(tmp_dir)
-    if not p.is_dir():
-        return []
-    return [str(f) for f in sorted(p.rglob("*")) if f.is_file()]
-
-
-def cleanup(tmp_dir: str) -> None:
-    """清理沙箱临时目录。"""
+def safe_display_path(path: Path) -> str:
+    """产物相对路径，用于消息展示。"""
     try:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    except Exception as e:
-        logger.warning("sandbox cleanup 失败: %s", e)
+        return str(path.relative_to(path.parents[-2])) if len(path.parts) > 2 else path.name
+    except Exception:
+        return path.name
+
+
+# ── 兼容包装：返回字符串而非 dict（保持与旧版 QQ sandbox 的接口兼容）──
+
+async def run_python_str(code: str, timeout: float = DEFAULT_TIMEOUT,
+                         max_output: int = MAX_OUTPUT, **kwargs) -> str:
+    """执行 Python 代码，返回格式化字符串（兼容旧接口）。"""
+    result = await run_python(code, timeout=timeout, max_output=max_output, **kwargs)
+    return _dict_to_str(result)
+
+
+async def run_shell_str(command: str, timeout: float = DEFAULT_TIMEOUT,
+                        max_output: int = MAX_OUTPUT, **kwargs) -> str:
+    """执行 shell 命令，返回格式化字符串（兼容旧接口）。"""
+    result = await run_shell(command, timeout=timeout, max_output=max_output, **kwargs)
+    return _dict_to_str(result)
+
+
+async def compile_and_run_cpp_str(files: dict, timeout: float = DEFAULT_TIMEOUT,
+                                  max_output: int = MAX_OUTPUT, stdin_data: str = "", **kwargs) -> str:
+    """编译并运行 C++，返回格式化字符串（兼容旧接口）。"""
+    result = await compile_and_run_cpp(files, timeout=timeout, max_output=max_output,
+                                       stdin_data=stdin_data, **kwargs)
+    return _dict_to_str(result)
+
+
+def _dict_to_str(result: dict) -> str:
+    """将 dict 执行结果转为可读字符串。"""
+    if result.get("timed_out"):
+        return f"[超时] 执行超时，已强制终止"
+    if result["returncode"] != 0:
+        err = result.get("stderr", "")
+        return f"[执行失败] {err}" if err else f"[执行失败] 退出码 {result['returncode']}"
+    return result.get("stdout", "") or "[无输出]"
+
+
+def collect_artifacts_str(tmp_dir) -> list[str]:
+    """收集产物，返回字符串路径列表（兼容旧接口）。"""
+    paths = collect_artifacts(tmp_dir)
+    return [str(p) for p in paths]
