@@ -446,3 +446,54 @@ def _format_msglog_entries(entries: list[dict], chat_id: int) -> str:
         content = e.get("content", "")[:100].replace("\n", " ")
         lines.append(f"{name}{role}: {content}")
     return "【最近聊天记录（来自消息回溯）】\n" + "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════
+#  SQLite 记忆回填 — 启动时把 .md 存量记忆迁入 SQLite
+# ════════════════════════════════════════════════════════════
+
+async def backfill_memories_to_db() -> int:
+    """把 data/memory_*.md 存量记忆回填到 SQLite（幂等，按 (conversation_id, content) 去重）。"""
+    from db.database import db
+    if not db.initialized:
+        return 0
+    from db.repositories import MemoryRepository
+
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for file_obj in sorted(MEMORY_DIR.glob("memory_*.md")):
+        raw_id = file_obj.stem[len("memory_"):]
+        if not raw_id.isdigit():
+            continue
+        conversation_id = int(raw_id)
+        try:
+            lines = [l.strip() for l in file_obj.read_text(encoding="utf-8").splitlines()
+                     if l.strip() and not l.strip().startswith("#")]
+        except Exception:
+            continue
+        if not lines:
+            continue
+        try:
+            async with db.session()() as s:
+                repo = MemoryRepository(s)
+                existing = {m.content for m in await repo.list(
+                    conversation_id=conversation_id, limit=1_000_000)}
+                added = 0
+                for line in lines:
+                    if line in existing:
+                        continue
+                    await repo.add(
+                        content=line, conversation_id=conversation_id,
+                        memory_type="auto", source="backfill",
+                    )
+                    existing.add(line)
+                    added += 1
+                await s.commit()
+                if added:
+                    total += added
+                    logger.info("记忆回填 [%d]: +%d 条", conversation_id, added)
+        except Exception as e:
+            logger.warning("记忆回填失败 [%d]: %s", conversation_id, e)
+    if total:
+        logger.info("存量记忆回填完成: 共 %d 条", total)
+    return total
