@@ -3,6 +3,8 @@ config/.env
 config/bot_config.toml
 config/adapter_config.toml
 config/roles.toml
+*.key
+*.pem
 
 # === 运行时数据 ===
 data/img_temp/
@@ -26,7 +28,21 @@ logs/
 *.log
 
 # === 插件下载缓存 ===
-plugins/_down/
+plugins/
+
+# === 自更新模块运行时快照缓存 ===
+.update_cache/
+
+# === 临时目录 ===
+tmp/
+temp/
+
+# === 阶段备份 ===
+backup/
+
+# === 数据库文件 ===
+*.db
+*.sqlite
 
 # === 私有实现备份（未引用，勿删） ===
 modules_private/

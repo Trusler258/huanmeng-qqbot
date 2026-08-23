@@ -81,6 +81,24 @@ class HuanmengBot:
         init_sender(self.cfg.host, self.cfg.port)
         info("消息发送器已初始化 (WS复用模式)")
 
+        # 4a. 初始化 SQLite/FTS5 数据库
+        # 失败仅降级到 Legacy（文件 memory / 内存搜索缓存），绝不阻断 Bot 启动。
+        try:
+            from db.database import init_db
+            await init_db()
+            from db.database import db
+            info("数据库已就绪 (url=%s)", db.url)
+            # 存量 .md 记忆回填 SQLite（幂等；失败仅降级，不阻断启动）
+            try:
+                from modules.memory import backfill_memories_to_db
+                n = await backfill_memories_to_db()
+                if n:
+                    info("存量记忆已回填 SQLite: %d 条", n)
+            except Exception as e:
+                warning("记忆回填失败（不影响启动）: %s", e)
+        except Exception as e:
+            warning("数据库初始化失败，进入 Legacy fallback: %s", e)
+
         # 5. 初始化上下文管理器
         init_context()
         info("上下文管理器已初始化")
@@ -121,9 +139,10 @@ class HuanmengBot:
         _asyncio.ensure_future(self._bg_log_server())
         _asyncio.ensure_future(self._bg_wdsj_collector())
         _asyncio.ensure_future(self._bg_pc_status_server())
+        _asyncio.ensure_future(self._bg_phone_status_server())
         _asyncio.ensure_future(self._bg_tts_server())
         _asyncio.ensure_future(self._bg_holiday())
-        info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890")
+        info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890+手机状态:58892")
 
         # ★ 启动插件系统（ADDITIVE：单个插件失败不影响主流程）
         try:
@@ -177,6 +196,14 @@ class HuanmengBot:
         """优雅关闭所有资源"""
         info("🛑 正在关闭...")
         
+        # 关闭 Plugin Runtime（卸载所有插件，清理定时器/事件/能力注册）
+        try:
+            from core.plugin import get_plugin_manager
+            await get_plugin_manager().shutdown_all()
+            info("Plugin Runtime 已关闭")
+        except Exception as e:
+            warning("Plugin Runtime 关闭降级: %s", e)
+
         # 关闭发送器的长连接
         await close_sender()
         
@@ -204,6 +231,14 @@ class HuanmengBot:
         # 持久化瞬时上下文（重启不丢记忆）
         from core.context_manager import save_context
         save_context()
+
+        # 优雅关闭数据库（dispose 引擎，避免连接泄漏）
+        try:
+            from db.database import close_db
+            await close_db()
+            info("数据库已关闭")
+        except Exception as e:
+            warning("数据库关闭降级: %s", e)
 
         info("👋 再见！")
         print("")  # 空行让日志更清晰
@@ -386,6 +421,11 @@ class HuanmengBot:
         """PC 状态接收服务器 (端口 58890；62002 归 KOOK bot 使用，不监听)"""
         from services.pc_status import start_pc_server
         await start_pc_server(58890)
+
+    async def _bg_phone_status_server(self):
+        """手机状态接收服务器 (端口 58892)"""
+        from services.phone_status import start_phone_server
+        await start_phone_server(58892)
 
     async def _bg_tts_server(self):
         """TTS 节点接收服务 (端口 58891)"""
