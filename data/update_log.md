@@ -163,4 +163,5 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - `size` 用重复键手工拼接 `size=regular&size=original`（urlencode 对数组不可靠），优先取 regular 缩略图发送
 - r18=0 全年龄过滤：库分类 r18 字段 + **R18 标签黑名单**（与 lolicon_client.py 一致，因 API r18 字段是库分类、不等同作品本身标识）；拉取 5 张再过滤保证有命中；无结果时提示换关键词
 - 保留本地下载 + `file:///` CQ 码发送链路，失败降级直发远程 URL
+- `/~img help` / `/~img18 help` 显示用法帮助（支持 帮助/?/usage 别名）
 - 备份：`qqbot-backup/2026-08-24/`
