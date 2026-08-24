@@ -158,10 +158,10 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 ### 图源切换：waifu.pics → Lolicon（Pixiv 来源）
 - 废弃不可用的 `waifu.pics`，`/~img` 改用 `https://api.lolicon.app/setu/v2`（免费免 key）
 - **支持多标签参数**：`/~img 甘雨 原神` 为 AND（同时包含，最多 3 个）；单个标签内可用 `|` 做 OR，如 `/~img 萝莉|少女 白丝|黑丝` → (萝莉 OR 少女) AND (白丝 OR 黑丝)；无参数时随机
-- `/~img18`（R18）恢复注册，同样支持多标签，**仅限私聊**（群聊直接拒绝，防封号）
+- `/~img18`（R18）曾恢复注册，**现按需求下线（移除注册，逻辑保留待启用）**；`/~img` help 不再提示 R18 版
 - 拆两套请求头：API 请求不带 Referer（否则 403），图片下载必须带 `Referer: https://www.pixiv.net/`（走 i.pixiv.re 反代）
 - `size` 用重复键手工拼接 `size=regular&size=original`（urlencode 对数组不可靠），优先取 regular 缩略图发送
 - r18=0 全年龄过滤：库分类 r18 字段 + **R18 标签黑名单**（与 lolicon_client.py 一致，因 API r18 字段是库分类、不等同作品本身标识）；拉取 5 张再过滤保证有命中；无结果时提示换关键词
 - 保留本地下载 + `file:///` CQ 码发送链路，失败降级直发远程 URL
-- `/~img help` / `/~img18 help` 显示用法帮助（支持 帮助/?/usage 别名）
+- `/~img help` 显示用法帮助（支持 帮助/?/usage 别名）
 - 备份：`qqbot-backup/2026-08-24/`
