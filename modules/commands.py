@@ -1014,29 +1014,51 @@ async def cmd_reset_fav(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 图片指令 ──────────────────────────────────────────────
 
-# ─── 图片指令 ──────────────────────────────────────────────
-
 # Lolicon API（Pixiv 来源，免费无需 key）
 # 坑1: API 端点带 Referer 直接 403，必须拆两套头
 # 坑2: size 默认只返回 original，要 regular 必须手工拼接重复键 size=regular&size=original
+# 坑3: API 的 r18 字段是"库分类"，r18=0 仍可能返回带 R-18 标签的图 → 需黑名单二次过滤
 _LOLICON_API = "https://api.lolicon.app/setu/v2"
 _LOLICON_API_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 _LOLICON_IMG_HEADERS = {"Referer": "https://www.pixiv.net/", "User-Agent": "Mozilla/5.0"}
 
 _IMG_TEMP_DIR = Path(__file__).resolve().parent.parent / "data" / "img_temp"
 
+# r18=0（全年龄）时的标签黑名单，与 lolicon_client.py 一致（大小写不敏感）
+_R18_TAG_BLACKLIST = [
+    "r-18", "r18", "r-18g", "r18g", "裸体", "裸身", "全裸", "半裸",
+    "裸", "sex", "sexual", "hentai", "ero", "erotic", "porn", "nsfw",
+    "bukkake", "paizuri", "anal", "bondage", "tentacle", "ahegao",
+    "incest", "shotacon", "lolicon", "futanari", "furry", "beastiality",
+    "guro", "ryona", "scat", "vore", "exhibitionism", "masturbation",
+    "rape", "torture", "urine", "urethra", "prolapse", "fisting",
+    "diaper", "omorashi", "peeing", "pissing", "enema", "necrophilia",
+]
 
-def _build_lolicon_url(r18: int, tag: str) -> str:
-    """构造 Lolicon 请求 URL。size 用重复键手工拼接（urlencode 对数组不可靠）。"""
-    qs = ["r18=%d" % r18, "num=1", "size=regular", "size=original"]
-    if tag:
-        qs.append("tag=" + urllib.parse.quote(tag))
+
+def _is_r18_tag(tag: str) -> bool:
+    """判断单个标签是否命中 R18 黑名单（子串匹配，大小写不敏感）"""
+    tl = tag.lower()
+    return any(b in tl for b in _R18_TAG_BLACKLIST)
+
+
+def _build_lolicon_url(r18: int, tags: list[str], num: int = 1) -> str:
+    """构造 Lolicon 请求 URL。
+
+    size/tag 均为数组参数，GET 需用重复键手工拼接（urlencode 对数组不可靠）。
+    tag 数组之间是 AND 规则（最多 3 个）；单个 tag 内可用 | 分隔做 OR（最多 20 个），
+    例：tag=萝莉|少女&tag=白丝|黑丝  →  (萝莉 OR 少女) AND (白丝 OR 黑丝)
+    """
+    qs = ["r18=%d" % r18, "num=%d" % num, "size=regular", "size=original"]
+    for t in tags:
+        if t:
+            qs.append("tag=" + urllib.parse.quote(t))
     return _LOLICON_API + "?" + "&".join(qs)
 
 
 async def _lolicon_fetch_and_send(
     r18: int,
-    tag: str,
+    tags: list[str],
     group_id: int | None,
     user_id: int | None,
     is_group: bool,
@@ -1053,7 +1075,9 @@ async def _lolicon_fetch_and_send(
 
     try:
         # Step 1: 请求 API（不带 Referer，否则 403）
-        api_url = _build_lolicon_url(r18, tag)
+        # r18=0 时多拉几张再过滤黑名单标签，避免过滤后无图
+        num = 5 if r18 == 0 else 1
+        api_url = _build_lolicon_url(r18, tags, num=num)
         logger.info("[%s] 请求 Lolicon API: %s", cmd_tag, api_url)
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True,
                                      headers=_LOLICON_API_HEADERS) as client:
@@ -1061,11 +1085,13 @@ async def _lolicon_fetch_and_send(
             resp.raise_for_status()
             items = (resp.json() or {}).get("data", [])
         if r18 == 0:
-            items = [it for it in items if not it.get("r18")]  # 双保险过滤
+            # 双保险：库分类 r18 字段 + 标签黑名单（API r18 字段不等同作品本身标识）
+            items = [it for it in items
+                     if not it.get("r18") and not any(_is_r18_tag(t) for t in it.get("tags", []))]
 
         if not items:
-            logger.warning("[%s] Lolicon 无结果 tag=%r", cmd_tag, tag)
-            tip = f"没有找到 tag「{tag}」的图，换个关键词试试喵~" if tag else "没有找到图片，稍后再试喵~"
+            logger.warning("[%s] Lolicon 无结果 tags=%r", cmd_tag, tags)
+            tip = f"没有找到 tag「{' '.join(tags)}」的图，换个关键词试试喵~" if tags else "没有找到图片，稍后再试喵~"
             if is_group and group_id:
                 await send_group_msg(tip, group_id)
             elif not is_group and user_id:
@@ -1160,14 +1186,14 @@ async def _send_image_url_fallback(
 
 
 async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """随机二次元图片 /~img [标签]，如 /~img 甘雨"""
-    tag = " ".join(args).strip() if args else ""
-    logger.info("指令 /~img 触发 user=%d group=%d tag=%r", user_id, group_id or 0, tag)
+    """随机二次元图片 /~img [标签...]，多标签为 AND 匹配，如 /~img 甘雨 原神"""
+    tags = [a.strip() for a in args if a.strip()]
+    logger.info("指令 /~img 触发 user=%d group=%d tags=%r", user_id, group_id or 0, tags)
 
     async def _bg_send():
         await _lolicon_fetch_and_send(
             r18=0,
-            tag=tag,
+            tags=tags,
             group_id=group_id if is_group else None,
             user_id=user_id if not is_group else None,
             is_group=is_group,
@@ -1179,17 +1205,17 @@ async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 
 async def cmd_img18(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """R18 图片 /~img18 [标签]（仅私聊，群聊拒绝防封号）"""
+    """R18 图片 /~img18 [标签...]（仅私聊，群聊拒绝防封号）"""
     if is_group:
         return "R18 图片仅限私聊使用喵~"
 
-    tag = " ".join(args).strip() if args else ""
-    logger.info("指令 /~img18 触发 user=%d tag=%r", user_id, tag)
+    tags = [a.strip() for a in args if a.strip()]
+    logger.info("指令 /~img18 触发 user=%d tags=%r", user_id, tags)
 
     async def _bg_send():
         await _lolicon_fetch_and_send(
             r18=1,
-            tag=tag,
+            tags=tags,
             group_id=None,
             user_id=user_id,
             is_group=False,
