@@ -1197,8 +1197,7 @@ async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
             "/~img 甘雨         单标签\n"
             "/~img 甘雨 原神    多标签 AND（同时包含，最多3个）\n"
             "/~img 萝莉|少女 白丝|黑丝  | 为 OR，组合匹配\n"
-            "/~img help         本帮助\n"
-            "R18 版：/~img18（仅限私聊）"
+            "/~img help         本帮助"
         )
 
     async def _bg_send():
@@ -3329,7 +3328,7 @@ COMMAND_MAP: dict[str, callable] = {
     "img2video":  cmd_img2video,
     "图生视频":   cmd_img2video,
     "img":        cmd_img,
-    "img18":      cmd_img18,
+    # img18 已移除注册（R18 指令下线），cmd_img18 逻辑保留待后续启用
     "eq":         cmd_eq,
     "地震":       cmd_eq,
     "luck":       cmd_luck,
