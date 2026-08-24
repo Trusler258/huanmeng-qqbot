@@ -1190,6 +1190,17 @@ async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
     tags = [a.strip() for a in args if a.strip()]
     logger.info("指令 /~img 触发 user=%d group=%d tags=%r", user_id, group_id or 0, tags)
 
+    if tags and tags[0].lower() in ("help", "帮助", "?", "usage"):
+        return (
+            "【/~img 二次元图片】\n"
+            "/~img              随机\n"
+            "/~img 甘雨         单标签\n"
+            "/~img 甘雨 原神    多标签 AND（同时包含，最多3个）\n"
+            "/~img 萝莉|少女 白丝|黑丝  | 为 OR，组合匹配\n"
+            "/~img help         本帮助\n"
+            "R18 版：/~img18（仅限私聊）"
+        )
+
     async def _bg_send():
         await _lolicon_fetch_and_send(
             r18=0,
@@ -1211,6 +1222,16 @@ async def cmd_img18(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     tags = [a.strip() for a in args if a.strip()]
     logger.info("指令 /~img18 触发 user=%d tags=%r", user_id, tags)
+
+    if tags and tags[0].lower() in ("help", "帮助", "?", "usage"):
+        return (
+            "【/~img18 R18 图片】仅限私聊\n"
+            "/~img18             随机\n"
+            "/~img18 白丝        单标签\n"
+            "/~img18 白丝 黑丝   多标签 AND（最多3个）\n"
+            "/~img18 萝莉|少女    | 为 OR\n"
+            "/~img18 help        本帮助"
+        )
 
     async def _bg_send():
         await _lolicon_fetch_and_send(
