@@ -21,19 +21,35 @@ from services.sender import get_ws_manager
 
 logger = get_logger("agnes")
 
-AGNES_BASE = "https://apihub.agnes-ai.com/v1"
+# 文生图：CloudMist（gpt-image-2，base64 返回）
+AGNES_BASE = "https://v2.cloudmist.cloud/v1"
+AGNES_API_KEY = "sk-0LBTn29oDMTpYYmnEo5y1Y6FHpoeKU3xcad75GrPQHMu47RA"
+
+# 文生视频：原 Agnes 服务（保持旧配置，与新图服务分离）
+AGNES_VIDEO_BASE = "https://apihub.agnes-ai.com/v1"
 CST = timezone(timedelta(hours=8))
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "agnes_output"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _get_api_key() -> str:
+    return AGNES_API_KEY
+
+
+def _video_api_key() -> str:
     return os.environ.get("AGNES_KEY", "") or os.environ.get("AGNES_API_KEY", "")
 
 
 def _headers() -> dict:
     return {
         "Authorization": f"Bearer {_get_api_key()}",
+        "Content-Type": "application/json",
+    }
+
+
+def _video_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {_video_api_key()}",
         "Content-Type": "application/json",
     }
 
@@ -154,9 +170,9 @@ def owner_quota_reset(kind: str = ""):
 # ── API 调用 ────────────────────────────────────────────
 
 async def _gen_image(prompt: str, size: str = "1024x1024") -> dict | None:
-    """文生图 → 返回 {url, local_path}"""
+    """文生图 → 返回 base64 解码为 {local_path}"""
     body = {
-        "model": "agnes-image-2.1-flash",
+        "model": "gpt-image-2",
         "prompt": prompt,
         "n": 1,
         "size": size,
@@ -167,12 +183,12 @@ async def _gen_image(prompt: str, size: str = "1024x1024") -> dict | None:
             r.raise_for_status()
             data = r.json()
             img = data.get("data", [{}])[0]
-            url = img.get("url", "")
-            if not url and img.get("b64_json"):
+            if img.get("b64_json"):
                 raw = base64.b64decode(img["b64_json"])
                 path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
                 path.write_bytes(raw)
                 return {"local_path": str(path)}
+            url = img.get("url", "")
             if url:
                 path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
                 async with httpx.AsyncClient(timeout=30, verify=False) as c2:
@@ -205,7 +221,7 @@ async def _gen_video(prompt: str, image_url: str = "",
     for retry in range(3):
         try:
             async with httpx.AsyncClient(timeout=60, verify=False) as c:
-                r = await c.post(f"{AGNES_BASE}/videos", json=body, headers=_headers())
+                r = await c.post(f"{AGNES_VIDEO_BASE}/videos", json=body, headers=_video_headers())
                 if r.status_code in (503, 502, 500, 429):
                     await asyncio.sleep(5)
                     continue
@@ -226,7 +242,7 @@ async def _gen_video(prompt: str, image_url: str = "",
             async with httpx.AsyncClient(timeout=30, verify=False) as c:
                 r2 = await c.get(
                     f"https://apihub.agnes-ai.com/agnesapi?video_id={video_id}",
-                    headers=_headers(),
+                    headers=_video_headers(),
                 )
                 if r2.status_code == 503:
                     continue
