@@ -176,3 +176,8 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - API key 硬编码为 CloudMist token（原环境变量 AGNES_KEY 不再用于 draw）
 - 文生视频（`/~video` / `/~img2video`）独立为 `AGNES_VIDEO_BASE` + `_video_headers()`，仍走原 Agnes 服务与环境变量 key，不受图源切换影响
 - 备份：`qqbot-backup/2026-08-24/`
+
+### 修复：/~draw 超时失败（v2.0.6 补充）
+- `_gen_image` 超时 120s → 300s：gpt-image-2 复杂 prompt 生成可超过 2 分钟（实测日志 120s 整触发超时）
+- 异常日志改打印类型 + repr（httpx 超时异常 str 为空导致日志无内容）
+- url 兜底下载超时 30s → 60s
