@@ -178,7 +178,8 @@ async def _gen_image(prompt: str, size: str = "1024x1024") -> dict | None:
         "size": size,
     }
     try:
-        async with httpx.AsyncClient(timeout=120, verify=False) as c:
+        # gpt-image-2 复杂 prompt 生成可能超过 2 分钟，超时放宽到 300s
+        async with httpx.AsyncClient(timeout=300, verify=False) as c:
             r = await c.post(f"{AGNES_BASE}/images/generations", json=body, headers=_headers())
             r.raise_for_status()
             data = r.json()
@@ -191,13 +192,14 @@ async def _gen_image(prompt: str, size: str = "1024x1024") -> dict | None:
             url = img.get("url", "")
             if url:
                 path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
-                async with httpx.AsyncClient(timeout=30, verify=False) as c2:
+                async with httpx.AsyncClient(timeout=60, verify=False) as c2:
                     r2 = await c2.get(url)
                     path.write_bytes(r2.content)
                 return {"url": url, "local_path": str(path)}
             return None
     except Exception as e:
-        logger.warning("文生图失败: %s", e)
+        # 打印异常类型 + repr（httpx 超时异常 str 可能为空字符串）
+        logger.warning("文生图失败 [%s]: %r", type(e).__name__, e)
         return None
 
 
