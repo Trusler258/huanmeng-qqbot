@@ -152,3 +152,15 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - KOOK 插件（import khl / Card / MessageTypes / api.fetch）+ 原生插件共存加载、命令/工具分发、卸载清理全通过
 - 沙箱逃逸向量（getattr / __class__ / __mro__ / globals 等）全部拦截测试通过
 - 全部修改文件 py_compile 通过
+
+## v2.0.5 — /~img 指令恢复（Lolicon API）— 2026.8.24
+
+### 图源切换：waifu.pics → Lolicon（Pixiv 来源）
+- 废弃不可用的 `waifu.pics`，`/~img` 改用 `https://api.lolicon.app/setu/v2`（免费免 key）
+- 支持可选标签参数：`/~img 甘雨`、`/~img 原神`；无参数时随机
+- `/~img18`（R18）恢复注册，支持标签参数，**仅限私聊**（群聊直接拒绝，防封号）
+- 拆两套请求头：API 请求不带 Referer（否则 403），图片下载必须带 `Referer: https://www.pixiv.net/`（走 i.pixiv.re 反代）
+- `size` 用重复键手工拼接 `size=regular&size=original`（urlencode 对数组不可靠），优先取 regular 缩略图发送
+- r18=0 时对返回结果做 r18 字段双保险过滤；无结果时提示换关键词
+- 保留本地下载 + `file:///` CQ 码发送链路，失败降级直发远程 URL
+- 备份：`qqbot-backup/2026-08-24/`
