@@ -16,6 +16,7 @@ import random
 import re
 import string
 import time
+import urllib.parse
 from datetime import date
 from pathlib import Path
 
@@ -1013,55 +1014,76 @@ async def cmd_reset_fav(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # ─── 图片指令 ──────────────────────────────────────────────
 
-# 图片 API 配置（可按需扩展）
-_IMG_APIS = {
-    "sfw": [
-        "https://api.waifu.pics/sfw/waifu",
-        "https://api.waifu.pics/sfw/neko",
-        "https://api.waifu.pics/sfw/shinobu",
-    ],
-    "nsfw": [
-        "https://api.waifu.pics/nsfw/waifu",
-        "https://api.waifu.pics/nsfw/neko",
-    ],
-}
+# ─── 图片指令 ──────────────────────────────────────────────
+
+# Lolicon API（Pixiv 来源，免费无需 key）
+# 坑1: API 端点带 Referer 直接 403，必须拆两套头
+# 坑2: size 默认只返回 original，要 regular 必须手工拼接重复键 size=regular&size=original
+_LOLICON_API = "https://api.lolicon.app/setu/v2"
+_LOLICON_API_HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+_LOLICON_IMG_HEADERS = {"Referer": "https://www.pixiv.net/", "User-Agent": "Mozilla/5.0"}
 
 _IMG_TEMP_DIR = Path(__file__).resolve().parent.parent / "data" / "img_temp"
 
 
-async def _download_and_send_image(
-    api_url: str,
+def _build_lolicon_url(r18: int, tag: str) -> str:
+    """构造 Lolicon 请求 URL。size 用重复键手工拼接（urlencode 对数组不可靠）。"""
+    qs = ["r18=%d" % r18, "num=1", "size=regular", "size=original"]
+    if tag:
+        qs.append("tag=" + urllib.parse.quote(tag))
+    return _LOLICON_API + "?" + "&".join(qs)
+
+
+async def _lolicon_fetch_and_send(
+    r18: int,
+    tag: str,
     group_id: int | None,
     user_id: int | None,
     is_group: bool,
-    tag: str = "img",
+    cmd_tag: str,
 ):
     """
-    从 API 获取随机图片 URL → 下载到本地临时目录 → 通过 CQ 码发送。
+    Lolicon API 拉图 → 下载到本地临时目录 → 通过 CQ 码发送。
 
-    设计决策：先下载到本地再用 `file:///` 路径发送，与天气/快递/更新日志
-    卡片使用相同的发送方式。NapCat 会读取本地文件并上传到 QQ 服务器。
-    如果本地下载失败，则尝试直接用远程 URL 发送（部分 NapCat 版本支持）。
+    与天气/快递/更新日志卡片相同的发送方式：先下载到本地再用 `file:///` 路径，
+    NapCat 会读取本地文件并上传到 QQ 服务器。下载失败则降级直发远程 URL。
     """
     _IMG_TEMP_DIR.mkdir(parents=True, exist_ok=True)
     image_url = ""  # 外层作用域保存，供 except 块 fallback 使用
 
     try:
-        # Step 1: 从 API 获取图片 URL
-        logger.info("[%s] 请求图片 API: %s", tag, api_url)
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        # Step 1: 请求 API（不带 Referer，否则 403）
+        api_url = _build_lolicon_url(r18, tag)
+        logger.info("[%s] 请求 Lolicon API: %s", cmd_tag, api_url)
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True,
+                                     headers=_LOLICON_API_HEADERS) as client:
             resp = await client.get(api_url)
             resp.raise_for_status()
-            data = resp.json()
-            image_url = data.get("url", "")
-            if not image_url:
-                logger.error("[%s] API 返回无 url 字段: %s", tag, data)
-                return
+            items = (resp.json() or {}).get("data", [])
+        if r18 == 0:
+            items = [it for it in items if not it.get("r18")]  # 双保险过滤
 
-        logger.info("[%s] 获取到图片 URL: %s...", tag, image_url[:80])
+        if not items:
+            logger.warning("[%s] Lolicon 无结果 tag=%r", cmd_tag, tag)
+            tip = f"没有找到 tag「{tag}」的图，换个关键词试试喵~" if tag else "没有找到图片，稍后再试喵~"
+            if is_group and group_id:
+                await send_group_msg(tip, group_id)
+            elif not is_group and user_id:
+                await send_private_msg(tip, user_id)
+            return
 
-        # Step 2: 下载图片到本地
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        item = items[0]
+        urls = item.get("urls", {})
+        image_url = urls.get("regular") or urls.get("original") or ""
+        if not image_url:
+            logger.error("[%s] Lolicon 返回无 urls 字段: %s", cmd_tag, item)
+            return
+
+        logger.info("[%s] 获取到图片: %s... (pid=%s)", cmd_tag, image_url[:80], item.get("pid"))
+
+        # Step 2: 下载图片（必须带 Referer: https://www.pixiv.net/，走 i.pixiv.re 反代）
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True,
+                                     headers=_LOLICON_IMG_HEADERS) as client:
             img_resp = await client.get(image_url)
             img_resp.raise_for_status()
             img_bytes = img_resp.content
@@ -1076,7 +1098,6 @@ async def _download_and_send_image(
         elif "webp" in content_type:
             ext = ".webp"
         else:
-            # 从 URL 路径推断
             url_path = image_url.split("?")[0]
             if url_path.endswith(".png"):
                 ext = ".png"
@@ -1086,10 +1107,10 @@ async def _download_and_send_image(
                 ext = ".webp"
 
         import uuid
-        local_filename = f"img_{tag}_{uuid.uuid4().hex[:8]}{ext}"
+        local_filename = f"img_{cmd_tag}_{uuid.uuid4().hex[:8]}{ext}"
         local_path = _IMG_TEMP_DIR / local_filename
         local_path.write_bytes(img_bytes)
-        logger.info("[%s] 图片已保存: %s (%d bytes)", tag, local_path.name, len(img_bytes))
+        logger.info("[%s] 图片已保存: %s (%d bytes)", cmd_tag, local_path.name, len(img_bytes))
 
         # Step 3: 构造 CQ 码并发送
         normalized = str(local_path).replace("\\", "/")
@@ -1100,16 +1121,16 @@ async def _download_and_send_image(
         elif not is_group and user_id:
             await send_private_msg(cq_msg, user_id)
 
-        logger.info("[%s] 图片已发送", tag)
+        logger.info("[%s] 图片已发送", cmd_tag)
 
     except httpx.HTTPStatusError as e:
-        logger.warning("[%s] API 请求失败 (HTTP %d): %s", tag, e.response.status_code, e)
-        fallback_url = image_url or api_url
-        await _send_image_url_fallback(fallback_url, group_id, user_id, is_group, tag)
-    except Exception as e:
-        logger.error("[%s] 图片处理异常: %s", tag, e, exc_info=True)
+        logger.warning("[%s] Lolicon 请求失败 (HTTP %d): %s", cmd_tag, e.response.status_code, e)
         if image_url:
-            await _send_image_url_fallback(image_url, group_id, user_id, is_group, tag)
+            await _send_image_url_fallback(image_url, group_id, user_id, is_group, cmd_tag)
+    except Exception as e:
+        logger.error("[%s] Lolicon 图片处理异常: %s", cmd_tag, e, exc_info=True)
+        if image_url:
+            await _send_image_url_fallback(image_url, group_id, user_id, is_group, cmd_tag)
 
 
 async def _send_image_url_fallback(
@@ -1139,18 +1160,18 @@ async def _send_image_url_fallback(
 
 
 async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """随机二次元图片 /~img"""
-    logger.info("指令 /~img 触发 user=%d group=%d", user_id, group_id or 0)
-
-    api_url = random.choice(_IMG_APIS["sfw"])
+    """随机二次元图片 /~img [标签]，如 /~img 甘雨"""
+    tag = " ".join(args).strip() if args else ""
+    logger.info("指令 /~img 触发 user=%d group=%d tag=%r", user_id, group_id or 0, tag)
 
     async def _bg_send():
-        await _download_and_send_image(
-            api_url,
+        await _lolicon_fetch_and_send(
+            r18=0,
+            tag=tag,
             group_id=group_id if is_group else None,
             user_id=user_id if not is_group else None,
             is_group=is_group,
-            tag="img",
+            cmd_tag="img",
         )
 
     asyncio.create_task(_bg_send())
@@ -1158,18 +1179,21 @@ async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 
 async def cmd_img18(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """轻度 R18 图片 /~img18"""
-    logger.info("指令 /~img18 触发 user=%d group=%d", user_id, group_id or 0)
+    """R18 图片 /~img18 [标签]（仅私聊，群聊拒绝防封号）"""
+    if is_group:
+        return "R18 图片仅限私聊使用喵~"
 
-    api_url = random.choice(_IMG_APIS["nsfw"])
+    tag = " ".join(args).strip() if args else ""
+    logger.info("指令 /~img18 触发 user=%d tag=%r", user_id, tag)
 
     async def _bg_send():
-        await _download_and_send_image(
-            api_url,
-            group_id=group_id if is_group else None,
-            user_id=user_id if not is_group else None,
-            is_group=is_group,
-            tag="img18",
+        await _lolicon_fetch_and_send(
+            r18=1,
+            tag=tag,
+            group_id=None,
+            user_id=user_id,
+            is_group=False,
+            cmd_tag="img18",
         )
 
     asyncio.create_task(_bg_send())
@@ -3257,6 +3281,8 @@ COMMAND_MAP: dict[str, callable] = {
     "语音":       cmd_voice,
     "img2video":  cmd_img2video,
     "图生视频":   cmd_img2video,
+    "img":        cmd_img,
+    "img18":      cmd_img18,
     "eq":         cmd_eq,
     "地震":       cmd_eq,
     "luck":       cmd_luck,
