@@ -162,6 +162,8 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 拆两套请求头：API 请求不带 Referer（否则 403），图片下载必须带 `Referer: https://www.pixiv.net/`（走 i.pixiv.re 反代）
 - `size` 用重复键手工拼接 `size=regular&size=original`（urlencode 对数组不可靠），优先取 regular 缩略图发送
 - r18=0 全年龄过滤：库分类 r18 字段 + **R18 标签黑名单**（与 lolicon_client.py 一致，因 API r18 字段是库分类、不等同作品本身标识）；拉取 5 张再过滤保证有命中；无结果时提示换关键词
+- **随机选图**：拉 5 张用 `random.choice` 而非固定 `items[0]`（Lolicon 带 tag 返回顺序固定，始终取第一张会导致同 tag 永远同一张图）
+- **最近 pid 去重**：`_IMG_SENT_PIDS` 集合缓存已发 pid（最多 200，超限清空），同 tag 连发跳过已发过的图，全命中则放宽不跳过
 - 保留本地下载 + `file:///` CQ 码发送链路，失败降级直发远程 URL
 - `/~img help` 显示用法帮助（支持 帮助/?/usage 别名）
 - 备份：`qqbot-backup/2026-08-24/`

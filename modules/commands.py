@@ -1024,6 +1024,11 @@ _LOLICON_IMG_HEADERS = {"Referer": "https://www.pixiv.net/", "User-Agent": "Mozi
 
 _IMG_TEMP_DIR = Path(__file__).resolve().parent.parent / "data" / "img_temp"
 
+# 最近发送过的 pid 缓存：Lolicon 带 tag 查询返回顺序固定，同 tag 会命中同一批结果，
+# 用「多拉几张 + 随机选 + 跳过最近已发」保证重复 tag 也能拿到不同图
+_IMG_SENT_PIDS: set[int] = set()
+_IMG_SENT_PIDS_MAX = 200
+
 # r18=0（全年龄）时的标签黑名单，与 lolicon_client.py 一致（大小写不敏感）
 _R18_TAG_BLACKLIST = [
     "r-18", "r18", "r-18g", "r18g", "裸体", "裸身", "全裸", "半裸",
@@ -1075,9 +1080,8 @@ async def _lolicon_fetch_and_send(
 
     try:
         # Step 1: 请求 API（不带 Referer，否则 403）
-        # r18=0 时多拉几张再过滤黑名单标签，避免过滤后无图
-        num = 5 if r18 == 0 else 1
-        api_url = _build_lolicon_url(r18, tags, num=num)
+        # 统一拉 5 张：一是黑名单过滤后有剩余，二是随机选图避免同 tag 永远同一张
+        api_url = _build_lolicon_url(r18, tags, num=5)
         logger.info("[%s] 请求 Lolicon API: %s", cmd_tag, api_url)
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True,
                                      headers=_LOLICON_API_HEADERS) as client:
@@ -1089,7 +1093,12 @@ async def _lolicon_fetch_and_send(
             items = [it for it in items
                      if not it.get("r18") and not any(_is_r18_tag(t) for t in it.get("tags", []))]
 
-        if not items:
+        # 跳过最近已发过的 pid（去重），全被跳过则放宽不跳过
+        fresh = [it for it in items if it.get("pid") not in _IMG_SENT_PIDS]
+        if not fresh:
+            fresh = items
+
+        if not fresh:
             logger.warning("[%s] Lolicon 无结果 tags=%r", cmd_tag, tags)
             tip = f"没有找到 tag「{' '.join(tags)}」的图，换个关键词试试喵~" if tags else "没有找到图片，稍后再试喵~"
             if is_group and group_id:
@@ -1098,12 +1107,17 @@ async def _lolicon_fetch_and_send(
                 await send_private_msg(tip, user_id)
             return
 
-        item = items[0]
+        item = random.choice(fresh)  # 随机选一张，避免同 tag 固定第一张
         urls = item.get("urls", {})
         image_url = urls.get("regular") or urls.get("original") or ""
         if not image_url:
             logger.error("[%s] Lolicon 返回无 urls 字段: %s", cmd_tag, item)
             return
+
+        # 记录已发 pid（下载前记录：即使下载失败也不再反复选中这张）
+        _IMG_SENT_PIDS.add(item.get("pid"))
+        if len(_IMG_SENT_PIDS) > _IMG_SENT_PIDS_MAX:
+            _IMG_SENT_PIDS.clear()  # 超上限直接清空，简单可靠
 
         logger.info("[%s] 获取到图片: %s... (pid=%s)", cmd_tag, image_url[:80], item.get("pid"))
 
