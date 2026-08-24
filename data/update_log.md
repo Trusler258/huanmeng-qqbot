@@ -167,3 +167,12 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 保留本地下载 + `file:///` CQ 码发送链路，失败降级直发远程 URL
 - `/~img help` 显示用法帮助（支持 帮助/?/usage 别名）
 - 备份：`qqbot-backup/2026-08-24/`
+
+## v2.0.6 — /~draw 图源切换 CloudMist（gpt-image-2）— 2026.8.24
+
+### 文生图后端更换
+- `modules/agnes.py` 文生图接口改走 `https://v2.cloudmist.cloud/v1`（OpenAI 兼容），模型 `agnes-image-2.1-flash` → `gpt-image-2`
+- 返回改为 base64（`data[0].b64_json`），解码后存 PNG 发送；保留 url 兜底分支
+- API key 硬编码为 CloudMist token（原环境变量 AGNES_KEY 不再用于 draw）
+- 文生视频（`/~video` / `/~img2video`）独立为 `AGNES_VIDEO_BASE` + `_video_headers()`，仍走原 Agnes 服务与环境变量 key，不受图源切换影响
+- 备份：`qqbot-backup/2026-08-24/`
