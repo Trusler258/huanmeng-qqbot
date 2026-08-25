@@ -57,7 +57,7 @@ def _video_headers() -> dict:
 # ── 配额管理 ────────────────────────────────────────────
 
 _QUOTA_DIR = Path(__file__).resolve().parent.parent / "data"
-DEFAULT_DRAW_LIMIT = 10  # 每人每天画图次数
+DEFAULT_DRAW_LIMIT = 5  # 每人每天画图次数（admin 无限）
 DEFAULT_VIDEO_LIMIT = 4  # 每人每天视频次数
 
 
@@ -103,7 +103,10 @@ def _use_quota(data: dict, user_id: int, default_limit: int = DEFAULT_DRAW_LIMIT
 
 
 def check_and_use_draw(user_id: int) -> tuple[bool, int, int]:
-    """返回 (允许, 剩余, 上限) — 不扣量，只检查"""
+    """返回 (允许, 剩余, 上限) — 不扣量，只检查；admin 无限"""
+    from core.config import get_config
+    if get_config().is_admin(user_id):
+        return True, 999, 0  # 0=无限，显示为 ∞
     data = _load_quota("draw.json")
     data = _check_daily_reset(data)
     left, limit = _get_user_quota(data, user_id, DEFAULT_DRAW_LIMIT)
@@ -111,7 +114,10 @@ def check_and_use_draw(user_id: int) -> tuple[bool, int, int]:
 
 
 def commit_draw(user_id: int) -> int:
-    """画图成功后扣量，返回剩余次数"""
+    """画图成功后扣量，返回剩余次数；admin 不扣"""
+    from core.config import get_config
+    if get_config().is_admin(user_id):
+        return 999
     data = _load_quota("draw.json")
     data = _check_daily_reset(data)
     remaining = _use_quota(data, user_id, DEFAULT_DRAW_LIMIT)
@@ -388,7 +394,9 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
     task_id = uuid.uuid4().hex[:8]
     prompt_short = prompt[:60] + "..." if len(prompt) > 60 else prompt
     chat_id = group_id if is_group else user_id
-    tip = f"开始生成图片: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日剩余: {left}/{limit}"
+    left_str = f"{left}" if limit else "∞"  # limit=0 表示 admin 无限
+    limit_str = f"{limit}" if limit else "∞"
+    tip = f"开始生成图片: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日剩余: {left_str}/{limit_str}"
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
