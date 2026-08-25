@@ -169,7 +169,46 @@ def owner_quota_reset(kind: str = ""):
 
 # ── API 调用 ────────────────────────────────────────────
 
-async def _gen_image(prompt: str, size: str = "1024x1024") -> dict | None:
+# 预设比例 → 尺寸映射表（默认 16:9）
+# gpt-image 原生支持 1024x1024/1536x1024/1024x1536，也支持自定义如 1536x864
+_ASPECT_RATIOS: dict[str, str] = {
+    "1:1":   "1024x1024",
+    "square": "1024x1024",
+    "3:2":   "1536x1024",
+    "landscape": "1536x1024",
+    "2:3":   "1024x1536",
+    "portrait": "1024x1536",
+    "16:9":  "1536x864",
+    "wide":   "1536x864",
+    "9:16":  "864x1536",
+    "tall":   "864x1536",
+    "4:3":   "1152x864",
+    "3:4":   "864x1152",
+}
+
+
+def _resolve_size(raw: str) -> str:
+    """解析比例/尺寸参数 → 规范的 WxH 字符串
+
+    支持: 16:9 / 1:1 / 1024x1024 / 1536x864 / wide / square / portrait / landscape
+    默认 16:9 → 1536x864
+    """
+    raw = raw.strip().lower()
+    if not raw:
+        return "1536x864"  # 默认 16:9
+    if "x" in raw and raw.replace("x", "").isdigit():
+        return raw  # 直接的 WxH 格式
+    if ":" in raw:
+        mapped = _ASPECT_RATIOS.get(raw)
+        if mapped:
+            return mapped
+    mapped = _ASPECT_RATIOS.get(raw)
+    if mapped:
+        return mapped
+    return "1536x864"  # 无法识别 → 默认 16:9
+
+
+async def _gen_image(prompt: str, size: str = "1536x864") -> dict | None:
     """文生图 → 返回 base64 解码为 {local_path}"""
     body = {
         "model": "gpt-image-2",
@@ -315,26 +354,32 @@ async def _bg_gen_video(user_id, group_id, is_group, prompt, image_url="",
 
 async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
     """
-    /~draw <提示词>  文生图
-    /~draw 512x512 <提示词>  指定尺寸
-    /~draw help       查看详细帮助
+    /~draw <提示词>          文生图（默认 16:9）
+    /~draw 16:9 <提示词>     指定比例（1:1 3:2 2:3 16:9 9:16 4:3 3:4）
+    /~draw 1024x1024 <提示词> 指定像素尺寸
+    /~draw help              查看帮助
     """
     from utils.format_lang import format_lang
     if args and args[0].lower() == "help":
         return format_lang("help.detail.draw")
     if not args:
-        return "用法: /~draw <提示词>  如 /~draw 一只坐在樱花树下的猫娘\n/~draw help 查看完整参数"
+        return "用法: /~draw <提示词>  如 /~draw 一只坐在樱花树下的猫娘\n/~draw 16:9 樱花猫娘  指定比例\n/~draw help 查看完整参数"
 
-    # 配额检查（不扣量）
+    # 配额检查
     ok, left, limit = check_and_use_draw(user_id)
     if not ok:
         return f"今日画图次数已用完喵~ ({limit}/{limit})，明天再来吧！"
 
-    size = "1024x1024"
+    # 解析：第一个参数可能是比例/尺寸，其余是 prompt
+    size = "1536x864"  # 默认 16:9
     prompt_parts = []
     for a in args:
-        if a.replace("x", "").isdigit() and "x" in a:
+        if "x" in a and a.replace("x", "").isdigit():
+            # 直接的 WxH 格式
             size = a
+        elif a.lower() in _ASPECT_RATIOS or (":" in a and a.replace(":", "").isdigit()):
+            # 比例别名（16:9 / wide / square 等）
+            size = _resolve_size(a)
         else:
             prompt_parts.append(a)
     prompt = " ".join(prompt_parts) if prompt_parts else " ".join(args)
