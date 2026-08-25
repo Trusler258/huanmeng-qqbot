@@ -384,9 +384,11 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
             prompt_parts.append(a)
     prompt = " ".join(prompt_parts) if prompt_parts else " ".join(args)
 
-    # 发送进度提示
+    # 生成任务 ID 并发送进度提示
+    task_id = uuid.uuid4().hex[:8]
+    prompt_short = prompt[:60] + "..." if len(prompt) > 60 else prompt
     chat_id = group_id if is_group else user_id
-    tip = f"正在画画喵~ 请稍等 (今日剩余 {left}/{limit})..."
+    tip = f"开始生成图片: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日剩余: {left}/{limit}"
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
