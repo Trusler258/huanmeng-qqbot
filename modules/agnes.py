@@ -396,7 +396,7 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
     chat_id = group_id if is_group else user_id
     left_str = f"{left}" if limit else "∞"  # limit=0 表示 admin 无限
     limit_str = f"{limit}" if limit else "∞"
-    tip = f"开始生成图片: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日剩余: {left_str}/{limit_str}"
+    tip = f"开始生成图片: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日用量: {left_str}/{limit_str}"
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
@@ -407,7 +407,7 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
     # 成功后扣量
     remaining = commit_draw(user_id)
     await _send_media(result["local_path"], group_id, is_group, user_id, "image")
-    return f"[CQ:at,qq={user_id}] 画好了喵~ (今日剩余 {remaining}/{limit})"
+    return f"[CQ:at,qq={user_id}] 画好了喵~ (今日用量 {remaining}/{limit})"
 
 
 async def cmd_video(args, user_id, group_id, sender_name, is_group, bot_qq):
