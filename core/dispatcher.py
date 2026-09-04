@@ -328,7 +328,12 @@ class EventDispatcher:
 
         # ── 图片处理 ──
         if msg_type == "图片":
-            is_img_mentioned = bool(re.search(rf'@{bot_qq}(?!\d)', raw_message))
+            # ★ v2.0.4aa: raw_message 是 CQ 码形态 [CQ:at,qq=xxx]，原 @QQ 正则匹配不到；
+            #   补 CQ 匹配修复"@bot 发图识别"静默失效
+            is_img_mentioned = bool(
+                re.search(rf'@{bot_qq}(?!\d)', raw_message)
+                or re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', raw_message or "")
+            )
             img_result = await self._process_image(msg_content, cfg, chat_id, is_group, user_id, sender_name, is_img_mentioned)
             if is_img_mentioned and not img_result.startswith("[图片]"):
                 msg_type = "文字"
@@ -378,7 +383,12 @@ class EventDispatcher:
             
             # ★ 检查引用消息中是否包含文件（错误报告）
             # 私聊无条件检查，群聊需 @机器人
-            is_mentioned = bool(re.search(rf'@{bot_qq}(?!\d)', msg_content))
+            # ★ v2.0.4aa: 同 pipeline，@ 检测兼容 bot 名替换 + CQ 码
+            is_mentioned = bool(
+                re.search(rf'@{bot_qq}(?!\d)', msg_content)
+                or (cfg.bot_name and re.search(rf'@{re.escape(str(cfg.bot_name))}(?!\w)', msg_content))
+                or re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', raw_message or "")
+            )
             if not is_group or is_mentioned:
                 logger.info("📎 检测到@机器人 + 引用消息，检查是否包含错误报告文件...")
                 file_info = await self._fetch_quoted_file(reply_id)
