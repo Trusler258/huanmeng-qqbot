@@ -144,7 +144,7 @@ def format_stats_report(stats: dict, cfg, group_id: int, title: str = "今日群
     # Top 5 发言榜
     lines.append("📊 发言排行 (前5):")
     for i, (uid, v) in enumerate(user_entries[:5], 1):
-        name = cfg.qq_name_map.get(uid, uid)
+        name = cfg.get_display_name(uid, group_id=group_id)
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         medal = medals.get(i, f"{i}.")
         active_hours = _active_hours_desc(v.get("hours", {}))
@@ -154,8 +154,8 @@ def format_stats_report(stats: dict, cfg, group_id: int, title: str = "今日群
     if len(user_entries) >= 2:
         most = user_entries[0]
         least = user_entries[-1]
-        most_name = cfg.qq_name_map.get(most[0], most[0])
-        least_name = cfg.qq_name_map.get(least[0], least[0])
+        most_name = cfg.get_display_name(most[0], group_id=group_id)
+        least_name = cfg.get_display_name(least[0], group_id=group_id)
         lines.append("")
         lines.append(f"💬 今日水群王: {most_name} ({most[1]['count']}条) — 话痨认证喵~")
         lines.append(f"🤿 今日潜水王: {least_name} ({least[1]['count']}条) — 需要氧气瓶吗？")
@@ -210,13 +210,17 @@ async def generate_daily_report_image(stats: dict, group_id: int, date_str: str,
     peak_label = f"{peak_hour}:00"
 
     # ── 排行条 ──
+    from core.config import get_config
+    cfg = get_config()
     max_count = user_entries[0][1]["count"] if user_entries else 1
     bar_classes = {0: "rb1", 1: "rb2", 2: "rb3"}
     rank_classes = {0: "r1", 1: "r2", 2: "r3"}
     rank_icons = {0: "🥇", 1: "🥈", 2: "🥉"}
     ranking_rows = []
     for i, (uid, v) in enumerate(user_entries[:8]):
-        name = v.get("name", str(uid))
+        name = cfg.get_display_name(uid, group_id=group_id)
+        if name == str(uid):
+            name = v.get("name", str(uid))
         count = v["count"]
         pct = int(count / max_count * 100)
         rc = rank_classes.get(i, "")

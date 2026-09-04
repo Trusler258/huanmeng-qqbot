@@ -133,6 +133,8 @@ def init_logger(debug_mode: bool = False, log_to_file: bool = True) -> logging.L
 
     _logger = logging.getLogger("huanmeng")
     _logger.setLevel(logging.DEBUG)  # 根级别设为最低，由 handler 控制实际输出
+    # ★ 阻止传播到 root logger：否则 root 的 lastResort handler 会重复打印（双时间戳）
+    _logger.propagate = False
 
     # 防止重复初始化：清理已有 handler
     if _logger.handlers:

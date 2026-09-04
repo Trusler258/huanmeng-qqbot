@@ -797,8 +797,12 @@ async def execute_tool(
         plugin_handler = _find_plugin_tool_handler(tool_name)
         if plugin_handler:
             try:
-                return await plugin_handler(
+                result = await plugin_handler(
                     arguments, user_id, group_id, sender_name, is_group, bot_qq)
+                if isinstance(result, str):
+                    from core.plugin.kook_compat import strip_kook_text
+                    return strip_kook_text(result)
+                return result
             except Exception as e:
                 logger.error("插件工具 %s 执行失败: %s", tool_name, e)
                 return f"插件工具 {tool_name} 执行出错: {e}"

@@ -59,13 +59,17 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     from modules.fav import ensure_fav
     ensure_fav(chat_id, user_id, is_group)
 
-    system_msg = format_lang("poke.message", name=sender_name, bot_name=cfg.bot_name)
+    # ★ 分群感知显示名（戳一戳也要用当前群的昵称）
+    display_name = cfg.get_display_name(user_id, chat_id) if is_group else (sender_name or str(user_id))
+    speaker_label = display_name if display_name != str(user_id) else sender_name
+
+    system_msg = format_lang("poke.message", name=speaker_label, bot_name=cfg.bot_name)
     ctx.append_to_context(chat_id, f"[系统] {system_msg}")
-    logger.info("🐾 戳一戳回复流程启动: from=%s chat=%d", sender_name, chat_id)
+    logger.info("🐾 戳一戳回复流程启动: from=%s chat=%d", speaker_label, chat_id)
 
     related_memories = get_top_memories(system_msg, ctx.get_context(chat_id), chat_id=chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
-    fav_info = f"当前{sender_name}对你的好感度：{fav_val}/100"
+    fav_info = f"当前{speaker_label}对你的好感度：{fav_val}/100"
 
     extra_parts = []
     from datetime import datetime
@@ -105,7 +109,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=ctx.get_context(chat_id),
-        speaker_name=sender_name,
+        speaker_name=speaker_label,
         current_msg=f"[系统] {system_msg}",
         bot_name=cfg.bot_name,
         system_prompt=cfg.system_prompt,
@@ -133,7 +137,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         update_fav(chat_id, user_id, 1, is_group)
         logger.info("戳一戳回复完成: %d句 fav+1", len(sentences))
 
-        await maybe_save_memory(system_msg, sentences[0], sender_name, chat_id, user_id, buffer_snapshot)
+        await maybe_save_memory(system_msg, sentences[0], speaker_label, chat_id, user_id, buffer_snapshot)
 
 
 # ------消息处理主入口------
@@ -146,6 +150,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     """
     if extra_kwargs:
         logger.debug("process_message 收到未识别扩展参数: %s", list(extra_kwargs.keys()))
+    import time as _tm
+    _t_pipe_start = _tm.monotonic()   # ★ v2.0.4r 阶段打点：单条消息总耗时
     from core.context_manager import get_context_mgr
     cfg = get_config()
     ctx = get_context_mgr()
@@ -164,10 +170,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         }
         for hook in _pre_hooks:
             try:
-                result = await hook(_msg_dict)
+                # ★ v2.0.4r: 单 hook 10s 超时，防插件 hook 卡死整条消息
+                result = await asyncio.wait_for(hook(_msg_dict), timeout=10.0)
                 if result is not None and isinstance(result, str):
                     await send_by_chat_type(result, chat_id, is_group, user_id if not is_group else None)
                     return
+            except asyncio.TimeoutError:
+                logger.warning("插件 pre-hook 超时跳过: %s", getattr(hook, "__name__", hook))
             except Exception:
                 pass
 
@@ -227,7 +236,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 role_tag = "admin"
         except ImportError:
             pass
-    display_name = cfg.get_display_name(user_id, chat_id)
+    # ★ 显示名：事件自带 card 优先（dispatcher 已处理），缺失时用分群/全局映射补全
+    display_name = sender_name
+    if not display_name or display_name == str(user_id):
+        mapped = cfg.get_display_name(user_id, chat_id)
+        display_name = mapped if mapped else sender_name
     fav_val = get_fav(chat_id, user_id, is_group)
 
     # ★ 好感度 -100 → 直接忽略
@@ -237,13 +250,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     context_line = f"[{role_tag}] {display_name}[fav={fav_val}]: {msg_content}"
 
-    buffer_text = f"{sender_name}: {msg_content}"
+    buffer_text = f"{display_name}: {msg_content}"
     if quoted_msg:
-        buffer_text = f"{sender_name} (回复「{quoted_msg[:80]}」): {msg_content}"
+        buffer_text = f"{display_name} (回复「{quoted_msg[:80]}」): {msg_content}"
     ctx.append_to_buffer(chat_id, buffer_text)
 
     from modules.stm import add_entry as stm_add
-    stm_add(chat_id, role_tag, f"{sender_name}: {msg_content}", sender_name)
+    stm_add(chat_id, role_tag, f"{display_name}: {msg_content}", display_name)
 
     # ------指令拦截------
     # /~ /# / 三种前缀都触发指令
@@ -289,6 +302,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             ctx.get_context(chat_id), cfg.bot_name, bot_qq,
             reply_threshold_override=custom_threshold,
         )
+    logger.debug("PIPE 回复判断完成 耗时%.2fs → should_reply=%s (total %.2fs)",
+                 _tm.monotonic() - _t_pipe_start, should_reply, _tm.monotonic() - _t_pipe_start)
 
     if not should_reply:
         return
@@ -301,7 +316,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
 
     # ------记忆检索+好感度+上下文组装------
-    full_msg = f"[{role_tag}] {sender_name}发了: {msg_content}"
+    full_msg = f"[{role_tag}] {display_name}发了: {msg_content}"
     related_memories = get_top_memories(msg_content, ctx.get_context(chat_id), chat_id=chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
 
@@ -363,10 +378,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     except Exception:
         pass
 
-    extra_info_parts.append(f"当前{sender_name}对你的好感度：{fav_val}/100")
+    extra_info_parts.append(f"当前{display_name}对你的好感度：{fav_val}/100")
 
     if is_group:
-        at_list = _build_at_list(ctx.get_context(chat_id), cfg)
+        at_list = _build_at_list(ctx.get_context(chat_id), cfg, group_id=chat_id)
         if at_list:
             extra_info_parts.append(at_list)
 
@@ -521,21 +536,25 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             logger.warning("代码生成管道失败: %s，回退正常生成", e)
 
     # ------JSON LLM生成------
-    logger.info("开始生成回复: speaker=%s chat=%d", sender_name, chat_id)
+    logger.info("开始生成回复: speaker=%s chat=%d (判断后已耗时%.2fs)",
+                display_name, chat_id, _tm.monotonic() - _t_pipe_start)
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
-        msg_history=msg_history_for_llm, speaker_name=sender_name, current_msg=full_msg,
+        msg_history=msg_history_for_llm, speaker_name=display_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
         is_group=is_group, extra_info=extra_info_for_llm,
         max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
     )
+    logger.debug("PIPE LLM生成完成 耗时%.2fs → %d句 (total %.2fs)",
+                 _tm.monotonic() - _t_pipe_start, len(sentences) if sentences else 0,
+                 _tm.monotonic() - _t_pipe_start)
 
     if not sentences:
         error_lines = [
             "呜呜，回复生成失败了喵~",
             f"错误: LLM返回空内容",
             f"时间: {now.strftime('%H:%M:%S')}",
-            f"对话者: {sender_name}",
+            f"对话者: {display_name}",
             f"上下文: {len(msg_history_for_llm)}轮",
             "请联系管理员 @Trusler 解决喵~",
         ]
@@ -560,7 +579,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # actor 始终以真实发送者为准，不信任 LLM 输出
     if origin == "user" and (not actor or actor.get("qq") != user_id):
-        actor = {"name": sender_name, "qq": user_id}
+        actor = {"name": display_name, "qq": user_id}
 
     # ------FILE文件处理------
     _file_re = re.compile(r'\[FILE:(.+?)\](.*?)\[/FILE\]', re.DOTALL)
@@ -587,6 +606,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if sentences:
         new_lines = []
         _cmd_re = _re.compile(r'/(?:\~|\#|(?=[a-zA-Z]))\s*(\w+)(?:\s+\[?([^\]]*)\]?)?')
+        # 占位符/示例特征：含这些词的 CALL 是 LLM 在"教用法"，不是真调用，只删不执行
+        _placeholder_re = _re.compile(r'@?(某人|某玩家|某群友|用户名|昵称|对方|某某|xxx|XX|示例|例子|比如)')
+        # 教学上下文特征：这行在解释用法（示例/怎么用），里面的指令文本都是示例文本
+        _teach_re = _re.compile(r'(比如|例如|示例|格式[:：是]?|用法[:：是]?|后面加|前面加|可以加|加上|就行|即可|写成|形如|指令是|命令是|或者)')
         for _line in sentences:
             _line = str(_line) if _line else ""
             _added = 0
@@ -597,6 +620,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     # Only intercept real commands, not random text matching the pattern
                     from modules.commands import COMMAND_MAP as _CM
                     if _cn in _CM:
+                        # ★ 防幻觉执行：示例/占位符/教学语境 只删文本不执行
+                        if _placeholder_re.search(_ca):
+                            logger.info("跳过示例CALL(含占位符): /~%s %s", _cn, _ca)
+                            continue
+                        if _teach_re.search(_line):
+                            logger.info("跳过教学CALL(用法解释行): /~%s %s | 行: %s", _cn, _ca, _line[:60])
+                            continue
                         llm_calls.append({"name": _cn, "args": _ca})
                         _added += 1
                         logger.info("从回复中自动提取CALL: /~%s %s", _cn, _ca)
@@ -630,10 +660,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 continue
             # 追踪：有人叫bot执行 → 用actor的QQ；bot自己执行 → 用bot_qq
             caller_id = user_id
-            caller_name = sender_name
+            caller_name = display_name
             if isinstance(actor, dict) and actor.get("qq"):
                 caller_id = int(actor["qq"])
-                caller_name = actor.get("name", sender_name)
+                caller_name = actor.get("name", display_name)
             elif origin == "bot":
                 caller_id = bot_qq
                 caller_name = cfg.bot_name
@@ -745,13 +775,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         for s in sentences:
             for hook in _post_hooks:
                 try:
-                    modified = await hook(s, _msg_dict)
+                    # ★ v2.0.4r: 单 hook 10s 超时
+                    modified = await asyncio.wait_for(hook(s, _msg_dict), timeout=10.0)
                     if modified is None:
                         continue
                     if modified == "":
                         s = None
                         break
                     s = modified
+                except asyncio.TimeoutError:
+                    logger.warning("插件 post-hook 超时跳过: %s", getattr(hook, "__name__", hook))
                 except Exception:
                     pass
             if s is not None:
@@ -904,7 +937,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     buffer_snapshot = list(ctx.get_buffer(chat_id))
     await maybe_save_memory(msg_content, sentences[0] if sentences else "", sender_name, chat_id, user_id, buffer_snapshot)
 
-    logger.info("✅ 管道处理完成: %d句 sent chat=%d", len(sentences), chat_id)
+    logger.info("✅ 管道处理完成: %d句 sent chat=%d (总耗时%.2fs)",
+                len(sentences), chat_id, _tm.monotonic() - _t_pipe_start)
 
     # ── 后台提取用户画像（不阻塞）──
     asyncio.ensure_future(_async_extract_profile(user_id, sender_name, msg_content))
@@ -1000,17 +1034,28 @@ def get_msglog_context(current_msg, context, chat_id):
         return ""
 
 
-def _build_at_list(context, cfg):
+def _build_at_list(context, cfg, group_id: int = 0):
     import re
     seen = {}
     for line in reversed(context[-30:]):
         m = re.match(r'\[(admin|friend|群友)\]\s+(.+?):', line)
         if m:
             name = m.group(2).strip()
-            for uid, n in cfg.qq_name_map.items():
-                if n == name and uid not in seen:
-                    seen[str(uid)] = name
-                    break
+            # 反查 QQ：先查分群映射，再查全局
+            found_uid = None
+            if group_id:
+                per = cfg.group_nicknames.get(str(group_id), {})
+                for uid, n in per.items():
+                    if n == name and uid not in seen:
+                        found_uid = uid
+                        break
+            if found_uid is None:
+                for uid, n in cfg.qq_name_map.items():
+                    if n == name and uid not in seen:
+                        found_uid = uid
+                        break
+            if found_uid:
+                seen[str(found_uid)] = name
         if len(seen) >= 8:
             break
     if not seen:

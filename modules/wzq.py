@@ -626,7 +626,8 @@ async def render_board(chat_id: int, cfg, test_mode: bool = False,
         white_name = "Player2"
     else:
         def qq_name(qq: int) -> str:
-            return cfg.qq_name_map.get(str(qq), str(qq))
+            # ★ 分群感知：棋盘渲染用当前局所在群的昵称
+            return cfg.get_display_name(str(qq), group_id=chat_id)
         black_name = qq_name(game.black)
         white_name = qq_name(game.white)
 
