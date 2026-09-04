@@ -771,3 +771,26 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 本地单测：@幻梦/@3682248514/@他人/CQ码 四形态全部命中正确
 - 教训：改"消息文本形态"（替换层）必须 grep 全仓所有依赖该形态的检测点再动手，
   不能只验证替换层本身；文本从 @QQ→@名字 会连带弄死所有 @QQ 正则
+
+## 注记（非代码版本）— 识图 Connection error 根因：.env 缺智谱 key — 2026.9.4
+- 9-2 v2.0.4r 把 glm-4v-flash Connection error 当"上游故障"是误判：实际 [model.picture]
+  provider=ZHIPU 但 config/.env 从未配 ZHIPU_URL/KEY → url/key 空回落默认 OpenAI 端点
+- 用户提供智谱 key 后 .env 追加 ZHIPU_URL/ZHIPU_KEY → 服务器全链路识别验证通过
+- 附带：SILICONFLOW_KEY 已失效(Token is invalid)，judge_cheap 靠熔断兜底，待换新 key
+- 教训：排查 Connection error 先验 .env 对应 provider 的 URL/KEY 是否配置且有效，再谈上游
+
+## v2.0.4ab — @其他同名"幻梦"也响应（v2.0.4aa 文本匹配过宽）— 2026.9.4
+
+### 现象（用户实测）
+- 群友昵称也叫"幻梦"，@那个真人 → bot 也跟着响应
+- 根因：v2.0.4aa 给 is_mentioned 加了 `@bot_name` **文本**匹配（@幻梦）兜底——
+  @真人幻梦与 @bot 在文本层都是"@幻梦"，无法区分 QQ → 误判
+- v2.0.4aa 当时为兼容"@QQ 被替换成 @bot名"用了文本匹配，属妥协方案
+
+### 修复（3 文件，@ 判定只信权威 at 段）
+- @ 检测全部改回**只认 QQ**：raw_message 的 `[CQ:at,qq=bot_qq]`（权威）+ msg_content
+  `@bot_qq` 数字（raw 无 CQ 时兜底）；**彻底移除 @bot_name 文本匹配**
+- pipeline.py:300 主回复判断 / dispatcher.py:381 错误报告检查 / judge.py:258
+- @bot 在文本层仍被替换成 @幻梦（v2.0.4y(b)，LLM 上下文友好），但与"是否响应"
+  判定解耦——判定看 at 段 QQ，文本只影响 LLM 阅读
+- 本地单测 5 形态：真@bot(CQ)/@真人幻梦/@QQ数字/@群友/无@ 全部符合预期

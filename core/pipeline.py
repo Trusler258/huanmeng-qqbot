@@ -297,15 +297,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------回复判断------
     should_reply = False
     import re as _re
-    # ★ v2.0.4aa(2026-09-04): @ 检测必须同时认 bot QQ 数字与 bot 名字。
-    #   v2.0.4y(b) 起 username.replace_at_in_message 把消息里的 @bot_qq 替换成
-    #   @bot_name(如 @幻梦)，只匹配 @QQ 会让所有 @bot 消息落到下方"@他人→SKIP"，
-    #   bot 对 @ 完全静默（实测 11:45 群1058782600 引用追问被吞）。raw_message 兜底
-    #   兼容 CQ 码形态 [CQ:at,qq=xxx]。
+    # ★ v2.0.4ab(2026-09-04): @ 检测只信权威来源——raw_message 的 CQ at 段 qq=bot_qq。
+    #   v2.0.4aa 曾加 @bot_name 文本匹配(如 @幻梦)兜底 → 群友昵称同名时 @真人也被
+    #   误判成 @bot（用户实测）。文本 @名字无法区分 QQ，必须回到 at 段 QQ 号判断。
+    #   msg_content 里 @bot_qq 数字仅作 raw 无 CQ 形态时的兜底。
     is_mentioned = bool(
-        _re.search(rf'@{bot_qq}(?!\d)', msg_content)
-        or (cfg.bot_name and _re.search(rf'@{_re.escape(str(cfg.bot_name))}(?!\w)', msg_content))
-        or (raw_message and _re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', str(raw_message)))
+        (raw_message and _re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', str(raw_message)))
+        or _re.search(rf'@{bot_qq}(?!\d)', msg_content)
     )
     group_setting = cfg.group_settings.get(chat_id, {}) if is_group else {}
     at_only = group_setting.get("at_only", False)
