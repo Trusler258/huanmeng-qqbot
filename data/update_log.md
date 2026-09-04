@@ -810,3 +810,20 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 2. changelog 注入 6 条 → 3 条（/~up 可查全部）
 - 预期：system 21194 → ~13700 字符（-35~40%），miss 成本同步降；命中率分母变小
 - 不影响行为：问架构/版本/能力时 pipeline 仍会注入完整架构（走末尾不污染缓存）
+
+## v2.0.4ad — judge/utils 换 DeepSeek（Qwen 15.8s → 1.25s 光速响应）— 2026.9.5
+### 现象
+- 用户反馈 Qwen judge 太慢：SiliconFlow Qwen2.5-7B-Instruct 实测单次 15.8s
+  （免费模型高峰排队），judge 阶段每条普通消息都等它 → 回复节奏拖沓
+- 用户提议：独立的 DeepSeek V4 Flash 实例做判断（提示词与回复人格隔离）
+### 改动（config/bot_config.toml 两段，本地+服务器同步）
+- [model.judge_cheap] + [model.utils_small]：Qwen2.5-7B-Instruct@SILICONFLOW →
+  **deepseek-chat@DEEPSEEK**
+- 两段保持同名 → 走 _judge_combined 单次合并调用路径不变；judge 提示词本就独立
+  （call_judgment_pipeline 自带精简 prompt，不注入回复人格），天然满足隔离需求
+- utils_small 同时服务 voice/画像提取等 → 一并提速提准，单次 few tokens 成本可忽略
+- 熔断兜底保留：DeepSeek judge 异常仍走本地规则，不堵队列
+### 验证
+- 服务器实测 call_judgment_pipeline 全链路 1.25s（原 15.8s，12.6x）
+- 部署：服务器 bot_config.toml(.bak_20260905_judge_ds) 精准替换两段（不整文件覆盖，
+  两侧配置结构本就不同），重启 PID active
