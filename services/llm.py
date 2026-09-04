@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time as _time
 from pathlib import Path
 
 # ── 回复 JSON schema ──────────────────────────────────────
@@ -318,7 +319,7 @@ _CMD_DESC = {
     "天气":    "同 weather，查天气",
     "eq":      "查最近地震信息",
     "地震":    "同 eq，查地震",
-    "wzq":     "查五子棋战绩排行榜",
+    "wzq":     "五子棋对战。用法: /~wzq duel @某人 [nofb] 发起挑战(加nofb为无禁手) | /~wzq ai 新手/普通/困难/专家 [nofb] 人机 | /~wzq accept 接受 | /~wzq <坐标> 落子(H8) | /~wzq board 看棋盘。nofb必须跟在duel/ai后面，不能单独用",
     # 搜索 / 阅读
     "search":  "搜索互联网获取信息，返回总结",
     "read":    "阅读网页内容，返回总结",
@@ -371,7 +372,7 @@ _CMD_DESC = {
     "语音":    "同 voice",
     "box":     "查看或加入小游戏盒子",
     # 五子棋 / 象棋 / 翻译
-    "五子棋":   "发起五子棋对战",
+    "五子棋":   "同 wzq，五子棋对战（duel/ai 可加 nofb 无禁手）",
     "象棋":    "发起象棋对战",
     "tr":      "翻译文本到指定语言",
     "翻译":    "同 tr，翻译文本",
@@ -399,9 +400,74 @@ _CMD_DESC = {
 
 # ── 底层调用：同步 OpenAI → 异步执行器 ────────────────────
 
-def _create_client(model_cfg: ModelConfig) -> OpenAI:
-    """创建 OpenAI 客户端实例"""
-    return OpenAI(base_url=model_cfg.url, api_key=model_cfg.key, timeout=60.0)
+# ══ 模型级熔断（Circuit Breaker，v2.0.4r）══
+# 背景：2026-09-02 22:45 事故 —— SiliconFlow(Qwen2.5-7B) 故障，judge 阶段每条消息
+#       都白等 15s 超时，per-group 串行队列从 2 积压到 8，连 /~restart 指令都被拖 45s。
+# 设计：按 model.name 独立计数，连续 3 次失败(且 5 分钟内) → 熔断冷却 180s，
+#       重复熔断指数退避(×2，封顶 600s)；任意一次成功即清零复位。
+#       熔断期间 judge 类调用跳过模型直接走本地规则兜底，毫秒级出队不再拖队列。
+_CIRCUIT: dict[str, dict] = {}          # model.name -> {fails, first_fail_ts, open_until, open_count}
+_CIRCUIT_MAX_FAILS = 3                  # 连续失败 N 次打开
+_CIRCUIT_WINDOW = 300                   # N 次失败须发生在该秒数内（防零散失败误开）
+_CIRCUIT_COOLDOWN = 180                 # 首次熔断冷却秒数
+_CIRCUIT_MAX_COOLDOWN = 600             # 指数退避封顶
+
+
+def _circuit_key(model_cfg) -> str:
+    return (getattr(model_cfg, "name", "") or "?").split("/")[-1][:24]
+
+
+def _record_call_success(model_cfg) -> None:
+    """调用成功 → 清空该模型熔断状态"""
+    k = _circuit_key(model_cfg)
+    st = _CIRCUIT.pop(k, None)
+    if st is not None:
+        logger.info("熔断[%s] 调用成功，熔断状态已复位", k)
+
+
+def _record_call_failure(model_cfg) -> None:
+    """调用失败(超时/连接错误) → 累计失败计数，达阈值打开熔断"""
+    k = _circuit_key(model_cfg)
+    now = _time.time()
+    st = _CIRCUIT.setdefault(k, {"fails": 0, "first_fail_ts": 0.0, "open_until": 0.0, "open_count": 0})
+    # 冷却期内的失败只续期，不重复计数
+    if st["open_until"] > now:
+        return
+    st["fails"] += 1
+    if st["first_fail_ts"] == 0.0:
+        st["first_fail_ts"] = now
+    if st["fails"] >= _CIRCUIT_MAX_FAILS:
+        if now - st["first_fail_ts"] <= _CIRCUIT_WINDOW:
+            base = _CIRCUIT_COOLDOWN * (2 ** min(st["open_count"], 3))
+            st["open_until"] = now + min(base, _CIRCUIT_MAX_COOLDOWN)
+            st["open_count"] += 1
+            logger.error("熔断[%s] 连续%d次失败 → 冷却%.0fs(第%d次熔断)，期间走规则兜底",
+                         k, st["fails"], st["open_until"] - now, st["open_count"])
+        # 失败窗口太长 → 视为零散失败，重新起算
+        st["fails"] = 0
+        st["first_fail_ts"] = 0.0
+
+
+def is_model_circuit_open(model_cfg) -> bool:
+    """该模型是否处于熔断冷却期"""
+    k = _circuit_key(model_cfg)
+    st = _CIRCUIT.get(k)
+    return bool(st and st["open_until"] > _time.time())
+
+
+def circuit_status() -> dict:
+    """熔断状态快照（供 /~status 之类排查）"""
+    return {k: dict(v) for k, v in _CIRCUIT.items()}
+
+
+def _create_client(model_cfg: ModelConfig, timeout: float = 60.0) -> OpenAI:
+    """创建 OpenAI 客户端实例。
+    ★ v2.0.4r: timeout 不再写死 60s。call_llm 外层 wait_for 超时后，
+    executor 线程里阻塞的同步调用若底层 timeout 更大，会继续占用线程池
+    （默认池 ≤32 线程），多条超时消息即可饿死线程池，拖垮所有 LLM 调用。
+    底层超时对齐到 调用超时+5s，保证超时后线程 5s 内自动释放。
+    """
+    return OpenAI(base_url=model_cfg.url, api_key=model_cfg.key, timeout=max(timeout, 10.0))
 
 
 async def call_llm(
@@ -426,7 +492,7 @@ async def call_llm(
     Returns:
         模型返回的文本内容；出错返回空字符串
     """
-    client = _create_client(model_cfg)
+    client = _create_client(model_cfg, timeout=timeout + 5.0)
     loop = asyncio.get_running_loop()
     
     # ★ max_tokens<=0 视为不设上限（DeepSeek 对 max_tokens=0 报 400 Invalid）
@@ -489,14 +555,17 @@ async def call_llm(
         preview = text[:50] + ("..." if len(text) > 50 else "")
         logger.info("LLM [%s] 返回 %d字符 耗时%.1fs → \"%s\"",
                    model_cfg.name[:20], len(text), elapsed, preview.replace("\n", "\\n"))
+        _record_call_success(model_cfg)
         return text
     except asyncio.TimeoutError:
         elapsed = loop.time() - start_time
         logger.error("LLM [%s] 调用超时 (%.1fs/%.1fs)", model_cfg.name[:20], elapsed, timeout)
+        _record_call_failure(model_cfg)
         return ""
     except Exception as e:
         elapsed = loop.time() - start_time
         logger.error("LLM [%s] 调用失败 (%.1fs): %s", model_cfg.name[:20], elapsed, e)
+        _record_call_failure(model_cfg)
         return ""
 
 
@@ -521,7 +590,7 @@ async def call_llm_with_tools(
     返回 ToolCallResult，包含可能的 tool_calls。
     """
 
-    client = _create_client(model_cfg)
+    client = _create_client(model_cfg, timeout=timeout + 5.0)
     loop = asyncio.get_running_loop()
 
     # ★ max_tokens<=0 视为不设上限（DeepSeek 对 max_tokens=0 报 400 Invalid）
@@ -562,13 +631,16 @@ async def call_llm_with_tools(
                        model_cfg.name[:20],
                        [(t["name"], str(t["arguments"])[:60]) for t in tc_list])
 
+        _record_call_success(model_cfg)
         return ToolCallResult(content=content.strip(), tool_calls=tc_list)
 
     except asyncio.TimeoutError:
         logger.error("LLM FC [%s] 超时", model_cfg.name[:20])
+        _record_call_failure(model_cfg)
         return ToolCallResult(content="", tool_calls=[])
     except Exception as e:
         logger.error("LLM FC [%s] 失败: %s", model_cfg.name[:20], e)
+        _record_call_failure(model_cfg)
         return ToolCallResult(content="", tool_calls=[])
 
 
@@ -845,8 +917,20 @@ async def generate_multi_reply_with_tools(
 
     # ── 如果工具已执行，强制 json_mode 回复 ──
     if errors or data_results or action_results:
+        # ★ v2.0.4u(2026-09-04): 工具结果已返回 → 给最终回复轮注入"诚实归因"提醒。
+        #   现象：search_web 查完，LLM 却说"哦这个我知道喵"（装成本来就会），
+        #   与上一句"让我查查"自相矛盾。此处插一条 system 提醒，配合 main_skill.md 规则10。
+        _final_msgs = list(msgs)
+        _final_msgs.insert(1, {
+            "role": "system",
+            "content": (
+                "你刚才调用了工具查询/搜索，现在请基于工具返回的结果回答。"
+                "回复必须如实体现信息是刚查到的：开头可用'我刚查了下''搜到啦''查到啦'等，"
+                "禁止说'这个我知道''我记得''早就知道'这类装作自己本来就会的话。"
+            ),
+        })
         json_raw = await call_llm(
-            reply_model, msgs,
+            reply_model, _final_msgs,
             max_tokens=max(max_tokens or 0, 8000),
             temperature=0.4, json_mode=True,
         )
@@ -1053,7 +1137,7 @@ def _build_messages(
             continue
         is_bot = False
         content = line
-        for sep in [f"{bot_name}: ", f"{bot_name}："]:
+        for sep in [": ", "："]:
             if line.startswith(f"{bot_name}{sep}"):
                 is_bot = True
                 content = line[len(bot_name) + len(sep):].strip()
@@ -1082,7 +1166,7 @@ def _build_messages(
     user_parts.append(fmt_reminder)
     # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
     msg_text = current_msg[:2500] + ("…[截断]" if len(current_msg) > 2500 else "")
-    user_parts.append(f"{speaker_name} 发消息：「{msg_text}」")
+    user_parts.append(f"【当前对话者】{speaker_name}\n{speaker_name} 发消息：「{msg_text}」")
     msgs.append({"role": "user", "content": "\n".join(user_parts)})
     return msgs
 
@@ -1325,7 +1409,7 @@ async def judge_interest(
         [{"role": "system", "content": system}],
         max_tokens=2,
         temperature=0.5,
-        timeout=15.0,
+        timeout=5.0,   # v2.0.4r: judge 只输出数字，5s 足够；15s 在故障期拖死队列
     )
     
     digits = "".join(c for c in result if c.isdigit())
@@ -1357,7 +1441,7 @@ async def judge_should_reply_cheap(
         [{"role": "user", "content": prompt}],
         max_tokens=1,
         temperature=0,
-        timeout=10.0,
+        timeout=5.0,   # v2.0.4r
     )
     should = result.strip() == "1"
     logger.debug("廉价判断模型: msg='%s...' → %s", msg[:30], "REPLY" if should else "SKIP")
@@ -1383,7 +1467,7 @@ async def judge_need_search(
         [{"role": "user", "content": prompt}],
         max_tokens=1,
         temperature=0,
-        timeout=10.0,
+        timeout=5.0,   # v2.0.4r
     )
     need = result.strip() == "1"
     logger.debug("搜索判断: msg='%s...' → %s", msg[:30], "SEARCH" if need else "NO_SEARCH")
@@ -1407,6 +1491,15 @@ async def call_judgment_pipeline(
     # 相同模型 → 合并为一次调用
     has_cheap = cheap_model and cheap_model.url and cheap_model.key and cheap_model.name
     has_judge = judge_model and judge_model.url and judge_model.key and judge_model.name
+
+    # ★ v2.0.4r 熔断短路：上游判断模型故障期跳过模型调用，本地规则毫秒级判定，
+    #   防止"每条群消息白等超时秒数"把 per-group 串行队列堵死（指令也被拖）。
+    if has_cheap and is_model_circuit_open(cheap_model):
+        _interest, _cheap, _arch = _fallback_judge(msg, personality)
+        logger.warning("熔断[%s] 生效 → 规则兜底: msg='%s...' cheap=%s interest=%d (剩%.0fs)",
+                       cheap_model.name.split("/")[-1][:24], msg[:20], _cheap, _interest,
+                       max(0.0, _CIRCUIT.get(_circuit_key(cheap_model), {}).get("open_until", 0) - _time.time()))
+        return _interest, _cheap, _arch
 
     if has_cheap and has_judge and cheap_model.name == judge_model.name:
         return await _judge_combined(msg, sender_name, context_str, cheap_model, personality)
@@ -1435,6 +1528,32 @@ async def call_judgment_pipeline(
     return interest_score, should_reply_cheap, is_arch
 
 
+# 熔断期间规则兜底：只在消息明显需要 bot 时放行（宁缺勿滥，快速出队不打扰）
+_FALLBACK_ASK_RE = re.compile(
+    r'(怎么|如何|什么|为什么|谁|哪|几岁|多少|是不是|会不会|能不能|可不可以|'
+    r'帮我|给我|介绍一下|讲讲|说说|说一下|来一个|来张|来份|搜|查|找|'
+    r'天气|几点|时间|新闻|@|？|\?)'
+)
+
+
+def _fallback_judge(msg: str, personality_core: str) -> tuple[int, bool, bool]:
+    """上游判断模型熔断时的本地规则判定。
+    返回 (兴趣度, 是否回复, 是否在问架构) —— 与 call_judgment_pipeline 契约一致。
+    """
+    text = (msg or "").strip()
+    bot_name = get_config().bot_name
+    if not text:
+        return 0, False, False
+    # 明确点名 bot / @bot → 必回（给满分，确保过 judge.py 的阈值判断）
+    if bot_name and (bot_name in text):
+        return 10, True, False
+    # 明确提问 / 请求 → 回（让主模型接住；给 9 确保 > reply_interest=8 阈值）
+    if _FALLBACK_ASK_RE.search(text[-60:]):
+        return 9, True, False
+    # 其余一律不回（无模型判断时不打扰群聊）
+    return 0, False, False
+
+
 async def _judge_combined(
     msg: str, sender_name: str, context_str: str,
     model: ModelConfig, personality_core: str,
@@ -1450,9 +1569,14 @@ async def _judge_combined(
         f"【上下文】{context_str}\n"
         f"【新消息】{msg}\n"
     )
-    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=20, temperature=0.4, timeout=15.0)
+    result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=20, temperature=0.4, timeout=5.0)  # v2.0.4r: 15s→5s
     result = result.strip()
     logger.debug("合并判断: '%s...' → '%s'", msg[:30], result)
+    # ★ v2.0.4r: call_llm 失败返回 ""（与模型说"0|0|0"同形）。这里区分：
+    #   空串/无法解析 = 调用失败 → 走规则兜底并返回，避免误判"不该回"而静默
+    if not result:
+        logger.warning("合并判断调用失败(空返回) → 规则兜底")
+        return _fallback_judge(msg, personality_core)
     try:
         parts = result.replace(" ", "").split("|")
         cheap = parts[0].strip() == "1" if len(parts) >= 1 else False
@@ -1460,7 +1584,7 @@ async def _judge_combined(
         is_arch = parts[2].strip() == "1" if len(parts) >= 3 else False
         return min(10, max(0, interest)), cheap, is_arch
     except Exception:
-        return 0, False, False
+        return _fallback_judge(msg, personality_core)
 
 
 async def call_summary_model(
