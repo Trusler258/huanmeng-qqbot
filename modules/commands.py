@@ -1329,6 +1329,7 @@ async def cmd_recall(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     for i, r in enumerate(records, 1):
         t = time.strftime("%H:%M:%S", time.localtime(r["time"]))
+        mid = r.get("msg_id", "")  # 消息号：可按它在 msglog 中精确匹配（撤回前已录制时）
         uid = str(r["user_id"])
         name = cfg.get_display_name(uid, group_id=group_id)
 
@@ -1352,14 +1353,14 @@ async def cmd_recall(args, user_id, group_id, sender_name, is_group, bot_qq):
             if r["user_id"] == 0:
                 op_id = str(r.get("recalled_by", ""))
                 op_name = cfg.get_display_name(op_id, group_id=group_id)
-                lines.append(f"{i}. [{t}] {op_name} 撤回了自己的消息: {content_display}")
+                lines.append(f"{i}. [{t} mid={mid}] {op_name} 撤回了自己的消息: {content_display}")
             else:
-                lines.append(f"{i}. [{t}] {name} 撤回了自己的消息: {content_display}")
+                lines.append(f"{i}. [{t} mid={mid}] {name} 撤回了自己的消息: {content_display}")
         else:
             op_id = str(r.get("recalled_by", ""))
             op_name = cfg.get_display_name(op_id, group_id=group_id)
             target_name = name if r["user_id"] != 0 else "某人"
-            lines.append(f"{i}. [{t}] {op_name} 撤回了 {target_name} 的消息: {content_display}")
+            lines.append(f"{i}. [{t} mid={mid}] {op_name} 撤回了 {target_name} 的消息: {content_display}")
 
     # 先发送图片
     from services.sender import send_group_msg

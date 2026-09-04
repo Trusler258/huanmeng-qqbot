@@ -827,3 +827,17 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 服务器实测 call_judgment_pipeline 全链路 1.25s（原 15.8s，12.6x）
 - 部署：服务器 bot_config.toml(.bak_20260905_judge_ds) 精准替换两段（不整文件覆盖，
   两侧配置结构本就不同），重启 PID active
+
+## v2.0.4ae — /~recall 展示消息号(msg_id) — 2026.9.5
+### 背景（用户实测 /recall 质疑可用性）
+- 用户问：1) 能获取消息号码吗 2) 能否按消息号找回记录
+- 排查实测：
+  - 撤回事件自带 message_id，msglog 录制/幽灵条目都存有 msg_id，但 /~recall 展示层
+    一直没显示 → 用户看不到"消息号"这回事
+  - 撤回后调平台 get_msg(message_id) 补救原文 → 实测返回空(QQ 服务端已清内容)，
+    撤回不可逆只能靠 bot 事前录制(msglog)
+  - 数据审计：全群 16 条撤回 7 条有原文(44%)，9 条幽灵 msg_id 在 msglog 确不存在
+    (bot 离线期/发送失败无 message_id 的消息录不上)，非匹配 bug 是录制覆盖缺口
+### 改动（modules/commands.py cmd_recall）
+- 每行展示加 mid=消息号：`1. [00:45:51 mid=1878792805] 枭茂密 撤回了 ...`
+- 用户可拿 mid 对账/反馈；msglog 按 msg_id 精确匹配逻辑本就存在(mark_recalled)
