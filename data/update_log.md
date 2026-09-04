@@ -637,3 +637,24 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 ### 约束核验（无需改代码）
 - JSON 路径不截断 replies 句数（[:5] 仅在纯文本降级路径）
 - sender.send_sentences 逐条发送、不截断内容、\n 原样保留 → 句内换行格式可行
+
+## v2.0.4w — 严格 JSON + 句号克制 — 2026.9.4
+
+### 现象（用户贴日志 11:00:44 群1058782600）
+- 追问"双亿度"时 LLM 轮1 输出纯文本（非 JSON，内容其实是对的）
+  → "LLM 输出非 JSON，强制重试" json_mode=True → DeepSeek json_object 返回**空**
+  → 老逻辑"JSON模式返回空，关闭json_mode重试"直接降级普通模式 → 又可能吐非 JSON
+- 另一隐患：兜底重试 max_tokens=min(...,800) 焊死 800，深度讲解长 JSON 必被截断
+
+### 修复（services/llm.py）
+1. **严格 JSON**：call_llm json_mode 空返回（finish=stop）不再立刻降级普通模式——
+   保持 json_mode 重试最多 2 次（_json_retries 计数 + 追加 _hint_json_output() 强制提示行，
+   DeepSeek json_object 要求 prompt 含 json 字样），仍空才普通兜底一次
+2. 两处兜底 token 800 焊死 → max(max_tokens or 0, 4000)
+   （第2轮空兜底 + 非JSON强制重试；FC最终轮本来就 8000）
+3. 新增 _hint_json_output(messages)：追加强制 JSON 指令
+
+### 提示词（data/main_skill.md v1.1.5→v1.1.6）
+- group_format 规则13 追加【句号克制】：聊天句尾尽量不用"。"，用 ～/喵/啦/哦/呢/嘛/颜文字收尾；
+  深度讲解长句内部可用逗号但句尾少用句号
+- private_format 规则4 同样追加句尾少用句号
