@@ -383,11 +383,11 @@ class EventDispatcher:
             
             # ★ 检查引用消息中是否包含文件（错误报告）
             # 私聊无条件检查，群聊需 @机器人
-            # ★ v2.0.4aa: 同 pipeline，@ 检测兼容 bot 名替换 + CQ 码
+            # ★ v2.0.4ab: 只信 at 段 QQ（CQ at / @QQ 数字），不做 @bot名字文本匹配，
+            #   避免群友昵称与 bot 同名时误触发
             is_mentioned = bool(
-                re.search(rf'@{bot_qq}(?!\d)', msg_content)
-                or (cfg.bot_name and re.search(rf'@{re.escape(str(cfg.bot_name))}(?!\w)', msg_content))
-                or re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', raw_message or "")
+                re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', raw_message or "")
+                or re.search(rf'@{bot_qq}(?!\d)', msg_content)
             )
             if not is_group or is_mentioned:
                 logger.info("📎 检测到@机器人 + 引用消息，检查是否包含错误报告文件...")
