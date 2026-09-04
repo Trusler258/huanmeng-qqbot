@@ -712,3 +712,9 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 ### 验证
 - 部署后同场景实测：轮1 content 先发 → 搜索 → 最终正文直接上干货
 - 本地 py_compile 通过；只改 3 文件 + update_log，未动数据格式
+
+### 补充修复（同版，utils/username.py）
+- 轮1 content 里 LLM 说"主人你@的是别人呀"——根因：replace_at_in_message 对 bot 自身
+  的 @ **保持原始 QQ 号**（@3682248514），LLM 不知道那是自己 → 误判"@的是别人"
+- 修复：bot 自身 @ → 替换为 `@{bot_name}`（dispatcher 早已传 bot_name 但函数没用）；
+  @bot 检测走 raw_message 不受影响，替换只影响 LLM 可见文本

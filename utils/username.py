@@ -160,10 +160,11 @@ async def replace_at_in_message(
         rep = m.group(0)
         try:
             if bot_qq is not None and int(qq) == int(bot_qq):
-                # ★ bot 自身的 @ 保持原始 QQ 号格式，不替换
-                # 避免群名片不同导致 @检测失败
-                rep = m.group(0)
-                logger.debug("@%s → 保持 (机器人自身)", qq)
+                # ★ bot 自身的 @ → 换成 bot 名字，让 LLM 明确知道是在叫自己
+                #   （原: 保持 QQ 号数字 → LLM 收到"@3682248514"误判"主人@的是别人"）
+                #   @bot 检测走 raw_message 原始消息，此处替换只影响 LLM 可见文本
+                rep = f"@{bot_name or '幻梦'}"
+                logger.debug("@%s → @%s (机器人自身)", qq, bot_name or qq)
             else:
                 nick = await get_or_resolve_username(qq, host, port, group_id=group_id)
                 if nick and str(nick) != str(qq):
