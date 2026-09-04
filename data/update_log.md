@@ -841,3 +841,21 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 ### 改动（modules/commands.py cmd_recall）
 - 每行展示加 mid=消息号：`1. [00:45:51 mid=1878792805] 枭茂密 撤回了 ...`
 - 用户可拿 mid 对账/反馈；msglog 按 msg_id 精确匹配逻辑本就存在(mark_recalled)
+
+## v2.0.4af — send_group_msg 拿真实 message_id（bot 消息撤回可命中）— 2026.9.5
+### 背景（承接 v2.0.4ae 排查）
+- 用户点出设计本意：录制带 message_id+原文 → 撤回时按号查原文（msglog 正是此设计，
+  mark_recalled 按 msg_id 精确匹配）
+- 但审计发现缺口主因之一：send_group_msg/send_private_msg 用 fire-and-forget
+  (mgr.send 只返回 bool)，_log_bot_sent 写死 msg_id=0；而 mark_recalled 明确跳过
+  msg_id=0 条目(多条 bot 消息共用 0 无法区分) → 凡走此通道的 bot 消息被撤回
+  永远成幽灵 "[原文未录制]"（实测 00:45:51/18:19:13 两条 bot 消息幽灵）
+### 修复（services/sender.py）
+1. send_group_msg/send_private_msg：fire-and-forget → **call_api 请求-响应**
+   （echo 匹配+超时5s+重试3次+内部重试1次），拿 data.message_id
+2. _log_bot_sent 加 msg_id 参数：有真实 id 以 id 录制(可被撤回匹配)；失败兜底维持 0
+3. 语义增强：call_api 确认送达才返回 True，失败走原 fallback 提示
+### 验证
+- 服务器实测：发送成功 → msglog bot 条目 msg_id=1405274912（原为 0）
+- 影响面：send_group_msg 被指令反馈/推送/错误提示广泛调用，均变为可撤回匹配+确认送达；
+  主回复通道 send_sentences→_send_and_record 本就带真实 id 不受影响
