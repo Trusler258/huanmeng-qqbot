@@ -297,7 +297,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------回复判断------
     should_reply = False
     import re as _re
-    is_mentioned = bool(_re.search(rf'@{bot_qq}(?!\d)', msg_content))
+    # ★ v2.0.4aa(2026-09-04): @ 检测必须同时认 bot QQ 数字与 bot 名字。
+    #   v2.0.4y(b) 起 username.replace_at_in_message 把消息里的 @bot_qq 替换成
+    #   @bot_name(如 @幻梦)，只匹配 @QQ 会让所有 @bot 消息落到下方"@他人→SKIP"，
+    #   bot 对 @ 完全静默（实测 11:45 群1058782600 引用追问被吞）。raw_message 兜底
+    #   兼容 CQ 码形态 [CQ:at,qq=xxx]。
+    is_mentioned = bool(
+        _re.search(rf'@{bot_qq}(?!\d)', msg_content)
+        or (cfg.bot_name and _re.search(rf'@{_re.escape(str(cfg.bot_name))}(?!\w)', msg_content))
+        or (raw_message and _re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', str(raw_message)))
+    )
     group_setting = cfg.group_settings.get(chat_id, {}) if is_group else {}
     at_only = group_setting.get("at_only", False)
     custom_threshold = group_setting.get("reply_threshold")
