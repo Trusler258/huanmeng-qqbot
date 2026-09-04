@@ -261,60 +261,71 @@ def build_local_image_cq(local_path: str) -> str:
 
 
 async def send_group_msg(message: str, group_id: int) -> bool:
-    """发送群聊文本消息"""
+    """发送群聊文本消息
+
+    v2.0.4af(2026-09-05): fire-and-forget(mgr.send) → call_api 请求-响应。
+    旧实现拿不到 message_id，_log_bot_sent 写死 msg_id=0，而 mark_recalled 跳过
+    msg_id=0 条目 → 走本通道的 bot 消息被撤回时永远匹配不到 → "[原文未录制]"。
+    现改为 call_api 拿真实 message_id 录制，撤回可按号命中原文。
+    """
     mgr = get_ws_manager()
-    payload = {
-        "action": "send_group_msg",
-        "params": {"group_id": group_id, "message": message},
-        "echo": "chat",
-    }
-    success = await mgr.send(payload, max_retries=3, retry_delay=5.0)
-    if not success:
-        # 发送 fallback 提示
-        cfg = get_config()
+    cfg = get_config()
+    data = None
+    for attempt in range(3):
+        data = await mgr.call_api("send_group_msg", {"group_id": group_id, "message": message}, timeout=5.0)
+        if data:
+            break
+        if attempt < 2:
+            await asyncio.sleep(1.0)
+    if not data:
+        # 发送失败 → fallback 提示（fire-and-forget 尽力而为）
         fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
-        fallback_payload = {
-            "action": "send_group_msg",
-            "params": {"group_id": group_id, "message": fallback},
-            "echo": "chat_fallback",
-        }
-        await mgr.send(fallback_payload, max_retries=0)
-    # ★ 记录 bot 所有群聊回复到 msglog（排查回复质量）
-    _log_bot_sent(group_id, message if success else fallback)
-    return success
+        try:
+            await mgr.send({"action": "send_group_msg", "params": {"group_id": group_id, "message": fallback}, "echo": "chat_fallback"}, max_retries=0)
+        except Exception:
+            pass
+        _log_bot_sent(group_id, fallback)
+        return False
+    msg_id = int(data.get("message_id", 0) or 0)
+    _log_bot_sent(group_id, message, msg_id=msg_id)
+    return True
 
 
 async def send_private_msg(message: str, user_id: int) -> bool:
-    """发送私聊文本消息"""
+    """发送私聊文本消息（v2.0.4af: call_api 确认送达，语义与群聊对齐）"""
     mgr = get_ws_manager()
-    payload = {
-        "action": "send_private_msg",
-        "params": {"user_id": user_id, "message": message},
-        "echo": "chat",
-    }
-    success = await mgr.send(payload, max_retries=3, retry_delay=5.0)
-    if not success:
-        cfg = get_config()
+    cfg = get_config()
+    data = None
+    for attempt in range(3):
+        data = await mgr.call_api("send_private_msg", {"user_id": user_id, "message": message}, timeout=5.0)
+        if data:
+            break
+        if attempt < 2:
+            await asyncio.sleep(1.0)
+    if not data:
         fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
-        fallback_payload = {
-            "action": "send_private_msg",
-            "params": {"user_id": user_id, "message": fallback},
-            "echo": "chat_fallback",
-        }
-        await mgr.send(fallback_payload, max_retries=0)
-    if success:
-        _log_bot_sent(user_id, message)
-    return success
+        try:
+            await mgr.send({"action": "send_private_msg", "params": {"user_id": user_id, "message": fallback}, "echo": "chat_fallback"}, max_retries=0)
+        except Exception:
+            pass
+        _log_bot_sent(user_id, fallback)
+        return False
+    _log_bot_sent(user_id, message)
+    return True
 
 
-def _log_bot_sent(chat_id: int, content: str):
-    """记录 bot 发送的消息到 msglog（全量归档，用于排查回复质量）"""
+def _log_bot_sent(chat_id: int, content: str, msg_id: int = 0):
+    """记录 bot 发送的消息到 msglog（全量归档，用于撤回匹配与排查）
+
+    v2.0.4af: 增加 msg_id 参数——有真实 message_id 时以真实 id 录制（可被撤回事件
+    按号匹配）；无 id(发送失败兜底)维持 0，mark_recalled 不会误匹配这类条目。
+    """
     try:
         from time import time as _time
         from core.config import get_config
         cfg = get_config()
         entry = {
-            "msg_id": 0,  # fire-and-forget 无 message_id
+            "msg_id": int(msg_id or 0),
             "time": int(_time()),
             "user_id": cfg.bot_qq,
             "type": "bot",
