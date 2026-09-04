@@ -44,6 +44,21 @@ from services.sender import send_sentences, send_by_chat_type, send_raw_group, s
 logger = get_logger("pipeline")
 
 # ------工具函数------
+def _make_interim_sender(chat_id: int, is_group: bool, user_id: int):
+    """构造 FC 先导语发送回调（v2.0.4y）：LLM 调工具前写的自然语先导语，
+    经此先发给用户，避免搜索/查询期间 10s+ 干等。与正常回复同走 send_sentences，
+    保持 stats/msglog 录制一致；先导语为单条，间隔压到 0.2s。"""
+    async def _send(text: str):
+        try:
+            await send_sentences(
+                [text], chat_id, is_group,
+                user_id=user_id if not is_group else None,
+                min_interval=0.2, max_interval=0.2,
+            )
+        except Exception:
+            logger.warning("先导语发送失败: %s", str(text)[:30], exc_info=True)
+    return _send
+
 def _clean_name(name):
     return re.sub(r'[\u200b\u200c\u200d\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]+', '', str(name))
 
@@ -118,6 +133,7 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         extra_info="\n".join(extra_parts),
         max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=cfg.bot_qq,
+        interim_cb=_make_interim_sender(chat_id, is_group, user_id),
     )
 
     if sentences:
@@ -544,6 +560,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         is_group=is_group, extra_info=extra_info_for_llm,
         max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
+        interim_cb=_make_interim_sender(chat_id, is_group, user_id),
     )
     logger.debug("PIPE LLM生成完成 耗时%.2fs → %d句 (total %.2fs)",
                  _tm.monotonic() - _t_pipe_start, len(sentences) if sentences else 0,

@@ -680,3 +680,35 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 2. main_skill v1.1.6→v1.1.7：
    - command_tools 规则0 新增**例外②（名词疑问必搜）**
    - 深度讲解规则24 补：名词类"XX是啥"拿不准就直接搜（不必等用户说"查"字）
+
+## v2.0.4y — FC 先导语先发 + 转述口语化 — 2026.9.4
+
+### 现象（11:26:38 群1017391415，与 v2.0.4x 同场景实测）
+- 用户 @bot 问"雷石东直放站是啥"，LLM 轮1 输出
+  `content="主人你@的是别人呀…这词我确实拿不准，帮你搜搜看吧" + tool_calls=[search_web]`
+- 但轮1 content **从未被发送**：代码只在无 tool_calls 分支用 content，有 tool_calls 直接
+  走工具执行 → 13.6s 后一次性发 3 句正文。期间用户干等以为 bot 没反应，且"帮你查查"
+  的铺垫丢失后正文开头突兀
+- 附带：最终 3 句转述偏百科念稿（直接照抄搜索结果的书面句式），猫娘味不足
+
+### 根因（services/llm.py generate_multi_reply_with_tools）
+- FC 循环 `if not result.tool_calls:` 为假时，content 无任何消费路径即被丢弃
+- assistant 消息 append 时 content 写死 None，后续轮/最终 json 轮 LLM 看不到
+  自己说过"帮你查查"，衔接易重复
+
+### 修复
+1. **llm.py**：签名新增可选 `interim_cb`（async 回调，pipeline 注入发送通道）；
+   FC 轮1 有原生 tool_calls 且 content 为短自然语（1<len≤120、非 JSON/无```/~）
+   → `await interim_cb(content)` **先把先导语发给用户再执行工具**；
+   后续轮 content 不发送（防刷屏）；assistant 消息 content 由 None 改为保留原文
+   （≤300 字才保留）——让最终轮 LLM 看到已说的话，避免重复"我查查/稍等"
+2. **pipeline.py**：新增 `_make_interim_sender()`，主消息(541)与戳一戳(110)两处调用
+   注入 interim_cb，先导语与正常回复同走 send_sentences（stats/msglog 录制一致）
+3. **main_skill.md v1.1.7→v1.1.8**（command_tools）：
+   - 新增**规则11 先导语会先发出**：调工具前的自然语会先发给对方；只写"动手前的话"
+     （知会/安抚），别写结论别提前展开正文；最终回复不重复先导语；先导语禁写 /~xxx
+   - 规则10 补**转述要口语化**：查到的书面资料用猫娘口吻转述，禁整段照抄搜索结果念稿
+
+### 验证
+- 部署后同场景实测：轮1 content 先发 → 搜索 → 最终正文直接上干货
+- 本地 py_compile 通过；只改 3 文件 + update_log，未动数据格式
