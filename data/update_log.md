@@ -794,3 +794,19 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - @bot 在文本层仍被替换成 @幻梦（v2.0.4y(b)，LLM 上下文友好），但与"是否响应"
   判定解耦——判定看 at 段 QQ，文本只影响 LLM 阅读
 - 本地单测 5 形态：真@bot(CQ)/@真人幻梦/@QQ数字/@群友/无@ 全部符合预期
+
+## v2.0.4ac — system 瘦身 40%（缓存 miss 成本砍半）— 2026.9.5
+### 背景
+- 用户反馈 token 缓存命中率低。审计确认 messages 结构本就最优（system 静态前缀 +
+  动态时间/记忆/fav 集中在末尾 user，实测 system 跨调用 md5 恒定 5873977d85）
+- 真凶：**system 单条 21194 字符(~14K tokens)**，其中 cfg.system_prompt 8563 字符里
+  87%(7453) 是 architecture.mermaid 全量节点(70 行)——每条消息都带进前缀，
+  miss 时全额计费；而日常聊天/科普根本用不到架构细节
+- pipeline 本就有按需注入机制：arch_keywords(版本/架构/能力/配置等)命中才经
+  core/arch_loader 注入完整架构到 extra_info 末尾——system 常驻全量属重复浪费
+### 修复（core/config.py 一处）
+1. _build_self_awareness：architecture.mermaid 70 行全量 → **极简一行摘要**
+   （四层 core→services→modules→utils + db/plugins/data），完整架构保持按需注入
+2. changelog 注入 6 条 → 3 条（/~up 可查全部）
+- 预期：system 21194 → ~13700 字符（-35~40%），miss 成本同步降；命中率分母变小
+- 不影响行为：问架构/版本/能力时 pipeline 仍会注入完整架构（走末尾不污染缓存）
