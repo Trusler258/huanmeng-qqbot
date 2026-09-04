@@ -859,3 +859,18 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 服务器实测：发送成功 → msglog bot 条目 msg_id=1405274912（原为 0）
 - 影响面：send_group_msg 被指令反馈/推送/错误提示广泛调用，均变为可撤回匹配+确认送达；
   主回复通道 send_sentences→_send_and_record 本就带真实 id 不受影响
+
+## v2.0.4ag — 修复撤回事件被消息去重吞掉（group_recall 收不到）— 2026.9.5
+### 现象（用户实测抓出）
+- v2.0.4af 部署后 01:01:11 用户发"现在该测撤回了" → 01:01:15 撤回 →
+  01:01:28 /recall 仍只显示旧幽灵，01:01:15 的撤回根本没进记录
+- 日志：01:01:10-20 窗口内 bot 零撤回事件（_handle_recall 未触发），消息却正常收到
+### 根因（dispatcher._dispatch_inner）
+- 消息去重 `_seen_ids` 对所有事件生效，而 OneBot v11 group_recall 事件带的
+  message_id 就是**被撤回消息的 id**——被撤消息刚作为普通消息处理过必然在
+  _seen_ids 里 → 撤回事件命中去重被 return 吞掉 → 撤回永远收不到
+- 9-4 11:45 那次撤回能处理是因为被撤消息当时未被 bot 收到(不在去重集)，纯属侥幸
+### 修复（core/dispatcher.py）
+- 消息去重移入 message 路由分支内，仅对 post_type=message 生效；
+  notice(撤回/戳一戳)/request 事件不参与 message_id 去重
+- 与 v2.0.4af 互补：af 解决"msglog 有真实 msg_id 可匹配"，ag 解决"撤回事件能收到"

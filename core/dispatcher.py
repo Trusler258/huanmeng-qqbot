@@ -68,24 +68,13 @@ class EventDispatcher:
         if not post_type and event.get("message_type"):
             post_type = "message"
 
-        # ── 消息去重（NapCat 偶发双发同一消息）──
-        msg_id = str(event.get("message_id", ""))
-        if msg_id:
-            if msg_id in self._seen_ids:
-                return  # 已处理过，跳过
-            self._seen_ids[msg_id] = None
-            if len(self._seen_ids) > self._seen_max:
-                # 按插入顺序保留最近一半（dict 保持插入顺序）
-                keep = list(self._seen_ids.keys())[-(self._seen_max // 2):]
-                self._seen_ids = {k: None for k in keep}
-
         # ── 静默过滤: meta_event (心跳包，每30秒一次，不计数不记录) ──
         if post_type == "meta_event":
             return
 
         self._msg_count += 1
 
-        # ── 路由 1: notice（戳一搓）──
+        # ── 路由 1: notice（戳一搓/撤回）──
         if post_type == "notice":
             await self._handle_notice(event)
             return
@@ -96,6 +85,20 @@ class EventDispatcher:
             return
 
         # ── 路由 2: message（普通消息）──
+        # ★ v2.0.4ag(2026-09-05): 消息去重只对 message 事件生效。
+        #   OneBot v11 的 group_recall 事件也带 message_id，且该 id 就是"被撤回消息"的 id
+        #   ——被撤消息刚处理过必然在 _seen_ids，撤回事件命中去重会被直接 return 吞掉，
+        #   撤回功能永远收不到事件（实测 01:01:11 发 → 01:01:15 撤 → bot 零日志）。
+        _mid = str(event.get("message_id", ""))
+        if _mid:
+            if _mid in self._seen_ids:
+                return  # 已处理过，跳过
+            self._seen_ids[_mid] = None
+            if len(self._seen_ids) > self._seen_max:
+                # 按插入顺序保留最近一半（dict 保持插入顺序）
+                keep = list(self._seen_ids.keys())[-(self._seen_max // 2):]
+                self._seen_ids = {k: None for k in keep}
+
         parsed = parse_msg(raw_message)
         if parsed is None:
             logger.debug("跳过非消息事件: post_type=%s", post_type)
