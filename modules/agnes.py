@@ -214,8 +214,31 @@ def _resolve_size(raw: str) -> str:
     return "1536x864"  # 无法识别 → 默认 16:9
 
 
-async def _gen_image(prompt: str, size: str = "1536x864") -> dict | None:
-    """文生图 → 返回 base64 解码为 {local_path}"""
+def _err_text(e: Exception, resp=None) -> str:
+    """异常 → 简短可读错误文本（HTTP 状态码 + 响应体摘要）"""
+    if resp is not None:
+        try:
+            body = resp.text[:200].replace("\n", " ")
+            return f"HTTP {resp.status_code}: {body}"
+        except Exception:
+            pass
+    s = str(e).strip()
+    if hasattr(e, "response") and getattr(e, "response") is not None:
+        try:
+            body = e.response.text[:200].replace("\n", " ")
+            return f"HTTP {e.response.status_code}: {body}"
+        except Exception:
+            pass
+    if not s:  # httpx 超时等 str 为空
+        return type(e).__name__
+    return f"{type(e).__name__}: {s[:180]}"
+
+
+async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: str = "") -> dict | None:
+    """文生图（支持参考图） → 成功 {local_path}，失败 {"error": 文本}"""
+    if reference_image_url:
+        return await _gen_image_with_ref(prompt, size, reference_image_url)
+
     body = {
         "model": "gpt-image-2",
         "prompt": prompt,
@@ -241,17 +264,106 @@ async def _gen_image(prompt: str, size: str = "1536x864") -> dict | None:
                     r2 = await c2.get(url)
                     path.write_bytes(r2.content)
                 return {"url": url, "local_path": str(path)}
-            return None
+            return {"error": f"响应中无图片数据: {str(data)[:180]}"}
     except Exception as e:
-        # 打印异常类型 + repr（httpx 超时异常 str 可能为空字符串）
-        logger.warning("文生图失败 [%s]: %r", type(e).__name__, e)
-        return None
+        err = _err_text(e)
+        logger.warning("文生图失败: %s", err)
+        return {"error": err}
+
+
+async def _download_image(url: str, dest: Path) -> bool:
+    """下载图片到本地（带 UA，失败返回 False）"""
+    try:
+        async with httpx.AsyncClient(timeout=60, verify=False, headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = await c.get(url)
+            r.raise_for_status()
+            if len(r.content) < 1024:
+                return False  # 太小视为无效（可能是错误页）
+            dest.write_bytes(r.content)
+            return True
+    except Exception as e:
+        logger.warning("参考图下载失败 [%s]: %r", type(e).__name__, e)
+        return False
+
+
+async def _gen_image_with_ref(prompt: str, size: str, ref_url: str) -> dict | None:
+    """参考图生图：multipart /images/edits 优先，JSON URL 兜底，失败 {"error": 文本}"""
+    import io
+    ref_path = DATA_DIR / f"ref_{uuid.uuid4().hex[:8]}.png"
+    if not await _download_image(ref_url, ref_path):
+        logger.warning("参考图下载失败，退回纯文生图")
+        return await _gen_image(prompt, size)
+
+    last_err = ""
+    # 方式一：官方 multipart /images/edits
+    try:
+        with open(ref_path, "rb") as f:
+            files = {"image": (ref_path.name, io.BytesIO(f.read()), "image/png")}
+            form = {
+                "model": "gpt-image-2",
+                "prompt": prompt,
+                "n": "1",
+                "size": size,
+            }
+            async with httpx.AsyncClient(timeout=300, verify=False) as c:
+                h = {"Authorization": f"Bearer {_get_api_key()}"}  # multipart 不能带 JSON Content-Type
+                r = await c.post(f"{AGNES_BASE}/images/edits", data=form, files=files, headers=h)
+                if r.status_code == 404:
+                    raise RuntimeError("edits endpoint not available")
+                r.raise_for_status()
+                img = r.json().get("data", [{}])[0]
+                if img.get("b64_json") or img.get("url"):
+                    return await _save_image_result(img)
+                last_err = f"响应中无图片数据: {str(img)[:150]}"
+    except Exception as e:
+        last_err = _err_text(e)
+        logger.warning("multipart edits 失败: %s，尝试 JSON URL 兜底", last_err)
+
+    # 方式二：JSON body {"image": url}（部分中转站支持）
+    try:
+        body = {
+            "model": "gpt-image-2",
+            "prompt": prompt,
+            "image": ref_url,
+            "n": 1,
+            "size": size,
+        }
+        async with httpx.AsyncClient(timeout=300, verify=False) as c:
+            r = await c.post(f"{AGNES_BASE}/images/edits", json=body, headers=_headers())
+            r.raise_for_status()
+            img = r.json().get("data", [{}])[0]
+            if img.get("b64_json") or img.get("url"):
+                return await _save_image_result(img)
+            last_err = last_err or f"响应中无图片数据: {str(img)[:150]}"
+    except Exception as e:
+        last_err = last_err or _err_text(e)
+        logger.warning("参考图生图失败: %s", last_err)
+    finally:
+        ref_path.unlink(missing_ok=True)
+    return {"error": last_err or "未知错误"}
+
+
+async def _save_image_result(img: dict) -> dict:
+    """从 API 响应的 data[0] 保存图片 → {local_path}"""
+    if img.get("b64_json"):
+        raw = base64.b64decode(img["b64_json"])
+        path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
+        path.write_bytes(raw)
+        return {"local_path": str(path)}
+    url = img.get("url", "")
+    if url:
+        path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
+        async with httpx.AsyncClient(timeout=60, verify=False) as c2:
+            r2 = await c2.get(url)
+            path.write_bytes(r2.content)
+        return {"url": url, "local_path": str(path)}
+    raise ValueError("响应中无图片数据")
 
 
 async def _gen_video(prompt: str, image_url: str = "",
                      width: int = 1152, height: int = 768,
                      num_frames: int = 241, frame_rate: int = 24) -> dict | None:
-    """文生视频 / 图生视频 → 返回 {url, local_path}，503 自动重试"""
+    """文生视频 / 图生视频 → 成功 {url, local_path}，失败 {"error": 文本}，503 自动重试"""
     body = {
         "model": "agnes-video-v2.0",
         "prompt": prompt or "make this image into a short video",
@@ -265,20 +377,23 @@ async def _gen_video(prompt: str, image_url: str = "",
 
     # 创建任务（503 重试 3 次）
     data = None
+    create_err = ""
     for retry in range(3):
         try:
             async with httpx.AsyncClient(timeout=60, verify=False) as c:
                 r = await c.post(f"{AGNES_VIDEO_BASE}/videos", json=body, headers=_video_headers())
                 if r.status_code in (503, 502, 500, 429):
+                    create_err = f"HTTP {r.status_code}: {r.text[:150]}"
                     await asyncio.sleep(5)
                     continue
                 r.raise_for_status()
                 data = r.json()
                 break
-        except Exception:
+        except Exception as e:
+            create_err = _err_text(e)
             await asyncio.sleep(5)
     if not data:
-        return None
+        return {"error": create_err or "创建视频任务失败（重试 3 次均失败）"}
 
     video_id = data.get("video_id", "") or data.get("id", "")
 
@@ -304,14 +419,15 @@ async def _gen_video(prompt: str, image_url: str = "",
                             r3 = await c3.get(video_url)
                             path.write_bytes(r3.content)
                         return {"url": video_url, "local_path": str(path)}
-                    return None
+                    return {"error": f"任务完成但无视频地址: {str(d2)[:150]}"}
                 if status == "failed":
-                    logger.warning("视频任务失败: %s", video_id)
-                    return None
+                    err_detail = str(d2.get("error") or d2)[:200]
+                    logger.warning("视频任务失败: %s %s", video_id, err_detail)
+                    return {"error": f"视频任务失败: {err_detail}"}
         except Exception:
             pass
     logger.warning("视频任务超时: %s", video_id)
-    return None
+    return {"error": f"视频任务超时（3 分钟未完成，video_id={video_id}）"}
 
 
 # ── 发送 ────────────────────────────────────────────────
@@ -345,6 +461,8 @@ async def _bg_gen_video(user_id, group_id, is_group, prompt, image_url="",
             remaining = commit_video(user_id)
             await _send_media(result["local_path"], group_id, is_group, user_id, "video")
             tip = f"[CQ:at,qq={user_id}] 视频好了喵~ (今日剩余 {remaining}/{DEFAULT_VIDEO_LIMIT})"
+        elif result and result.get("error"):
+            tip = f"[CQ:at,qq={user_id}] 视频生成失败喵~ (不扣次数)\n错误: {result['error'][:350]}"
         else:
             tip = f"[CQ:at,qq={user_id}] 视频生成失败喵~ 换一种描述试试？(不扣次数)"
     except Exception as e:
@@ -358,18 +476,42 @@ async def _bg_gen_video(user_id, group_id, is_group, prompt, image_url="",
 
 # ── 命令 ────────────────────────────────────────────────
 
-async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
+async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", left=0, limit=0):
+    """后台图片生成——不阻塞聊天（模式同 _bg_gen_video）"""
+    try:
+        result = await _gen_image(prompt, size, reference_image_url=ref_url)
+        if result and not result.get("error"):
+            remaining = commit_draw(user_id)
+            await _send_media(result["local_path"], group_id, is_group, user_id, "image")
+            limit_str = f"{limit}" if limit else "∞"
+            tip = f"[CQ:at,qq={user_id}] 画好了喵~ (今日用量 {remaining}/{limit_str})"
+        elif result and result.get("error"):
+            err = result["error"]
+            tip = f"[CQ:at,qq={user_id}] 图片生成失败喵~ (不扣次数)\n错误: {err[:350]}"
+        else:
+            tip = f"[CQ:at,qq={user_id}] 图片生成失败喵~ 换一种描述试试？(不扣次数)"
+    except Exception as e:
+        logger.warning("后台图片生成异常: %s", e)
+        tip = f"[CQ:at,qq={user_id}] 图片生成失败喵~ 换一种描述试试？(不扣次数)"
+
+    from services.sender import send_by_chat_type
+    chat_id = group_id if is_group else user_id
+    await send_by_chat_type(tip, chat_id, is_group, user_id)
+
+
+async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message=""):
     """
     /~draw <提示词>          文生图（默认 16:9）
     /~draw 16:9 <提示词>     指定比例（1:1 3:2 2:3 16:9 9:16 4:3 3:4）
     /~draw 1024x1024 <提示词> 指定像素尺寸
     /~draw help              查看帮助
+    引用图片 + /~draw <提示词>  以引用图片为参考图生成
     """
     from utils.format_lang import format_lang
     if args and args[0].lower() == "help":
         return format_lang("help.detail.draw")
     if not args:
-        return "用法: /~draw <提示词>  如 /~draw 一只坐在樱花树下的猫娘\n/~draw 16:9 樱花猫娘  指定比例\n/~draw help 查看完整参数"
+        return "用法: /~draw <提示词>  如 /~draw 一只坐在樱花树下的猫娘\n/~draw 16:9 樱花猫娘  指定比例\n引用图片 + /~draw  以引用图片为参考图\n/~draw help 查看完整参数"
 
     # 配额检查
     ok, left, limit = check_and_use_draw(user_id)
@@ -390,24 +532,50 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq):
             prompt_parts.append(a)
     prompt = " ".join(prompt_parts) if prompt_parts else " ".join(args)
 
+    # 提取引用图片作为参考图
+    ref_url = ""
+    if raw_message:
+        import re as _re
+        m = _re.search(r'\[CQ:reply[^\]]*id=([^\],]+)', raw_message)
+        if m:
+            reply_id = m.group(1)
+            try:
+                from services.sender import get_ws_manager
+                mgr = get_ws_manager()
+                data = await mgr.call_api("get_msg", {"message_id": int(reply_id)})
+                if data:
+                    # 从 message 段提取图片 URL
+                    for seg in data.get("message", []):
+                        if seg.get("type") == "image":
+                            ref_url = seg.get("data", {}).get("url", "")
+                            if ref_url:
+                                break
+                    # CQ 码兜底
+                    if not ref_url:
+                        raw = data.get("raw_message", "") or ""
+                        m2 = _re.search(r'\[CQ:image[^\]]*url=([^,\]]+)', raw)
+                        if m2:
+                            ref_url = m2.group(1)
+            except Exception as e:
+                logger.warning("提取引用图片失败: %s", e)
+
     # 生成任务 ID 并发送进度提示
     task_id = uuid.uuid4().hex[:8]
     prompt_short = prompt[:60] + "..." if len(prompt) > 60 else prompt
     chat_id = group_id if is_group else user_id
     left_str = f"{left}" if limit else "∞"  # limit=0 表示 admin 无限
     limit_str = f"{limit}" if limit else "∞"
-    tip = f"开始生成图片: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日用量: {left_str}/{limit_str}"
+    ref_hint = " [参考图]" if ref_url else ""
+    tip = f"开始生成图片{ref_hint}: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日用量: {left_str}/{limit_str}"
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
-    result = await _gen_image(prompt, size)
-    if not result:
-        return f"[CQ:at,qq={user_id}] 图片生成失败喵~ 换一种描述试试？(不扣次数)"
-
-    # 成功后扣量
-    remaining = commit_draw(user_id)
-    await _send_media(result["local_path"], group_id, is_group, user_id, "image")
-    return f"[CQ:at,qq={user_id}] 画好了喵~ (今日用量 {remaining}/{limit})"
+    # 后台生成，不阻塞聊天（模式同 cmd_video）
+    asyncio.create_task(_bg_gen_image(
+        user_id, group_id, is_group, prompt, size,
+        ref_url=ref_url, left=left, limit=limit,
+    ))
+    return f"图片生成任务已提交喵~ 好了会发出来 (任务ID: {task_id})"
 
 
 async def cmd_video(args, user_id, group_id, sender_name, is_group, bot_qq):

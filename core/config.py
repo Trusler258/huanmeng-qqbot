@@ -10,6 +10,7 @@ from __future__ import annotations
 from core.arch_loader import get_architecture_context
 
 import os
+import json
 import toml
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,7 @@ except ImportError:
 # ── 项目根目录 ──────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_DIR = _PROJECT_ROOT / "config"
+_GROUP_NICK_PATH = _PROJECT_ROOT / "data" / "group_nicknames.json"
 
 
 @dataclass
@@ -57,6 +59,7 @@ class BotConfig:
     admin_qq: int = 0
     friend_qqs: list[int] = field(default_factory=list)
     qq_name_map: dict[str, str] = field(default_factory=dict)
+    group_nicknames: dict[str, dict[str, str]] = field(default_factory=dict)  # 分群昵称: {群号: {QQ: 昵称}} (来自 nickname_sync)
     op_qqs: list[int] = field(default_factory=list)           # OP（次级管理员）QQ 列表
     group_owners: dict[int, list[int]] = field(default_factory=dict) # 群主权限指派: {group_id: [op_qq, ...]}
     
@@ -241,14 +244,19 @@ class BotConfig:
         return self.group_owners.get(group_id, [])
 
     def get_display_name(self, user_id: int, group_id: int = 0) -> str:
-        """获取用户显示名：分群昵称 > 全局昵称 > QQ 号"""
+        """获取用户显示名：分群自动昵称(优先) > 分群手动配置 > 全局昵称 > QQ 号"""
         uid = str(user_id)
-        # 优先查分群昵称
+        # 1. 分群自动昵称（nickname_sync 写入 data/group_nicknames.json）
+        if group_id and self.group_nicknames:
+            per = self.group_nicknames.get(str(group_id))
+            if per and uid in per:
+                return per[uid]
+        # 2. 分群手动配置（adapter_config.toml group_settings.nicknames）
         if group_id and group_id in self.group_settings:
             gs_nicks = self.group_settings[group_id].get("nicknames", {})
             if uid in gs_nicks:
                 return gs_nicks[uid]
-        # fallback 全局昵称
+        # 3. fallback 全局昵称
         return self.qq_name_map.get(uid, uid)
 
 
@@ -328,6 +336,7 @@ def load_bot_config() -> BotConfig:
     admin_qq = 0
     friend_qqs: list[int] = []
     qq_name_map: dict[str, str] = {}
+    group_nicknames: dict[str, dict[str, str]] = {}
     if roles_path.exists():
         with open(roles_path, "r", encoding="utf-8") as f:
             roles_toml = toml.load(f)
@@ -345,6 +354,19 @@ def load_bot_config() -> BotConfig:
                 group_owners[int(k)] = [int(q) for q in v]
             else:
                 group_owners[int(k)] = [int(v)]  # 兼容旧单个格式
+
+    # ── data/group_nicknames.json 分群昵称（nickname_sync 维护）──
+    if _GROUP_NICK_PATH.exists():
+        try:
+            raw = json.loads(_GROUP_NICK_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                group_nicknames = {
+                    str(k): {str(q): n for q, n in v.items() if isinstance(v, dict)}
+                    for k, v in raw.items()
+                }
+        except Exception as e:
+            from core.logger import warning
+            warning("加载分群昵称文件失败: %s", e)
     
     # ── .env ──
     env_providers = _load_env_config()
@@ -380,6 +402,7 @@ def load_bot_config() -> BotConfig:
         admin_qq=admin_qq,
         friend_qqs=[int(q) for q in friend_qqs],
         qq_name_map={str(k): v for k, v in qq_name_map.items()},
+        group_nicknames=group_nicknames,
         op_qqs=op_qqs,
         group_owners=group_owners,
         group_list=adapter_toml.get("chat", {}).get("group_list", []) if adapter_path.exists() else [],

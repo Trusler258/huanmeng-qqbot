@@ -81,3 +81,6 @@ Thumbs.db
 .bot_protect
 docs/fix_change.md
 test_fc_sim.py
+
+# 误建于仓库内的备份目录
+qqbot-backup/

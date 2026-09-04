@@ -439,7 +439,8 @@ def _format_msglog_entries(entries: list[dict], chat_id: int) -> str:
     for e in entries:
         uid = str(e.get("user_id", ""))
         is_bot = e.get("type") == "bot"
-        name = cfg.qq_name_map.get(uid, uid)
+        # ★ 群聊传群号→分群昵称，私聊传 user_id→查不到分群映射自然 fallback 全局
+        name = cfg.get_display_name(uid, group_id=chat_id)
         role = ""
         if is_bot and name != cfg.bot_name:
             role = " [bot]"

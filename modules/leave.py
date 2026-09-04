@@ -77,6 +77,6 @@ def _fmt_fav(group_id: int) -> str | None:
     lines = ["【本群好感度排行】"]
     for key, val in sorted(fav_data.items(), key=lambda x: x[1], reverse=True):
         uid = key.split(":")[-1] if ":" in key else key
-        name = cfg.qq_name_map.get(uid, uid)
+        name = cfg.get_display_name(uid, group_id=group_id)
         lines.append(f"  {name}: {val}")
     return "\n".join(lines)

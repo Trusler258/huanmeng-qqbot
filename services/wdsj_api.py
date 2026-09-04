@@ -1,5 +1,6 @@
 """
-洛花星雨 Nexus 战绩查询 API 封装
+洛花星雨 Nexus 战绩查询 API 封装 v2
+- 2026-08-27 爬取更新: 模板 13->16, 玩家标识支持 name/nick/uid/uuid, 新增 player-heads 头像端点
 """
 from __future__ import annotations
 
@@ -12,9 +13,27 @@ from core.logger import get_logger
 
 logger = get_logger("wdsj")
 
+# 最近一次查询失败的详细原因（供 cmd 层区分 风控/玩家不存在/网络错误）
+last_error = ""
+
 BASE_URL = "https://www.wdsj.net/nexus"
 HEADERS = {"Referer": "https://www.wdsj.net/nexus/stats"}
 
+# Cloudflare Worker 中转代理（服务器 IP 被 CrowdSec 封禁时启用）
+# 环境变量 WDSJ_PROXY=https://xxx.workers.dev/proxy?url=
+import os as _os
+PROXY_BASE = _os.environ.get("WDSJ_PROXY", "").strip().rstrip("/")
+
+
+def _api_url(path: str) -> str:
+    """构造请求 URL：有代理走代理，否则直连"""
+    full = f"{BASE_URL}{path}"
+    if PROXY_BASE:
+        import urllib.parse as _up
+        return f"{PROXY_BASE}?url={_up.quote(full, safe='')}"
+    return full
+
+# v2: 16 个模板（新增 villagedefense/naturaldisasters/csgo）
 TEMPLATES = {
     "bedwars-stats": "起床战争", "knockbackwars-stats": "击退战场",
     "arena-stats": "竞技场", "kitpvp-stats": "职业战争",
@@ -22,16 +41,22 @@ TEMPLATES = {
     "colorwars-stats": "色盲战争", "drawguess-stats": "你画我猜",
     "hideandseek-stats": "躲猫猫", "murdermystery-stats": "神秘谋杀",
     "uhc-stats": "极限生存", "watercube-stats": "星跃水立方",
-    "buildbattle-stats": "建筑战争",
+    "buildbattle-stats": "建筑战争", "villagedefense-stats": "村庄保卫战",
+    "naturaldisasters-stats": "天灾逃生", "csgo-stats": "反恐精英",
 }
 
 ALIASES = {
     "bw": "bedwars-stats", "kbw": "knockbackwars-stats",
-    "are": "arena-stats", "kp": "kitpvp-stats", "sw": "skywars-stats",
+    "are": "arena-stats", "jjc": "arena-stats", "kp": "kitpvp-stats", "sw": "skywars-stats",
     "pit": "thepit-stats", "cw": "colorwars-stats", "dg": "drawguess-stats",
     "has": "hideandseek-stats", "mm": "murdermystery-stats",
     "uhc": "uhc-stats", "wc": "watercube-stats", "bb": "buildbattle-stats",
+    "vd": "villagedefense-stats", "nd": "naturaldisasters-stats",
+    "cs": "csgo-stats", "csgo": "csgo-stats",
 }
+
+# v2: 玩家标识类型（templates API 返回 allowedIdentityTypes）
+IDENTITY_TYPES = ("name", "nick", "uid", "uuid")
 
 BOARD_ALIASES = {
     "bwk": "起床战争-击杀", "bww": "bedwars-wins", "bwb": "bedwars-beds",
@@ -79,23 +104,49 @@ def resolve_board_shorthand(game: str, metric: str = "") -> str | None:
     return BOARD_SHORTHAND.get((game.lower(), metric.lower()))
 
 
-async def query_player_stats(player: str, template_id: str, timeout: float = 15.0) -> Optional[dict]:
-    encoded = f"name:{urllib.parse.quote(player)}"
-    url = f"{BASE_URL}/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}"
+def build_identity(player: str, id_type: str = "name") -> str:
+    """构造带类型前缀的玩家标识，自动检测已带前缀的情况"""
+    p = player.strip()
+    if ":" in p and p.split(":", 1)[0].lower() in IDENTITY_TYPES:
+        return urllib.parse.quote(p, safe=":")
+    if id_type not in IDENTITY_TYPES:
+        id_type = "name"
+    return f"{id_type}:{urllib.parse.quote(p)}"
+
+
+async def query_player_stats(player: str, template_id: str,
+                             id_type: str = "name", timeout: float = 15.0) -> Optional[dict]:
+    global last_error
+    encoded = build_identity(player, id_type)
+    url = _api_url(f"/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}")
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(url, headers=HEADERS)
-            if resp.status_code != 200: return None
+            if resp.status_code != 200:
+                last_error = f"HTTP {resp.status_code}"
+                if resp.status_code == 403:
+                    logger.warning("wdsj API 被风控/拒绝 (HTTP 403): %s", url)
+                elif resp.status_code == 404:
+                    logger.info("wdsj 玩家不存在 (HTTP 404): %s", url)
+                else:
+                    logger.warning("wdsj API HTTP %s: %s", resp.status_code, url)
+                return None
             data = resp.json()
-            if data.get("code") != 0: return None
+            if data.get("code") != 0:
+                last_error = f"API error {data.get('code')}: {data.get('message')}"
+                logger.warning("wdsj API 业务错误: %s", last_error)
+                return None
+            last_error = ""
             return data["data"]
     except Exception as e:
-        logger.error("查询战绩失败: %s %s", type(e).__name__, e)
+        last_error = f"{type(e).__name__}: {e}"
+        logger.error("wdsj 查询异常: player=%r template=%s err=%s:%r url=%s",
+                     player, template_id, type(e).__name__, e, url)
         return None
 
 
 async def download_stats_image(image_url: str, save_path: str, timeout: float = 15.0) -> bool:
-    full_url = f"{BASE_URL}{image_url}" if image_url.startswith("/") else image_url
+    full_url = _api_url(image_url) if image_url.startswith("/") else image_url
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(full_url, headers=HEADERS)
@@ -104,6 +155,20 @@ async def download_stats_image(image_url: str, save_path: str, timeout: float = 
             return True
     except Exception as e:
         logger.error("下载战绩图片失败: %s", e)
+        return False
+
+
+async def download_player_head(name: str, save_path: str, timeout: float = 15.0) -> bool:
+    """v2 新增: 玩家头像 /api/v1/player-heads/{name}/head.png"""
+    url = _api_url(f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=HEADERS)
+            resp.raise_for_status()
+            with open(save_path, "wb") as f: f.write(resp.content)
+            return True
+    except Exception as e:
+        logger.error("下载玩家头像失败: %s", e)
         return False
 
 

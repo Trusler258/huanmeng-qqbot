@@ -45,6 +45,7 @@ class HuanmengBot:
         self.dispatcher: EventDispatcher | None = None
         self._running: bool = False
         self._ws_uri: str = ""
+        self._bg_tasks: set = set()      # 后台分发任务引用（防GC）
 
     async def initialize(self):
         """初始化：加载配置 → 初始化各服务 → 构建分发器"""
@@ -131,17 +132,23 @@ class HuanmengBot:
 
         # ★ 启动后台任务：提醒轮询 & 每日统计推送
         import asyncio as _asyncio
-        _asyncio.ensure_future(self._bg_remind_checker())
+        # ★ v2.0.4t(2026-09-03): 提醒轮询/控制文件监听/节假日服务已由 bg_tasks 插件统一负责。
+        #   旧入口与插件 on_enable 各注册一遍 → 启动日志双"提醒轮询已启动"（30s 轮询 x2，
+        #   提醒存在双发风险），control_watcher/holiday 同理双跑。删除启动，方法体保留为死代码。
+        # _asyncio.ensure_future(self._bg_remind_checker())
         _asyncio.ensure_future(self._bg_midnight_report())
-        _asyncio.ensure_future(self._bg_control_watcher())
+        # _asyncio.ensure_future(self._bg_control_watcher())
         _asyncio.ensure_future(self._bg_nickname_sync())
         _asyncio.ensure_future(self._bg_eq_poller())
         _asyncio.ensure_future(self._bg_log_server())
-        _asyncio.ensure_future(self._bg_wdsj_collector())
+        # ★ v2.0.4s(2026-09-03): 战绩采集已由 bg_tasks 插件统一负责。
+        #   此处遗留循环与插件双跑 → 同批玩家被并发采 2 次（日志双进度流/双"采集完成"），
+        #   上游压力翻倍导致 ConnectTimeout 批量失败。删除启动，方法体保留为死代码。
+        # _asyncio.ensure_future(self._bg_wdsj_collector())
         _asyncio.ensure_future(self._bg_pc_status_server())
         _asyncio.ensure_future(self._bg_phone_status_server())
         _asyncio.ensure_future(self._bg_tts_server())
-        _asyncio.ensure_future(self._bg_holiday())
+        # _asyncio.ensure_future(self._bg_holiday())  # v2.0.4t: 已由 bg_tasks 插件负责
         info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890+手机状态:58892")
 
         # ★ 启动插件系统（ADDITIVE：单个插件失败不影响主流程）
@@ -171,11 +178,12 @@ class HuanmengBot:
                     async for message in ws:
                         if not self._running:
                             break
-                        
+
                         try:
-                            await self.dispatcher.dispatch(message)
+                            # 并发分发：每条消息独立任务，单条慢（如生图最长300s）不阻塞后续消息接收
+                            asyncio.create_task(self._dispatch_safe(message))
                         except Exception as e:
-                            error("消息处理异常: %s", e, exc_info=True)
+                            error("消息分发异常: %s", e, exc_info=True)
                             continue
 
             except websockets.exceptions.ConnectionClosed as e:
@@ -191,6 +199,17 @@ class HuanmengBot:
         """触发停止信号"""
         self._running = False
         info("停止信号已发出")
+
+    async def _dispatch_safe(self, message):
+        """单条消息的安全分发：异常只影响本条，不影响主循环和其他消息"""
+        _task = asyncio.current_task()
+        if _task is not None:
+            self._bg_tasks.add(_task)
+            _task.add_done_callback(self._bg_tasks.discard)
+        try:
+            await self.dispatcher.dispatch(message)
+        except Exception as e:
+            error("消息处理异常: %s", e, exc_info=True)
 
     async def shutdown(self):
         """优雅关闭所有资源"""

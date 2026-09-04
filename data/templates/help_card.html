@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=800, initial-scale=1.0">
+<title>指令帮助 · {{BOT_NAME}}</title>
+<style>
+/* ════════════════════════════════════════════════════════════
+   幻梦 Design System — Crystal Aurora v2 (help_card)
+   三列网格指令卡 · 非竖屏 · 自上而下排列
+   ════════════════════════════════════════════════════════════ */
+:root {
+  --primary:       #ec4899;
+  --primary-light: #f472b6;
+  --accent:        #8b5cf6;
+  --accent-light:  #a78bfa;
+  --deepseek:      #5686FE;
+  --cyan:          #22d3ee;
+
+  --bg-card:  rgba(20,18,32,0.55);
+  --bg-chip:  rgba(255,255,255,0.05);
+
+  --text:    #ffffff;
+  --text-2:  rgba(255,255,255,0.72);
+  --text-3:  rgba(255,255,255,0.40);
+
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger:  #f87171;
+  --info:    #60a5fa;
+
+  --radius:   15px;
+  --radius-s: 9px;
+
+  --mono: 'Consolas','JetBrains Mono','Courier New',monospace;
+  --sans: 'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;
+
+  --border: rgba(255,255,255,0.10);
+}
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+@page { margin: 0; }
+
+html {
+  width: 780px; margin: 0 auto;
+  min-height: 100vh;
+}
+body {
+  width: 780px; margin: 0 auto; position: relative; z-index: 1;
+  font-family: var(--sans); color: var(--text);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  padding: 26px 24px 30px;
+  background:
+    radial-gradient(ellipse 80% 55% at 15% -10%, rgba(236,72,153,0.42) 0%, transparent 50%),
+    radial-gradient(ellipse 70% 50% at 88% 110%, rgba(139,92,246,0.38) 0%, transparent 50%),
+    radial-gradient(ellipse 65% 60% at 50% 50%, rgba(86,134,254,0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 5% 80%, rgba(34,211,238,0.14) 0%, transparent 55%),
+    conic-gradient(from 200deg at 30% 20%, transparent 0deg, rgba(236,72,153,0.08) 60deg, transparent 120deg, rgba(139,92,246,0.06) 200deg, transparent 280deg),
+    linear-gradient(165deg, #07060f 0%, #0d0b1a 45%, #080a16 100%);
+}
+
+/* ── 头部 ── */
+.hero {
+  text-align: center; margin-bottom: 20px;
+}
+.hero .logo {
+  display: inline-block; font-size: 12px; letter-spacing: 2px;
+  color: var(--text-3); text-transform: uppercase; margin-bottom: 6px;
+}
+.hero h1 {
+  font-size: 26px; font-weight: 800; letter-spacing: 1px;
+  background: linear-gradient(92deg, var(--primary-light), var(--accent-light) 55%, var(--cyan));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 30px rgba(236,72,153,0.25);
+}
+.hero .sub {
+  font-size: 12px; color: var(--text-3); margin-top: 6px;
+}
+.hero .sub code {
+  font-family: var(--mono); color: var(--cyan);
+  background: var(--bg-chip); border: 1px solid var(--border);
+  padding: 1px 7px; border-radius: 6px;
+}
+
+/* ── 分类 ── */
+.section {
+  margin-bottom: 18px;
+}
+.section-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 700; letter-spacing: 1px;
+  margin-bottom: 10px; color: var(--text);
+}
+.section-title .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  box-shadow: 0 0 10px rgba(236,72,153,0.5);
+}
+.section-title .tag {
+  font-size: 11px; color: var(--text-3); font-weight: 400; margin-left: auto;
+}
+
+/* ── 三列网格 ── */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  padding: 9px 12px 10px;
+  display: flex; flex-direction: column; gap: 2px;
+  backdrop-filter: blur(6px);
+  transition: border-color .15s ease;
+  min-height: 62px;
+}
+.item:hover { border-color: rgba(236,72,153,0.45); }
+.item .cmd-row {
+  font-family: var(--mono); font-size: 13px; font-weight: 700;
+  color: var(--primary-light); white-space: nowrap;
+}
+.item .alias {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--text-3); font-style: italic;
+  white-space: nowrap;
+}
+.item .desc {
+  font-size: 11.5px; color: var(--text-2); line-height: 1.45;
+  min-width: 0; overflow-wrap: break-word;
+  margin-top: auto;
+}
+.item .desc b { color: var(--cyan); font-weight: 600; }
+
+/* ── 插件徽章 ── */
+.item.plugin .cmd { color: var(--accent-light); }
+.item.plugin .badge {
+  display: inline-block; font-size: 9.5px; color: var(--accent-light);
+  border: 1px solid rgba(139,92,246,0.4); border-radius: 4px;
+  padding: 0 4px; margin-left: 4px; vertical-align: 1px;
+}
+
+/* ── 底部 ── */
+.footer {
+  margin-top: 22px; padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 11px; color: var(--text-3);
+}
+.footer .brand { color: var(--text-2); }
+.footer .brand b { color: var(--accent-light); font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="hero">
+    <div class="logo">Huanmeng Command Center</div>
+    <h1>{{BOT_NAME}} · 指令手册</h1>
+    <div class="sub">
+      发送 <code>/~help &lt;指令&gt;</code> 查看单个指令详细用法 · 共 {{TOTAL}} 条指令
+    </div>
+  </div>
+
+  {{SECTIONS}}
+
+  <div class="footer">
+    <span>Generated by {{BOT_NAME}} · {{DATE}}</span>
+    <span class="brand">输入 <b>/~help</b> 随时唤出本手册</span>
+  </div>
+</body>
+</html>
