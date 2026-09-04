@@ -470,6 +470,17 @@ def _create_client(model_cfg: ModelConfig, timeout: float = 60.0) -> OpenAI:
     return OpenAI(base_url=model_cfg.url, api_key=model_cfg.key, timeout=max(timeout, 10.0))
 
 
+def _hint_json_output(messages: list[dict]) -> list[dict]:
+    """严格 JSON 重试辅助：追加强制 JSON 提示行。
+
+    DeepSeek json_object 模式要求 prompt 中出现 "json" 字样，否则可能返回空；
+    空返回重试时用它给模型最后一次明确指令。
+    """
+    out = [dict(m) for m in messages]
+    out.append({"role": "user", "content": "只输出一个合法 JSON 对象，不要输出任何其他文字、解释或代码块。"})
+    return out
+
+
 async def call_llm(
     model_cfg: ModelConfig,
     messages: list[dict],
@@ -477,6 +488,7 @@ async def call_llm(
     temperature: float = 0.7,
     timeout: float = 60.0,
     json_mode: bool = False,
+    _json_retries: int = 0,
 ) -> str:
     """
     调用 LLM 并返回原始文本内容。
@@ -529,10 +541,20 @@ async def call_llm(
             logger.warning("LLM [%s] 返回空内容 | finish_reason=%s | 耗时%.1fs",
                          model_cfg.name[:20], finish, elapsed)
             if json_mode and finish == "stop":
-                logger.warning("JSON模式返回空，关闭json_mode重试...")
+                # ★ v2.0.4w: 严格 JSON —— DeepSeek json_object 偶发空返回。
+                #   不再立刻降级普通模式（降级=放弃严格JSON，容易再吐纯文本），
+                #   保持 json_mode 重试最多 2 次（追加 json 提示行），仍空才普通兜底。
+                if _json_retries < 2:
+                    logger.warning("JSON模式空返回，保持 json_mode 重试(%d/2)...", _json_retries + 1)
+                    return await call_llm(
+                        model_cfg, _hint_json_output(messages),
+                        max_tokens, temperature, timeout,
+                        json_mode=True, _json_retries=_json_retries + 1,
+                    )
+                logger.warning("json_mode 连续空返回，降级普通模式兜底一次")
                 return await call_llm(model_cfg, messages, max_tokens, temperature, timeout, json_mode=False)
-            if finish == "length" and max_tokens < 2000:
-                boosted = min(max_tokens * 2, 2000)
+            if finish == "length" and (max_tokens or 0) < 2000:
+                boosted = min(max(max_tokens or 0, 1000) * 2, 2000)
                 logger.warning("finish_reason=length, 扩大上限 %d→%d 重试...", max_tokens, boosted)
                 return await call_llm(model_cfg, messages, boosted, temperature, timeout, json_mode)
 
@@ -795,7 +817,7 @@ async def generate_multi_reply_with_tools(
                 logger.warning("LLM 连续返回空内容，用 json_mode 兜底...")
                 json_raw = await call_llm(
                     reply_model, msgs,
-                    max_tokens=min(max_tokens or 800, 800),
+                    max_tokens=max(max_tokens or 0, 4000),  # v2.0.4w: 长 JSON 不再被 800 焊死
                     temperature=0.3, json_mode=True,
                 )
                 if json_raw and json_raw.strip():
@@ -847,7 +869,7 @@ async def generate_multi_reply_with_tools(
                             result.content = json_raw
                 else:
                     logger.info("LLM 输出非 JSON，强制重试...")
-                    json_raw = await call_llm(reply_model, msgs, max_tokens=min(max_tokens or 800, 800), temperature=0.3, json_mode=True)
+                    json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.3, json_mode=True)  # v2.0.4w
                     if json_raw and json_raw.startswith("{"):
                         result.content = json_raw
                         logger.info("json_mode 重试成功: %s...", json_raw[:80])
