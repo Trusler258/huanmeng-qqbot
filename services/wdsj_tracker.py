@@ -56,50 +56,85 @@ def _save_history(data):
     _HISTORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+# ── 防双跑锁：bot.py 遗留循环 与 bg_tasks 插件循环 并存时只允许一轮采集执行 ──
+# v2.0.4s: 2026-09-03 事故，两条"每日采集完成"日志 = 同进程双循环重复采集，
+# 上游并发翻倍 → ConnectTimeout 批量失败（80 成功 / 20 失败）
+_collect_lock = asyncio.Lock()
+
+
 # ------每日采集------
-async def daily_stats_collect():
-    from services import wdsj_api as api
-    from modules.commands import _load_wdsj_bindings
+async def daily_stats_collect(max_retry_rounds: int = 3, retry_delay: float = 8.0):
+    """
+    每日战绩采集（★ v2.0.4s 升级）
+    - 首轮全量采集 → 统计失败项 → 对失败名单整体统一重试（最多 max_retry_rounds 轮）
+    - 防双跑：模块级锁，已有采集在跑则直接跳过
+    - 返回最终仍失败的项目 [(player, template_id), ...]，由调用方决定是否通知
+      （如定时采集后把 3 轮仍失败的人发 QQ 空间说明）
+    """
+    if _collect_lock.locked():
+        logger.warning("已有采集任务在运行，本次跳过（防双跑）")
+        return []
 
-    bindings = _load_wdsj_bindings()
-    if not bindings:
-        return
+    async with _collect_lock:
+        from services import wdsj_api as api
+        from modules.commands import _load_wdsj_bindings
 
-    from datetime import datetime as dt
-    ts_str = dt.now().strftime("%Y-%m-%dT%H:%M:%S")
-    history = _load_history()
-    players = list(set(bindings.values()))
+        bindings = _load_wdsj_bindings()
+        if not bindings:
+            return []
 
-    logger.info("每日战绩采集: %d 个玩家 x %d 模板", len(players), len(_TEMPLATES))
+        from datetime import datetime as dt
+        ts_str = dt.now().strftime("%Y-%m-%dT%H:%M:%S")
+        history = _load_history()
+        players = list(set(bindings.values()))
 
-    total = 0
-    sem = asyncio.Semaphore(3)
-    done = 0
+        logger.info("每日战绩采集: %d 个玩家 x %d 模板 (重试上限 %d 轮)",
+                    len(players), len(_TEMPLATES), max_retry_rounds)
 
-    async def _collect_one(player):
-        nonlocal total, done
-        async with sem:
-            entry = history.setdefault(player, {})
-            for tid in _TEMPLATES:
+        all_targets = [(p, t) for p in players for t in _TEMPLATES]
+        sem = asyncio.Semaphore(3)
+        collected = 0
+        failed: dict = {}  # (player, tid) -> 失败原因
+
+        async def _collect_target(player, tid):
+            nonlocal collected
+            async with sem:
                 try:
                     data = await api.query_player_stats(player, tid, timeout=5.0)
-                    if data and data.get("values"):
-                        vals = dict(data["values"])
-                        series = entry.setdefault(tid, [])
-                        # ★ 只追加，不做日级覆盖（多时间点才能算增量）
-                        series.append({"ts": ts_str, "values": vals})
-                        total += 1
                 except Exception as e:
-                    logger.warning("采集失败 %s/%s: %s", player, tid, e)
-                await asyncio.sleep(0.2)
-            done += 1
-            if done % 5 == 0:
-                logger.info("采集进度: %d/%d", done, len(players))
+                    failed[(player, tid)] = f"{type(e).__name__}: {e}"
+                    return
+                if data and data.get("values"):
+                    entry = history.setdefault(player, {})
+                    series = entry.setdefault(tid, [])
+                    # ★ 只追加，不做日级覆盖（多时间点才能算增量）
+                    series.append({"ts": ts_str, "values": dict(data["values"])})
+                    collected += 1
+                    failed.pop((player, tid), None)
+                else:
+                    failed[(player, tid)] = api.last_error or "empty data"
 
-    await asyncio.gather(*[_collect_one(p) for p in players])
-    _save_history(history)
-    logger.info("每日战绩采集完成: %d 条新记录", total)
-    return history
+        # 首轮全量 + 对失败名单统一重试（最多 max_retry_rounds 轮）
+        for rnd in range(1 + max_retry_rounds):
+            targets = all_targets if rnd == 0 else list(failed.keys())
+            if not targets:
+                break
+            if rnd > 0:
+                logger.warning("失败重试第 %d/%d 轮: %d 项 → %s",
+                               rnd, max_retry_rounds, len(targets),
+                               "、".join(f"{p}[{t}]" for p, t in targets))
+            await asyncio.gather(*[_collect_target(p, t) for p, t in targets])
+            if rnd == 0:
+                logger.info("首轮采集完成: 成功 %d, 失败 %d 项", collected, len(failed))
+            if failed and rnd < max_retry_rounds:
+                await asyncio.sleep(retry_delay)  # 统一重试前稍等，给上游恢复时间
+
+        _save_history(history)
+        logger.info("每日战绩采集完成: %d 条新记录 (最终失败 %d)", collected, len(failed))
+        if failed:
+            logger.warning("最终失败名单(%d轮后仍失败): %s", 1 + max_retry_rounds,
+                           "、".join(f"{p}[{t}]({e})" for (p, t), e in failed.items()))
+        return list(failed.keys())
 
 
 # ------趋势数据------
@@ -328,13 +363,18 @@ def build_daily_rankings(label_date=None, cross_day=False):
 
 # ── 竞技场日报 ──
 
-def build_arena_daily_rankings(label_date=None):
-    """竞技场日榜: 击杀 / 胜场 / 败场 / 死亡 / KD"""
+def build_arena_daily_rankings(label_date=None, cross_day=False):
+    """竞技场日榜: 击杀 / 胜场 / 败场 / 死亡 / KD
+    cross_day=False: 当日最早 -> 当日最新（手动查询）
+    cross_day=True:  当日最早 -> 次日最早（凌晨自动发送，与起床对齐）
+    """
     history = _load_history()
     if label_date is None:
         label_date = date.today().isoformat()
     from modules.commands import _load_wdsj_bindings
     bindings = _load_wdsj_bindings()
+
+    tomorrow = (datetime.strptime(label_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d") if cross_day else None
 
     rows = []
     for uid, name in bindings.items():
@@ -346,7 +386,11 @@ def build_arena_daily_rankings(label_date=None):
         if not day_entries:
             continue
         prev = day_entries[0].get("values", {})
-        curr = day_entries[-1].get("values", {})
+        if cross_day:
+            next_day = [s for s in arena if s.get("ts", "").startswith(tomorrow)]
+            curr = next_day[0].get("values", {}) if next_day else day_entries[-1].get("values", {})
+        else:
+            curr = day_entries[-1].get("values", {})
         diffs = {}
         for k in _ARENA_DAILY_FIELDS:
             pv = int(prev.get(k, 0))
@@ -361,11 +405,18 @@ def build_arena_daily_rankings(label_date=None):
     rows.sort(key=lambda x: -x[1].get("kills", 0))
 
     all_times = []
+    cross_times = []
     for uid, name in bindings.items():
         arena = history.get(name, {}).get("arena-stats", [])
         for e in arena:
             if e.get("ts", "").startswith(label_date):
                 all_times.append(e.get("ts", ""))
+            if cross_day and e.get("ts", "").startswith(tomorrow):
+                cross_times.append(e.get("ts", ""))
     time_start = min(all_times)[11:16] if all_times else "??:??"
-    time_end = max(all_times)[11:16] if all_times else "??:??"
+    if cross_day and cross_times:
+        end_ts = min(cross_times) if cross_times else max(all_times)
+        time_end = f"{end_ts[5:10]} {end_ts[11:16]}"
+    else:
+        time_end = max(all_times)[11:16] if all_times else "??:??"
     return rows, label_date, time_start, time_end

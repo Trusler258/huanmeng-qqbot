@@ -156,9 +156,10 @@ class EventDispatcher:
             return
 
         user_id = event.get("user_id", 0)
-        sender_name = cfg.qq_name_map.get(str(user_id), str(user_id))
         group_id = event.get("group_id", user_id)
         is_group = "group_id" in event
+        # ★ 分群感知: 戳一戳优先用当前群昵称
+        sender_name = cfg.get_display_name(user_id, group_id) if is_group else cfg.qq_name_map.get(str(user_id), str(user_id))
 
         # ★ 白名单检查：非白名单群/私聊不响应戳一戳
         if is_group and group_id not in cfg.group_list:
@@ -293,16 +294,17 @@ class EventDispatcher:
             msg_content[:30].replace("\n", " "),
         )
 
-        # 预设昵称覆盖（全局 + 本群自定义）
-        preset_name = cfg.qq_name_map.get(str(user_id))
-        if is_group:
-            gs = cfg.group_settings.get(chat_id, {})
-            preset_name = gs.get("nicknames", {}).get(str(user_id), preset_name)
-        if preset_name:
-            old_name = sender_name
-            sender_name = preset_name
-            if old_name != sender_name:
-                logger.debug("昵称覆盖: '%s' → '%s' (QQ=%d)", old_name, sender_name, user_id)
+        # ── 昵称解析：事件自带 card(分群正确) 优先，缺失时用映射补全 ──
+        # parse_msg 的 sender_name 已提取 card>nickname>user_id。
+        # 分组场景下 card 就是当前群的名片，天然分群正确，绝不覆盖；
+        # 只有没拿到 card（sender_name 是 QQ号/空）时才用映射补全。
+        if sender_name == str(user_id) or not sender_name:
+            preset_name = cfg.get_display_name(user_id, chat_id) if is_group else cfg.qq_name_map.get(str(user_id))
+            if preset_name:
+                old_name = sender_name
+                sender_name = preset_name
+                if old_name != sender_name:
+                    logger.debug("昵称补全: '%s' → '%s' (QQ=%d)", old_name, sender_name, user_id)
 
         # ★ 群消息统计记录（仅白名单群 + 非指令消息）
         if is_group and chat_id in cfg.group_list and not is_command:
@@ -356,8 +358,8 @@ class EventDispatcher:
                 msg_content = "[文件]"
                 logger.debug("文件消息: 已替换为占位符")
 
-        # ── @ 替换 ──
-        if re.search(r"@\d{5,12}", msg_content):
+        # ── @ 替换（指令消息跳过：保留 QQ 号给指令/插件解析，如 /~摸头 @QQ）──
+        if not is_command and re.search(r"@\d{5,12}", msg_content):
             logger.debug("检测到@，开始替换用户名...")
             msg_content = await replace_at_in_message(
                 msg_content,
@@ -421,6 +423,7 @@ class EventDispatcher:
                 logger.debug("私聊消息索引入库失败(忽略): %s", _e)
 
         # 调用消息处理管道（通过队列，不阻塞当前消息接收）
+        # ★ v2.0.4r: 传 is_command → 队列层给指令最高优先级，不被普通消息堵住
         from core.queues import enqueue_message
         await enqueue_message(
             msg_type=msg_type,
@@ -434,6 +437,7 @@ class EventDispatcher:
             raw_message=raw_message,
             quoted_msg=quoted_text,   # ★ 引用消息原文
             error_report=error_report_content,  # ★ 错误报告内容
+            is_command=is_command,    # ★ v2.0.4r 指令插队标记
         )
 
     async def _process_image(self, image_url_or_path: str, cfg, chat_id: int, is_group: bool, user_id: int, sender_name: str, is_mentioned: bool = False) -> str:

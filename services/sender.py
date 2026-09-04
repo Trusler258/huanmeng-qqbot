@@ -249,6 +249,17 @@ async def close_sender():
 
 # ── 发送便捷函数 ────────────────────────────────────────────
 
+def build_local_image_cq(local_path: str) -> str:
+    """把本地文件绝对路径转成 CQ:image 消息（修复 file:// 拼接 4 斜杠问题）。
+
+    Linux 绝对路径如 /root/bot/xx.png 直接拼 file:/// 会变成 file:////root/...（4 斜杠），
+    NapCat 剥掉 file:// 后得到 //root/... 报 ENOENT。这里去掉开头斜杠再拼，
+    确保结果是 file:///root/bot/xx.png（协议 + 1 个根斜杠）。
+    """
+    normalized = str(local_path).replace("\\", "/").lstrip("/")
+    return f"[CQ:image,file=file:///{normalized}]"
+
+
 async def send_group_msg(message: str, group_id: int) -> bool:
     """发送群聊文本消息"""
     mgr = get_ws_manager()
@@ -467,7 +478,29 @@ async def send_file(file_path: str, chat_id: int, is_group: bool) -> bool:
     if not path.exists():
         logger.warning("文件不存在: %s", file_path)
         return False
-    
+
+    # ★ 图片扩展名走图片消息（CQ:image 本地路径），避免 gif/png 等以文件形式发送
+    _IMG_EXTS = {".gif", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    if path.suffix.lower() in _IMG_EXTS:
+        cq = build_local_image_cq(str(path.resolve()))
+        try:
+            # ★ 必须用 call_api（请求-响应）等待 NapCat 确认收到图片后再返回。
+            #   若用 send()（fire-and-forget），调用方(motou)会立即删临时文件，
+            #   NapCat 随后读文件报 ENOENT，图片丢失。
+            ws_mgr = get_ws_manager()
+            params = {"message": cq}
+            api_name = "send_group_msg" if is_group else "send_private_msg"
+            params["group_id" if is_group else "user_id"] = chat_id
+            resp = await ws_mgr.call_api(api_name, params, timeout=30)
+            ok = bool(resp)
+            if ok:
+                logger.info("图片发送成功: %s (chat=%d)", path.name, chat_id)
+            else:
+                logger.warning("图片发送失败(走文件兜底): %s", path.name)
+            return ok
+        except Exception as e:
+            logger.warning("图片发送异常[%s]: %s，走文件兜底", path.name, e)
+
     api_name = "upload_group_file" if is_group else "upload_private_file"
     abs_path = str(path.resolve())
     

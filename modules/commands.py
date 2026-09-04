@@ -88,9 +88,48 @@ async def cmd_help(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ── 详细帮助：/~help <关键词> ──
     if args:
         keyword = args[0].lower().lstrip("/~")
-        detail = format_lang(f"help.detail.{keyword}", default=None)
-        if detail:
-            return detail
+        # format_lang 无 default 参数，缺失会返回 [LANG:...] 裸键 → 先用 has_key 判断
+        from utils.format_lang import has_key
+        if has_key(f"help.detail.{keyword}"):
+            return format_lang(f"help.detail.{keyword}")
+        # 兜底：docstring / _CMD_DESC / capability 描述（覆盖所有 COMMAND_MAP + 插件指令）
+        try:
+            from modules.commands import COMMAND_MAP
+            target_handler = COMMAND_MAP.get(keyword)
+            desc = ""
+            if target_handler is not None:
+                doc = (getattr(target_handler, '__doc__', '') or '').strip()
+                if doc:
+                    desc = doc.split('\n')[0]
+            if not desc:
+                from services.llm import _CMD_DESC
+                desc = _CMD_DESC.get(keyword, "")
+                if not desc and target_handler is not None:
+                    for k, h in COMMAND_MAP.items():
+                        if h is target_handler:
+                            desc = _CMD_DESC.get(k, "")
+                            if desc:
+                                break
+            # 插件指令描述（help_card._PLUGIN_COMMANDS）
+            if not desc:
+                try:
+                    from modules.help_card import _PLUGIN_COMMANDS
+                    desc = _PLUGIN_COMMANDS.get(keyword, "")
+                except Exception:
+                    pass
+            if desc:
+                return f"【指令 /~{keyword}】\n{desc}"
+            # 插件指令描述
+            try:
+                from core.capability import get_capability_registry
+                reg = get_capability_registry()
+                for c in (list(reg._caps.values()) if hasattr(reg, "_caps") else []):
+                    if getattr(c, "name", "") == keyword and getattr(c, "description", ""):
+                        return f"【指令 /~{keyword}】\n{c.description}"
+            except Exception:
+                pass
+        except Exception:
+            pass
         return format_lang("help.not_found", keyword=keyword)
 
     # ── 完整帮助：发送预渲染指令卡片 ──
@@ -304,7 +343,7 @@ async def cmd_favlist(args, user_id, group_id, sender_name, is_group, bot_qq):
     for key, val in sorted(fav_data.items(), key=lambda x: x[1], reverse=True):
         # 从 key 中提取 user_id: "g123:456" -> "456", "p:456" -> "456"
         uid = key.split(":")[-1] if ":" in key else key
-        name = cfg.qq_name_map.get(uid, uid)
+        name = cfg.get_display_name(uid, group_id=group_id if is_group else 0)
         lines.append(format_lang("favlist.item_format", name=name, value=val))
     return "\n".join(lines)
 
@@ -983,6 +1022,12 @@ async def cmd_add_relation(args, user_id, group_id, sender_name, is_group, bot_q
     
     try:
         save_roles_config(roles)
+        # ★ 立即刷新内存配置，否则 favlist/游戏等模块拿不到新名字
+        try:
+            from core.config import reload_config
+            reload_config()
+        except Exception:
+            pass
         logger.info("关系更新: %s(%s) → %s 操作者=%s", qq_id, nick, relation, sender_name)
         return format_lang("relation.success", qq=qq_id, name=nick, role=relation)
     except Exception as e:
@@ -1285,7 +1330,7 @@ async def cmd_recall(args, user_id, group_id, sender_name, is_group, bot_qq):
     for i, r in enumerate(records, 1):
         t = time.strftime("%H:%M:%S", time.localtime(r["time"]))
         uid = str(r["user_id"])
-        name = cfg.qq_name_map.get(uid, uid)
+        name = cfg.get_display_name(uid, group_id=group_id)
 
         msg_type = r.get("type", "text")
         if msg_type == "图片":
@@ -1306,13 +1351,13 @@ async def cmd_recall(args, user_id, group_id, sender_name, is_group, bot_qq):
         if r.get("recalled_by") == r["user_id"]:
             if r["user_id"] == 0:
                 op_id = str(r.get("recalled_by", ""))
-                op_name = cfg.qq_name_map.get(op_id, op_id)
+                op_name = cfg.get_display_name(op_id, group_id=group_id)
                 lines.append(f"{i}. [{t}] {op_name} 撤回了自己的消息: {content_display}")
             else:
                 lines.append(f"{i}. [{t}] {name} 撤回了自己的消息: {content_display}")
         else:
             op_id = str(r.get("recalled_by", ""))
-            op_name = cfg.qq_name_map.get(op_id, op_id)
+            op_name = cfg.get_display_name(op_id, group_id=group_id)
             target_name = name if r["user_id"] != 0 else "某人"
             lines.append(f"{i}. [{t}] {op_name} 撤回了 {target_name} 的消息: {content_display}")
 
@@ -1682,13 +1727,19 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
         if m:
             white_id = int(m.group(1))
         else:
-            # 无数字 → 可能是 @昵称，反向查 roles.toml
+            # 无数字 → 可能是 @昵称，反向查映射（分群优先，再全局）
             name = opponent.lstrip("@")
             found = None
-            for qq, nick in cfg.qq_name_map.items():
+            per = cfg.group_nicknames.get(str(group_id), {}) if is_group else {}
+            for qq, nick in per.items():
                 if nick == name:
                     found = int(qq)
                     break
+            if found is None:
+                for qq, nick in cfg.qq_name_map.items():
+                    if nick == name:
+                        found = int(qq)
+                        break
             if found:
                 white_id = found
             else:
@@ -1756,14 +1807,14 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
 
             if msg == "win":
                 game = g.get_game(chat_id)
-                winner_name = cfg.qq_name_map.get(str(game.white if game.winner == 2 else game.black), "?")
+                winner_name = cfg.get_display_name(str(game.white if game.winner == 2 else game.black), group_id=group_id if is_group else 0)
                 return f"五连！{winner_name} 获胜！"
             if msg == "draw":
                 return "棋盘满了，平局！"
             if msg.startswith("forbidden:"):
                 reason = msg.split(":", 1)[1]
                 game = g.get_game(chat_id)
-                winner = cfg.qq_name_map.get(str(game.white), "白方")
+                winner = cfg.get_display_name(str(game.white), group_id=group_id if is_group else 0)
                 return f"禁手犯规({reason})！{winner} 获胜！"
 
             # AI 自动走棋
@@ -1804,7 +1855,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
     if action == "surrender":
         ok, msg = g.surrender(chat_id, user_id)
         if ok:
-            loser = cfg.qq_name_map.get(str(user_id), str(user_id))
+            loser = cfg.get_display_name(str(user_id), group_id=group_id if is_group else 0)
             return f"{loser} 认输了！"
         return msg
 
@@ -1835,8 +1886,8 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
         game = g.get_game(chat_id)
         if not game:
             return format_lang("wzq.no_game")
-        bn = cfg.qq_name_map.get(str(game.black), str(game.black))
-        wn = cfg.qq_name_map.get(str(game.white), str(game.white))
+        bn = cfg.get_display_name(str(game.black), group_id=group_id if is_group else 0)
+        wn = cfg.get_display_name(str(game.white), group_id=group_id if is_group else 0)
         return f"黑方 {bn} vs 白方 {wn} | 手数 {game.move_count} | 状态 {game.status}"
 
     # ── 历史记录 ──
@@ -1875,8 +1926,8 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
         lines = [f"五子棋记录 (最近{min(count, len(records))}场)"]
         lines.append("  /~wzq history <编号> board 查看棋盘")
         for i, r in enumerate(records[:count], 1):
-            bn = cfg.qq_name_map.get(str(r["black"]), str(r["black"]))
-            wn = cfg.qq_name_map.get(str(r["white"]), str(r["white"]))
+            bn = cfg.get_display_name(str(r["black"]), group_id=group_id if is_group else 0)
+            wn = cfg.get_display_name(str(r["white"]), group_id=group_id if is_group else 0)
             if r["winner"] == 1:
                 result = f"{bn} 胜"
             elif r["winner"] == 2:
@@ -2301,9 +2352,12 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         from services.wdsj_tracker import daily_stats_collect
         import time as _t
         t0 = _t.time()
-        await daily_stats_collect()
+        failed = await daily_stats_collect()  # v2.0.4s: 返回 3 轮重试后仍失败名单
         elapsed = _t.time() - t0
-        return f"✅ 手动采集完成 ({elapsed:.1f}s)"
+        if failed:
+            names = sorted({p for p, _t in failed})
+            return f"✅ 手动采集完成 ({elapsed:.1f}s)，{len(names)} 人仍未采集到: " + "、".join(names)
+        return f"✅ 手动采集完成 ({elapsed:.1f}s)，全部成功"
 
     # 绑定玩家名
     if action in ("bd", "bind", "绑定"):
@@ -2604,7 +2658,7 @@ def _build_owner_help_md() -> str:
         "| 指令 | 说明 |\n"
         "|------|------|\n"
         "| `/~owner draw get [QQ]` | 查看画图用量，不填 QQ 看全部 |\n"
-        "| `/~owner draw set <QQ> <N>` | 设每日画图上限（默认 10）|\n"
+        "| `/~owner draw set <QQ> <N>` | 设每日画图上限（默认 5）|\n"
         "| `/~owner draw reset` | 重置今日画图用量 |\n"
         "| `/~owner video get\\|set\\|reset` | 视频配额管理（默认 4）|\n"
         "\n"
@@ -2664,7 +2718,7 @@ tr:hover td{{background:rgba(249,115,22,.06)}}
 </table></div>
 <div class="section"><h3>🎨 画图 / 视频配额</h3><table><tr><th>指令</th><th>说明</th></tr>
 <tr><td><code>/~owner draw get [QQ]</code></td><td>查看画图用量，不填 QQ 看全部</td></tr>
-<tr><td><code>/~owner draw set &lt;QQ&gt; &lt;N&gt;</code></td><td>设每日画图上限（默认 10）</td></tr>
+<tr><td><code>/~owner draw set &lt;QQ&gt; &lt;N&gt;</code></td><td>设每日画图上限（默认 5）</td></tr>
 <tr><td><code>/~owner draw reset</code></td><td>重置今日画图用量</td></tr>
 <tr><td><code>/~owner video get|set|reset</code></td><td>视频配额管理（默认 4）</td></tr>
 </table></div>
@@ -3476,7 +3530,9 @@ async def handle_command(
         if getattr(handler, "__plugin__", None):
             src = f" (插件: {handler.__plugin__})"
         if result is not None:
-            logger.info("指令执行完成 [%s]%s: 返回%d字符", cmd_name, src, len(str(result)))
+            # 打印完整返回内容（不截断），方便排障
+            result_str = str(result)
+            logger.info("指令执行完成 [%s]%s: %s", cmd_name, src, result_str)
         else:
             logger.info("指令执行完成 [%s]%s: 无返回值（已自行发送）", cmd_name, src)
         return result

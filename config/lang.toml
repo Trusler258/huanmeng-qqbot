@@ -39,7 +39,7 @@ preset = "【提示词注入 /~preset (主人)】\n/~preset clear    清除注�
 reload = "【重载 /~reload (主人)】\n热重载 .toml 配置"
 cost = "【Token消耗 /~cost】\n查看今日/累计 Token 消耗和预估费用"
 token = "【Token计算 /~token】\n/~token <文本>   计算 token 数和费用"
-draw = "【绘画 /~draw】\n/~draw <提示词>   文生图"
+draw = "【绘画 /~draw】\n/~draw <提示词>   文生图\n引用一张图片 + /~draw <提示词>   以引用图为参考图生成"
 video = "【视频 /~video】\n/~video <提示词>  文生视频"
 img2video = "【图生视频 /~img2video】\n/~img2video <图片URL>  图生视频"
 eq = "【地震 /~eq】\n/~eq           最新 1 条地震速报\n/~eq 3         最新 3 条"
@@ -150,3 +150,38 @@ user_not_found = "找不到玩家喵~"
 no_game = "当前没有对局喵~"
 no_records = "还没有对局记录喵~"
 only_n_records = "只有 ${count} 场记录喵~"
+
+[wdsj]
+lb_searching = "正在查询排行榜喵~"
+lb_fail = "排行榜查询失败喵~ (${board})"
+player_searching = "正在查询 ${player} 的 ${template} 战绩喵~"
+player_not_found = "未找到 ${player} 的 ${template} 战绩喵~"
+img_download_fail = "官方图片下载失败喵~"
+
+[weather]
+prompt_input = "请输入城市名称喵~ 例如 /~weather 北京"
+searching = "正在查询天气喵~"
+fallback_error = "天气查询失败喵~ 稍后再试"
+
+[box]
+prompt_input = "请输入快递单号喵~ 例如 /~box 1234567890"
+api_error = "快递查询服务异常喵~ 稍后再试"
+network_error = "网络连接失败喵~ 检查一下网络再试"
+no_result = "查不到这个快递喵~ 单号对不对呢"
+state_transport = "运输中"
+state_delivering = "派送中"
+state_signed = "已签收"
+state_return = "退回"
+state_pending = "待揽收"
+state_finish = "已完成"
+header = "快递信息"
+state = "状态"
+latest = "最新"
+trajectory_header = "物流轨迹"
+trajectory_item = "${time} ${status}"
+delivering_tip = "快递正在派送中喵~"
+signed_tip = "快递已签收喵~"
+parse_error = "快递数据解析失败喵~"
+
+[analyze]
+fail = "分析失败喵~ 换个说法试试"

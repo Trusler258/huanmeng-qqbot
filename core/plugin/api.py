@@ -52,9 +52,10 @@ class PluginMessage:
     async def send(self, text: str, chat_id: int, is_group: bool = True) -> bool:
         """发送文本消息到群聊/私聊。失败返回 False（不抛异常）。"""
         try:
+            from core.plugin.kook_compat import strip_kook_text
             from services.sender import send_by_chat_type
             await send_by_chat_type(
-                str(text), chat_id, is_group,
+                str(strip_kook_text(text)), chat_id, is_group,
                 user_id=chat_id if not is_group else None,
             )
             return True
@@ -243,27 +244,61 @@ class PluginCapability:
 
         兼容两种 handler 签名：
         - qqbot 风格: async (args: list, user_id, group_id, sender_name, is_group, bot_qq)
-        - KOOK 风格:  async (msg: dict)  msg 含 args/author/sender/chat_id/is_group
+        - KOOK 风格:  async (msg: dict)  msg 含 args/author/sender/chat_id/is_group/mentions/quote_id
         """
         try:
             from modules.commands import COMMAND_MAP
-            async def _bridge(args, user_id, group_id, sender_name, is_group, bot_qq):
-                try:
-                    return await handler(args, user_id, group_id, sender_name, is_group, bot_qq)
-                except TypeError:
+            async def _bridge(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message=""):
+                async def _run() -> Any:
                     try:
-                        # KOOK 风格：handler 只收一个 msg 字典
-                        return await handler({
-                            "args": list(args or []),
-                            "author": user_id,
-                            "sender": sender_name,
-                            "chat_id": group_id if is_group else user_id,
-                            "is_group": bool(is_group),
-                            "bot_qq": bot_qq,
-                            "raw": " ".join(args or []),
-                        })
+                        return await handler(args, user_id, group_id, sender_name, is_group, bot_qq)
                     except TypeError:
-                        return await handler()
+                        try:
+                            # KOOK 风格：handler 只收一个 msg 字典
+                            # ★ 从 raw_message(CQ码/array格式) 解析 @的QQ列表 mentions 和 引用消息id quote_id
+                            mentions = []
+                            quote_id = None
+                            if raw_message:
+                                import re as _re
+                                import json as _json
+                                for m in _re.finditer(r'\[CQ:at,qq=(\d+)\]', raw_message):
+                                    if m.group(1) not in mentions:
+                                        mentions.append(m.group(1))
+                                # array 格式: [{"type":"at","data":{"qq":"123"}}, ...]
+                                if not mentions:
+                                    for m in _re.finditer(r'"type"\s*:\s*"at"\s*,\s*"data"\s*:\s*\{[^}]*"qq"\s*:\s*"?(\d+)"?', raw_message):
+                                        if m.group(1) not in mentions:
+                                            mentions.append(m.group(1))
+                                qm = _re.search(r'"message_id":(\d+)', raw_message) or \
+                                     _re.search(r'\[CQ:reply,id=(\d+)\]', raw_message) or \
+                                     _re.search(r'"type"\s*:\s*"reply"\s*,\s*"data"\s*:\s*\{[^}]*"id"\s*:\s*"?(\d+)"?', raw_message)
+                                if qm:
+                                    quote_id = qm.group(1)
+                            logger.debug("插件bridge [%s] mentions=%s quote_id=%s raw=%.120s",
+                                         self._plugin, mentions, quote_id, raw_message)
+                            return await handler({
+                                "args": list(args or []),
+                                "author": user_id,
+                                "sender": sender_name,
+                                "chat_id": group_id if is_group else user_id,
+                                "is_group": bool(is_group),
+                                "bot_qq": bot_qq,
+                                "raw": " ".join(args or []),
+                                "raw_message": raw_message,
+                                "mentions": mentions,
+                                "quote_id": quote_id,
+                            })
+                        except TypeError:
+                            return await handler()
+                try:
+                    from core.plugin.kook_compat import strip_kook_text
+                    result = await _run()
+                    if isinstance(result, str):
+                        return strip_kook_text(result)
+                    return result
+                except Exception as e:
+                    logger.warning("插件 %s 命令 %s 执行失败: %s", self._plugin, name, e)
+                    return None
             # 标注来源：日志/调试用，handle_command 检测 __plugin__ 显示插件名
             _bridge.__plugin__ = self._plugin
             _bridge.__cmd_name__ = name
@@ -302,15 +337,53 @@ class PluginImage:
 
     @staticmethod
     async def fetch_user_avatar(user_id: int) -> str:
-        """按 QQ 号拉取其头像 URL（失败返回空串）。走 NapCat get_stranger_info。"""
+        """按 QQ 号返回头像 URL。
+
+        QQ 头像有固定公开 URL：https://q1.qlogo.cn/g?b=qq&nk=<QQ号>&s=640
+        无需调 API（get_stranger_info 不返回头像字段）。先试 s=640 高清，
+        再试 s=100（部分号段 640 无图时 100 有）。
+        """
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return ""
+        base = "https://q1.qlogo.cn/g?b=qq&nk={}&s={}"
+        # 640 是标准高清头像，QQ 客户端通用；失败场景极少，直接返回 640
+        return base.format(uid, 640)
+
+    @staticmethod
+    async def fetch_quote_images(message_id) -> list[str]:
+        """获取被引用消息中的图片 URL 列表（供插件取原图，不调视觉模型）。
+
+        motou 等 KOOK 移植插件依赖此方法；QQ 端用 NapCat get_msg 按 message_id
+        从 message 段 + CQ 码两级提取，与 dispatcher._fetch_quoted_image 同源。
+        失败/无图返回空列表。
+        """
+        import re
         try:
             from services.sender import get_ws_manager
-            data = await get_ws_manager().call_api("get_stranger_info", {"user_id": int(user_id)})
-            qq_avatar = (data or {}).get("qlogo_url") or ""
-            return str(qq_avatar)
+            mgr = get_ws_manager()
+            data = await mgr.call_api("get_msg", {"message_id": int(message_id)})
+            if not data:
+                return []
+            urls: list[str] = []
+            msg_segments = data.get("message", [])
+            if isinstance(msg_segments, list):
+                for seg in msg_segments:
+                    if seg.get("type") == "image":
+                        u = (seg.get("data") or {}).get("url", "")
+                        if u and u not in urls:
+                            urls.append(u)
+            if not urls:
+                raw = data.get("raw_message", "") or ""
+                for m in re.finditer(r'\[CQ:image[^\]]*url=([^,\]]+)', raw):
+                    u = m.group(1)
+                    if u and u not in urls:
+                        urls.append(u)
+            return urls
         except Exception as e:
-            logger.warning("PluginImage 拉取头像失败 %s: %s", user_id, e)
-        return ""
+            logger.warning("PluginImage 获取引用图片失败 %s: %s", message_id, e)
+            return []
 
 
 class PluginVision:

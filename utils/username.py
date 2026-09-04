@@ -77,36 +77,45 @@ async def get_or_resolve_username(
 ) -> str:
     """
     三级查找用户名：
-    1. roles.toml 预设
-    2. 本地缓存文件
-    3. 在线 WS 查询（NapCat API）
-    
+    1. 分群昵称（data/group_nicknames.json，仅群聊）
+    2. roles.toml 全局预设
+    3. 本地缓存文件
+    4. 在线 WS 查询（NapCat API）
+
     Args:
         qq: QQ 号码
         host: NapCat WebSocket 地址
         port: NapCat WebSocket 端口
         group_id: 所在群号（用于群成员查询）
-    
+
     Returns:
         用户昵称，查询失败则返回 QQ 号字符串
     """
     qq_str = str(qq)
-    
-    # 第一优先：roles.toml 预设
+
+    # 第一优先：分群昵称（nickname_sync 同步的群名片）
     cfg = get_config()
+    if group_id:
+        per = cfg.group_nicknames.get(str(group_id), {})
+        nick = per.get(qq_str)
+        if nick:
+            logger.debug("用户 %s 映射到分群名称: %s (群 %s)", qq_str, nick, group_id)
+            return nick
+
+    # 第二优先：roles.toml 全局预设
     preset_name = cfg.qq_name_map.get(qq_str)
     if preset_name:
         logger.debug("用户 %s 映射到预设名称: %s (来源: roles.toml)", qq_str, preset_name)
         return preset_name
     
-    # 第二优先：本地文件缓存
+    # 第三优先：本地文件缓存
     local_mapping = _load_mapping()
     cached_nick = local_mapping.get(qq_str)
     if cached_nick:
         logger.debug("用户 %s 映射到缓存名称: %s (来源: 本地文件)", qq_str, cached_nick)
         return cached_nick
     
-    # 第三优先：在线 WS 查询
+    # 第四优先：在线 WS 查询
     logger.info("开始在线查询用户 %s 的昵称 (group=%s)...", qq_str, group_id)
     try:
         nick = await _query_username_ws(int(qq_str), host, port, group_id=group_id)

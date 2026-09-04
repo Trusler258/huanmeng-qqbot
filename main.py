@@ -75,12 +75,18 @@ def main():
         except Exception as e:
             info("优雅关闭异常（已忽略）: %s", e)
         # 清理残留任务（插件后台协程 / 渲染队列等），避免 loop.close() 挂起
+        # ★ 必须带超时：wdsj 采集等后台任务卡在 httpx/socket 时不响应 cancel，
+        #   无超时 gather 会永远挂起 → systemd 只能等满 TimeoutStopUSec(90s) 强杀
         pending = asyncio.all_tasks(loop)
         for t in pending:
             t.cancel()
         if pending:
             try:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(
+                    asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=5)
+                )
+            except asyncio.TimeoutError:
+                info("残留任务清理超时（5s），强制退出")
             except Exception:
                 pass
         loop.close()
