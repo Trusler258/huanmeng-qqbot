@@ -780,10 +780,15 @@ async def generate_multi_reply_with_tools(
     user_id: int = 0,
     group_id: int = 0,
     bot_qq: int = 0,
+    interim_cb=None,
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
     如果 LLM 选择调用工具，执行后把结果喂回去，再生成最终回复。
+
+    interim_cb: 可选 async 回调 (text)->None。FC 轮1 LLM 在发起工具调用前
+    写的自然语先导语（如"帮你搜搜看吧"）会经它先发给用户，避免 13s+ 干等。
+    由调用方（pipeline）注入发送通道；不传则维持旧行为（先导语丢弃）。
     """
     from core.tools import get_tool_schemas, execute_tool
 
@@ -875,10 +880,34 @@ async def generate_multi_reply_with_tools(
                         logger.info("json_mode 重试成功: %s...", json_raw[:80])
             break
 
+        # ★ v2.0.4y(2026-09-04): 轮1有工具调用且 content 是短自然语 → 先发先导语。
+        #   现象：LLM 写"帮你搜搜看吧"却整段被吞，工具执行完(13s+)才一次性出正文，
+        #   期间用户以为 bot 没反应，且铺垫丢失后正文开头突兀。
+        #   只发第一轮，后续轮 content 丢弃（防刷屏，最终回复会覆盖）。
+        if (
+            round_idx == 0 and result.tool_calls and interim_cb
+            and (result.content or "").strip()
+        ):
+            lead = result.content.strip()
+            # 过滤：只发"值得先说的话"——短自然语；JSON/长文/代码块/指令文本不发
+            if (
+                1 < len(lead) <= 120
+                and not lead.startswith("{")
+                and "```" not in lead
+                and "/~" not in lead
+            ):
+                logger.info("FC: 轮1先导语先发 (%d字): %s", len(lead), lead[:60])
+                try:
+                    await interim_cb(lead)
+                except Exception:
+                    logger.warning("FC: 先导语发送失败: %s...", lead[:30], exc_info=True)
+
         logger.info("FC: 轮%d 检测到 %d 个工具调用", round_idx + 1, len(result.tool_calls))
         msgs.append({
             "role": "assistant",
-            "content": None,
+            # ★ 保留轮 content：让后续轮/最终轮 LLM 看到自己已说过的先导语，
+            #   最终回复才不会重复"我查查/稍等"等动手前用语（仅保留短内容防污染）
+            "content": (result.content or None) if result.content and len(result.content) <= 300 else None,
             "tool_calls": [
                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)}}
                 for tc in result.tool_calls
