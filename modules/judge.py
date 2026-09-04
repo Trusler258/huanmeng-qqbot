@@ -255,10 +255,9 @@ async def should_respond(
     """完整的三级判断流程。注意：is_arch 已由 pipeline.py 从 call_judgment_pipeline 直接获取。"""
     cfg = get_config()
 
-    # ★ v2.0.4aa: @bot 名字文本也算点名（消息里的 @QQ 会被替换成 @bot名）
-    if re.search(rf'@{bot_qq}(?!\d)', msg) or (
-        bot_name and re.search(rf'@{re.escape(str(bot_name))}(?!\w)', msg)
-    ):
+    # v2.0.4ab: 仅匹配 @QQ 数字（at 段权威），不做 @bot名字 文本匹配——群友昵称
+    # 与 bot 同名时 @真人会误触发；真正的 @bot 在 pipeline 层已由 CQ at 短路
+    if re.search(rf'@{bot_qq}(?!\d)', msg):
         logger.info("@机器人检测 → 直接回复")
         return True
 
