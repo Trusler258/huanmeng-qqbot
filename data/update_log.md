@@ -874,3 +874,18 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 消息去重移入 message 路由分支内，仅对 post_type=message 生效；
   notice(撤回/戳一戳)/request 事件不参与 message_id 去重
 - 与 v2.0.4af 互补：af 解决"msglog 有真实 msg_id 可匹配"，ag 解决"撤回事件能收到"
+
+## v2.0.4ah — 修复 v2.0.4af 引入的重复发送回归 — 2026.9.5
+### 现象（用户实测）
+- 一次 /sys 在群里出现 3 条相同消息
+- 日志：13:24:39 /sys 触发 1 次 → 指令执行完 → call_api send 第1次 → 5s 超时 →
+  重试第2次 → 又超时 → 重试第3次 → 成功。**实际发出去 3 遍**
+### 根因
+- v2.0.4af 把 fire-and-forget 改成 call_api + 3 次重试：call_api 的"超时"≠"发送失败"——
+  NapCat 往往已收到并发出，只是响应回包慢/丢 → 重试 = 同一条消息重复发送
+- 老 fire-and-forget 不会重复（只有 ws.send 抛异常才重试，此时消息确实没到）
+### 修复（services/sender.py）
+- send_group_msg/send_private_msg：去掉重试循环 → **单次 call_api + 8s 超时**
+- 未确认(超时/失败)仅日志警告，不重发、不补 fallback（避免"原文+fallback"双条）
+- message_id 拿不到时 msg_id=0 兜底录制（撤回匹配该条让位，换取绝不重复）
+- 权衡说明：重复发送是用户可见的硬伤，message_id 偶发拿不到只是撤回匹配降级

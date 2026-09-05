@@ -263,28 +263,19 @@ def build_local_image_cq(local_path: str) -> str:
 async def send_group_msg(message: str, group_id: int) -> bool:
     """发送群聊文本消息
 
-    v2.0.4af(2026-09-05): fire-and-forget(mgr.send) → call_api 请求-响应。
-    旧实现拿不到 message_id，_log_bot_sent 写死 msg_id=0，而 mark_recalled 跳过
-    msg_id=0 条目 → 走本通道的 bot 消息被撤回时永远匹配不到 → "[原文未录制]"。
-    现改为 call_api 拿真实 message_id 录制，撤回可按号命中原文。
+    v2.0.4af(2026-09-05): fire-and-forget(mgr.send) → call_api 拿真实 message_id
+    供撤回匹配（旧实现 msg_id=0 永远匹配不到撤回）。
+    v2.0.4ah(2026-09-05): **去掉失败重试**——call_api 超时大多是"NapCat 已收到但响应
+    回包慢/丢"，重试 = 同一条消息重复发送（实测 /sys 一次发 3 条）。改为单次 call_api
+    + 8s 超时，未确认仅日志不重发不补 fallback；message_id 拿不到则 msg_id=0 兜底录制。
     """
     mgr = get_ws_manager()
     cfg = get_config()
-    data = None
-    for attempt in range(3):
-        data = await mgr.call_api("send_group_msg", {"group_id": group_id, "message": message}, timeout=5.0)
-        if data:
-            break
-        if attempt < 2:
-            await asyncio.sleep(1.0)
+    data = await mgr.call_api("send_group_msg", {"group_id": group_id, "message": message}, timeout=8.0)
     if not data:
-        # 发送失败 → fallback 提示（fire-and-forget 尽力而为）
-        fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
-        try:
-            await mgr.send({"action": "send_group_msg", "params": {"group_id": group_id, "message": fallback}, "echo": "chat_fallback"}, max_retries=0)
-        except Exception:
-            pass
-        _log_bot_sent(group_id, fallback)
+        # 超时/失败不重发（消息可能已送达，重发=重复），也不补 fallback（同理）
+        logger.warning("send_group_msg 未确认(超时/失败) 群=%d 不重发防重复", group_id)
+        _log_bot_sent(group_id, message)
         return False
     msg_id = int(data.get("message_id", 0) or 0)
     _log_bot_sent(group_id, message, msg_id=msg_id)
@@ -292,23 +283,13 @@ async def send_group_msg(message: str, group_id: int) -> bool:
 
 
 async def send_private_msg(message: str, user_id: int) -> bool:
-    """发送私聊文本消息（v2.0.4af: call_api 确认送达，语义与群聊对齐）"""
+    """发送私聊文本消息（v2.0.4af: call_api 确认；v2.0.4ah: 去掉重试防重复）"""
     mgr = get_ws_manager()
     cfg = get_config()
-    data = None
-    for attempt in range(3):
-        data = await mgr.call_api("send_private_msg", {"user_id": user_id, "message": message}, timeout=5.0)
-        if data:
-            break
-        if attempt < 2:
-            await asyncio.sleep(1.0)
+    data = await mgr.call_api("send_private_msg", {"user_id": user_id, "message": message}, timeout=8.0)
     if not data:
-        fallback = format_lang("bot.fallback_reply", name=cfg.bot_name)
-        try:
-            await mgr.send({"action": "send_private_msg", "params": {"user_id": user_id, "message": fallback}, "echo": "chat_fallback"}, max_retries=0)
-        except Exception:
-            pass
-        _log_bot_sent(user_id, fallback)
+        logger.warning("send_private_msg 未确认(超时/失败) user=%d 不重发防重复", user_id)
+        _log_bot_sent(user_id, message)
         return False
     _log_bot_sent(user_id, message)
     return True
