@@ -889,3 +889,21 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 未确认(超时/失败)仅日志警告，不重发、不补 fallback（避免"原文+fallback"双条）
 - message_id 拿不到时 msg_id=0 兜底录制（撤回匹配该条让位，换取绝不重复）
 - 权衡说明：重复发送是用户可见的硬伤，message_id 偶发拿不到只是撤回匹配降级
+
+## v2.0.4ai — 日志控制台支持隧道 path 前缀 + https/wss — 2026.9.5
+### 背景
+- 需求：两 bot 日志页经 CF Tunnel 挂 bot.truslerweb.dpdns.org 单子域
+  （/ → QQ 58888，/kook → KOOK 62000），页面 JS 固定连 location.host+/ws 会串台
+- 附带：走 https 隧道时旧模板硬编码 ws:// 会被浏览器 mixed-content 拦截
+### 改动（data/templates/console.html 两端: /root/bot + /root/kook_bot）
+- WebSocket 地址：按 location.pathname 前缀自适应 + https→wss
+  `(proto)+'://'+host+pathname去尾斜杠+'/ws'`（/ 与 /kook 下各连各的）
+- /api/logs 历史接口同样加前缀
+- log_server WS 握手本就不校验路径，服务端零改动
+### 隧道侧（cloudflared config.yml）
+- ingress: bot.truslerweb.dpdns.org path /kook* → 127.0.0.1:62000（在前）；
+  同 hostname 兜底 → 127.0.0.1:58888（QQ）
+- 同步 /etc → route dns → 重启
+### 验证
+- bot.xxx/ → 幻梦 QQ Bot 控制台 200；bot.xxx/kook → KOOK 控制台；
+  /kook/ws Upgrade → HTTP 101；两端 HTML 均含 wss 分支
