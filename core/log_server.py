@@ -395,12 +395,17 @@ class WebSocketLogHandler(logging.Handler):
 _server_task: asyncio.Task | None = None
 
 
-async def start(port: int = 58888):
-    """启动日志 Web 服务器"""
+async def start(port: int = 58888, bind_host: str = "127.0.0.1"):
+    """启动日志 Web 服务器
+
+    v2.0.4aj(2026-09-06): 默认绑定 127.0.0.1——日志页已走 CF Tunnel(nginx BasicAuth
+    反代层 bot.truslerweb.dpdns.org)，公网/内网直连 58888/62000 全部封锁，仅本机
+    cloudflared/nginx 回源可达。
+    """
     global _server_task
-    server = await asyncio.start_server(_http_handler, "0.0.0.0", port)
+    server = await asyncio.start_server(_http_handler, bind_host, port)
     addr = server.sockets[0].getsockname()
-    logging.getLogger("huanmeng").info("🌐 日志控制台已启动 → http://0.0.0.0:%d", addr[1])
+    logging.getLogger("huanmeng").info("🌐 日志控制台已启动 → http://%s:%d", bind_host, addr[1])
     _server_task = asyncio.current_task()
     async with server:
         await server.serve_forever()

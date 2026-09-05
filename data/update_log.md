@@ -907,3 +907,22 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 ### 验证
 - bot.xxx/ → 幻梦 QQ Bot 控制台 200；bot.xxx/kook → KOOK 控制台；
   /kook/ws Upgrade → HTTP 101；两端 HTML 均含 wss 分支
+
+## v2.0.4aj — bg_tasks datetime 修复 + 日志服务封公网直连 + 隧道 BasicAuth — 2026.9.6
+### 1. 采集失败通知 datetime NameError（用户贴日志）
+- 现象：00:03:55 `main:_bg_wdsj_collector:191 战绩采集失败: name 'datetime' is not defined`
+- 根因：_notify_qzone_failures(plugins/bg_tasks/main.py:194+) 用 datetime.now() 但方法内
+  未 import（datetime 只是 _bg_wdsj_collector 的局部变量）→ NameError → 被外层兜底
+  except 捕获 → **0 点档日榜图片推送(126-189 行)被短路跳过**
+- 修复：方法内补 `from datetime import datetime`
+- 补发：脚本复刻 0 点档推送 → 床战日报 28 人 + 竞技场 10 人 → 群 1058782600 + QQ 空间 ✓
+### 2. 日志页封公网直连（承接 bot 子域隧道）
+- 需求：58888/62000 不再从公网直连 + 访问密码
+- 方案：cloudflared ingress 改指 nginx 反代层(127.0.0.1:48888/46200, Basic Auth
+  htpasswd /www/server/nginx/conf/htpasswd.bot, 用户名 trusler)；log_server.py 默认
+  绑定 0.0.0.0 → 127.0.0.1（QQ bot.py 与 KOOK logweb 各副本）
+- 验证：公网直连 58888/62000 → 000 拒绝；隧道无凭据 401/带凭据 200；WS 101
+- 访问：https://bot.truslerweb.dpdns.org/qqbot 与 /kookbot（nginx bot-log.conf 反代，
+  配置 .bak_20260906_botsub；源 .bak_20260906_bind）
+### 3. 今日采集注记：Flowers_summer[bedwars] 00:03 4 轮 ConnectTimeout 最终失败，
+   属上游网络瞬时故障，非绑定问题；明晨 04:01 全量采集自动补上
