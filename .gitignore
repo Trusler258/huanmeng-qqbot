@@ -1,5 +1,6 @@
 # === 敏感配置 ===
 config/.env
+config/.env.bak*
 config/bot_config.toml
 config/adapter_config.toml
 config/roles.toml
