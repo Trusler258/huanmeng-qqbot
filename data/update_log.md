@@ -926,3 +926,40 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
   配置 .bak_20260906_botsub；源 .bak_20260906_bind）
 ### 3. 今日采集注记：Flowers_summer[bedwars] 00:03 4 轮 ConnectTimeout 最终失败，
    属上游网络瞬时故障，非绑定问题；明晨 04:01 全量采集自动补上
+
+## 注记（承接 v2.0.4ai/aj）— 路径定版 /qqbot /kookbot + 导航页同步 — 2026.9.6
+- bot.truslerweb.dpdns.org 最终定版：/qqbot → QQ 58888、/kookbot → KOOK 62000
+  （v2.0.4ai 原用 /kook，用户要求更清晰的命名，已验证 200/101/根404）
+- 公网直连封锁后，CF 导航页(cf.truslerweb.dpdns.org)原直连卡片失效 →
+  两卡片改指隧道地址（tag 标注"隧道·需密码"），本地副本已同步
+  (C:/Users/Huang/WorkBuddy/2026-09-05-20-51-46/cf-test/index.html)
+
+## v2.0.4an — qzone 失败说明并入日报说说(不再单独发文字说说) (2026.9.8)
+- 背景: 用户要求"战绩采集说明应放在图片所在那一条的文字部分, 而非发两条说说"
+- 改动(plugins/bg_tasks/main.py, gitignore 不入库):
+  1. 删除 _notify_qzone_failures 方法及 96/121 两处调用(不再非0点单独发文字说说)
+  2. 新增 self._pending_failed: 每轮采集失败暂存(不含通知副作用)
+  3. 0 点推日报时, 若有失败玩家且当日未并入过, 把"⚠️ 战绩采集失败说明"拼接进
+     QQ 空间日报说说的 content, 与图片同一条发出
+  4. 复用 wdsj_qzone_fail_notify.json 按自然日去重, 防 bot 重启后重复说明
+- 行为约定(用户选定"仅供日报合并, 非0点不单独发"):
+  * 0 点: 失败说明并入日报图片说说文字
+  * 4/8/12/16/20 点: 仅采集, 失败不单独发文字说说
+- 部署: 本地改 → scp /root/bot/plugins/bg_tasks/main.py → systemctl restart bot.service
+- 验证: 服务器 py_compile OK; NapCat 已连(pid 2845043); 00:15 重启无报错, 下轮采集 04:01
+- 注意: 今天非0点不会推日报, 合并效果在次日0点(若有失败)可见; 04:01 若失败也不再单独发文字
+
+## v2.0.4ao — 战绩日报重复同名修复: shuangzi_1228 绑了两个QQ (2026.9.9)
+- 现象: QQ空间战绩日报意外显示两个 shuangzi_1228
+- 根因: data/wdsj_player_name.json(榜单玩家名单)里 [QQ号] 和 [QQ号] 都映射到
+  shuangzi_1228; build_daily_rankings/build_arena_daily_rankings 按 bindings.items() 遍历
+  → 同名 name 各产出一条 row, 日报重复
+- 处置(用户: 留[QQ号]):
+  1. 数据: 删 [QQ号] 绑定, 保留 [QQ号](服务器 data/wdsj_player_name.json,
+     备份 .bak_20260909_0010; 名单 52→51)
+  2. 代码防御: wdsj_tracker.py 两个日榜函数循环顶加 _seen_names 按游戏名去重,
+     防将来同名绑定再重复上榜
+- 部署: scp services/wdsj_tracker.py → restart bot.service
+- 验证: 服务器 py_compile OK; bot active(pid 1216392); 58888 绑 127.0.0.1;
+  NapCat 已连; 绑定表 shuangzi 仅 [QQ号]
+- 文件备份: /root/bot/services/wdsj_tracker.py.bak_20260909_0015

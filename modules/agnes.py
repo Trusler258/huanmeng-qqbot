@@ -22,8 +22,9 @@ from services.sender import get_ws_manager
 logger = get_logger("agnes")
 
 # 文生图：CloudMist（gpt-image-2，base64 返回）
+# key 从环境变量读取（config/.env 里配置 AGNES_API_KEY），禁止硬编码入库
 AGNES_BASE = "https://v2.cloudmist.cloud/v1"
-AGNES_API_KEY = "sk-REPLACED"
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY", "")
 
 # 文生视频：原 Agnes 服务（保持旧配置，与新图服务分离）
 AGNES_VIDEO_BASE = "https://apihub.agnes-ai.com/v1"
@@ -33,7 +34,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _get_api_key() -> str:
-    return AGNES_API_KEY
+    # 运行时读取，避免 .env 加载晚于模块 import 导致取到空
+    return os.environ.get("AGNES_API_KEY", "") or AGNES_API_KEY
 
 
 def _video_api_key() -> str:
