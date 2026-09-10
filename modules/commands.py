@@ -55,7 +55,7 @@ try:
 except ImportError:
     cmd_tuflevel = cmd_tuf_search = cmd_tufd = cmd_tufpage = None
 
-from core.token_tracker import cmd_cost, cmd_tokens
+from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
 
 # ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
 
@@ -316,6 +316,10 @@ _HELP_DETAIL = {
 
     "tokens": "【Token计算 /~tokens】\n"
               "  /~tokens <文本>  计算 token 数和预估费用\n",
+
+    "cache": "【缓存命中率 /~cache】\n"
+             "  /~cache [天数]  查看 token 缓存命中率趋势（默认近7天）\n"
+             "  用于排查命中率低的原因（DeepSeek 前缀缓存）\n",
 
     "resetfav": "【重置好感 /~resetfav (主人)】\n"
                 "  清空所有好感度数据",
@@ -3439,6 +3443,7 @@ COMMAND_MAP: dict[str, callable] = {
     "balance":    cmd_balance,
     "cost":       cmd_cost,
     "tokens":     cmd_tokens,
+    "cache":      cmd_cache,
     "tuflevel":   cmd_tuflevel,
     "tuf谱面":  cmd_tuflevel,
     "tufsearch":  cmd_tuf_search,

@@ -412,6 +412,10 @@ _CIRCUIT_WINDOW = 300                   # N 次失败须发生在该秒数内（
 _CIRCUIT_COOLDOWN = 180                 # 首次熔断冷却秒数
 _CIRCUIT_MAX_COOLDOWN = 600             # 指数退避封顶
 
+# 当前调用场景标记（record_usage 用于命中率归因）
+# call_llm 是底层入口，各调用方在调用前设置此变量
+_current_call_scene: str = ""
+
 
 def _circuit_key(model_cfg) -> str:
     return (getattr(model_cfg, "name", "") or "?").split("/")[-1][:24]
@@ -489,6 +493,7 @@ async def call_llm(
     timeout: float = 60.0,
     json_mode: bool = False,
     _json_retries: int = 0,
+    scene: str = "",
 ) -> str:
     """
     调用 LLM 并返回原始文本内容。
@@ -500,6 +505,7 @@ async def call_llm(
         max_tokens: 最大生成 token 数
         temperature: 温度参数
         timeout: 超时时间（秒）
+        scene: 调用场景标识（reply/judge/search/tools等），用于 token 命中率归因
         
     Returns:
         模型返回的文本内容；出错返回空字符串
@@ -564,12 +570,15 @@ async def call_llm(
             if usage:
                 from core.token_tracker import record_usage
                 cached = getattr(usage, 'prompt_tokens_details', None)
-                cached_tokens = cached.cached_tokens if cached else 0
+                cached_tokens = getattr(cached, 'cached_tokens', 0) or 0
+                cwrite = getattr(cached, 'cache_write_tokens', 0) or 0
                 record_usage(
                     model=model_cfg.name,
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
                     cached_tokens=cached_tokens,
+                    cache_write_tokens=cwrite,
+                    scene=scene or _current_call_scene,
                 )
         except Exception:
             pass
@@ -606,10 +615,12 @@ async def call_llm_with_tools(
     max_tokens: int | None = None,
     temperature: float = 0.7,
     timeout: float = 60.0,
+    scene: str = "",
 ) -> ToolCallResult:
     """
     调用 LLM，支持 Function Calling。
     返回 ToolCallResult，包含可能的 tool_calls。
+    scene: 调用场景标识，用于 token 命中率归因
     """
 
     client = _create_client(model_cfg, timeout=timeout + 5.0)
@@ -652,6 +663,23 @@ async def call_llm_with_tools(
             logger.info("LLM [%s] → tool_calls: %s",
                        model_cfg.name[:20],
                        [(t["name"], str(t["arguments"])[:60]) for t in tc_list])
+
+        # 记录 token 消耗（FC 轮同样记录，命中率归因用）
+        try:
+            usage = getattr(completion, "usage", None)
+            if usage:
+                from core.token_tracker import record_usage
+                cached = getattr(usage, "prompt_tokens_details", None)
+                record_usage(
+                    model=model_cfg.name,
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    cached_tokens=getattr(cached, "cached_tokens", 0) or 0,
+                    cache_write_tokens=getattr(cached, "cache_write_tokens", 0) or 0,
+                    scene=scene or _current_call_scene or "tools",
+                )
+        except Exception:
+            pass
 
         _record_call_success(model_cfg)
         return ToolCallResult(content=content.strip(), tool_calls=tc_list)
@@ -809,7 +837,7 @@ async def generate_multi_reply_with_tools(
     _prev_call_set: frozenset[str] | None = None  # 防死循环：连续两轮相同调用集则停
 
     for round_idx in range(MAX_ROUNDS):
-        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4)
+        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools")
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
 
@@ -1329,7 +1357,7 @@ async def generate_multi_reply(
     logger.info("开始多句回复生成 | speaker=%s | history_turns=%d | extra=%d字",
                speaker_name, len(turns) - 1, len(extra_info))
 
-    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True)
+    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True, scene="reply")
     if not raw:
         logger.warning("多句回复生成为空，将使用 fallback")
         return [], 0, [], "", "", "", None, None, "user", {}, [], []
@@ -1461,6 +1489,7 @@ async def judge_interest(
         max_tokens=2,
         temperature=0.5,
         timeout=5.0,   # v2.0.4r: judge 只输出数字，5s 足够；15s 在故障期拖死队列
+        scene="judge",
     )
     
     digits = "".join(c for c in result if c.isdigit())
@@ -1493,6 +1522,7 @@ async def judge_should_reply_cheap(
         max_tokens=1,
         temperature=0,
         timeout=5.0,   # v2.0.4r
+        scene="judge",
     )
     should = result.strip() == "1"
     logger.debug("廉价判断模型: msg='%s...' → %s", msg[:30], "REPLY" if should else "SKIP")
@@ -1519,6 +1549,7 @@ async def judge_need_search(
         max_tokens=1,
         temperature=0,
         timeout=5.0,   # v2.0.4r
+        scene="judge_search",
     )
     need = result.strip() == "1"
     logger.debug("搜索判断: msg='%s...' → %s", msg[:30], "SEARCH" if need else "NO_SEARCH")
