@@ -963,3 +963,16 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 验证: 服务器 py_compile OK; bot active(pid 1216392); 58888 绑 127.0.0.1;
   NapCat 已连; 绑定表 shuangzi 仅 [QQ号]
 - 文件备份: /root/bot/services/wdsj_tracker.py.bak_20260909_0015
+
+## v2.0.5 — 脱敏 + GitHub 上传 (2026.9.10)
+- 背景: 上传 v2.0.5 到 GitHub 前做敏感信息清洗, 用户选择"全量清洗+重写历史"
+- 清洗范围:
+  1. `data/update_log.md`: 全部真实 QQ号/群号 → 语义占位符([QQ号]/[群号]/[botQQ]/[消息号])
+  2. `modules/agnes.py`: 硬编码 CloudMist API key → `os.environ.get("AGNES_API_KEY")` 运行时读取, config/.env 配置
+  3. `modules/gh.py`/`utils/username.py`/`core/log_server.py`: 注释中的号码同样清洗
+  4. `.gitignore` 增加 `config/.env.bak*`(防备份文件入库)
+- 历史重写: git filter-repo --no-gc 重写全部 83 提交 + force-push 到 origin main, 删除远程遗留 master 分支
+- 验证: 重新 clone 后全历史无敏感残留; agnes.py 无硬编码; update_log 无 9-11 位号码
+- 服务器部署: 备份 agnes.py/.env → 上传新版 → .env 追加 AGNES_API_KEY → 重启
+- 坑: force-push 后自动更新引擎 base SHA 失效触发全量下载阻塞启动 → 重启后状态文件自动恢复
+- filter-repo Windows 坑: 默认 gc 步骤会清空 .git refs! 必须 --no-gc, 重写后勿手动 gc
