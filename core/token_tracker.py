@@ -211,7 +211,7 @@ def _hit_rate(prompt: int, cached: int) -> float:
 
 
 def analyze_cache(days: int = 7) -> dict:
-    """分析缓存命中率，返回按天/按小时/按场景的统计数据"""
+    """分析缓存命中率，返回按天/按小时/按场景/按大小的统计数据"""
     today = date.today()
     start = (today - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     records = _load_range(start, today.strftime("%Y-%m-%d"))
@@ -222,19 +222,40 @@ def analyze_cache(days: int = 7) -> dict:
     hourly: dict[str, dict] = {}
     # 按场景聚合
     by_scene: dict[str, dict] = {}
+    # 按 prompt 大小分桶（区分主回复 vs judge/cheap 小调用）
+    by_size: dict[str, dict] = {
+        "主回复(>2000)": {"calls": 0, "prompt": 0, "cached": 0},
+        "中(500-2000)": {"calls": 0, "prompt": 0, "cached": 0},
+        "小(<500)": {"calls": 0, "prompt": 0, "cached": 0},
+    }
     today_str = today.strftime("%Y-%m-%d")
 
     for r in records:
         d = r["time"][:10]
         h = r["time"][11:13]
         scene = r.get("scene", "") or "unknown"
-        for bucket in (daily.setdefault(d, {"calls": 0, "prompt": 0, "cached": 0, "cwrite": 0}),
-                       hourly.setdefault(h, {"calls": 0, "prompt": 0, "cached": 0}),
-                       by_scene.setdefault(scene, {"calls": 0, "prompt": 0, "cached": 0})):
-            bucket["calls"] += 1
-            bucket["prompt"] += r.get("prompt_tokens", 0)
-            bucket["cached"] += r.get("cached_tokens", 0)
+        pt = r.get("prompt_tokens", 0)
+        ct = r.get("cached_tokens", 0)
+        daily.setdefault(d, {"calls": 0, "prompt": 0, "cached": 0, "cwrite": 0})
+        daily[d]["calls"] += 1
+        daily[d]["prompt"] += pt
+        daily[d]["cached"] += ct
         daily[d]["cwrite"] += r.get("cache_write_tokens", 0)
+
+        hourly.setdefault(h, {"calls": 0, "prompt": 0, "cached": 0})
+        hourly[h]["calls"] += 1
+        hourly[h]["prompt"] += pt
+        hourly[h]["cached"] += ct
+
+        by_scene.setdefault(scene, {"calls": 0, "prompt": 0, "cached": 0})
+        by_scene[scene]["calls"] += 1
+        by_scene[scene]["prompt"] += pt
+        by_scene[scene]["cached"] += ct
+
+        bucket = "主回复(>2000)" if pt > 2000 else ("中(500-2000)" if pt >= 500 else "小(<500)")
+        by_size[bucket]["calls"] += 1
+        by_size[bucket]["prompt"] += pt
+        by_size[bucket]["cached"] += ct
 
     # 组装结果
     daily_out = [
@@ -258,8 +279,13 @@ def analyze_cache(days: int = 7) -> dict:
          "rate": _hit_rate(v["prompt"], v["cached"])}
         for s, v in sorted(by_scene.items(), key=lambda x: -x[1]["prompt"])
     ]
+    size_out = [
+        {"bucket": s, "calls": v["calls"], "prompt": v["prompt"], "cached": v["cached"],
+         "rate": _hit_rate(v["prompt"], v["cached"])}
+        for s, v in by_size.items()
+    ]
 
-    return {"daily": daily_out, "hourly": hourly_out, "by_scene": scene_out, "today": today_str}
+    return {"daily": daily_out, "hourly": hourly_out, "by_scene": scene_out, "by_size": size_out, "today": today_str}
 
 
 def _fmt_rate(rate: float) -> str:
@@ -291,11 +317,20 @@ async def cmd_cache(args, user_id, group_id, sender_name, is_group, bot_qq):
             f"命中率{_fmt_rate(d['rate'])}{flag}"
         )
 
+    # 按 prompt 大小（关键：区分主回复 vs judge）
+    lines.append("按输入大小(关键):")
+    for s in data["by_size"]:
+        if s["calls"]:
+            lines.append(
+                f"  {s['bucket']:<12}: {s['calls']:>3}次 输入{s['prompt']:>7,} "
+                f"命中率{_fmt_rate(s['rate'])}"
+            )
+
     # 按场景（如果有多场景）
     scenes = data["by_scene"]
     if len(scenes) > 1:
         lines.append("按场景:")
-        for s in scenes:
+        for s in scenes[:6]:
             lines.append(
                 f"  {s['scene'][:12]:<12}: {s['calls']:>3}次 输入{s['prompt']:>7,} "
                 f"命中率{_fmt_rate(s['rate'])}"
@@ -312,14 +347,24 @@ async def cmd_cache(args, user_id, group_id, sender_name, is_group, bot_qq):
         else:
             lines.append("  无明显低谷时段")
 
-    # 结论
+    # 结论：用主回复命中率（>2000 token）判断真实缓存健康度
+    main_bucket = next((s for s in data["by_size"] if s["bucket"] == "主回复(>2000)"), None)
+    main_rate = main_bucket["rate"] if main_bucket and main_bucket["calls"] else None
     today_rate = next((d["rate"] for d in data["daily"] if d["date"] == data["today"]), 0)
-    if today_rate >= 70:
-        lines.append(f"结论: 今日命中率{today_rate:.1f}% 正常 ✓")
-    elif today_rate >= 40:
-        lines.append(f"结论: 今日命中率{today_rate:.1f}% 偏低，注意是否有大量新话题/重启")
+    lines.append("结论:")
+    if main_rate is not None:
+        if main_rate >= 70:
+            lines.append(f"  主回复命中率 {main_rate:.1f}% — 缓存健康 ✓")
+        elif main_rate >= 40:
+            lines.append(f"  主回复命中率 {main_rate:.1f}% — 偏低，注意 system 是否频繁变化")
+        else:
+            lines.append(f"  主回复命中率 {main_rate:.1f}% — 低，system prompt 变化或调用不连续")
+        lines.append(f"  总体命中率 {today_rate:.1f}%（受 judge 小调用稀释，仅供参考）")
     else:
-        lines.append(f"结论: 今日命中率{today_rate:.1f}% 很低 — 可能原因: ①DeepSeek服务端缓存冷启动 ②大量不同前缀请求 ③system prompt频繁变化 ④调用间隔过长超过缓存TTL")
-        lines.append("建议: ①减少额外动态信息注入system ②让消息历史保持稳定(锚点消息) ③避免频繁重启")
+        if today_rate >= 70:
+            lines.append(f"  今日命中率 {today_rate:.1f}% 正常 ✓")
+        else:
+            lines.append(f"  今日命中率 {today_rate:.1f}% — 主回复调用少，多为 judge 小调用拉低")
+            lines.append("  建议: ①保持 system prompt 稳定 ②群活跃时前缀缓存自然累积")
 
     return "\n".join(lines)
