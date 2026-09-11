@@ -598,11 +598,12 @@ async def call_llm(
     json_mode: bool = False,
     _json_retries: int = 0,
     scene: str = "",
+    thinking: bool | None = False,
 ) -> str:
     """
     调用 LLM 并返回原始文本内容。
     内部使用 run_in_executor 避免阻塞事件循环。
-    
+
     Args:
         model_cfg: 模型配置（含 url / key / name）
         messages: 对话消息列表 [{"role":"system","content":...}, ...]
@@ -610,7 +611,9 @@ async def call_llm(
         temperature: 温度参数
         timeout: 超时时间（秒）
         scene: 调用场景标识（reply/judge/search/tools等），用于 token 命中率归因
-        
+        thinking: v2.3.0 思考模式开关。默认 False（本函数多为短输出判断调用，
+          思考会吃掉小输出预算导致空返回；长文本生成场景调用方显式传 True）。
+
     Returns:
         模型返回的文本内容；出错返回空字符串
     """
@@ -637,6 +640,9 @@ async def call_llm(
             req_params["max_tokens"] = max_tokens
         if json_mode:
             req_params["response_format"] = {"type": "json_object"}
+        # v2.3.0: 思考模式显式控制。本函数默认 False（短判断调用防思考吃光输出预算）
+        if thinking is not None:
+            req_params["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
         
         completion = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: client.chat.completions.create(**req_params)),
@@ -708,9 +714,12 @@ async def call_llm(
 
 class ToolCallResult:
     """工具调用结果"""
-    def __init__(self, content: str, tool_calls: list[dict] | None):
+    def __init__(self, content: str, tool_calls: list[dict] | None, reasoning: str = ""):
         self.content = content or ""
         self.tool_calls = tool_calls or []
+        # v2.3.0: 思考模式思维链（deepseek-flash reasoning_content），
+        # 带 tools 的请求必须回传给 API（否则 400），存这里方便拼接
+        self.reasoning = reasoning or ""
 
 async def call_llm_with_tools(
     model_cfg: "ModelConfig",
@@ -720,11 +729,19 @@ async def call_llm_with_tools(
     temperature: float = 0.7,
     timeout: float = 60.0,
     scene: str = "",
+    thinking: bool | None = None,
 ) -> ToolCallResult:
     """
     调用 LLM，支持 Function Calling。
     返回 ToolCallResult，包含可能的 tool_calls。
     scene: 调用场景标识，用于 token 命中率归因
+
+    thinking: 思考模式开关（DeepSeek-flash 默认开启思考）。
+      - True  → 显式启用 (extra_body thinking.enabled)
+      - False → 显式关闭（闲聊更快更省；思考 token 不计入输出）
+      - None  → 跟随 API 默认（不传 extra_body）
+    v2.3.0: deepseek-flash 自带 thinking；带 tools 的请求必须回传 reasoning_content
+    否则 API 400（DeepSeek 官方要求），故 ToolCallResult 新增 reasoning 字段承载。
     """
 
     client = _create_client(model_cfg, timeout=timeout + 5.0)
@@ -743,6 +760,9 @@ async def call_llm_with_tools(
     }
     if max_tokens is not None:
         req_params["max_tokens"] = max_tokens
+    # v2.3.0: 思考模式显式控制（DeepSeek-flash；reasoning_effort 走模型默认 high）
+    if thinking is not None:
+        req_params["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
 
     try:
         completion = await asyncio.wait_for(
@@ -751,6 +771,7 @@ async def call_llm_with_tools(
         )
         msg = completion.choices[0].message
         content = msg.content or ""
+        reasoning = getattr(msg, "reasoning_content", None) or ""
         tc_list: list[dict] = []
 
         if msg.tool_calls:
@@ -786,7 +807,7 @@ async def call_llm_with_tools(
             pass
 
         _record_call_success(model_cfg)
-        return ToolCallResult(content=content.strip(), tool_calls=tc_list)
+        return ToolCallResult(content=content.strip(), tool_calls=tc_list, reasoning=reasoning)
 
     except asyncio.TimeoutError:
         logger.error("LLM FC [%s] 超时", model_cfg.name[:20])
@@ -913,6 +934,7 @@ async def generate_multi_reply_with_tools(
     group_id: int = 0,
     bot_qq: int = 0,
     interim_cb=None,
+    thinking: bool | None = None,
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
@@ -921,6 +943,8 @@ async def generate_multi_reply_with_tools(
     interim_cb: 可选 async 回调 (text)->None。FC 轮1 LLM 在发起工具调用前
     写的自然语先导语（如"帮你搜搜看吧"）会经它先发给用户，避免 13s+ 干等。
     由调用方（pipeline）注入发送通道；不传则维持旧行为（先导语丢弃）。
+
+    thinking: v2.3.0 思考模式开关，透传给每轮 FC 调用（True=启用/False=关闭/None=默认）
     """
     from core.tools import get_tool_schemas, execute_tool
 
@@ -941,7 +965,7 @@ async def generate_multi_reply_with_tools(
     _prev_call_set: frozenset[str] | None = None  # 防死循环：连续两轮相同调用集则停
 
     for round_idx in range(MAX_ROUNDS):
-        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools")
+        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools", thinking=thinking)
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
 
@@ -1040,6 +1064,8 @@ async def generate_multi_reply_with_tools(
             # ★ 保留轮 content：让后续轮/最终轮 LLM 看到自己已说过的先导语，
             #   最终回复才不会重复"我查查/稍等"等动手前用语（仅保留短内容防污染）
             "content": (result.content or None) if result.content and len(result.content) <= 300 else None,
+            # v2.3.0: 思考模式启用时，带 tools 请求必须回传 reasoning_content（否则 400）
+            "reasoning_content": result.reasoning or None,
             "tool_calls": [
                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)}}
                 for tc in result.tool_calls
