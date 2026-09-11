@@ -1024,10 +1024,10 @@ async def generate_multi_reply_with_tools(
         )
     if data_results:
         wrap_msgs = [
-            {"role": "system", "content": "你是幻梦，一个可爱的QQ机器人。用自然语气回复，加个喵或颜文字。1句，≤40字。"},
-            {"role": "user", "content": f"用户说「{current_msg}」\n查到数据：{data_results[0]}\n请用一句话自然回复。"},
+            {"role": "system", "content": "你是幻梦。用自然语气回复，别句句挂喵。简单数据一句话即可；如果是知识性/原理性内容，就多说几句讲清楚，不限字数。"},
+            {"role": "user", "content": f"用户说「{current_msg}」\n查到数据：{data_results[0]}\n请自然回复——简单数据一两句；知识性内容该展开就展开，讲透为止。"},
         ]
-        raw = await call_llm(reply_model, wrap_msgs, max_tokens=80, temperature=0.4)
+        raw = await call_llm(reply_model, wrap_msgs, max_tokens=2000, temperature=0.4)
         if raw:
             return _parse_reply(
                 json.dumps({"replies": [raw.strip()], "fav": 0, "calls": [], "face": None, "mood": "好奇", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}, ensure_ascii=False),
@@ -1232,7 +1232,7 @@ def _build_messages(
         ctx_hint = "优先用上下文+自身知识回答，上下文够用就别搜。"
     else:
         ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
-    max_chars = "40" if is_group else "12"
+    max_chars = "40" if is_group else "20"
     fmt_reminder = (
         "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
         f"{ctx_hint}\n"
@@ -1240,7 +1240,8 @@ def _build_messages(
         "数学题/方程/方程组/计算题必须调用 calc 工具用代码精确求解，不要心算。"
         "★ 搜索规则：闲聊、寒暄、接梗、聊已知日常话题时不要搜。但名词/概念类提问（XX是啥/是什么/什么意思/这词哪来的）、你不确定的、涉及时效或数据的问题，必须先用 search 查证再答——禁止凭印象瞎猜，禁止反问'从哪看到的'打发；拿不准就查，别硬答。不用工具就直接输出 JSON。\n"
         f'回复格式: {{"replies":["回复"],"fav":0,"calls":[],"face":null,"mood":"开心","action":"","at":null,"mode":null,"origin":"user","actor":{{"name":"{speaker_name}","qq":0}}}}\n'
-        f"回复 1~3 句，每句≤{max_chars}字。fav -5~+5。严格按照这个 JSON 格式输出！"
+        f"回复长度随场景：闲聊/接梗 1~3 句、每句≤{max_chars}字；知识/技术/原理/概念/步骤/对比/追问 → 3~10 句、不限字数，讲透为止。fav -5~+5。"
+        "可选字段（face/at/mode/action）不需要就填 null 或空串，别为了填满而硬编。严格按照上面的 JSON 格式输出！"
     )
     user_parts.append(fmt_reminder)
     # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
@@ -1316,13 +1317,13 @@ async def generate_multi_reply(
     if extra_info:
         user_parts.append(f"【当前可用的搜索/记忆信息】\n{extra_info}\n请参考以上信息回答，如果信息不相关可忽略。")
     # ★ 格式提醒：JSON 输出
-    max_chars = "40" if is_group else "12"
+    max_chars = "40" if is_group else "20"
     fmt_reminder = (
         "【格式规则：严格输出 JSON，不要任何额外文字】"
         "\n"
         '{"replies":["完整的第一句话","自然的第二句话"],"mood_detail":["开心","好奇"],"fav":2,"calls":[],"face":null,"mood":"开心","action":"摇了摇尾巴","at":null,"mode":null,"origin":"user","actor":{"name":"当前发言者","qq":发言人QQ号}}'
         "\n"
-        f"日常回复 1~3 句，每句≤{max_chars}字。复杂问题 3~6 句，每句≤150 字，展开说透。fav -5~+5。"
+        f"回复长度随场景：闲聊 1~3 句、每句≤{max_chars}字；知识/技术/原理/概念/步骤/对比类问题或对方追问 → 3~10 句、不限字数，讲深讲透。fav -5~+5。"
             "\n"
                         "mood: 当前整体情绪。mood_detail: 每句话对应情绪数组(和replies一一对应)。action: 动作描写。at: @的QQ号，不@就null。mode: 模式切换。face: 极少用，通常null。"
             "\n"
