@@ -715,17 +715,9 @@ async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_qq):
     from core.config import get_config
     cfg = get_config()
     max_chars = "40" if is_group else "12"
-
-    fmt_reminder = (
-        "【格式规则：严格输出 JSON，不要任何额外文字】\n"
-        '{"replies":["完整的第一句话","自然的第二句话"],"fav":2,"calls":[],"face":null,"mood":"开心","action":"摇了摇尾巴","at":null,"mode":null,"origin":"user","actor":{"name":"当前发言者","qq":0}}\n'
-        f"replies 2~5句，每句≤{max_chars}字，内容完整自然。fav -5~+5。\n"
-        "mood: 当前情绪。action: 动作描写。at: @的QQ号，不@就null。mode: 模式切换。face: 极少用，通常null。\n"
-        "origin: 谁发起操作(user/bot)。actor: 替谁执行({name,qq})，bot发起时actor=null。\n"
-        '【致命规则：replies 内必须用标准 JSON，英文引号必须转义为 \\" ，或用中文引号「」替代！】\n'
-        '【指令调用规则：如果有人要求你执行一个操作，必须通过calls执行对应指令。】\n'
-        "【禁止：JSON之后严禁加任何注释、说明、//、/*、```、换行文字！】"
-    )
+    # ★ v2.2.2: 提醒模板统一放 data/skills/40_reminders.md（原硬编码已迁走）
+    from services.llm import _build_reminder
+    fmt_reminder = _build_reminder("jsonraw_reminder", max_chars=max_chars)
 
     system = cfg.system_prompt or "你是幻梦，一只可爱的猫娘机器人。"
     raw = await call_llm(cfg.reply_model, [

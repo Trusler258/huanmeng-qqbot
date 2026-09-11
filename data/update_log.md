@@ -1,5 +1,43 @@
 # 更新日志
 
+## v2.2.2 — 提示词集中管理 + 回复禁用 Markdown — 2026.9.11
+两个需求：① 回复别用 Markdown（QQ 不渲染，星号/井号/减号原样显示很难看）② 提示词写在一个固定的 skill 里，不要硬编码在各个角落。
+
+### 现状（硬编码散落的 4 处）
+- `services/llm.py` `_build_messages`（主回复路径）一大坨 `fmt_reminder`
+- `services/llm.py` `generate_multi_reply`（voice 路径）另一大坨 `fmt_reminder`
+- `modules/commands.py` `cmd_jsonraw`（调试指令）第三份副本
+- `core/ctx_usage.py`（/~ctx 统计）**手工复刻**了一份，会随提示词改动漂移 → 统计失真
+
+### 改造
+- **新增 `data/skills/40_reminders.md`**（集中落点，经 `_merge_skills_dir` 自动叠加，无需新机制）
+  - `## reply_reminder` 主回复模板（原 A 版，`${ctx_hint}` / `${max_chars}` 为变量）
+  - `## voice_reminder` 语音路径模板（原 B 版）
+  - `## jsonraw_reminder` 调试指令模板
+  - `## plain_text_rule` **新增·禁用 Markdown 规则**（自动追加到提醒末尾 —— 越靠近当前消息注意力越高）
+- **`services/llm.py`** 新增 `_build_reminder(name, **vars)`：读模板 → 插值 → 追加禁 md 规则
+  - 缺章节时打 ERROR 并回退**最小 JSON 兜底**（JSON 约束绝不能丢，否则 LLM 输出纯文本 → 全量解析失败）
+  - `_OPTIONAL_SECTIONS` 补入 4 个新章节名，防被 `_build_skill_refs` 关键词兜底误注入
+  - 顺带修复 `_parse_reply` 的日志格式串 bug（5 个占位符只传 4 个参数 → 每次解析都刷 TypeError traceback）
+- **`modules/commands.py`** / **`core/ctx_usage.py`**：改调 `_build_reminder`，副本全部删除
+
+### 禁 Markdown 规则要点
+禁止 `**加粗**`、`*斜体*`、`# 标题`、`> 引用`、`-`/`*` 列表、表格、`[文字](链接)`、分隔线、反引号/代码块；
+要强调用「」《》【】，要分点就分行或用「一是…二是…」，链接直接贴完整网址，代码直接写原文。
+与既有规则无冲突（group_format 规则5 本就要求"只输出纯文本、不要编号"）。
+
+### 验证（本地 + 服务器双端）
+- **逐字对比**：改前先 dump 三条路径的提醒原文存档，改后与原文字节级比对 —— 全部一致，只多出 344 字符禁 md 规则
+  | 路径 | 原文 | 改后 |
+  |------|------|------|
+  | A 主回复（群/私聊） | 1412 | 1757 = 1412 + 345 |
+  | B 语音 | 1213 | 1558 = 1213 + 345 |
+- 兜底测试：模拟章节缺失 → 正确回退最小兜底、无残留占位符、不抛异常
+- 隔离测试：新章节不泄漏进 system、不被 `_build_skill_refs` 捞走；指令列表仍正常注入
+- 端到端回归：记笔记场景仍裁到 1 句、`400tok/s` 不再误触发搜索、知识类多句不被裁
+- 服务器：`已叠加 skill 文件: 40_reminders.md`、章节 13 → 17、提醒渲染 1757 字符、无 ERROR、WS 已连接
+- `/~ctx` 的"格式提醒"从 493 → **884 tokens**（此前是偏短的手工复刻，现在读真实模板，数字终于准了）
+
 ## v2.2.1 — 修复回复正文里的「/字母」被误当指令（串台/白跑搜索）— 2026.9.11
 现象（群 247478659 实测）：Trusler 发「修订Note1为空，已读」→ bot 删笔记后**白跑了一次 28s 搜索**，
 搜的还是「都快赶上本地推理了」，接着又追加一句莫名其妙的「诶，怎么把这条删掉了呀？」。
