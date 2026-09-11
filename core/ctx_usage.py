@@ -16,8 +16,8 @@ from core.logger import get_logger
 
 logger = get_logger("ctx")
 
-# 上下文窗口上限（DeepSeek 64K，留安全余量按 60K 计）
-CTX_WINDOW = 60_000
+# 上下文窗口上限（deepseek-flash = DeepSeek-V4.1-Flash，1M 上下文；留安全余量按 960K 计）
+CTX_WINDOW = 960_000
 
 # 超长注入的内容要截断，避免 /~ctx 自己也把上下文撑爆
 _MAX_PREVIEW = 60

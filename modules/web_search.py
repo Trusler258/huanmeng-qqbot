@@ -474,7 +474,7 @@ async def ds_native_search(query: str) -> str | None:
         raise RuntimeError("DEEPSEEK_KEY 未配置")
 
     payload = json.dumps({
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "instructions": "你是一个搜索助手，请根据搜索结果简洁回答用户问题，列出关键信息。",
         "input": query,
         "tools": [{"type": "web_search"}],
