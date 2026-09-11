@@ -115,59 +115,44 @@ logger = get_logger("llm")
 #    确保即使 FIFO 裁剪历史消息，system+锚点这段前缀始终缓存命中。
 _MULTI_REPLY_ANCHOR = "【以下是最新的聊天记录，请结合你的人设和上述规则参与对话】"
 
-# ── main_skill.md 加载 ────────────────────────────────────
+# ── 提示词加载（data/skills/*.md 为唯一落点）────────────────
 
 _skill_sections: dict[str, str] = {}
 _skill_loaded = False
 
 
 def _load_skill_sections() -> dict[str, str]:
-    """解析 data/main_skill.md，按 ## 节名 切割返回 {节名: 内容}"""
+    """加载提示词章节：data/skills/*.md，叠加历史遗留的 data/main_skill.md（可选）。
+
+    v2.2.4：提示词已按「加载角色」拆分到 data/skills/，见各文件头部注释：
+      00_ 常驻核心 / 10,11_ 格式 / 20_ 常驻指令规则 / 21_ 按需指令表 /
+      30_ 好感度 / 40_ 提醒模板 / 50_ 按需玩梗 / 60_ 按需表情库
+
+    ★ main_skill.md 缺失时**必须继续合并 skills 目录**，不能提前 return——
+      旧实现直接 return，会导致拆分后所有提示词静默丢失（真 bug，已修）。
+    """
     global _skill_sections, _skill_loaded
     if _skill_loaded:
         return _skill_sections
 
-    skill_path = Path(__file__).resolve().parent.parent / "data" / "main_skill.md"
-    if not skill_path.exists():
-        logger.warning("main_skill.md 不存在: %s，使用内置回退", skill_path)
-        _skill_loaded = True
-        return _skill_sections
-
-    try:
-        text = skill_path.read_text(encoding="utf-8")
-    except Exception as e:
-        logger.error("读取 main_skill.md 失败: %s", e)
-        _skill_loaded = True
-        return _skill_sections
-
+    _base = Path(__file__).resolve().parent.parent / "data"
     sections: dict[str, str] = {}
-    current_key = ""
-    current_lines: list[str] = []
 
-    for line in text.split("\n"):
-        stripped = line.strip()
-        # 纯注释行（# 开头但不是 ## 开头）和空行跳过
-        if stripped == "" or (stripped.startswith("#") and not stripped.startswith("## ")):
-            continue
+    # 1) 历史遗留单文件（可选，splits 后已不再维护）
+    legacy = _base / "main_skill.md"
+    if legacy.exists():
+        try:
+            sections = _parse_md_sections(legacy.read_text(encoding="utf-8"))
+            logger.info("main_skill.md 已解析: %d 个章节（遗留文件）", len(sections))
+        except Exception as e:
+            logger.error("读取 main_skill.md 失败: %s", e)
 
-        if stripped.startswith("## "):
-            if current_key:
-                sections[current_key] = "\n".join(current_lines).strip()
-            current_key = stripped[3:].strip()
-            current_lines = []
-        elif current_key:
-            current_lines.append(line)
-
-    if current_key:
-        sections[current_key] = "\n".join(current_lines).strip()
-
-    # ★ 叠加 data/skills/ 下的模块化提示词文件（与 kook bot 的 skills/ 体系对齐）。
-    #    skills 文件可覆盖 main_skill.md 中同名章节，或新增额外章节。
+    # 2) 叠加 data/skills/*.md —— 提示词的唯一落点（同名章节覆盖 legacy）
     _merge_skills_dir(sections)
 
     _skill_sections = sections
     _skill_loaded = True
-    logger.info("main_skill.md 已加载: %d 个章节（含 skills 叠加）", len(sections))
+    logger.info("提示词已加载: %d 个章节（data/skills/ + 遗留 main_skill.md）", len(sections))
     return sections
 
 
@@ -400,6 +385,7 @@ _CMD_DESC = {
     "cost":    "查今日 Token 消耗统计（调了多少次、花了多少钱）",
     "tokens":  "查今日各模型 Token 用量明细",
     "ctx":     "查当前对话的上下文用量统计（system/参考资料/历史/注入各占多少token）",
+    "say":     "代发消息到指定群或指定私聊（仅管理员）。用法: /~say g<群号> <内容> 或 /~say u<QQ号> <内容>，纯数字默认群号；内容里的 @123456 会变成真的@",
     "stats":   "查自身统计（回复次数/好感度/被@次数）",
     "setstats":"设置自身统计数据（主人用）",
     "unstats": "管理员用",

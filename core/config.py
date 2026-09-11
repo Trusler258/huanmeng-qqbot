@@ -115,21 +115,33 @@ class BotConfig:
         return self.system_prompt
 
     def _build_self_awareness(self) -> str:
-        """构建自我认知：从 main_skill.md 加载模板并填入动态信息"""
+        """构建自我认知：从 data/skills/ 加载 self_awareness 模板并填入动态信息
+
+        v2.2.4：提示词拆到 data/skills/*.md 后，这里扫描 skills 目录找章节；
+        找不到再回退历史遗留的 data/main_skill.md。
+        （config 不能 import services.llm，故就地用正则取段，逻辑与技能文件的
+          ## 章节切分一致：以 ## 开头为界）
+        """
         import re
 
-        # 读取模板
-        skill_path = Path(__file__).resolve().parent.parent / "data" / "main_skill.md"
+        # 读取模板：先扫 skills 目录，再回退遗留单文件
+        _data = Path(__file__).resolve().parent.parent / "data"
+        candidates = sorted((_data / "skills").glob("*.md")) if (_data / "skills").is_dir() else []
+        legacy = _data / "main_skill.md"
+        if legacy.exists():
+            candidates.append(legacy)
+
         template = ""
-        if skill_path.exists():
+        for f in candidates:
             try:
-                text = skill_path.read_text(encoding="utf-8")
-                # 提取 ## self_awareness 段
-                m = re.search(r'## self_awareness\n(.*?)(?=\n## |\Z)', text, re.DOTALL)
-                if m:
-                    template = m.group(1).strip()
+                text = f.read_text(encoding="utf-8")
             except Exception:
-                pass
+                continue
+            # 提取 ## self_awareness 段
+            m = re.search(r'## self_awareness\n(.*?)(?=\n## |\Z)', text, re.DOTALL)
+            if m:
+                template = m.group(1).strip()
+                break
 
         # 从更新日志提取最新版本
         version = "v0.9.8 Pro"
