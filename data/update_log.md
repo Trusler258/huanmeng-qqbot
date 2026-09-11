@@ -1,5 +1,28 @@
 # 更新日志
 
+## v2.1.9 — 提示词分层：system 稳定化 + skill 热读取 — 2026.9.11
+需求："skill 热读取，而不是一直都带着；重要的写系统提示词里，其他聊天内容写用户提示词里"。
+
+改造（2 文件）：
+- **data/main_skill.md**：把 `## command_tools` 拆成两章
+  - `## command_tools`（核心调用规则 0-11，含笔记本必记/先导语/诚实归因）
+  - `## command_table`（指令表格段，1350 字符，可单独热注入）
+- **services/llm.py**：
+  - `_build_system_text` 重构为只拼常驻核心（header/persona_lock/format/command_tools/fav_format/fav_tiers/self_awareness/anti_repeat/private_tone），
+    每轮完全一致 → DeepSeek 前缀缓存命中率最高
+  - 新增 `_SYSTEM_SECTIONS`/`_OPTIONAL_SECTIONS`/`_TOOL_HINTS`/`_detect_skill_needs`/`_build_skill_refs`
+  - `_detect_skill_needs` 宽松匹配工具意图（查/搜/帮我/天气/积分/谱面/棋等 27 词 + `~` + 疑问词）
+  - `_build_skill_refs` 组装【本轮参考资料】注入 user 消息：tools 意图才带 command_table + 指令列表，
+    face 意图带 face_lib，play 意图带 play_mode；data/skills/*.md 自定义章节按章节名在消息中命中才热加载
+  - `_build_messages` 与 `generate_multi_reply` 两处 user 构建处插入参考资料注入
+
+验证（本地）：
+- system 由 15891 → 10460 字符（省 34%），两次生成完全一致（缓存友好）
+- 闲聊消息仅带核心 system + 格式，不附带指令表/指令列表
+- 工具意图（如"帮我查明天北京天气"）才附带 command_table + 全部指令列表
+- 服务器部署后重启正常：main_skill.md 加载 13 个章节，NapCat WS 已连接
+- 待 API 频率限额恢复后做最小真实调用验证热注入
+
 ## v2.0.4s — wdsj 战绩采集失败统计 + 统一重试 + QQ空间说明 — 2026.9.3
 现象：00:03 每日采集"80 条新记录 (失败 20)"，全部 ConnectTimeout；且日志出现**两条"采集完成"+ 双进度流**。
 根因：

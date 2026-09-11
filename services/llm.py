@@ -229,10 +229,12 @@ def reload_skill_cache():
 
 
 def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_persona: dict | None = None) -> str:
-    """根据群聊/私聊组装 system prompt
+    """组装 system prompt —— 只放稳定核心（人设 / 格式 / 核心规则）
 
-    custom_persona dict {core, side, identity} 非空时：用三段构造 header（全替换人设），
-    禁用 face_lib/private_tone/play_mode（表情/语气/玩模式），保留功能段（format/command/fav/anti_repeat）。
+    v2.1.9 分层重构：
+    - system 只留常驻核心，每轮完全一致 → DeepSeek 前缀缓存命中率最高
+    - 指令表格、指令列表、表情库、玩梗模式等参考资料改由 _build_skill_refs() 注入 user 消息
+    - data/skills/*.md 的额外章节按关键词热匹配（见 _build_skill_refs）
     """
     sec = _load_skill_sections()
 
@@ -255,32 +257,88 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         )
 
     fmt_key = "group_format" if is_group else "private_format"
-    format_rules = sec.get(fmt_key, "")
+    core_parts = [
+        header,
+        sec.get("persona_lock", "") if not custom_persona else "",
+        sec.get(fmt_key, ""),
+        sec.get("command_tools", ""),
+        sec.get("fav_format", ""),
+        sec.get("fav_tiers", ""),
+        sec.get("self_awareness", ""),
+        sec.get("anti_repeat", ""),
+        sec.get("private_tone", "") if (not is_group and not custom_persona) else "",
+    ]
+    return "\n\n".join(p for p in core_parts if p)
 
-    fav_format = sec.get("fav_format", "")
-    fav_tiers = sec.get("fav_tiers", "")
-    anti_repeat = sec.get("anti_repeat", "")
-    play_mode = sec.get("play_mode", "") if not custom_persona else ""
-    command_tools = sec.get("command_tools", "")
-    face_lib = sec.get("face_lib", "") if not custom_persona else ""
-    private_tone = sec.get("private_tone", "") if (not is_group and not custom_persona) else ""
 
-    # 动态注入 COMMAND_MAP 全部指令
-    cmd_list = _build_dynamic_command_list()
+# 常驻 system 的章节名（不参与按需注入）
+_SYSTEM_SECTIONS = frozenset((
+    "prompt_header", "persona_lock", "group_format", "private_format",
+    "command_tools", "fav_format", "fav_tiers", "self_awareness",
+    "anti_repeat", "private_tone",
+))
+# 已单独处理的可选章节
+_OPTIONAL_SECTIONS = frozenset(("command_table", "face_lib", "play_mode"))
 
-    # 追加 main_skill.md / skills 中未被显式引用的额外章节（如用户自定义的技能片段）
-    used_keys = {
-        "prompt_header", "group_format", "private_format",
-        "command_tools", "face_lib", "private_tone",
-        "anti_repeat", "fav_format", "fav_tiers", "play_mode",
-    }
-    extra = [v for k, v in sec.items() if k not in used_keys and v]
+# 工具/指令意图触发词（宽松匹配：宁可多带，漏带会导致不会调指令）
+_TOOL_HINTS = (
+    "查", "搜", "帮我", "画", "唱", "天气", "地震", "新闻", "战绩", "积分", "签到",
+    "提醒", "倒计时", "余额", "快递", "翻译", "抽", "谱面", "棋", "卡片", "读",
+    "网页", "更新", "状态", "统计", "记忆", "昵称", "备注", "下载", "谱", "tuf",
+)
 
-    return "\n\n".join(
-        p for p in [header, format_rules, command_tools, cmd_list,
-                     face_lib, private_tone, anti_repeat, fav_format, fav_tiers, play_mode, *extra]
-        if p
-    )
+
+def _detect_skill_needs(msg: str, is_group: bool) -> set:
+    """判断本轮需要哪些参考资料（宽松触发）"""
+    needs: set = set()
+    m = (msg or "").lower()
+    if any(w in m for w in _TOOL_HINTS) or "~" in m:
+        needs.add("tools")
+    if any(w in m for w in ("?", "？", "吗", "怎么", "什么", "为什么", "如何", "哪")):
+        needs.add("tools")
+    if any(w in m for w in ("表情", "emoji", "颜文字", "表情包")):
+        needs.add("face")
+    if any(w in m for w in ("扮演", "演个", "来一个", "角色", "设定", "梗")):
+        needs.add("play")
+    return needs
+
+
+def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
+    """组装按需参考资料（注入 user 消息，不污染 system 缓存）
+
+    v2.1.9：system 保持稳定，把"参考资料"类内容（指令表/指令列表/表情库/玩梗）
+    挪到这里按需注入。data/skills/*.md 的自定义章节按章节名热匹配才加载。
+    """
+    sec = _load_skill_sections()
+    parts: list[str] = []
+
+    if "tools" in needs:
+        t = sec.get("command_table", "")
+        if t:
+            parts.append(t)
+        cl = _build_dynamic_command_list()
+        if cl:
+            parts.append(cl)
+    if "face" in needs:
+        f = sec.get("face_lib", "")
+        if f:
+            parts.append(f)
+    if "play" in needs:
+        pm = sec.get("play_mode", "")
+        if pm:
+            parts.append(pm)
+
+    # skills/*.md 拖进来的自定义章节：章节名出现在消息里才热加载
+    low = (msg or "").lower()
+    for k, v in sec.items():
+        if k in _SYSTEM_SECTIONS or k in _OPTIONAL_SECTIONS or not v:
+            continue
+        if k.lower() in low:
+            parts.append(v)
+
+    if not parts:
+        return ""
+    return "【本轮参考资料】\n" + "\n\n".join(parts)
 
 
 def _build_dynamic_command_list() -> str:
@@ -1225,6 +1283,10 @@ def _build_messages(
         msgs.append({"role": role, "content": content})
 
     user_parts = []
+    # ★ v2.1.9: 按需参考资料（指令表/指令列表/表情库）注入 user，不污染 system 缓存
+    _refs = _build_skill_refs(_detect_skill_needs(current_msg, is_group), is_group, current_msg)
+    if _refs:
+        user_parts.append(_refs)
     # 大消息（题目/长文）→ 去记忆，给 LLM 省上下文
     is_long = len(current_msg) > 1500
     if extra_info and not is_long:
@@ -1323,6 +1385,10 @@ async def generate_multi_reply(
 
     # 3. 构造最后一条 user 消息：动态信息 + 格式提醒 + 当前发言
     user_parts = []
+    # ★ v2.1.9: 按需参考资料注入 user
+    _refs = _build_skill_refs(_detect_skill_needs(current_msg, is_group), is_group, current_msg)
+    if _refs:
+        user_parts.append(_refs)
     if extra_info:
         user_parts.append(f"【当前可用的搜索/记忆信息】\n{extra_info}\n请参考以上信息回答，如果信息不相关可忽略。")
     # ★ 格式提醒：JSON 输出
