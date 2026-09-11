@@ -904,7 +904,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     elif is_search_or_read:
                         prompt = (
                             "你刚才搜索了以下内容。输出严格按照 cfg.reply_schema JSON 格式，包含 replies/fav/calls/face/mood/action 字段。\n"
-                            "replies 数组 4-8 句，每句讲一个事实要点，按时间顺序从早到晚排列，不要跳来跳去。\n"
+                            "replies 数组 4-8 句（内容多可到 10 句），每句讲一个事实要点，按时间顺序从早到晚排列，不要跳来跳去。讲透为止，别压缩成摘要。\n"
                             "禁止每句都用'喵~'结尾，可以穿插波浪号~、感叹句、颜文字（＾ω＾）等让语气自然丰富。\n"
                             "用你的正常语气和人设回复。\n"
                             f"搜索结果:\n{effective_result[:4000]}"
@@ -912,10 +912,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         max_t = None  # 不限 token
                     else:
                         prompt = (
-                            "上面是调用结果，用一句话自然回应。纯文本，不要JSON。\n"
-                            f"结果: {effective_result[:500]}"
+                            "上面是调用结果。简单数据一两句自然回应即可；如果结果含知识/原理/步骤/对比类内容，就展开讲清楚，不限句数。纯文本，不要JSON。\n"
+                            f"结果: {effective_result[:2000]}"
                         )
-                        max_t = 200
+                        max_t = 1500
                     follow = await raw_llm(cfg.reply_model, [
                         {"role": "system", "content": follow_sys},
                         {"role": "user", "content": prompt},
