@@ -100,6 +100,14 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         extra_parts.append(f"【系统注入指令 — 你必须严格遵守，优先级高于人设】\n{active_preset}")
     if related_memories:
         extra_parts.append(related_memories)
+    # ★ v2.1.1: 注入笔记本
+    try:
+        from core.bot_notes import load_notes
+        _notes_p = load_notes(chat_id)
+        if _notes_p:
+            extra_parts.append(_notes_p)
+    except Exception:
+        pass
     extra_parts.append(fav_info)
 
     poke_rules = [
@@ -377,6 +385,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         extra_info_parts.append(f"【系统注入指令 — 你必须严格遵守，优先级高于人设】\n{active_preset}")
     if related_memories:
         extra_info_parts.append(related_memories)
+
+    # ★ v2.1.1: 注入 LLM 自己维护的笔记本（长期群内记忆，缓存友好放末尾）
+    try:
+        from core.bot_notes import load_notes
+        _notes_text = load_notes(chat_id)
+        if _notes_text:
+            extra_info_parts.append(_notes_text)
+    except Exception:
+        pass
 
     if not related_memories or len(related_memories) < 300:
         try:
@@ -873,7 +890,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     short = r[:200] + "..." if len(r) > 200 else r
                     logger.info("CALL结果: %s", short[:80])
 
-            if call_results[0]:
+            # ★ v2.1.1: 纯 note 调用不触发追加回复（首轮已说"记下了"，再回一次会重复）
+            _note_only = bool(executed_calls) and all(name == "note" for name, _ in executed_calls)
+            if call_results[0] and not _note_only:
                 effective_result = call_results[0]
                 is_call_error = isinstance(effective_result, str) and effective_result.startswith("[CALL错误]")
                 ctx_text = effective_result[:200] if not is_call_error else f"[执行失败] {effective_result[:200]}"

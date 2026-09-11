@@ -56,6 +56,7 @@ except ImportError:
     cmd_tuflevel = cmd_tuf_search = cmd_tufd = cmd_tufpage = None
 
 from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
+from core.bot_notes import cmd_note
 
 # ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
 
@@ -317,8 +318,9 @@ _HELP_DETAIL = {
     "tokens": "【Token计算 /~tokens】\n"
               "  /~tokens <文本>  计算 token 数和预估费用\n",
 
-    "cache": "【缓存命中率 /~cache】\n"
-             "  /~cache [天数]  查看 token 缓存命中率趋势（默认近7天）\n"
+    "note": "【你的笔记本 /~note】维护长期群内记忆（群内关系/称呼/约定/梗/谁是谁）。用法: /~note 查看 | /~note <内容> 记一条 | /~note del <序号> 删除 | /~note clear 清空。**重要：当有人说\"记一下/记住这个\"，或你发现值得长期记住的信息（如某人是谁、谁和谁什么关系、群内约定/黑话），必须用 calls 调 note 真的记下来——严禁只在回复里说\"记下了/我记住了\"而实际没调用！**",
+
+    "cache": "【缓存命中率 /~cache】\n"             "  /~cache [天数]  查看 token 缓存命中率趋势（默认近7天）\n"
              "  用于排查命中率低的原因（DeepSeek 前缀缓存）\n",
 
     "resetfav": "【重置好感 /~resetfav (主人)】\n"
@@ -3444,6 +3446,7 @@ COMMAND_MAP: dict[str, callable] = {
     "cost":       cmd_cost,
     "tokens":     cmd_tokens,
     "cache":      cmd_cache,
+    "note":       cmd_note,
     "tuflevel":   cmd_tuflevel,
     "tuf谱面":  cmd_tuflevel,
     "tufsearch":  cmd_tuf_search,
