@@ -578,6 +578,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d (判断后已耗时%.2fs)",
                 display_name, chat_id, _tm.monotonic() - _t_pipe_start)
+    # v2.3.0: 前置思考判断 —— 复用 _detect_skill_needs 的 deep 意图
+    # deep 命中（知识/原理/对比/长问句提问）→ 开启思考模式；闲聊/指令 → 关闭（更快更省）
+    thinking = False
+    try:
+        from services.llm import _detect_skill_needs
+        needs = _detect_skill_needs(full_msg, is_group)
+        thinking = "deep" in needs
+        logger.info("思考模式: %s (needs=%s)", "开启" if thinking else "关闭", sorted(needs))
+    except Exception as e:
+        logger.warning("思考判断失败，默认关闭: %s", e)
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=msg_history_for_llm, speaker_name=display_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
@@ -585,6 +595,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
         interim_cb=_make_interim_sender(chat_id, is_group, user_id),
+        thinking=thinking,
     )
     logger.debug("PIPE LLM生成完成 耗时%.2fs → %d句 (total %.2fs)",
                  _tm.monotonic() - _t_pipe_start, len(sentences) if sentences else 0,
