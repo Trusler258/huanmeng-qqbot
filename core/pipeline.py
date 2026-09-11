@@ -646,7 +646,12 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------scan replies for inline /~commands ------
     if sentences:
         new_lines = []
-        _cmd_re = _re.compile(r'/(?:\~|\#|(?=[a-zA-Z]))\s*(\w+)(?:\s+\[?([^\]]*)\]?)?')
+        # v2.2.1 修复：只认文档化的 /~ 和 /# 前缀。
+        # 原正则的 (?=[a-zA-Z]) 分支会把正文里任意「/字母」当指令——
+        # 回复中出现 "400tok/s 都快赶上本地推理了" 时，/s 被解析成搜索指令（s 是 search 别名），
+        # 参数吃掉后半句 → 白跑一次 28s 搜索，并触发错误的追加回复。
+        # tok/s、MB/s、m/s、10/up 这类单位/路径写法在技术聊天里极常见，必须从源头掐掉。
+        _cmd_re = _re.compile(r'/(?:\~|\#)\s*(\w+)(?:\s+\[?([^\]]*)\]?)?')
         # 占位符/示例特征：含这些词的 CALL 是 LLM 在"教用法"，不是真调用，只删不执行
         _placeholder_re = _re.compile(r'@?(某人|某玩家|某群友|用户名|昵称|对方|某某|xxx|XX|示例|例子|比如)')
         # 教学上下文特征：这行在解释用法（示例/怎么用），里面的指令文本都是示例文本
@@ -837,6 +842,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         return
 
     # ------发送------
+    # ★ v2.2.1: 纯 note 操作时回复裁到 1 句。
+    #   实测 LLM 常在「好，记本子上了～」后面多带一句评论群里其他话题的话（串台），
+    #   例：别人在聊军训出汗 → 顺嘴点评军训。规则已写进 fmt_reminder，这里做硬保护。
+    #   与下面「纯 note 不触发追加回复」(_note_only) 同源，都是 note 专属的静默处理。
+    if executed_calls and all(name == "note" for name, _ in executed_calls) and len(sentences) > 1:
+        logger.info("note 专用回复裁到 1 句（原 %d 句），丢弃: %s",
+                    len(sentences), [s[:30] for s in sentences[1:]])
+        sentences = sentences[:1]
+
     old_task = ctx.cancel_old_task(chat_id)
     if old_task:
         logger.debug("取消旧发送任务 chat=%d", chat_id)
