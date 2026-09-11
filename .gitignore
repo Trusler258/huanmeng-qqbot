@@ -12,6 +12,7 @@ data/img_temp/
 data/fav.json
 data/luck.json
 data/search_cache.json
+data/context_cache.json
 data/Image_description_cache.txt
 data/economy.json
 data/search.db
