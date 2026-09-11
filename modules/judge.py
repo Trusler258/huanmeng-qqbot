@@ -261,6 +261,12 @@ async def should_respond(
         logger.info("@机器人检测 → 直接回复")
         return True
 
+    # ★ v2.1.3: 明确的记忆指令 → 强制回复，保证 LLM 有机会调 note 写笔记本
+    #   （否则"记一下xxx"没@bot 会被 judge 判定不回复，笔记本形同虚设）
+    if re.search(r"(记一下|记住这个|记下来|帮我记|记录一下|别忘了这个)", msg):
+        logger.info("记忆指令检测 → 直接回复（笔记本）")
+        return True
+
     if should_quick_reject(msg, context, bot_name):
         logger.debug("快速规则拒绝: msg='%s...'", msg[:30])
         return False
