@@ -28,6 +28,22 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 NOTES_DIR = DATA_DIR / "notes"
 
 MAX_NOTES = 100          # 单群笔记上限，超出淘汰最旧
+
+# 隐私保护：命中即拒绝写入（2026-09-11 全量语料审查发现 msglog 含群友真实住址）
+_PRIVACY_PATTERNS = [
+    (r"1[3-9]\d{9}", "手机号"),
+    (r"\d{17}[\dXx]", "身份证号"),
+    (r"\d{16,19}", "银行卡号"),
+    (r"[\u4e00-\u9fa5]{2,8}(省|市)[\u4e00-\u9fa5]{0,10}(区|县|市)[\u4e00-\u9fa5A-Za-z0-9]{0,20}(路|街|道|号|室|楼|栋|小区)", "详细住址"),
+]
+
+
+def _privacy_kind(text: str) -> str:
+    """返回命中的隐私类型，无则空串"""
+    for pat, kind in _PRIVACY_PATTERNS:
+        if re.search(pat, text):
+            return kind
+    return ""
 INJECT_LIMIT = 40        # 注入上下文的最大条数（省 token，最新的优先）
 LINE_MAX = 200           # 单条笔记最大长度
 
@@ -62,6 +78,11 @@ def add_note(chat_id, text: str) -> str:
         return "笔记内容为空，没记"
     if len(text) > LINE_MAX:
         text = text[:LINE_MAX] + "…"
+
+    kind = _privacy_kind(text)
+    if kind:
+        logger.warning("拒绝记录疑似隐私(%s): %s", kind, text[:40])
+        return f"这条含疑似{kind}，涉及隐私我就不记了"
 
     lines = _load_lines(chat_id)
     tag = datetime.now().strftime("%m-%d")
@@ -125,6 +146,10 @@ def update_note(chat_id, index: int, new_text: str) -> str:
         return "新内容为空，没改"
     if len(new_text) > LINE_MAX:
         new_text = new_text[:LINE_MAX] + "…"
+
+    kind = _privacy_kind(new_text)
+    if kind:
+        return f"新内容含疑似{kind}，涉及隐私就不改了"
 
     lines = _load_lines(chat_id)
     if not lines:
