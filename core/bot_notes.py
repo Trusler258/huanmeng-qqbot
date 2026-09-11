@@ -88,19 +88,20 @@ def load_notes(chat_id, limit: int = INJECT_LIMIT) -> str:
     start = max(1, total - limit + 1)
     shown = lines[start - 1:]
     header = (
-        f"【你的笔记本】共 {total} 条群内信息。"
+        f"【你的笔记本·本群专属】共 {total} 条群内信息（只在当前群生效，其它群看不到）。"
         "新增直接写内容；改某条写 \"fix <序号> <新内容>\"；删某条写 \"del <序号>\"（都通过 calls 调 note，args 填这些）："
     )
     body = "\n".join(f"{i}. {ln.lstrip('- ')}" for i, ln in enumerate(shown, start=start))
     return header + "\n" + body
 
 
-def list_notes(chat_id) -> str:
-    """给用户看的笔记列表"""
+def list_notes(chat_id, scope: str = "") -> str:
+    """给用户看的笔记列表（scope 用于标明是哪个群的笔记，直观确认隔离）"""
     lines = _load_lines(chat_id)
+    title = f"笔记本·{scope}" if scope else "笔记本"
     if not lines:
-        return "笔记本还是空的~ 说「记一下xxx」我就会记下来"
-    out = [f"【笔记本】共 {len(lines)} 条："]
+        return f"【{title}】还是空的~ 说「记一下xxx」我就会记下来"
+    out = [f"【{title}】共 {len(lines)} 条："]
     out.extend(f"{i}. {ln.lstrip('- ')}" for i, ln in enumerate(lines, 1))
     return "\n".join(out)
 
@@ -159,10 +160,11 @@ async def cmd_note(args, user_id, group_id, sender_name, is_group, bot_qq):
     /~note clear        清空（仅管理员）
     """
     chat_id = group_id if is_group else user_id
+    scope = "本群" if is_group else "私聊"
     a = list(args or [])
 
     if not a:
-        return list_notes(chat_id)
+        return list_notes(chat_id, scope=scope)
 
     head = a[0].lower()
     if head in ("del", "delete", "删除", "-"):
