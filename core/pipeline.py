@@ -44,12 +44,20 @@ from services.sender import send_sentences, send_by_chat_type, send_raw_group, s
 logger = get_logger("pipeline")
 
 # ------工具函数------
-def _make_interim_sender(chat_id: int, is_group: bool, user_id: int):
+def _make_interim_sender(chat_id: int, is_group: bool, user_id: int, thought_ctx: dict | None = None):
     """构造 FC 先导语发送回调（v2.0.4y）：LLM 调工具前写的自然语先导语，
     经此先发给用户，避免搜索/查询期间 10s+ 干等。与正常回复同走 send_sentences，
-    保持 stats/msglog 录制一致；先导语为单条，间隔压到 0.2s。"""
+    保持 stats/msglog 录制一致；先导语为单条，间隔压到 0.2s。
+
+    v2.3.2: thought_ctx 共享思考状态 {"secs": int|None, "applied": bool}——
+    先导语是用户看到的第一条文本，若已思考则把 [已思考N秒] 挂在这里并置 applied，
+    主回复段检测 applied 后不再重复挂。"""
     async def _send(text: str):
         try:
+            # v2.3.2: 先导语 + 思考标记（回调已记录 secs、未应用过 → 挂前缀）
+            if thought_ctx and thought_ctx.get("secs") and not thought_ctx.get("applied"):
+                text = f"[已思考{thought_ctx['secs']}秒] {text}"
+                thought_ctx["applied"] = True
             await send_sentences(
                 [text], chat_id, is_group,
                 user_id=user_id if not is_group else None,
@@ -58,6 +66,18 @@ def _make_interim_sender(chat_id: int, is_group: bool, user_id: int):
         except Exception:
             logger.warning("先导语发送失败: %s", str(text)[:30], exc_info=True)
     return _send
+
+def _make_thought_cb(thought_ctx: dict):
+    """v2.3.2: 构造思考标记回调——LLM 思考完（reasoning 产出）→ 仅记录时长。
+    由先导语发送方 / 主回复发送段在真正发出文本时消费并置 applied（去重）。"""
+    async def _cb(secs: int):
+        try:
+            if secs < 2:      # 思考太短没意义，不加前缀
+                return
+            thought_ctx["secs"] = max(thought_ctx.get("secs") or 0, secs)
+        except Exception:
+            logger.warning("思考标记回调异常: %s", exc_info=True)
+    return _cb
 
 def _clean_name(name):
     return re.sub(r'[\u200b\u200c\u200d\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]+', '', str(name))
@@ -588,14 +608,18 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.info("思考模式: %s (needs=%s)", "开启" if thinking else "关闭", sorted(needs))
     except Exception as e:
         logger.warning("思考判断失败，默认关闭: %s", e)
+    # v2.3.2: [已思考N秒] 共享状态——LLM 思考完成后由回调记录时长，
+    # 先导语（FC轮1）或主回复首句消费并置 applied，只展示一次
+    thought_ctx: dict = {"secs": None, "applied": False}
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=msg_history_for_llm, speaker_name=display_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
         is_group=is_group, extra_info=extra_info_for_llm,
         max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
-        interim_cb=_make_interim_sender(chat_id, is_group, user_id),
+        interim_cb=_make_interim_sender(chat_id, is_group, user_id, thought_ctx),
         thinking=thinking,
+        thought_shown_cb=_make_thought_cb(thought_ctx),
     )
     logger.debug("PIPE LLM生成完成 耗时%.2fs → %d句 (total %.2fs)",
                  _tm.monotonic() - _t_pipe_start, len(sentences) if sentences else 0,
@@ -877,6 +901,18 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         sentences, chat_id, is_group,
         user_id=user_id if not is_group else None,
     ))
+
+    # v2.3.2: 主回复首句 + [已思考N秒]（先导语未挂过才挂，且思考时长满足阈值）
+    if thought_ctx.get("secs") and not thought_ctx.get("applied") and sentences:
+        prefix = f"[已思考{thought_ctx['secs']}秒] "
+        # 首句本身已是前缀/Markdown 标题/文件卡片 → 前缀独立成句，避免粘连
+        if sentences[0].lstrip().startswith(("[", "#", "`")):
+            sentences.insert(0, prefix.rstrip())
+        else:
+            sentences[0] = prefix + sentences[0]
+        thought_ctx["applied"] = True
+        logger.info("主回复前置 [已思考%d秒]", thought_ctx["secs"])
+
     ctx.set_active_send_task(chat_id, task)
 
     if _face_cq_for_later:
