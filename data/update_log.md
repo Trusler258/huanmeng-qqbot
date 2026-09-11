@@ -1,5 +1,58 @@
 # 更新日志
 
+## v2.2.4 — 提示词拆分到 data/skills/（要啥加载啥）+ 管理员代发 /~say — 2026.9.11
+需求：① 把 skill 拆开放进 skills 文件夹，实现"要啥加载啥" ② admin 私聊 bot 就能让它往指定群/私聊发消息。
+
+### 一、提示词拆分（data/main_skill.md → data/skills/*.md）
+按**加载角色**拆成 8 个文件，文件名前缀即加载顺序与用途：
+| 文件 | 内容 | 加载方式 |
+|------|------|----------|
+| `00_core.md` | prompt_header / persona_lock / self_awareness / anti_repeat | 常驻 system |
+| `10_format_group.md` | group_format | 常驻 system（群聊） |
+| `11_format_private.md` | private_format / private_tone | 常驻 system（私聊） |
+| `20_command_tools.md` | command_tools | 常驻 system |
+| `21_command_table.md` | command_table | **按需**：命中工具/指令意图才注入 user |
+| `30_fav.md` | fav_format / fav_tiers | 常驻 system |
+| `40_reminders.md` | reply/voice/jsonraw_reminder + plain_text_rule | **按调用路径**取 |
+| `50_play_mode.md` | play_mode | **按需**：命中玩梗意图才注入 |
+| `60_face_lib.md` | face_lib | **按需**：命中表情意图才注入 |
+
+代码改动：
+- `services/llm.py` `_load_skill_sections` 重写：main_skill.md 变为**可选遗留文件**，缺失时**必须继续合并 skills 目录**
+  - ★ **修掉一个真 bug**：旧实现在 main_skill.md 不存在时直接 `return`（跳过 `_merge_skills_dir`），
+    拆分后会把所有提示词静默清空 —— bot 会变成没有人设的空壳，且不报错
+- `core/config.py` `_build_self_awareness`：不再硬编码 `data/main_skill.md`，改为扫描 `data/skills/*.md` 找
+  `## self_awareness`（config 不能 import services，故就地正则取段），找不到再回退遗留文件
+- 本地 `data/main_skill.md` 已删除（备份在 `qqbot-backup/2026-09-11/main_skill.md.retired`）
+
+**零回归验证**（拆分前抓基线 → 拆分后逐字节比对）：
+| 指标 | 结果 |
+|------|------|
+| system（群聊） | 12827 字符 / md5 dad3b2be，**拆分前后完全一致** |
+| system（私聊） | 8224 字符 / md5 e957e0a5，一致 |
+| 17 个章节内容 | 全部逐字一致 |
+| refs（tools/face/play/chat） | face/play/chat 一致；tools 3402→3507（仅因新增 say 指令，符合预期） |
+| 服务器 vs 本地 | 17 章节哈希全等 |
+
+坑：`self_awareness` 段原文含 `# 自我认知` 标题行和空行，章节解析器会丢弃、但 `core/config.py` 用正则读原文会保留
+→ 首轮比对 system 少 9 字符。已把原始格式还原进 `00_core.md`，两处读法结果一致。
+坑：`data/skills/` 下**任何 `*.md` 都会被当技能加载**，备份文件放这里会按文件名顺序覆盖正式版本 → 备份必须放目录外。
+
+### 二、管理员代发消息 /~say（新文件 `modules/msg_relay.py`）
+主人在私聊里让 bot 把消息发到指定群 / 指定私聊。
+```
+/~say g<群号> <内容>     发到群      例: /~say g1058782600 大家晚上好呀
+/~say u<QQ号> <内容>     发到私聊
+/~say <群号> <内容>      纯数字默认按群号
+```
+- 前缀兼容：`g/group/群/群聊` 与 `u/user/p/private/私/私聊`
+- 内容里的 `@123456` 自动转 `[CQ:at,qq=123456]`；也能直接写 CQ 码；`a@163.com` 这类不会误转
+- 权限：主人 / 全局 OP / 该群管理员；非管理员直接拒绝
+- 注册：COMMAND_MAP `say`/`代发` + `_CMD_DESC` + `lang.toml` 帮助菜单与详情
+
+验证：本地 11 组目标解析 + 4 组 @ 转换 + 权限/发群/发私聊/参数不足，全部 PASS；
+服务器端同样跑通（`say` 已注册、@ 已转码、非管理员被拦）。
+
 ## v2.2.3 — 禁用 Markdown 规则细化：放开编号、消解规则冲突 — 2026.9.11
 背景：v2.2.2 的 `plain_text_rule` 把 `1. 2. 3.` 编号也一起禁了，与既有的 group_format 规则22
 （"列表用「1. 」「2. 」或「- 」配合缩进"）**直接冲突** —— 按提示词铁律2，冲突会让规则互相抵消。

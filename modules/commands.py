@@ -58,6 +58,7 @@ except ImportError:
 from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
 from core.bot_notes import cmd_note
 from core.ctx_usage import cmd_ctx
+from modules.msg_relay import cmd_say
 
 # ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
 
@@ -3456,6 +3457,9 @@ COMMAND_MAP: dict[str, callable] = {
     "plugin":     cmd_plugin,
     "插件":       cmd_plugin,
     "apy":        cmd_apy,          # 插件审批回执
+    # ── 管理员代发（/~say）──
+    "say":        cmd_say,
+    "代发":       cmd_say,
 }
 
 
