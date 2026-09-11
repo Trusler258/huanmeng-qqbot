@@ -1320,3 +1320,65 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
   - 带 calls → origin 默认 user, actor 补 {} ✓
   - 带 action/at → 正常 ✓
 - 收益: 闲聊场景每次少输出 6-8 个字段(约 50-120 输出 token)
+
+## v2.3.0 — 模型切换 deepseek-flash + 上下文扩容 1M (2026.9.12)
+- 用户要求: 模型 ID 换成 `deepseek-flash`（DeepSeek-V4.1-Flash，2026-09-10 正式发布，可路由到最新）
+- 背景事实（官方文档核实）:
+  - `deepseek-flash` = DeepSeek-V4.1-Flash，**1M 上下文**、最大输出 384K
+  - 旧名 `deepseek-v4-flash`/`deepseek-v4-flash-vision-exp` 已退役但会路由到新模型（按 Flash 计费）
+  - V4 Pro 将于 2026-09-14 后也路由到 V4.1 Flash —— 换到 flash 是顺官方趋势
+- 改动:
+  - `config/bot_config.toml`: 3 个模型段 `deepseek-chat` → `deepseek-flash`（replyer_1/utils_small/judge_cheap）
+  - `modules/web_search.py`: 搜索模型 `deepseek-v4-flash` → `deepseek-flash`
+  - `core/ctx_usage.py`: `CTX_WINDOW` 60_000 → 960_000（1M 窗口留 4% 余量，/~ctx 显示比例恢复真实）
+  - `config/bot_config.toml`: `消息记录长度` 20 → **200**（用户选拉满，充分利用 1M 窗口）
+- 验证:
+  - API 直连 `deepseek-flash` 正常返回
+  - 配置加载确认: reply/judge/cheap_model.name 全部 = deepseek-flash ✓
+  - `context_length = 200` 生效 ✓
+  - bot.service 重启后 active，日志无错误
+- 成本影响: 历史 200 条 ≈ 30-60K token/请求，按 $0.15/M 输入 = ~$0.005-0.01/次，可接受
+- ⚠️ 注意: deepseek-flash 默认**思考模式**，maxtoken=1000 可能偏小（思考 token 计入输出），待实测
+
+## v2.3.1 — 前置思考判断 + thinking 开关 + judge 空返回修复 (2026.9.12)
+- 背景: deepseek-flash 默认开启思考模式（DeepSeek-V4.1-Flash）。V4.1 默认 thinking 开启
+- **发现 Bug**: 换 deepseek-flash 后 judge 短判断(max_tokens=20) 空返回 finish_reason=length
+  → 根因: 思考 token 吃掉仅有的 20 输出预算。日志证据: tokens=20 返回空
+- **修复**: `call_llm` 新增 thinking 参数，**默认 False**（本函数多为短输出判断调用）
+  → judge/搜索判断/json_mode 兜底全部自动关思考，短判断恢复
+- **新功能(前置判断开启思考)**: 主回复链路按需开思考
+  - `call_llm_with_tools` 新增 thinking 参数 + 提取 reasoning_content 返回
+  - `ToolCallResult` 新增 reasoning 字段
+  - FC 多轮 assistant 消息回传 reasoning_content（防 DeepSeek 400: 带 tools 必须回传）
+  - `generate_multi_reply_with_tools` 透传 thinking
+  - pipeline: `_detect_skill_needs(full_msg).deep` 命中 → thinking=True（知识/原理/对比提问）
+    → 深问题 11 句讲透；闲聊 thinking=False 2 句快答
+- **验证**:
+  - _detect_skill_needs 4 用例全对（深知识=True / 闲聊=False / 工具=False / 知识=True）
+  - thinking=True 模拟测试: reasoning_content=735字符（思考真实产出）且 JSON 输出正常
+  - thinking=False: reasoning 为空，快答
+  - judge 复测: "0|3|0" 正常返回（修复前空返回）
+  - 生产主回复链路: 知识提问 11 句 / 闲聊 2 句
+- ⚠️ 设计说明: judge/工具/JSON兜底默认关思考（短判断不能被思考拖垮）；仅主回复按 deep 意图开
+
+## v2.3.2 — 思考标记 [已思考N秒] 前置 (2026.9.12)
+- 用户需求: "正式发出去的消息前加上[已思考xx秒]"（隔离思考，给用户反馈感）
+- 前置判断（v2.3.1 deep 意图）开启思考后，模型真实产出 reasoning 时给出标记
+- 实现:
+  - `services/llm.py`:
+    - `call_llm_with_tools` 提取 `reasoning_duration`（reasoning 非空时的本轮耗时，秒）
+    - `ToolCallResult` 新增 `reasoning_duration` 字段
+    - `generate_multi_reply_with_tools` 新增 `thought_shown_cb(duration_sec)->None` 回调参数
+    - 轮1带工具调用（先导语先行）→ 思考标记附先导语（用户等待期就看到"已思考"）
+    - 纯思考无工具 → 最终回复生成时回调（时长取最后有思考的轮次）
+  - `core/pipeline.py`:
+    - `_make_thought_cb`: 记录思考时长到共享 dict（<2s 忽略，太短无意义）
+    - `_make_interim_sender`: 先导语发送时若已思考且未应用 → 挂 `[已思考N秒]` 前缀，置 applied
+    - 主回复发送段: 先导语未挂过则首句前置 `[已思考N秒] `
+      - 首句为 [/#/` 开头（前缀/标题/文件卡片）→ 前缀独立成句避免粘连
+- 展示条件（防刷屏防无意义）:
+  1. thinking 开启（deep 意图命中）
+  2. reasoning 非空（模型真思考了）
+  3. 耗时 ≥ 2s
+  4. 同一轮对话只展示一次（先导语挂了主回复不重复挂）
+- 验证待补: 生产链路知识提问应看到 [已思考N秒] 前缀，闲聊无前缀

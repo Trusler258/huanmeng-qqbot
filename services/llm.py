@@ -714,12 +714,14 @@ async def call_llm(
 
 class ToolCallResult:
     """工具调用结果"""
-    def __init__(self, content: str, tool_calls: list[dict] | None, reasoning: str = ""):
+    def __init__(self, content: str, tool_calls: list[dict] | None, reasoning: str = "", reasoning_duration: float = 0.0):
         self.content = content or ""
         self.tool_calls = tool_calls or []
         # v2.3.0: 思考模式思维链（deepseek-flash reasoning_content），
         # 带 tools 的请求必须回传给 API（否则 400），存这里方便拼接
         self.reasoning = reasoning or ""
+        # v2.3.2: reasoning 非空时记录本轮耗时（思考时长秒），供 [已思考N秒] 标注
+        self.reasoning_duration = reasoning_duration or 0.0
 
 async def call_llm_with_tools(
     model_cfg: "ModelConfig",
@@ -742,6 +744,8 @@ async def call_llm_with_tools(
       - None  → 跟随 API 默认（不传 extra_body）
     v2.3.0: deepseek-flash 自带 thinking；带 tools 的请求必须回传 reasoning_content
     否则 API 400（DeepSeek 官方要求），故 ToolCallResult 新增 reasoning 字段承载。
+
+    v2.3.2: reasoning 有值时记录本轮耗时（思考时长），供 [已思考N秒] 前缀标注。
     """
 
     client = _create_client(model_cfg, timeout=timeout + 5.0)
@@ -764,6 +768,7 @@ async def call_llm_with_tools(
     if thinking is not None:
         req_params["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
 
+    _t_start = loop.time()
     try:
         completion = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: client.chat.completions.create(**req_params)),
@@ -772,6 +777,7 @@ async def call_llm_with_tools(
         msg = completion.choices[0].message
         content = msg.content or ""
         reasoning = getattr(msg, "reasoning_content", None) or ""
+        reasoning_duration = (loop.time() - _t_start) if reasoning else 0.0
         tc_list: list[dict] = []
 
         if msg.tool_calls:
@@ -807,7 +813,7 @@ async def call_llm_with_tools(
             pass
 
         _record_call_success(model_cfg)
-        return ToolCallResult(content=content.strip(), tool_calls=tc_list, reasoning=reasoning)
+        return ToolCallResult(content=content.strip(), tool_calls=tc_list, reasoning=reasoning, reasoning_duration=reasoning_duration)
 
     except asyncio.TimeoutError:
         logger.error("LLM FC [%s] 超时", model_cfg.name[:20])
@@ -935,6 +941,7 @@ async def generate_multi_reply_with_tools(
     bot_qq: int = 0,
     interim_cb=None,
     thinking: bool | None = None,
+    thought_shown_cb=None,
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
@@ -945,11 +952,21 @@ async def generate_multi_reply_with_tools(
     由调用方（pipeline）注入发送通道；不传则维持旧行为（先导语丢弃）。
 
     thinking: v2.3.0 思考模式开关，透传给每轮 FC 调用（True=启用/False=关闭/None=默认）
+
+    thought_shown_cb: 可选 async 回调 (duration_sec:int)->None，v2.3.2。
+    思考模式启用且模型产出 reasoning 时，在"给用户的第一条可见文本发出前"调用一次，
+    由发送端决定是否/如何展示 [已思考N秒] 标记（前缀、过滤由 pipeline 负责）。
+    - 轮1带工具调用：先导语先行 → duration=该轮 reasoning 耗时，附在先导语上
+    - 纯思考无工具：最终回复生成 → duration=最后有 reasoning 的轮次的耗时
+    - 思考关闭 / reasoning 为空 / 耗时过短：不调用（由 pipeline 侧过滤）
     """
     from core.tools import get_tool_schemas, execute_tool
 
     tools = get_tool_schemas()
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
+
+    # v2.3.2: 记录"最后一条有思考"的轮次耗时，最终回复生成时按它标注 [已思考N秒]
+    _last_reasoning_dur: float | None = None
 
     # 长消息（题目/长文/网页阅读）→ 扩大输出 token
     has_long_context = len(current_msg) > 2000
@@ -967,7 +984,11 @@ async def generate_multi_reply_with_tools(
     for round_idx in range(MAX_ROUNDS):
         result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools", thinking=thinking)
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
-        logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d", round_idx + 1, raw_preview, len(result.tool_calls))
+        logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d | reasoning=%d字",
+                    round_idx + 1, raw_preview, len(result.tool_calls), len(result.reasoning))
+        # v2.3.2: 记录"最后一条有思考"的轮次耗时（轮1先导语分支在下方就近回调）
+        if result.reasoning and result.reasoning_duration > 0:
+            _last_reasoning_dur = result.reasoning_duration
 
         if not result.tool_calls:
             if not (result.content or "").strip():
@@ -1052,6 +1073,12 @@ async def generate_multi_reply_with_tools(
                 and "```" not in lead
                 and "/~" not in lead
             ):
+                # v2.3.2: 先导语是"用户看到的第一条文本"——思考了就把 [已思考N秒] 挂这里
+                if thought_shown_cb is not None and result.reasoning and result.reasoning_duration > 0:
+                    try:
+                        await thought_shown_cb(round(result.reasoning_duration))
+                    except Exception:
+                        logger.warning("FC: 思考标记回调失败: %s", exc_info=True)
                 logger.info("FC: 轮1先导语先发 (%d字): %s", len(lead), lead[:60])
                 try:
                     await interim_cb(lead)
@@ -1126,6 +1153,13 @@ async def generate_multi_reply_with_tools(
 
     # ── 如果工具已执行，强制 json_mode 回复 ──
     if errors or data_results or action_results:
+        # v2.3.2: 工具链最终回复前，若此前思考过（轮1先导语未附标记时）补标一次
+        if thought_shown_cb is not None and _last_reasoning_dur:
+            try:
+                await thought_shown_cb(round(_last_reasoning_dur))
+            except Exception:
+                logger.warning("FC: 思考标记回调失败: %s", exc_info=True)
+            _last_reasoning_dur = None
         # ★ v2.0.4u(2026-09-04): 工具结果已返回 → 给最终回复轮注入"诚实归因"提醒。
         #   现象：search_web 查完，LLM 却说"哦这个我知道喵"（装成本来就会），
         #   与上一句"让我查查"自相矛盾。此处插一条 system 提醒，配合 main_skill.md 规则10。
@@ -1179,6 +1213,15 @@ async def generate_multi_reply_with_tools(
     raw = result.content or ""
     if not raw.strip():
         return [], 0, [], "", "", None, "", None, None, "user", {}, None
+
+    # v2.3.2: 纯思考路径（无工具）→ 生成完毕，发出前补一次 [已思考N秒] 回调
+    #   （前置判断开了 thinking 且模型真思考了才会到这里；时长取最后有思考的轮次）
+    if thought_shown_cb is not None and _last_reasoning_dur:
+        try:
+            await thought_shown_cb(round(_last_reasoning_dur))
+        except Exception:
+            logger.warning("FC: 思考标记回调失败: %s", exc_info=True)
+        _last_reasoning_dur = None
 
     # 尝试 JSON 解析（LLM 有时返回 JSON 但不调工具）
     parsed = _parse_reply(raw, speaker_name, quiet=True)
