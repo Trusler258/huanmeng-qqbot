@@ -277,8 +277,12 @@ _SYSTEM_SECTIONS = frozenset((
     "command_tools", "fav_format", "fav_tiers", "self_awareness",
     "anti_repeat", "private_tone",
 ))
-# 已单独处理的可选章节
-_OPTIONAL_SECTIONS = frozenset(("command_table", "face_lib", "play_mode"))
+# 已单独处理的可选章节（既不进 system 常驻，也不参与 _build_skill_refs 的关键词兜底注入）
+_OPTIONAL_SECTIONS = frozenset((
+    "command_table", "face_lib", "play_mode",
+    # 提示词模板章节：由 _build_reminder() 按调用路径显式读取（见 data/skills/40_reminders.md）
+    "reply_reminder", "voice_reminder", "jsonraw_reminder", "plain_text_rule",
+))
 
 # 工具/指令意图触发词（宽松匹配：宁可多带，漏带会导致不会调指令）
 _TOOL_HINTS = (
@@ -339,6 +343,39 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
     if not parts:
         return ""
     return "【本轮参考资料】\n" + "\n\n".join(parts)
+
+
+# ── 格式提醒：统一从提示词文件读取（v2.2.2）────────────────────────
+# 背景：这些提醒原先硬编码在本文件的 _build_messages / generate_multi_reply，
+#       另有一份副本散落在 core/ctx_usage.py 和 modules/commands.py。
+#       改一处忘一处 → 行为漂移 + /~ctx 统计失真。现统一放 data/skills/40_reminders.md。
+# 模板缺失时的最小兜底：JSON 约束不能丢，否则 LLM 会输出纯文本导致全量解析失败。
+_REMINDER_FALLBACK = (
+    "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
+    '回复格式（必填只有这两个）: {"replies":["回复内容"],"fav":0}\n'
+    "严格按上面的 JSON 格式输出（replies 和 fav 必须有，其他按需）。"
+)
+
+
+def _build_reminder(name: str, **vars) -> str:
+    """按章节名取格式提醒模板并插值。
+
+    - 模板位置：data/skills/40_reminders.md（经 _load_skill_sections 自动叠加）
+    - ${xxx} 为变量占位符，由 vars 传入替换
+    - plain_text_rule（禁用 Markdown）自动追加到末尾 —— 越靠近当前消息注意力越高
+    - 章节缺失 → 打 ERROR 日志 + 回退最小 JSON 兜底，保证回复链路不崩
+    """
+    sec = _load_skill_sections()
+    tpl = (sec.get(name) or "").strip()
+    if not tpl:
+        logger.error("提示词章节缺失: %s —— 已回退兜底提醒（检查 data/skills/40_reminders.md）", name)
+        tpl = _REMINDER_FALLBACK
+    for k, v in vars.items():
+        tpl = tpl.replace("${" + k + "}", str(v))
+    plain = (sec.get("plain_text_rule") or "").strip()
+    if plain:
+        tpl = tpl + "\n" + plain
+    return tpl
 
 
 def _build_dynamic_command_list() -> str:
@@ -1296,26 +1333,8 @@ def _build_messages(
     else:
         ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
     max_chars = "40" if is_group else "20"
-    fmt_reminder = (
-        "★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★\n"
-        f"{ctx_hint}\n"
-        "用户让你写代码/做游戏/做网页/写脚本时，必须调用 write_code 工具，不要口头承诺。出题/写文章/答疑等直接文字回答。"
-        "数学题/方程/方程组/计算题必须调用 calc 工具用代码精确求解，不要心算。"
-        "★ 搜索规则：闲聊、寒暄、接梗、聊已知日常话题时不要搜。但名词/概念类提问（XX是啥/是什么/什么意思/这词哪来的）、你不确定的、涉及时效或数据的问题，必须先用 search 查证再答——禁止凭印象瞎猜，禁止反问'从哪看到的'打发；拿不准就查，别硬答。不用工具就直接输出 JSON。\n"
-        "★ 笔记本规则（必须真记，出现即调）：①群内关系（谁和谁什么关系）②称呼/黑话（某外号指谁、某词在群里什么意思）③某人的身份/昵称/性别/特征 ④有人明确说\"记一下/记住\"。碰到任一类，立即用 calls 调 note 记录，如 {\"name\":\"note\",\"args\":\"模组东=雪泠翎，女生\"}。写清楚\"谁=什么信息\"或\"谁和谁=什么关系\"。**判定要点：只要群里的人这样称呼/这样认为就照记——哪怕是知名角色或公众人物，你记的是「这个群的事实」，不是百科。**发现之前记错了或过时了 → 用 calls 调 note 传 \"fix <序号> <新内容>\" 改正（序号看笔记本编号），别重记一条。只在回复里说\"记下了\"而没有实际调用，是骗人，绝对禁止。\n"
-        f'回复格式（必填只有这两个）: {{"replies":["回复内容"],"fav":0}}\n'
-        "★ 动态字段——只在真的需要时才带上，不需要就【整个省略这个 key】，绝对不要写 null 占位（省 token）：\n"
-        '  · "mood":"开心" —— 当前情绪，一般带上\n'
-        '  · "calls":[{"name":"指令名","args":"参数"}] —— 需要调指令时才加\n'
-        '  · "action":"动作描写" —— 需要肢体动作才加（少用）\n'
-        '  · "at":对方QQ号 —— 需要@某人时才加\n'
-        '  · "face":"表情关键词" —— 极少用\n'
-        '  · "origin":"user","actor":{"name":"发言人","qq":0} —— 只在带 calls 时一起加\n'
-        f"回复长度随场景：闲聊/接梗 1~3 句、每句≤{max_chars}字；知识/技术/原理/概念/步骤/对比/追问 → 3~10 句、不限字数，讲透为止。fav -5~+5。"
-        "严格按上面的 JSON 格式输出（replies 和 fav 必须有，其他按需）。"
-        "\n★【笔记本·最后强调，看当前这条消息就够了】如果它包含：①谁和谁是什么关系（情侣/兄弟/搭档/主人等）②某人的身份/性别/昵称 ③外号或黑话指谁 ④对方说「记一下」「记住」 —— 那你必须在本轮 calls 里加一条 note 调用（name 填 note，args 填要记的内容，写成「谁=什么信息」或「谁和谁=什么关系」），回复只需一句「好，记本子上了～」。**笔记本里已有同一个人/同一条关系的条目 → 一律用 args 填「fix <序号> <新内容>」改那条，禁止再新增一条重复的。**硬性要求：该记不记＝失职；只在回复里说记下了却没有实际调用＝骗人，绝对禁止。"
-        "\n★【只答当前这条，禁止搭话别的话题】你的回复必须针对【当前对话者】刚落的那条消息。上下文里其他人的聊天只是背景，严禁点评、附和、接梗（例：你正在记事，别人在聊军训出汗 → 只回「好，记本子上了～」，绝不许顺嘴点评军训）。规律：**本轮一旦要调 calls（note/查询/操作），回复限 1 句就够**，多出来的句子都是错的，删掉。"
-    )
+    # ★ v2.2.2: 提醒模板统一放 data/skills/40_reminders.md，此处不再硬编码
+    fmt_reminder = _build_reminder("reply_reminder", ctx_hint=ctx_hint, max_chars=max_chars)
     user_parts.append(fmt_reminder)
     # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
     msg_text = current_msg[:2500] + ("…[截断]" if len(current_msg) > 2500 else "")
@@ -1395,33 +1414,8 @@ async def generate_multi_reply(
         user_parts.append(f"【当前可用的搜索/记忆信息】\n{extra_info}\n请参考以上信息回答，如果信息不相关可忽略。")
     # ★ 格式提醒：JSON 输出
     max_chars = "40" if is_group else "20"
-    fmt_reminder = (
-        "【格式规则：严格输出 JSON，不要任何额外文字】"
-        "\n"
-        '{"replies":["完整的第一句话","自然的第二句话"],"fav":2}'
-        "\n"
-        f"回复长度随场景：闲聊 1~3 句、每句≤{max_chars}字；知识/技术/原理/概念/步骤/对比类问题或对方追问 → 3~10 句、不限字数，讲深讲透。fav -5~+5。"
-        "\n"
-        "★ 动态字段——只在需要时才带上，不需要就【整个省略这个 key】，不要写 null 占位（省 token）：\n"
-        '  · "mood_detail":["开心","好奇"] —— 每句情绪，和 replies 一一对应\n'
-        '  · "calls":[{"name":"指令名","args":"参数"}] —— 需要调指令时才加\n'
-        '  · "action":"动作描写" —— 需要肢体动作才加（少用）\n'
-        '  · "at":QQ号 —— 需要@某人时才加\n'
-        '  · "face":"表情关键词" —— 极少用\n'
-        '  · 一旦带 calls，必须同时加 "origin":"user","actor":{"name":"发言人名字","qq":QQ号}（origin 填 user 或 bot）'
-            "\n"
-            '不要输出残缺URL（如单独的"https:"），不知道完整链接就说不知道！'
-            "\n"
-            '【指令调用规则：如果有人要求你执行一个操作（如发战报/查天气/搜百度/发群统计等），必须通过calls执行对应指令，不要只回文字假装做了。calls里填指令名和参数，replies里说一句简短的"好的喵~"即可。】'
-            "\n"
-            '【笔记本规则（必须真记，出现即调）：①群内关系 → ②称呼/黑话（某外号指谁、某词群内什么意思）→ ③某人身份/昵称/性别/特征 → ④有人明确说"记一下/记住"。碰到任一类，立即用 calls 调 note 记录，如 {"name":"note","args":"模组东=雪泠翎，女生"}，写清"谁=什么信息"。**判定要点：只要群里的人这样称呼/这样认为就照记（哪怕是知名角色/公众人物）——你记的是「这个群的事实」，不是百科。**发现之前记错了或过时了、或笔记本里已有同一个人/同一条关系的条目 → 用 calls 调 note 传 "fix <序号> <新内容>" 改正（序号看编号），**别重记一条重复的**。只在回复说"记下了"而没调用是骗人。】'
-            "\n"
-            '【只答当前这条，禁止搭话别的话题：你的回复必须针对当前说话人刚落的那条消息。上下文里其他人的聊天只是背景，严禁点评/附和/接梗（例：你正在记事，别人在聊军训出汗 → 只回「好，记本子上了～」，绝不许顺嘴点评军训）。本轮一旦要调 calls（note/查询/操作），replies 限 1 句，多出来的句子一律删掉。】'
-            "\n"
-            '【致命规则：replies 内必须用标准 JSON，英文引号必须转义为 \\" ，或用中文引号「」替代！】'
-            "\n"
-            "【禁止：JSON之后严禁加任何注释、说明、//、/*、```、换行文字！】"
-        )
+    # ★ v2.2.2: 提醒模板统一放 data/skills/40_reminders.md，此处不再硬编码
+    fmt_reminder = _build_reminder("voice_reminder", max_chars=max_chars)
     user_parts.append(fmt_reminder)
     user_parts.append(f"{speaker_name}说：{current_msg}")
     turns.append({"role": "user", "content": "\n\n".join(user_parts)})
@@ -1498,7 +1492,7 @@ async def generate_multi_reply(
         actor = data.get("actor") or {}
 
         logger.info("JSON回复解析: %d句 fav=%+d calls=%d mood=%s action=%s",
-                   len(replies), fav_change, len(calls), mood)
+                   len(replies), fav_change, len(calls), mood, action or "-")
         return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, instructs
     except json.JSONDecodeError:
         logger.warning("JSON解析失败，尝试修复: %s...", raw[:80])
