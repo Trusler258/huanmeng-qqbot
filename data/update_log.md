@@ -1,5 +1,37 @@
 # 更新日志
 
+## v2.2.0 — 上下文用量查询指令 /~ctx — 2026.9.11
+需求：加一个上下文查询指令，展示每轮给 LLM 的上下文都被什么占着（对齐 ChatGPT 的上下文用量面板）。
+
+实现（4 文件 + 1 新增）：
+- **core/ctx_usage.py**（新增）：`build_ctx_report(chat_id, is_group)` 统计 6 个维度
+  - `System Prompt`：`_build_system_text` 完整输出（与真实请求一致）
+  - `参考资料`：`_build_skill_refs` 热注入（工具意图时最大占用 / 实际聊天不带）
+  - `Conversation`：历史消息（当前条数/上限）
+  - `注入信息`：extra_info（时间/节假日/记忆/笔记/画像/好感度等）
+  - `格式提醒`：fmt_reminder 完整文本
+  - `当前消息`：本次发言
+  - 顶部总览：`上下文用量 X% · N / 60K` + 进度条；百分比按 60K 窗口
+- **modules/commands.py**：import + `COMMAND_MAP` 注册 `"ctx": cmd_ctx`
+- **services/llm.py**：`_CMD_DESC` 加 ctx 说明（指令文档同步铁律）
+- **config/lang.toml**：`/~help` 系统菜单加 `/~ctx`，新增 ctx 详细帮助
+
+token 计算：
+- 优先本地 DeepSeek tokenizer（`core/token_tracker._token_count`）
+- **发现并修复 BPE 退化坑**：服务器 tokenizer 无 PyTorch 时 encode 长文本严重偏小
+  （12745 字符只算出 1236，正常 ~6600）→ `_tok_count` 加退化检测
+  （估算与真实差距 > 2.5 倍 → 回退字符估算：中文≈0.7 tok/字，英文≈0.25）
+- `/~ctx <群号>` 管理员可查指定群
+
+实测（服务器真实群 1058782600）：
+```
+上下文用量 13.8% · 8.3K / 60.0K
+System Prompt  ~6.7K   11.1%   ← v2.1.9 后稳定核心
+参考资料     ~650   1.1%     ← 工具意图才注入
+Conversation   ~470   0.8%  (20条/上限20条)
+格式提醒     ~493   0.8%
+```
+
 ## v2.1.9 — 提示词分层：system 稳定化 + skill 热读取 — 2026.9.11
 需求："skill 热读取，而不是一直都带着；重要的写系统提示词里，其他聊天内容写用户提示词里"。
 

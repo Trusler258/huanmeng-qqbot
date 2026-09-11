@@ -362,6 +362,7 @@ _CMD_DESC = {
     "balance": "查 DeepSeek API 余额（还剩多少钱）",
     "cost":    "查今日 Token 消耗统计（调了多少次、花了多少钱）",
     "tokens":  "查今日各模型 Token 用量明细",
+    "ctx":     "查当前对话的上下文用量统计（system/参考资料/历史/注入各占多少token）",
     "stats":   "查自身统计（回复次数/好感度/被@次数）",
     "setstats":"设置自身统计数据（主人用）",
     "unstats": "管理员用",

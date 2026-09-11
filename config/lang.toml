@@ -16,7 +16,7 @@ sections = [
     ["--- 工具 ---", "/~s <关键词>        联网搜索", "/~remind <时间> <事> 定时提醒", "/~抽 <A> <B>        随机选择", "/~countdown <日期> <事> 倒计时"],
     ["--- 数据 ---", "/~stats [...]      群聊统计", "/~recall [数量]     撤回记录", "/~favlist           好感度"],
     ["--- 游戏 ---", "/~wzq ...          五子棋对战", "/~luck              今日运气值"],
-    ["--- 系统 ---", "/~cost              Token消耗统计", "/~info             运行状态", "/~up [版本]         更新日志", "/~ping <目标>       全球延迟测试"],
+    ["--- 系统 ---", "/~cost              Token消耗统计", "/~ctx              上下文用量", "/~info             运行状态", "/~up [版本]         更新日志", "/~ping <目标>       全球延迟测试"],
     ["--- 主人专用 ---", "/~owner ...        配置/数据管理", "/~memory ...       记忆查询", "/~preset ...        提示词注入管理", "/~reload           热重载配置"],
 ]
 
@@ -38,6 +38,7 @@ memory = "【记忆管理 /~memory (主人)】\n/~memory list    查看所有记
 preset = "【提示词注入 /~preset (主人)】\n/~preset clear    清除注入"
 reload = "【重载 /~reload (主人)】\n热重载 .toml 配置"
 cost = "【Token消耗 /~cost】\n查看今日/累计 Token 消耗和预估费用"
+ctx = "【上下文用量 /~ctx】\n查看当前对话给 LLM 的上下文都装了什么（system/参考资料/历史/注入/格式提醒/当前消息各占多少 token、百分比、进度条）\n/~ctx <群号>   管理员查看指定群"
 token = "【Token计算 /~token】\n/~token <文本>   计算 token 数和费用"
 draw = "【绘画 /~draw】\n/~draw <提示词>   文生图\n引用一张图片 + /~draw <提示词>   以引用图为参考图生成"
 video = "【视频 /~video】\n/~video <提示词>  文生视频"
