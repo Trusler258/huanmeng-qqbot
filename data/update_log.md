@@ -993,3 +993,15 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
   6. reply_schema.json max_items 5→12, 非核心字段标 optional (face/at/mode/action/mood/origin/actor)
 - 实测: "Q群管家干啥的" 4句115字; "TCP三次握手" 10句937字带分节; "在吗" 1句8字 — 自适应生效
 - 部署: 4文件整体上传 + bot_config.toml 原地脚本替换(服务器版为转义单行格式, 不可覆盖) + 重启验证
+
+## v2.1.1 — 笔记本: LLM 主动维护的长期记忆 (2026.9.11)
+- 背景: bot 常说"那我记下了喵"但实际没记住 (如"光煞和夜煞是小玩具情侣"这类群内知识)
+- 方案: 复用 CALL 指令机制, 零架构改动
+  1. 新增 `core/bot_notes.py`: data/notes/<chat_id>.md 一行一条, 上限100条自动淘汰, 重复检测
+  2. 注册 /~note 指令 (查看/手动记/del序号/clear), LLM 经 calls 调用写入
+  3. main_skill 规则5b: 明确"必须真记", 禁用嘴上说记下了; 有人自报家门时记 `[QQ:x] 昵称/身份`
+  4. pipeline: 笔记注入 extra_info (群聊+私聊两处), 缓存友好放末尾
+  5. pipeline: 纯 note 调用不触发追加回复 (避免"记下了"说两遍)
+  6. .gitignore 加 data/notes/
+- 实测: "记一下光煞和夜煞是情侣" → calls=[note ✓]; "我叫小明" → 自动记 [QQ:x] 格式 ✓; 闲聊不记 ✓
+- 注意: 服务器 bot_config.toml 为转义单行格式, 修改须用脚本原地替换, 严禁整体覆盖

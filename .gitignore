@@ -21,6 +21,7 @@ data/stats_archive/
 data/Group_members_name.txt
 data/recall.json
 data/memory_*.md
+data/notes/
 data/templates/old/
 data/Message_frequency_cache.txt
 
