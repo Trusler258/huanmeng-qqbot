@@ -267,6 +267,8 @@ _OPTIONAL_SECTIONS = frozenset((
     "command_table", "face_lib", "play_mode",
     # 提示词模板章节：由 _build_reminder() 按调用路径显式读取（见 data/skills/40_reminders.md）
     "reply_reminder", "voice_reminder", "jsonraw_reminder", "plain_text_rule",
+    # 长回答规范：命中知识/技术/原理类意图才注入
+    "deep_explain",
 ))
 
 # 工具/指令意图触发词（宽松匹配：宁可多带，漏带会导致不会调指令）
@@ -274,6 +276,16 @@ _TOOL_HINTS = (
     "查", "搜", "帮我", "画", "唱", "天气", "地震", "新闻", "战绩", "积分", "签到",
     "提醒", "倒计时", "余额", "快递", "翻译", "抽", "谱面", "棋", "卡片", "读",
     "网页", "更新", "状态", "统计", "记忆", "昵称", "备注", "下载", "谱", "tuf",
+)
+
+# 深度讲解意图触发词（v2.2.5：把长回答规范从常驻 system 改为按需注入，日常闲聊省 ~870 tokens）
+# 宽松匹配：多带只是多花 token，漏带会让知识类回答被常驻的"闲聊 1~3 句"规则压短
+_DEEP_HINTS = (
+    "详细", "详解", "展开", "细说", "讲讲", "讲一下", "解释", "说明", "科普", "介绍",
+    "原理", "为什么", "为啥", "怎么", "如何", "什么是", "是什么", "啥是", "是啥",
+    "啥意思", "什么意思", "指的是", "区别", "差异", "对比", "比较", "步骤", "流程",
+    "怎么做", "教程", "分析", "总结", "举例", "例子", "冷知识", "历史", "背景",
+    "起源", "典故", "多少", "多久", "干啥", "干嘛",
 )
 
 
@@ -289,6 +301,12 @@ def _detect_skill_needs(msg: str, is_group: bool) -> set:
         needs.add("face")
     if any(w in m for w in ("扮演", "演个", "来一个", "角色", "设定", "梗")):
         needs.add("play")
+    # 深度讲解模式：知识/技术/原理/概念/对比/步骤类提问 → 才加载长回答规范
+    # （宽松触发：宁可多带多花点 token，漏带的代价是知识类回答被"闲聊短句"规则压短）
+    if any(w in m for w in _DEEP_HINTS):
+        needs.add("deep")
+    elif len(m) >= 8 and ("？" in m or "?" in m):
+        needs.add("deep")
     return needs
 
 
@@ -316,6 +334,10 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
         pm = sec.get("play_mode", "")
         if pm:
             parts.append(pm)
+    if "deep" in needs:
+        de = sec.get("deep_explain", "")
+        if de:
+            parts.append(de)
 
     # skills/*.md 拖进来的自定义章节：章节名出现在消息里才热加载
     low = (msg or "").lower()
