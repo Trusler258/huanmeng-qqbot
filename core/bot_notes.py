@@ -80,14 +80,19 @@ def add_note(chat_id, text: str) -> str:
 
 
 def load_notes(chat_id, limit: int = INJECT_LIMIT) -> str:
-    """加载笔记文本用于注入上下文；无笔记返回空串"""
+    """加载笔记文本用于注入上下文（带序号，方便 LLM 用 fix/del 精确操作）；无笔记返回空串"""
     lines = _load_lines(chat_id)
     if not lines:
         return ""
     total = len(lines)
-    shown = lines[-limit:]
-    header = f"【你的笔记本】你之前记下的 {total} 条群内信息（需要时可增删，用 calls 调 note 指令）："
-    return header + "\n" + "\n".join(shown)
+    start = max(1, total - limit + 1)
+    shown = lines[start - 1:]
+    header = (
+        f"【你的笔记本】共 {total} 条群内信息。"
+        "新增直接写内容；改某条写 \"fix <序号> <新内容>\"；删某条写 \"del <序号>\"（都通过 calls 调 note，args 填这些）："
+    )
+    body = "\n".join(f"{i}. {ln.lstrip('- ')}" for i, ln in enumerate(shown, start=start))
+    return header + "\n" + body
 
 
 def list_notes(chat_id) -> str:
@@ -112,6 +117,27 @@ def delete_note(chat_id, index: int) -> str:
     return f"已删除：{removed.lstrip('- ')}"
 
 
+def update_note(chat_id, index: int, new_text: str) -> str:
+    """修改第 index 条笔记（序号来自 load_notes/list_notes，从 1 开始）"""
+    new_text = (new_text or "").strip().replace("\n", " ")
+    if not new_text:
+        return "新内容为空，没改"
+    if len(new_text) > LINE_MAX:
+        new_text = new_text[:LINE_MAX] + "…"
+
+    lines = _load_lines(chat_id)
+    if not lines:
+        return "笔记本是空的"
+    if index < 1 or index > len(lines):
+        return f"序号超出范围（当前 {len(lines)} 条，用 /~note 查看）"
+    old = lines[index - 1].lstrip("- ")
+    tag = datetime.now().strftime("%m-%d")
+    lines[index - 1] = f"- [{tag}] {new_text}"
+    _save_lines(chat_id, lines)
+    logger.info("修改笔记 chat=%s #%d: %s → %s", chat_id, index, old[:30], new_text[:60])
+    return f"已改第{index}条：{old} → {new_text}"
+
+
 def clear_notes(chat_id) -> str:
     lines = _load_lines(chat_id)
     n = len(lines)
@@ -128,6 +154,7 @@ async def cmd_note(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     /~note              查看笔记
     /~note <内容>       手动记一条
+    /~note fix <序号> <新内容>  修改某条
     /~note del <序号>   删除某条
     /~note clear        清空（仅管理员）
     """
@@ -142,6 +169,10 @@ async def cmd_note(args, user_id, group_id, sender_name, is_group, bot_qq):
         if len(a) < 2 or not a[1].isdigit():
             return "用法: /~note del <序号>（序号用 /~note 查看）"
         return delete_note(chat_id, int(a[1]))
+    if head in ("fix", "edit", "改", "修改"):
+        if len(a) < 3 or not a[1].isdigit():
+            return "用法: /~note fix <序号> <新内容>（序号用 /~note 查看）"
+        return update_note(chat_id, int(a[1]), " ".join(a[2:]))
     if head in ("clear", "清空"):
         from core.config import get_config
         cfg = get_config()
