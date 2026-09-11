@@ -1080,3 +1080,17 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - **发现3(高价值)**: 群友发的【好感度列表】里含完整 QQ昵称↔游戏昵称映射(如 LP_XiaoP#初梦龙❤)，
   是"别把号忘了"的最佳数据源
 - 人工判断结果: 725 条干净消息里, 真正该进笔记本的约 8-12 条(其余为闲聊/玩笑/技术讨论/乞讨/玩梗)
+
+## v2.1.8 — 动态 JSON 真正落地 (2026.9.11)
+- 用户追问"动态 JSON 实现了吗" → 核查发现**之前只是假的**:
+  - schema.json 里标了 optional 标记, 但 services/llm.py **根本没读这个标记**(grep 无消费点)
+  - fmt_reminder 的 JSON 模板仍列全 10 个字段 → LLM 照抄一堆 null, 输出 token 白烧
+- 真正实现: 两处 fmt_reminder 的模板改为「必填 2 个 + 动态按需」
+  - 必填: replies, fav
+  - 动态(需要才带, 不需要就整个省略 key, 禁止 null 占位): mood / calls / action / at / face / mood_detail / origin+actor
+  - origin+actor 只在带 calls 时一起加(原规则是"每句必填", 已改)
+- 健壮性实测(关键): _normalize_reply_json 会遍历 schema 补默认值, pipeline 对所有字段都是 falsy 检查
+  - 极简返回 {"replies":[...],"fav":1} → 解析正常, 其余字段补默认 ✓
+  - 带 calls → origin 默认 user, actor 补 {} ✓
+  - 带 action/at → 正常 ✓
+- 收益: 闲聊场景每次少输出 6-8 个字段(约 50-120 输出 token)
