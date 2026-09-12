@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v2.3.3 思考误触发 + 图片时序幻觉 回归测试
+"""v2.1.13 思考误触发 + 图片时序幻觉 回归测试
 运行: python tests/_test_phase_v233_fix.py
 覆盖:
   1. deep 意图判定 — 闲聊(干啥/干嘛)不再误开 thinking；知识提问照常触发
@@ -67,4 +67,4 @@ assert "[历史图片描述]" in core, "00_core.md 应提新标记"
 assert "刚在看你发的仓鼠" in core, "00_core.md 应含仓鼠反例"
 print("[3] 00_core.md 图片规则 OK:", _core_path)
 
-print("\n全部通过: v2.3.3 思考误触发 + 图片时序幻觉 修复")
+print("\n全部通过: v2.1.13 思考误触发 + 图片时序幻觉 修复")
