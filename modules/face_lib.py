@@ -76,3 +76,34 @@ def list_keywords() -> list[str]:
     return sorted(set(
         k for k in _KEYWORD_MAP if len(k) >= 3 and all('\u4e00' <= c <= '\u9fff' for c in k)
     ))[:30]
+
+
+def get_face_keywords() -> list[str]:
+    """提取「情绪词」关键词列表，供提示词动态展示可用表情。
+
+    v2.1.18 背景：文件名形如「眯眼开心.jpg」「捂嘴害羞.jpg」（修饰 + 情绪），
+    取末尾 2 个汉字就能拿到 LLM 真正想表达的情绪词（开心/害羞/坏笑…）。
+    比 list_keywords() 的切词碎片（'举手欢'/'低头失'）可读得多。
+    提示词用这个动态生成，用户换成自己的表情包后自动跟随，不用改提示词。
+    """
+    _init()
+    from pathlib import Path as _P
+    faces_dir = _P(__file__).resolve().parent.parent / "data" / "faces"
+    words: list[str] = []
+    if not faces_dir.is_dir():
+        return words
+    for f in sorted(faces_dir.iterdir()):
+        if f.suffix.lower() not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+            continue
+        han = [c for c in f.stem if '\u4e00' <= c <= '\u9fff']
+        if len(han) >= 2:
+            w = "".join(han[-2:])
+            if w not in words:
+                words.append(w)
+    return words
+
+
+def face_keywords_hint() -> str:
+    """生成提示词用的「可用表情」一行（无表情时返回空串）"""
+    ws = get_face_keywords()
+    return "/".join(ws) if ws else ""

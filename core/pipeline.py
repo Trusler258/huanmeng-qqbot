@@ -803,15 +803,53 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.info("CALL执行: %s", call_hint)
         ctx.append_to_context(chat_id, f"[系统] 已调用: {call_hint}")
 
-    # ------表情处理------
-    if not face_cq:
-        # 静默去除 [FACE:xxx] 残留
-        combined_reply = re.sub(r'\[FACE:[^\]]*\]?', '', combined_reply).strip()
-
+    # ------表情处理（v2.1.18：支持逐句配图）------
+    # 旧行为：整条回复只能有 1 个表情，且堆在所有文字之后发出 → 观感"图是图、话是话"，
+    # 不像真人边打字边甩表情包。新行为：replies 的**每一句**都可以带自己的 [FACE:关键词]，
+    # 发送时按「文字 → 该句的图 → 文字 → 图」交错，情绪节拍由表情承担。
     sentences = [s for s in combined_reply.split(" || ") if s.strip()]
     if not sentences:
         sentences = ["喵~"]
-    _face_cq_for_later = face_cq
+
+    _face_re = _re.compile(r'\[FACE:([^\]]*)\]?')
+    _faces_per_sentence: list[str | None] = []
+    _inline_face_count = 0
+    _clean_sentences: list[str] = []
+    for _s in sentences:
+        _kws = [k.strip() for k in _face_re.findall(_s) if k.strip()]
+        # 去掉标记，保留纯文本
+        _txt = _face_re.sub("", _s).strip()
+        _cq = None
+        if _kws:
+            try:
+                from modules.face_lib import get_face, make_cq
+                for _kw in _kws:
+                    _fp = get_face(_kw)
+                    if _fp:
+                        _cq = make_cq(_fp)
+                        _inline_face_count += 1
+                        break
+                    logger.debug("表情库未匹配关键词: %s", _kw)
+            except Exception:
+                logger.warning("表情解析失败: %s", _kws, exc_info=True)
+        # 纯表情句（没有文字）也要保留，否则这一拍会丢
+        if not _txt and not _cq:
+            continue
+        _clean_sentences.append(_txt)
+        _faces_per_sentence.append(_cq)
+
+    sentences = _clean_sentences
+    if not sentences:
+        sentences = ["喵~"]
+        _faces_per_sentence = [None]
+
+    # 兼容旧的单表情字段：只有当正文里没有任何内联表情时才用它，
+    # 挂在最后一句上（等价于旧行为），避免与内联表情重复发图。
+    if face_cq and _inline_face_count == 0:
+        _faces_per_sentence[-1] = face_cq
+        logger.debug("使用 JSON face 字段（末句配图）")
+    if _inline_face_count:
+        logger.info("逐句配图: 正文内联 %d 张 / 共 %d 句", _inline_face_count, len(sentences))
 
     # ------上下文回写------
     _context_reply = re.sub(r'\s*\[系统\]\s*已调用:\s*\S+', '', " || ".join(sentences)).strip()
@@ -911,31 +949,27 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             call_hints.append(f"[工具调用: {name} {args_str}]")
         sentences.append("\n".join(call_hints))
 
-    task = asyncio.create_task(send_sentences(
-        sentences, chat_id, is_group,
-        user_id=user_id if not is_group else None,
-    ))
-
     # v2.1.12: 主回复首句 + [已思考N秒]（先导语未挂过才挂，且思考时长满足阈值）
+    # v2.1.18: 移到 create_task **之前**——原来在任务创建后才改 sentences，
+    #   依赖"协程还没跑起来"这个巧合；现在 faces 与 sentences 必须下标对齐，
+    #   插入新句就必须同步插入占位，顺序错了会导致配图错位。
     if thought_ctx.get("secs") and not thought_ctx.get("applied") and sentences:
         prefix = f"[已思考{thought_ctx['secs']}秒] "
         # 首句本身已是前缀/Markdown 标题/文件卡片 → 前缀独立成句，避免粘连
         if sentences[0].lstrip().startswith(("[", "#", "`")):
             sentences.insert(0, prefix.rstrip())
+            _faces_per_sentence.insert(0, None)
         else:
             sentences[0] = prefix + sentences[0]
         thought_ctx["applied"] = True
         logger.info("主回复前置 [已思考%d秒]", thought_ctx["secs"])
 
+    task = asyncio.create_task(send_sentences(
+        sentences, chat_id, is_group,
+        user_id=user_id if not is_group else None,
+        faces=_faces_per_sentence,
+    ))
     ctx.set_active_send_task(chat_id, task)
-
-    if _face_cq_for_later:
-        async def _send_face_after():
-            await task
-            await send_by_chat_type(_face_cq_for_later, chat_id if is_group else chat_id,
-                                   is_group=True if is_group else False,
-                                   user_id=user_id if not is_group else None)
-        asyncio.create_task(_send_face_after())
 
     # ------CALL结果回发------
     if call_results:

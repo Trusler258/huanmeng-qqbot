@@ -267,7 +267,19 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
     ]
     # v2.1.17: 允许在任意常驻章节里用 {bot_name} 占位——换名字部署时只改配置，
     # 不用逐条改提示词。prompt_header 已由 .format 处理，这里的 replace 对它是空操作。
-    core_parts = [p.replace("{bot_name}", bot_name) for p in core_parts]
+    # v2.1.18: 同理支持 {face_keywords} 动态表情词（随 data/faces/ 自动更新），
+    # 让「可以发表情包」这条能力常驻可见——此前 only-in-face_lib 且按需注入，
+    # 导致私聊里 LLM 根本不知道自己能发表情（生产 msglog 私聊 faces = 0，群聊 68 张）。
+    _face_kw = ""
+    try:
+        from modules.face_lib import face_keywords_hint
+        _face_kw = face_keywords_hint()
+    except Exception:
+        pass
+    core_parts = [
+        p.replace("{bot_name}", bot_name).replace("{face_keywords}", _face_kw)
+        for p in core_parts
+    ]
     return "\n\n".join(p for p in core_parts if p)
 
 
