@@ -88,3 +88,14 @@ test_fc_sim.py
 
 # 误建于仓库内的备份目录
 qqbot-backup/
+
+# === 后台面板（panel/）===
+# ⚠️ 密钥文件绝对禁止提交
+panel/secret.toml
+panel/secret.toml.bak_*
+panel/audit.log
+# 前端构建产物与依赖
+panel_web/node_modules/
+panel_web/dist/
+panel_web/.vite/
+panel_web/src/api/generated/
