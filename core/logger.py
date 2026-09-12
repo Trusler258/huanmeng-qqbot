@@ -64,7 +64,7 @@ def _color_msg(msg: str) -> str:
     msg = re.sub(r'([📩✅🐱📎⚠️🔒🎨⚙️📂🐾🗑️🌐🔥])', f'{A_SYMBOL}\\1{RESET}', msg)
     # 管理员 / 指令
     msg = re.sub(r'(\/~\w+)', f'{A_ADMIN}\\1{RESET}', msg)
-    msg = re.sub(r'(Trusler|admin|管理员)', f'{A_ADMIN}\\1{RESET}', msg)
+    msg = re.sub(r'(admin|管理员)', f'{A_ADMIN}\\1{RESET}', msg)
     # 成功状态
     msg = re.sub(r'(启动成功|连接完成|重载完成|准备就绪|初始化完成|已连接|截图成功)', f'{A_HI}\\1{RESET}', msg)
     # 分割线

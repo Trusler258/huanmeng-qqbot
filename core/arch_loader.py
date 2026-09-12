@@ -95,6 +95,33 @@ _SECTION_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
+def _command_list() -> str:
+    """动态生成「可调用指令清单」——从真实注册的 COMMAND_MAP 取，部署时自动跟随。
+
+    v2.1.17: 用户反馈"你没有指令清单，他怎么知道要调用什么指令"。
+    手写清单写死了就不通用（换部署/加指令都得改提示词），所以这里运行时生成：
+    指令名与说明都由 modules.commands.COMMAND_MAP + services.llm._CMD_DESC 提供。
+    延迟导入避免 core↔services 循环依赖（arch_loader 被 core.config 导入，
+    而 services.llm 又导入 core.config），调用发生在运行期、模块早已加载完毕。
+    """
+    try:
+        from services.llm import _build_dynamic_command_list
+        out = _build_dynamic_command_list()
+        if out:
+            return out
+    except Exception:
+        pass
+    # 兜底：至少把指令名列出来（缺中文说明也比没有强）
+    try:
+        from modules.commands import COMMAND_MAP
+        names = sorted(set(COMMAND_MAP))
+        if names:
+            return "【全部可调用指令】\n" + "、".join(f"/~{n}" for n in names)
+    except Exception:
+        pass
+    return ""
+
+
 def get_self_knowledge(msg: str = "") -> str:
     """按消息内容取自我认知章节；未命中关键词 → 返回全部（泛问"介绍一下你自己"）。
 
@@ -121,7 +148,17 @@ def get_self_knowledge(msg: str = "") -> str:
             if name in sections:
                 picked.append(name)
 
-    parts = [f"## {name}\n{sections[name]}" for name in picked]
+    parts = []
+    for name in picked:
+        body = sections[name]
+        # v2.1.17: 「能力清单」追加真实指令表——被问"会什么/能调什么指令"时
+        # 得能报出具体指令名，而不是只说"能查天气"这种笼统描述
+        if name == "能力清单":
+            _cmds = _command_list()
+            if _cmds:
+                body = f"{body}\n\n以下是我实际能调用的指令（都是真的，回答「会什么」时可以照这个说）：\n{_cmds}"
+        parts.append(f"## {name}\n{body}")
+
     if not parts:
         return ""
     return sanitize("# 关于我自己\n" + "\n\n".join(parts))

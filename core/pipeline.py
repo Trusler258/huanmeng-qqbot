@@ -663,7 +663,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             f"时间: {now.strftime('%H:%M:%S')}",
             f"对话者: {display_name}",
             f"上下文: {len(msg_history_for_llm)}轮",
-            "请联系管理员 @Trusler 解决喵~",
+            # v2.1.17: 不再硬编码管理员名字（换部署会 @ 错人），改为配置里的 admin QQ
+            f"请联系管理员 @{cfg.admin_qq} 解决喵~",
         ]
         await send_by_chat_type("\n".join(error_lines), chat_id if is_group else chat_id,
                                is_group=True if is_group else False,
@@ -709,47 +710,29 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 except: pass
             asyncio.create_task(_clean())
 
-    # ------scan replies for inline /~commands ------
+    # ------清理回复正文里的指令语法（只清理，不执行）------
+    # v2.1.17 用户要求：replies 就应该是正常文本，指令出现在正文里不该被触发。
+    # 数据支持这个决定（近 7 天日志统计）：
+    #   · 「从回复中自动提取CALL」只命中 1 次，且是误伤——"400tok/s 都快赶上本地推理了"
+    #     里的 /s 被当成 search 别名，白跑一次 28s 搜索（v2.2.1 记录在案）
+    #   · 同期 `calls` 字段正常工作 21 次（note 11 / search_web 4 / draw / wdsj …）
+    # 也就是说扫描执行换不来收益，只留下误触发风险。现在改为：把指令语法从正文里清掉
+    # （保证用户看不到 /~xxx 这种乱码），但**绝不执行**；要执行只能走 JSON 的 calls 字段
+    # （由 _parse_reply 解析，交给下面的「CALL执行」段）。
     if sentences:
-        new_lines = []
-        # v2.2.1 修复：只认文档化的 /~ 和 /# 前缀。
-        # 原正则的 (?=[a-zA-Z]) 分支会把正文里任意「/字母」当指令——
-        # 回复中出现 "400tok/s 都快赶上本地推理了" 时，/s 被解析成搜索指令（s 是 search 别名），
-        # 参数吃掉后半句 → 白跑一次 28s 搜索，并触发错误的追加回复。
-        # tok/s、MB/s、m/s、10/up 这类单位/路径写法在技术聊天里极常见，必须从源头掐掉。
         _cmd_re = _re.compile(r'/(?:\~|\#)\s*(\w+)(?:\s+\[?([^\]]*)\]?)?')
-        # 占位符/示例特征：含这些词的 CALL 是 LLM 在"教用法"，不是真调用，只删不执行
-        _placeholder_re = _re.compile(r'@?(某人|某玩家|某群友|用户名|昵称|对方|某某|xxx|XX|示例|例子|比如)')
-        # 教学上下文特征：这行在解释用法（示例/怎么用），里面的指令文本都是示例文本
-        _teach_re = _re.compile(r'(比如|例如|示例|格式[:：是]?|用法[:：是]?|后面加|前面加|可以加|加上|就行|即可|写成|形如|指令是|命令是|或者)')
+        _new_lines = []
         for _line in sentences:
             _line = str(_line) if _line else ""
-            _added = 0
-            for _m in _cmd_re.finditer(_line):
-                _cn = _m.group(1).strip()
-                _ca = (_m.group(2) or "").strip()
-                if _cn:
-                    # Only intercept real commands, not random text matching the pattern
-                    from modules.commands import COMMAND_MAP as _CM
-                    if _cn in _CM:
-                        # ★ 防幻觉执行：示例/占位符/教学语境 只删文本不执行
-                        if _placeholder_re.search(_ca):
-                            logger.info("跳过示例CALL(含占位符): /~%s %s", _cn, _ca)
-                            continue
-                        if _teach_re.search(_line):
-                            logger.info("跳过教学CALL(用法解释行): /~%s %s | 行: %s", _cn, _ca, _line[:60])
-                            continue
-                        llm_calls.append({"name": _cn, "args": _ca})
-                        _added += 1
-                        logger.info("从回复中自动提取CALL: /~%s %s", _cn, _ca)
-            if _added:
-                # Strip out the command text to avoid sending it as literal text
-                _cleaned = _cmd_re.sub("", _line).strip()
-                if _cleaned:
-                    new_lines.append(_cleaned)
-            else:
-                new_lines.append(_line)
-        sentences = new_lines
+            _found = _cmd_re.findall(_line)
+            if _found:
+                logger.warning("回复正文含指令语法，已清理（不执行）: %s | 行: %s",
+                               [f"/~{n}" for n, _ in _found][:3], _line[:60])
+                _line = _cmd_re.sub("", _line).strip()
+                if not _line:
+                    continue
+            _new_lines.append(_line)
+        sentences = _new_lines
 
     # ------CALL执行------
     executed_calls = []
@@ -765,7 +748,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 continue
             from modules.commands import COMMAND_MAP
             if cmd_name not in COMMAND_MAP:
-                err_msg = f"指令 /~{cmd_name} 不存在喵~\n请联系管理员 @Trusler"
+                err_msg = f"指令 /~{cmd_name} 不存在喵~\n请联系管理员 @{cfg.admin_qq}"
                 await send_by_chat_type(err_msg, chat_id if is_group else chat_id,
                                        is_group=True, user_id=None)
                 logger.warning("JSON CALL 无效: %s", cmd_name)
@@ -793,7 +776,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     call_results.append(result)
                 except Exception as e:
                     logger.warning("JSON CALL执行失败 [%s]: %s", cmd_name, e)
-                    err_msg = f"指令 /~{cmd_name} 执行失败喵~\n错误: {str(e)[:200]}\n请联系管理员 @Trusler"
+                    err_msg = f"指令 /~{cmd_name} 执行失败喵~\n错误: {str(e)[:200]}\n请联系管理员 @{cfg.admin_qq}"
                     await send_by_chat_type(err_msg, chat_id if is_group else chat_id,
                                            is_group=True, user_id=None)
                     call_results.append(f"[CALL错误] {e}")
