@@ -482,15 +482,21 @@ class EventDispatcher:
             try:
                 from services.image_api import recognize_image, save_image_description
                 import hashlib
+                from datetime import datetime
                 description = await recognize_image(image_url_or_path, cfg.image_model, chat_id=chat_id)
                 if not description or not description.strip():
                     return
                 short_desc = description[:80].replace("\n", " ")
                 logger.info("[chat=%d] 图片后台识别完成: '%s...' (%d字)", chat_id, short_desc, len(description))
                 # 注入上下文
+                # ★ v2.3.2 fix: 后台识别是异步的，完成时可能已过了几条消息。
+                #   旧代码直接 append 到末尾 → LLM 把"几分钟前的图"当成"刚刚发的"（用户实测:
+                #   '你在干啥' 被答成 '刚在看你发的仓鼠'，实际仓鼠图是更早发的）。
+                #   修复: 明确标注为历史图片 + 图片发送时刻，让 LLM 不混淆时间线。
                 from core.context_manager import get_context_mgr
                 ctx = get_context_mgr()
-                ctx.append_to_context(chat_id, f'[图片描述]"{short_desc}" {sender_name}')
+                _sent_ts = datetime.now().strftime("%H:%M")
+                ctx.append_to_context(chat_id, f'[历史图片描述]({_sent_ts})"{short_desc}" 发送者:{sender_name}')
                 # 保存到仓库
                 try:
                     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as cl:
@@ -502,9 +508,6 @@ class EventDispatcher:
                     logger.warning("图片MD5计算/保存失败: %s", e)
             except Exception as e:
                 logger.warning("图片后台识别/保存失败: %s", e)
-
-        asyncio.ensure_future(_bg_recognize())
-        return "[图片]"
 
         asyncio.ensure_future(_bg_recognize())
         return "[图片]"
