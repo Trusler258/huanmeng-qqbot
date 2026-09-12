@@ -242,6 +242,16 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         )
 
     fmt_key = "group_format" if is_group else "private_format"
+    # v2.1.19: 私聊表情规则（private_face_inline 章节）由测试项 face_inline 控制——
+    # 关闭时连提示词都不注入，才叫真正"恢复默认回复"（不然 LLM 仍会写 [FACE:] 标记）。
+    _face_inline_part = ""
+    if not is_group:
+        try:
+            from modules.features import is_enabled as _feat_on
+            if _feat_on("face_inline"):
+                _face_inline_part = sec.get("private_face_inline", "")
+        except Exception:
+            _face_inline_part = sec.get("private_face_inline", "")
     # v2.1.17: self_awareness 只在 custom_persona 分支需要单独补。
     #   常规分支的 header 已通过 personality(=cfg.system_prompt) 带入**替换好变量**的版本；
     #   这里若再取一次 skills 原始模板，会导致：
@@ -258,6 +268,7 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         header,
         sec.get("persona_lock", "") if not custom_persona else "",
         sec.get(fmt_key, ""),
+        _face_inline_part,
         sec.get("command_tools", ""),
         sec.get("fav_format", ""),
         sec.get("fav_tiers", ""),
@@ -296,6 +307,9 @@ _OPTIONAL_SECTIONS = frozenset((
     "reply_reminder", "voice_reminder", "jsonraw_reminder", "plain_text_rule",
     # 长回答规范：命中知识/技术/原理类意图才注入
     "deep_explain",
+    # v2.1.19: 逐句配图规则：由测试项 face_inline 控制注入（见 _build_system_text），
+    # 不能走关键词热加载，否则关掉开关后只要消息里带"表情"就又被注入
+    "private_face_inline",
 ))
 
 # 工具/指令意图触发词（宽松匹配：宁可多带，漏带会导致不会调指令）
@@ -490,6 +504,8 @@ _CMD_DESC = {
     "tokens":  "查今日各模型 Token 用量明细",
     "ctx":     "查当前对话的上下文用量统计（system/参考资料/历史/注入各占多少token）",
     "say":     "代发消息到指定群或指定私聊（仅管理员）。用法: /~say g<群号> <内容> 或 /~say u<QQ号> <内容>，纯数字默认群号；内容里的 @123456 会变成真的@",
+    "key":     "实验测试项开关（仅管理员）。/~key 看列表 ｜ /~key <名称> 激活 ｜ /~key <名称> off 恢复默认。当前测试项: face_inline（逐句配图）",
+    "测试项":  "同 key，实验测试项开关（仅管理员）",
     "stats":   "查自身统计（回复次数/好感度/被@次数）",
     "setstats":"设置自身统计数据（主人用）",
     "unstats": "管理员用",
