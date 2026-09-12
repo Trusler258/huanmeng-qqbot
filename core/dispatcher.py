@@ -489,7 +489,7 @@ class EventDispatcher:
                 short_desc = description[:80].replace("\n", " ")
                 logger.info("[chat=%d] 图片后台识别完成: '%s...' (%d字)", chat_id, short_desc, len(description))
                 # 注入上下文
-                # ★ v2.3.2 fix: 后台识别是异步的，完成时可能已过了几条消息。
+                # ★ v2.1.12 fix: 后台识别是异步的，完成时可能已过了几条消息。
                 #   旧代码直接 append 到末尾 → LLM 把"几分钟前的图"当成"刚刚发的"（用户实测:
                 #   '你在干啥' 被答成 '刚在看你发的仓鼠'，实际仓鼠图是更早发的）。
                 #   修复: 明确标注为历史图片 + 图片发送时刻，让 LLM 不混淆时间线。

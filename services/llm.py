@@ -611,7 +611,7 @@ async def call_llm(
         temperature: 温度参数
         timeout: 超时时间（秒）
         scene: 调用场景标识（reply/judge/search/tools等），用于 token 命中率归因
-        thinking: v2.3.0 思考模式开关。默认 False（本函数多为短输出判断调用，
+        thinking: v2.1.10 思考模式开关。默认 False（本函数多为短输出判断调用，
           思考会吃掉小输出预算导致空返回；长文本生成场景调用方显式传 True）。
 
     Returns:
@@ -640,7 +640,7 @@ async def call_llm(
             req_params["max_tokens"] = max_tokens
         if json_mode:
             req_params["response_format"] = {"type": "json_object"}
-        # v2.3.0: 思考模式显式控制。本函数默认 False（短判断调用防思考吃光输出预算）
+        # v2.1.10: 思考模式显式控制。本函数默认 False（短判断调用防思考吃光输出预算）
         if thinking is not None:
             req_params["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
         
@@ -717,10 +717,10 @@ class ToolCallResult:
     def __init__(self, content: str, tool_calls: list[dict] | None, reasoning: str = "", reasoning_duration: float = 0.0):
         self.content = content or ""
         self.tool_calls = tool_calls or []
-        # v2.3.0: 思考模式思维链（deepseek-flash reasoning_content），
+        # v2.1.10: 思考模式思维链（deepseek-flash reasoning_content），
         # 带 tools 的请求必须回传给 API（否则 400），存这里方便拼接
         self.reasoning = reasoning or ""
-        # v2.3.2: reasoning 非空时记录本轮耗时（思考时长秒），供 [已思考N秒] 标注
+        # v2.1.12: reasoning 非空时记录本轮耗时（思考时长秒），供 [已思考N秒] 标注
         self.reasoning_duration = reasoning_duration or 0.0
 
 async def call_llm_with_tools(
@@ -742,10 +742,10 @@ async def call_llm_with_tools(
       - True  → 显式启用 (extra_body thinking.enabled)
       - False → 显式关闭（闲聊更快更省；思考 token 不计入输出）
       - None  → 跟随 API 默认（不传 extra_body）
-    v2.3.0: deepseek-flash 自带 thinking；带 tools 的请求必须回传 reasoning_content
+    v2.1.10: deepseek-flash 自带 thinking；带 tools 的请求必须回传 reasoning_content
     否则 API 400（DeepSeek 官方要求），故 ToolCallResult 新增 reasoning 字段承载。
 
-    v2.3.2: reasoning 有值时记录本轮耗时（思考时长），供 [已思考N秒] 前缀标注。
+    v2.1.12: reasoning 有值时记录本轮耗时（思考时长），供 [已思考N秒] 前缀标注。
     """
 
     client = _create_client(model_cfg, timeout=timeout + 5.0)
@@ -764,7 +764,7 @@ async def call_llm_with_tools(
     }
     if max_tokens is not None:
         req_params["max_tokens"] = max_tokens
-    # v2.3.0: 思考模式显式控制（DeepSeek-flash；reasoning_effort 走模型默认 high）
+    # v2.1.10: 思考模式显式控制（DeepSeek-flash；reasoning_effort 走模型默认 high）
     if thinking is not None:
         req_params["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
 
@@ -951,9 +951,9 @@ async def generate_multi_reply_with_tools(
     写的自然语先导语（如"帮你搜搜看吧"）会经它先发给用户，避免 13s+ 干等。
     由调用方（pipeline）注入发送通道；不传则维持旧行为（先导语丢弃）。
 
-    thinking: v2.3.0 思考模式开关，透传给每轮 FC 调用（True=启用/False=关闭/None=默认）
+    thinking: v2.1.10 思考模式开关，透传给每轮 FC 调用（True=启用/False=关闭/None=默认）
 
-    thought_shown_cb: 可选 async 回调 (duration_sec:int)->None，v2.3.2。
+    thought_shown_cb: 可选 async 回调 (duration_sec:int)->None，v2.1.12。
     思考模式启用且模型产出 reasoning 时，在"给用户的第一条可见文本发出前"调用一次，
     由发送端决定是否/如何展示 [已思考N秒] 标记（前缀、过滤由 pipeline 负责）。
     - 轮1带工具调用：先导语先行 → duration=该轮 reasoning 耗时，附在先导语上
@@ -965,7 +965,7 @@ async def generate_multi_reply_with_tools(
     tools = get_tool_schemas()
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
 
-    # v2.3.2: 记录"最后一条有思考"的轮次耗时，最终回复生成时按它标注 [已思考N秒]
+    # v2.1.12: 记录"最后一条有思考"的轮次耗时，最终回复生成时按它标注 [已思考N秒]
     _last_reasoning_dur: float | None = None
 
     # 长消息（题目/长文/网页阅读）→ 扩大输出 token
@@ -986,7 +986,7 @@ async def generate_multi_reply_with_tools(
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d | reasoning=%d字",
                     round_idx + 1, raw_preview, len(result.tool_calls), len(result.reasoning))
-        # v2.3.2: 记录"最后一条有思考"的轮次耗时（轮1先导语分支在下方就近回调）
+        # v2.1.12: 记录"最后一条有思考"的轮次耗时（轮1先导语分支在下方就近回调）
         if result.reasoning and result.reasoning_duration > 0:
             _last_reasoning_dur = result.reasoning_duration
 
@@ -1073,7 +1073,7 @@ async def generate_multi_reply_with_tools(
                 and "```" not in lead
                 and "/~" not in lead
             ):
-                # v2.3.2: 先导语是"用户看到的第一条文本"——思考了就把 [已思考N秒] 挂这里
+                # v2.1.12: 先导语是"用户看到的第一条文本"——思考了就把 [已思考N秒] 挂这里
                 if thought_shown_cb is not None and result.reasoning and result.reasoning_duration > 0:
                     try:
                         await thought_shown_cb(round(result.reasoning_duration))
@@ -1091,7 +1091,7 @@ async def generate_multi_reply_with_tools(
             # ★ 保留轮 content：让后续轮/最终轮 LLM 看到自己已说过的先导语，
             #   最终回复才不会重复"我查查/稍等"等动手前用语（仅保留短内容防污染）
             "content": (result.content or None) if result.content and len(result.content) <= 300 else None,
-            # v2.3.0: 思考模式启用时，带 tools 请求必须回传 reasoning_content（否则 400）
+            # v2.1.10: 思考模式启用时，带 tools 请求必须回传 reasoning_content（否则 400）
             "reasoning_content": result.reasoning or None,
             "tool_calls": [
                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)}}
@@ -1153,7 +1153,7 @@ async def generate_multi_reply_with_tools(
 
     # ── 如果工具已执行，强制 json_mode 回复 ──
     if errors or data_results or action_results:
-        # v2.3.2: 工具链最终回复前，若此前思考过（轮1先导语未附标记时）补标一次
+        # v2.1.12: 工具链最终回复前，若此前思考过（轮1先导语未附标记时）补标一次
         if thought_shown_cb is not None and _last_reasoning_dur:
             try:
                 await thought_shown_cb(round(_last_reasoning_dur))
@@ -1214,7 +1214,7 @@ async def generate_multi_reply_with_tools(
     if not raw.strip():
         return [], 0, [], "", "", None, "", None, None, "user", {}, None
 
-    # v2.3.2: 纯思考路径（无工具）→ 生成完毕，发出前补一次 [已思考N秒] 回调
+    # v2.1.12: 纯思考路径（无工具）→ 生成完毕，发出前补一次 [已思考N秒] 回调
     #   （前置判断开了 thinking 且模型真思考了才会到这里；时长取最后有思考的轮次）
     if thought_shown_cb is not None and _last_reasoning_dur:
         try:

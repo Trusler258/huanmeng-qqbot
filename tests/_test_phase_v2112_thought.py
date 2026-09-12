@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v2.3.2 思考标记回调逻辑验证 —— 不改数据，只测 llm.py 的回调触发链路
+"""v2.1.12 思考标记回调逻辑验证 —— 不改数据，只测 llm.py 的回调触发链路
 运行: python tests/_test_phase_v232_thought.py
 覆盖: ToolCallResult.reasoning_duration / 纯思考路径回调 / 先导语前缀+去重 /
       主回复前缀+去重 / 首句[]开头前缀独立成句

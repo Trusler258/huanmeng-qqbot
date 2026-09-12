@@ -49,12 +49,12 @@ def _make_interim_sender(chat_id: int, is_group: bool, user_id: int, thought_ctx
     经此先发给用户，避免搜索/查询期间 10s+ 干等。与正常回复同走 send_sentences，
     保持 stats/msglog 录制一致；先导语为单条，间隔压到 0.2s。
 
-    v2.3.2: thought_ctx 共享思考状态 {"secs": int|None, "applied": bool}——
+    v2.1.12: thought_ctx 共享思考状态 {"secs": int|None, "applied": bool}——
     先导语是用户看到的第一条文本，若已思考则把 [已思考N秒] 挂在这里并置 applied，
     主回复段检测 applied 后不再重复挂。"""
     async def _send(text: str):
         try:
-            # v2.3.2: 先导语 + 思考标记（回调已记录 secs、未应用过 → 挂前缀）
+            # v2.1.12: 先导语 + 思考标记（回调已记录 secs、未应用过 → 挂前缀）
             if thought_ctx and thought_ctx.get("secs") and not thought_ctx.get("applied"):
                 text = f"[已思考{thought_ctx['secs']}秒] {text}"
                 thought_ctx["applied"] = True
@@ -68,7 +68,7 @@ def _make_interim_sender(chat_id: int, is_group: bool, user_id: int, thought_ctx
     return _send
 
 def _make_thought_cb(thought_ctx: dict):
-    """v2.3.2: 构造思考标记回调——LLM 思考完（reasoning 产出）→ 仅记录时长。
+    """v2.1.12: 构造思考标记回调——LLM 思考完（reasoning 产出）→ 仅记录时长。
     由先导语发送方 / 主回复发送段在真正发出文本时消费并置 applied（去重）。"""
     async def _cb(secs: int):
         try:
@@ -598,7 +598,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------JSON LLM生成------
     logger.info("开始生成回复: speaker=%s chat=%d (判断后已耗时%.2fs)",
                 display_name, chat_id, _tm.monotonic() - _t_pipe_start)
-    # v2.3.0: 前置思考判断 —— 复用 _detect_skill_needs 的 deep 意图
+    # v2.1.10: 前置思考判断 —— 复用 _detect_skill_needs 的 deep 意图
     # deep 命中（知识/原理/对比/长问句提问）→ 开启思考模式；闲聊/指令 → 关闭（更快更省）
     thinking = False
     try:
@@ -608,7 +608,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.info("思考模式: %s (needs=%s)", "开启" if thinking else "关闭", sorted(needs))
     except Exception as e:
         logger.warning("思考判断失败，默认关闭: %s", e)
-    # v2.3.2: [已思考N秒] 共享状态——LLM 思考完成后由回调记录时长，
+    # v2.1.12: [已思考N秒] 共享状态——LLM 思考完成后由回调记录时长，
     # 先导语（FC轮1）或主回复首句消费并置 applied，只展示一次
     thought_ctx: dict = {"secs": None, "applied": False}
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
@@ -902,7 +902,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         user_id=user_id if not is_group else None,
     ))
 
-    # v2.3.2: 主回复首句 + [已思考N秒]（先导语未挂过才挂，且思考时长满足阈值）
+    # v2.1.12: 主回复首句 + [已思考N秒]（先导语未挂过才挂，且思考时长满足阈值）
     if thought_ctx.get("secs") and not thought_ctx.get("applied") and sentences:
         prefix = f"[已思考{thought_ctx['secs']}秒] "
         # 首句本身已是前缀/Markdown 标题/文件卡片 → 前缀独立成句，避免粘连

@@ -54,6 +54,7 @@ class BotConfig:
     context_length: int = 20         # 消息上下文最大条数
     enable_private: bool = False     # 允许私聊
     debug_mode: bool = False         # 调试开关
+    version: str = ""                # v2.1.11: 版本号（config/version.toml 优先）
     
     # ── 角色权限 ──
     admin_qq: int = 0
@@ -143,8 +144,9 @@ class BotConfig:
                 template = m.group(1).strip()
                 break
 
-        # 从更新日志提取最新版本
-        version = "v0.9.8 Pro"
+        # 版本号：config/version.toml 优先（loaded into self.version），回退 update_log 解析
+        # v2.1.11(2026.9.12): 版本号独立成配置，不再被 update_log 格式变更绑架
+        version = self.version or "v0.0.0"
         changelog_lines = ""
         log_path = Path(__file__).resolve().parent.parent / "data" / "update_log.md"
         if log_path.exists():
@@ -152,7 +154,8 @@ class BotConfig:
                 ltext = log_path.read_text(encoding="utf-8")
                 vm = re.search(r"## (v[\d.]+ .+?)(?=\n## |\Z)", ltext, re.DOTALL)
                 if vm:
-                    version = vm.group(1).strip().split("\n")[0].strip("#- ")
+                    if not version or version == "v0.0.0":
+                        version = vm.group(1).strip().split("\n")[0].strip("#- ")
                     lines = vm.group(1).strip().split("\n")
                     lines = [l.strip("- # ").strip() for l in lines if l.strip() and not l.startswith("|") and not l.startswith("###")]
                     lines = [l for l in lines[:3] if l]  # v2.0.4ac: changelog 6→3 条省 token
@@ -432,6 +435,29 @@ def load_bot_config() -> BotConfig:
         private_persona_side=bot_toml.get("private_persona", {}).get("side", ""),
         private_identity=bot_toml.get("private_persona", {}).get("identity", ""),
     )
+    # ── 版本号：优先读 config/version.toml，缺省回退 update_log 解析 ──
+    # v2.1.11(2026.9.12): 版本号独立成配置，不再被 update_log 格式变更绑架
+    try:
+        _vpath = _CONFIG_DIR / "version.toml"
+        if _vpath.exists():
+            _vdata = toml.load(_vpath)
+            _cfg_version = str(_vdata.get("version", {}).get("current", "")).strip()
+            if _cfg_version:
+                instance.version = _cfg_version
+    except Exception:
+        pass
+    if not getattr(instance, "version", ""):
+        try:
+            _log_path = _PROJECT_ROOT / "data" / "update_log.md"
+            if _log_path.exists():
+                _lt = _log_path.read_text(encoding="utf-8")
+                _vm = re.search(r"## (v[\d.]+ .+?)(?=\n## |\Z)", _lt, re.DOTALL)
+                if _vm:
+                    instance.version = _vm.group(1).strip().split("\n")[0].strip("#- ")
+        except Exception:
+            pass
+    if not getattr(instance, "version", ""):
+        instance.version = "v0.0.0"
     
     # ── 模型配置 ──
     instance.reply_model = _make_model(models_section.get("replyer_1", {}), env_providers)
