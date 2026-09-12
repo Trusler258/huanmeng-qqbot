@@ -392,18 +392,25 @@ async def send_sentences(
     user_id: int | None = None,
     min_interval: float = 0.5,
     max_interval: float = 1.5,
+    faces: list[str | None] | None = None,
+    face_interval: float = 0.35,
 ):
     """
     逐条发送句子列表，每条之间随机间隔。
     用于多句回复的分批发送效果。
+
+    v2.1.18: 新增 faces —— 与 sentences **等长**的 CQ 码列表（None 表示该句不带图）。
+    有值时按「文字 → 该句的图 → 文字 → 图」交错发送，模拟真人一边打字一边甩表情包的节奏，
+    而不是把仅有的一个表情堆在所有文字之后。长度不一致时按较短的对齐，缺的视为不带图。
     """
     from core.config import get_config
     cfg = get_config()
     import random
 
-    logger.info("开始分批发送 %d 条句子 → chat=%d is_group=%s",
-               len(sentences), chat_id, is_group)
-    
+    logger.info("开始分批发送 %d 条句子 → chat=%d is_group=%s%s",
+               len(sentences), chat_id, is_group,
+               f" (含 {sum(1 for f in faces if f)} 张配图)" if faces else "")
+
     for i, sentence in enumerate(sentences):
         if i > 0:
             delay = random.uniform(min_interval, max_interval)
@@ -412,7 +419,16 @@ async def send_sentences(
 
         await _send_and_record(sentence, chat_id, is_group, user_id, cfg)
         logger.debug("已发送第 %d/%d 条: %s...", i + 1, len(sentences), sentence[:30])
-    
+
+        # 该句配图：紧跟着发，短暂停顿让它落在同一条消息的气口上
+        if faces and i < len(faces) and faces[i]:
+            await asyncio.sleep(face_interval)
+            try:
+                await _send_and_record(faces[i], chat_id, is_group, user_id, cfg)
+                logger.debug("已发送第 %d/%d 条的配图", i + 1, len(sentences))
+            except Exception:
+                logger.warning("配图发送失败 (#%d)", i + 1, exc_info=True)
+
     logger.info("分批发送完成: 共 %d 条 → chat=%d", len(sentences), chat_id)
 
 
