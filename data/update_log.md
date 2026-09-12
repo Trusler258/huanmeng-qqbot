@@ -11,6 +11,58 @@
 
 
 
+## v2.2.0 — 后台控制面板（独立进程 API 服务，65 个接口）(2026.9.12)
+一句话总结：给 bot 做了一个能看能管的网页后台，独立进程运行——bot 崩了它还能活着看日志、重启服务。
+
+**一、为什么是独立进程**
+- `main.py` 里 `await bot.run()` 永不返回，面板挂进同一个 event loop 会有两个致命后果：
+  ① 面板一个慢请求（读大文件/慢 SQL）会把全群消息卡住；
+  ② bot 崩溃时面板跟着死，「出事时最需要它」的时刻恰好用不了。
+- 所以 `panel.service` 与 `bot.service` 平级，互不依赖（有意不写 `Requires`）。
+
+**二、后端：FastAPI + uvicorn，65 个接口，13 个路由组**
+- 端口 59300，**只绑 127.0.0.1**，公网直连不可达
+- 概览 / 消息中心 / 用户与关系 / 长期记忆 / 实验开关 / 指令中心 / 实时日志 /
+  经济系统 / 游戏 / 地震 / 系统运维 / 插件管理 / 认证
+- 前端契约走 FastAPI 自带的 OpenAPI，后续前端可代码生成，杜绝前后端字段不同步
+
+**三、安全：四层防御**
+- L1 网络：绑 127.0.0.1，不监听 0.0.0.0
+- L2 隧道：Cloudflare Tunnel → nginx BasicAuth（`panel.truslerweb.dpdns.org`）
+- L3 应用：bcrypt 密码哈希（不存明文）+ JWT（12h）+ 改密后 `session_version+1` 使旧 token 全部失效
+  + 同 IP 5 次失败锁 5 分钟；所有受保护路由统一挂依赖，**默认拒绝**
+- L4 操作：写操作全记审计（JSONL）+ 危险操作二次确认（须原样输入服务名）
+- 另有：路径逃逸防护（`resolve()` + 根目录校验，拒绝 `..`/绝对路径/盘符/软链接跳出）、
+  配置回显脱敏（`sk-*`/Bearer/IP/域名/邮箱/密码 → 打码，回环地址保留）
+
+**四、踩到并修掉的坑**
+- **日期格式**：统计文件名是 `stats_<群号>_<YYYYMMDD>.json`（**紧凑格式，无横线**），
+  一开始按 `%Y-%m-%d` 拼文件名，结果「今日消息量」恒为 0。改用 `%Y%m%d`，今日正确显示 1083 条/5 群。
+- **Python 3.10 无 `tomllib`**：服务器 `/usr/bin/python3` 是 3.10.12，`tomllib` 是 3.11+ 才有。
+  已加 `tomllib → tomli → 极简正则兜底` 三级兼容（本机 3.12 走标准库，服务器走兜底）。
+- **短查询走 FTS 会静默返回 0 条**：trigram 分词器对 <3 字无效，`db/store.py` 也是 `len(q)>=3` 才用 FTS。
+  面板对齐了同一规则，短词自动退回 LIKE。
+- **函数签名想当然**：`help_card.collect_commands()` 返回的是 `dict[分类, list[tuple]]`，
+  不是 `list[dict]`——按后者解析导致指令清单接口返回 0 条，已按元组顺序修正（74 条 / 8 分类）。
+  同类问题：`core.capability` 是 `get_capability_registry()`，`core.eventbus` 是 `get_event_bus()`，`_handlers` 不是 `_subscribers`。
+
+**五、测试**
+- 新增 `tests/_test_panel_backend.py`：**51 项全过**
+  （路径安全 12 / 脱敏 12 / 原子写 7 / 认证 13 / 接口默认拒绝 7）
+- 新增 `deploy/panel_check.py`：真实数据接口验收，服务器上 **32/32 全过**
+  （好感度 171 条、画像 49 个、短期记忆 53 个会话、消息库 17996 条、能力注册表 107 个、指令 74 条…）
+
+**六、部署**
+- `deploy/panel.service`（systemd，绑 127.0.0.1:59300，含 `NoNewPrivileges`/`PrivateTmp` 等加固）
+- `deploy/nginx_panel.conf`（127.0.0.1:49300，BasicAuth + WS 透传）
+- `deploy/panel_init.py`（初始化密码，密钥文件 `chmod 600` 且已进 `.gitignore`）
+- 隧道 ingress 新增 `panel.truslerweb.dpdns.org` → `127.0.0.1:49300`，DNS 已建
+- 全链路已验证：未过 BasicAuth → 401；过了 BasicAuth 但无 JWT → 仍 401
+
+**七、待办**
+- 前端 `panel_web/`（计划用 vue-pure-admin 起手，P3 阶段）
+- 默认密码请尽快在面板内改掉
+
 ## v2.1.22 — 表情改用「动画表情」形式发送，不再占满屏幕 + 修图片路径四斜杠 (2026.9.12)
 一句话总结：发表情时 QQ 里显示的是一张小贴纸而不是占半屏的图片，顺带修掉一个会让表情全部发不出去的路径 bug。
 

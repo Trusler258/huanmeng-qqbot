@@ -1,0 +1,36 @@
+[Unit]
+Description=Huanmeng QQ Bot Control Panel API
+Documentation=file:/root/bot/docs/panel_plan.md
+After=network.target
+# 与 bot.service 平级：面板先起还是 bot 先起互不依赖
+# ⚠️ 有意 NOT 写 Requires/BindsTo —— bot 挂了面板必须还活着（这就是独立进程的意义）
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/bot
+EnvironmentFile=-/root/bot/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PANEL_BIND_HOST=127.0.0.1
+Environment=PANEL_PORT=59300
+ExecStart=/usr/bin/python3 -m uvicorn panel.app:app --host 127.0.0.1 --port 59300 --workers 1
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=panel
+
+# ── 安全加固 ──
+# 面板只需要读写 /root/bot，不需要特权
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/root/bot
+# 允许调 systemctl（服务管理功能需要）
+ProtectKernelTunables=true
+ProtectControlGroups=false
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target
