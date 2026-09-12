@@ -3358,6 +3358,65 @@ async def cmd_apy(args, user_id, group_id, sender_name, is_group, bot_qq):
         return f"审批失败: {e}"
 
 
+# ════════════════════════════════════════════════════════════
+#  实验测试项开关 /~key
+# ════════════════════════════════════════════════════════════
+async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """实验测试项开关（仅管理员）
+
+    用法:
+      /~key                列出全部测试项与当前状态
+      /~key <code>         激活该测试项
+      /~key <code> off     恢复默认行为（关闭）
+      /~key <code> reset   恢复为注册表默认值
+    """
+    cfg = get_config()
+    if not cfg.is_admin(user_id, group_id):
+        return "这是测试项开关，只有管理员能用喵~"
+
+    from modules.features import FEATURES, list_features, resolve, reset, set_enabled
+
+    # 无参 → 列表
+    if not args:
+        items = list_features()
+        if not items:
+            return "当前没有可用的测试项喵~"
+        lines = ["【实验测试项】"]
+        for it in items:
+            code = it["code"]
+            state = "已激活" if it["on"] else "已关闭"
+            mark = "" if it["default"] else "（默认关闭）"
+            alias = "/".join(it["aliases"][:3])
+            lines.append(f"· {code}（{alias}）— {state}{mark}")
+            lines.append(f"     {it['desc']}")
+            if not it["on"]:
+                lines.append(f"     关闭后：{it['affects']}")
+        lines.append("")
+        lines.append("用法：/~key <名称> 激活 ｜ /~key <名称> off 恢复默认")
+        return "\n".join(lines)
+
+    code = resolve(args[0])
+    if not code:
+        known = "、".join(FEATURES.keys())
+        return f"没有这个测试项喵~\n可用：{known}\n（也可以发 /~key 看列表）"
+
+    action = (args[1].lower() if len(args) > 1 else "on")
+    meta = FEATURES[code]
+
+    if action in ("on", "开", "启用", "激活", "1", "true"):
+        set_enabled(code, True)
+        return f"已激活测试项「{code}」喵~\n{meta['desc']}\n想恢复默认发：/~key {code} off"
+    if action in ("off", "关", "关闭", "恢复", "0", "false"):
+        set_enabled(code, False)
+        return f"已关闭测试项「{code}」，恢复默认行为喵~\n{meta['affects']}"
+    if action in ("reset", "重置", "默认"):
+        reset(code)
+        default_state = "开启" if meta.get("default") else "关闭"
+        return f"「{code}」已恢复注册表默认（{default_state}）喵~"
+
+    return f"不认识这个操作「{action}」喵~\n用法：/~key {code} ｜ /~key {code} off ｜ /~key {code} reset"
+
+
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
     "ping":       cmd_ping,
@@ -3460,6 +3519,9 @@ COMMAND_MAP: dict[str, callable] = {
     # ── 管理员代发（/~say）──
     "say":        cmd_say,
     "代发":       cmd_say,
+    # ── 实验测试项开关（仅管理员）──
+    "key":        cmd_key,
+    "测试项":     cmd_key,
 }
 
 

@@ -125,13 +125,23 @@ if kw:
     print(f"    替换结果已注入 system（{len(st)} 字符）")
 
 # ── 6. 表情能力已在常驻提示词 ──
+# v2.1.19 结构调整：表情规则从 private_format 内搬到了独立章节 private_face_inline，
+# 由 _build_system_text 显式注入（受测试项 face_inline 开关控制）。
+# 断言的**本质**不变——规则不能挂在"按需/关键词热加载"章节上，否则平常聊天不注入。
 priv = read("data/skills/11_format_private.md")
-assert "{face_keywords}" in priv, "常驻私聊格式应含表情占位符"
-assert "逐句配图" in priv, "常驻私聊格式应说明逐句配图"
+assert "{face_keywords}" in priv, "私聊格式应含表情占位符"
+assert "逐句配图" in priv, "应说明逐句配图"
 assert "[FACE:" in priv, "应给出 [FACE:] 用法"
-# 不被条件包裹（常驻段落在 private_format 章节内）
-seg = re.search(r"## private_format\n(.*?)(?=\n## |\Z)", priv, re.DOTALL).group(1)
-assert "逐句配图" in seg, "表情规则必须在常驻 private_format 章节内（不能挂在按需章节）"
-print("[6] 表情能力进常驻私聊格式 OK（不再只在按需 face_lib）")
+face_seg = re.search(r"## private_face_inline\n(.*?)(?=\n## |\Z)", priv, re.DOTALL)
+assert face_seg, "表情规则应独立成 private_face_inline 章节（便于开关控制）"
+assert "逐句配图" in face_seg.group(1), "表情规则正文缺失"
+# 不得走关键词热加载（否则关掉开关后带"表情"二字的消息又会把它注回来）
+from services.llm import _OPTIONAL_SECTIONS
+assert "private_face_inline" in _OPTIONAL_SECTIONS, "表情章节须登记为可选章节，避免热加载注入"
+# 必须由代码显式注入
+with open(os.path.join(ROOT, "services", "llm.py"), encoding="utf-8") as f:
+    llm_src = f.read()
+assert 'sec.get("private_face_inline"' in llm_src, "llm.py 未显式注入表情章节"
+print("[6] 表情能力常驻注入 OK（独立章节 + 显式注入 + 不走热加载）")
 
 print("\n全部 6 组通过: v2.1.18 逐句配图")
