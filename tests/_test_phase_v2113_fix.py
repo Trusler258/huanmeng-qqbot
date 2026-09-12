@@ -55,16 +55,22 @@ assert "_sent_ts" in src or "strftime" in src, "应带时间戳"
 assert src.count("asyncio.ensure_future(_bg_recognize())") == 1, f"死代码未清理: {src.count('asyncio.ensure_future(_bg_recognize())')} 处"
 print("[2] dispatcher 图片注入格式 OK:", _disp_path)
 
-# ── 3. 00_core.md 图片规则 ──
-_core_path = None
+# ── 3. 图片时序规则（v2.1.14 精简重写后从 00_core.md 移到了 10_format_group.md）──
+#    断言方式改为：在 skills 目录里搜索，规则在哪个体现在都算通过（避免改文件位置就误报）
+_skills_dir = None
 for p in (r"G:\py\qqbot", "/root/bot", os.getcwd()):
-    cand = os.path.join(p, "data", "skills", "00_core.md")
-    if os.path.isfile(cand):
-        _core_path = cand
+    cand = os.path.join(p, "data", "skills")
+    if os.path.isdir(cand):
+        _skills_dir = cand
         break
-core = open(_core_path, encoding="utf-8").read()
-assert "[历史图片描述]" in core, "00_core.md 应提新标记"
-assert "刚在看你发的仓鼠" in core, "00_core.md 应含仓鼠反例"
-print("[3] 00_core.md 图片规则 OK:", _core_path)
+assert _skills_dir, "找不到 data/skills 目录"
+_all_skills = ""
+for _fn in os.listdir(_skills_dir):
+    if _fn.endswith(".md") and not _fn.endswith(".bak") and ".bak_" not in _fn:
+        with open(os.path.join(_skills_dir, _fn), encoding="utf-8") as _f:
+            _all_skills += _f.read() + "\n"
+assert "[历史图片描述]" in _all_skills, "skills 里应提 [历史图片描述] 标记"
+assert "刚在看你发的仓鼠" in _all_skills, "skills 里应含仓鼠反例"
+print("[3] 图片时序规则 OK（在 data/skills 中找到）:", _skills_dir)
 
 print("\n全部通过: v2.1.13 思考误触发 + 图片时序幻觉 修复")
