@@ -228,6 +228,17 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     from modules.fav import ensure_fav
     ensure_fav(chat_id if is_group else user_id, user_id, is_group)
 
+    # ------空消息拦截（v2.1.15）------
+    # 现象：用户误触发送空消息 → 上下文出现 "[admin] Trusler[fav=50]: "（空内容），
+    # 随即 bot 回"嗯，在呢 || 主人想说什么"，属于瞎答。
+    # 根因：下面清洗块的条件是 `if msg_type == "文字" and msg_content:`，
+    # 空串本身为假 → 整块被跳过 → 既不 return 也没有可回复的内容，
+    # 却继续走到回复判断（私聊 should_reply 恒为 True）→ LLM 拿到空消息凭空编。
+    # 空消息没有任何可回应的信息量，直接丢弃，连上下文都不记。
+    if msg_type == "文字" and not (msg_content or "").strip():
+        logger.info("[chat=%d] 空消息（无有效内容），已跳过", chat_id)
+        return
+
     # ------清洗不可见字符------
     import re as _re
     if msg_type == "文字" and msg_content:

@@ -364,6 +364,51 @@ _REMINDER_FALLBACK = (
 )
 
 
+def _recent_bot_snippets(history: list, bot_name: str, limit: int = 3) -> str:
+    """抽取 bot 最近的回复片段，生成「防复读」提醒文本（空则返回 ""）。
+
+    v2.1.15 背景：用户实测同一个梗连续 4 轮出现（"薯片味" 12:37/12:44/12:44/13:02，
+    "KD 0.37" 3 轮），说明只写在 system 里的 anti_repeat 被长提示词稀释、没生效。
+    这里把 bot 自己刚说过的话摘出来，放到 fmt_reminder（最后一条 user 消息、
+    注意力最高处）再明确点一次，属于代码层的硬提醒。
+
+    history 兼容两种形态：
+      - 扁平上下文行：["幻梦: 文本", "群友: 文本", ...]
+      - 已解析的多轮消息：[{"role": "assistant", "content": "文本"}, ...]
+    """
+    picked: list[str] = []
+    for item in reversed(history or []):
+        if isinstance(item, dict):
+            if item.get("role") != "assistant":
+                continue
+            txt = str(item.get("content") or "")
+            # 去掉可能残留的 "幻梦: " 前缀
+            for sep in (f"{bot_name}: ", f"{bot_name}:", f"{bot_name}：", f"{bot_name}:"):
+                if txt.startswith(sep):
+                    txt = txt[len(sep):]
+                    break
+        else:
+            # 扁平上下文：只有 "{bot_name}: xxx" 开头的才是 bot 自己的话，
+            # 其余是别人发言 → 必须跳过（否则会把群友的话当自己的复读内容）
+            raw = str(item or "")
+            for sep in (f"{bot_name}: ", f"{bot_name}:", f"{bot_name}：", f"{bot_name}:"):
+                if raw.startswith(sep):
+                    txt = raw[len(sep):]
+                    break
+            else:
+                continue
+        txt = re.sub(r'\s+', ' ', txt).strip()
+        if not txt or txt in picked:
+            continue
+        picked.append(txt[:50])
+        if len(picked) >= limit:
+            break
+    if not picked:
+        return ""
+    quoted = " ／ ".join(f"「{t}」" for t in picked)
+    return f"你最近说过：{quoted} —— 这些话和用过的梗不要再重复，换个说法或换话题。"
+
+
 def _build_reminder(name: str, **vars) -> str:
     """按章节名取格式提醒模板并插值。
 
@@ -371,6 +416,9 @@ def _build_reminder(name: str, **vars) -> str:
     - ${xxx} 为变量占位符，由 vars 传入替换
     - plain_text_rule（禁用 Markdown）自动追加到末尾 —— 越靠近当前消息注意力越高
     - 章节缺失 → 打 ERROR 日志 + 回退最小 JSON 兜底，保证回复链路不崩
+    - v2.1.15: 未传值的占位符清空 + 告警，插值后变空的行删除 ——
+      可选段落（如防复读）没内容时不会留"【防复读】"空壳行，也不会把 ${no_repeat}
+      字面量塞给模型
     """
     sec = _load_skill_sections()
     tpl = (sec.get(name) or "").strip()
@@ -379,9 +427,16 @@ def _build_reminder(name: str, **vars) -> str:
         tpl = _REMINDER_FALLBACK
     for k, v in vars.items():
         tpl = tpl.replace("${" + k + "}", str(v))
+    # 未赋值的占位符：告警 + 清掉，避免字面量进入提示词
+    _leftover = re.findall(r"\$\{(\w+)\}", tpl)
+    if _leftover:
+        logger.warning("提醒模板 %s 存在未赋值占位符: %s", name, _leftover)
+        tpl = re.sub(r"\$\{\w+\}", "", tpl)
     plain = (sec.get("plain_text_rule") or "").strip()
     if plain:
         tpl = tpl + "\n" + plain
+    # 插值后变空的行（可选段落未启用）直接丢弃，别留空行/空壳标题
+    tpl = "\n".join(ln for ln in tpl.split("\n") if ln.strip())
     return tpl
 
 
@@ -1411,7 +1466,9 @@ def _build_messages(
         ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
     max_chars = "40" if is_group else "20"
     # ★ v2.2.2: 提醒模板统一放 data/skills/40_reminders.md，此处不再硬编码
-    fmt_reminder = _build_reminder("reply_reminder", ctx_hint=ctx_hint, max_chars=max_chars)
+    # ★ v2.1.15: 防复读——把 bot 最近说过的话摘出来，在注意力最高处再点一次
+    no_repeat = _recent_bot_snippets(msg_history, bot_name)
+    fmt_reminder = _build_reminder("reply_reminder", ctx_hint=ctx_hint, max_chars=max_chars, no_repeat=no_repeat)
     user_parts.append(fmt_reminder)
     # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
     msg_text = current_msg[:2500] + ("…[截断]" if len(current_msg) > 2500 else "")
@@ -1492,7 +1549,9 @@ async def generate_multi_reply(
     # ★ 格式提醒：JSON 输出
     max_chars = "40" if is_group else "20"
     # ★ v2.2.2: 提醒模板统一放 data/skills/40_reminders.md，此处不再硬编码
-    fmt_reminder = _build_reminder("voice_reminder", max_chars=max_chars)
+    # ★ v2.1.15: 防复读（语音路径同样需要，turns 已是解析好的多轮消息）
+    no_repeat = _recent_bot_snippets(turns, bot_name)
+    fmt_reminder = _build_reminder("voice_reminder", max_chars=max_chars, no_repeat=no_repeat)
     user_parts.append(fmt_reminder)
     user_parts.append(f"{speaker_name}说：{current_msg}")
     turns.append({"role": "user", "content": "\n\n".join(user_parts)})

@@ -333,7 +333,12 @@ class EventDispatcher:
         if msg_type == "图片":
             # ★ v2.0.4aa: raw_message 是 CQ 码形态 [CQ:at,qq=xxx]，原 @QQ 正则匹配不到；
             #   补 CQ 匹配修复"@bot 发图识别"静默失效
-            is_img_mentioned = bool(
+            # ★ v2.1.15: 私聊里没有 @ 这个动作，但用户发图显然就是想让你看。
+            #   旧逻辑只认 @ → 私聊发图 is_img_mentioned=False → 走后台识别，
+            #   msg_type 保持"图片" → pipeline 判定"非文字消息，不进入回复管道"，
+            #   结果用户发了图 bot 一声不吭（识别结果只默默进上下文）。
+            #   私聊一律同步识别并转成文字，让图片能触发正常回复。
+            is_img_mentioned = (not is_group) or bool(
                 re.search(rf'@{bot_qq}(?!\d)', raw_message)
                 or re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', raw_message or "")
             )
@@ -529,6 +534,11 @@ class EventDispatcher:
         try:
             mgr = get_ws_manager()
             data = await mgr.call_api("get_forward_msg", {"id": forward_id})
+            if not data:
+                # ★ v2.1.15: 不同 NapCat 版本对该接口的参数名要求不同（id / message_id），
+                #   首次返回空时换个参数名再试一次，避免合并转发整条退化成占位符
+                logger.debug("[chat=%d] get_forward_msg(id=) 返回空，改用 message_id 重试", chat_id)
+                data = await mgr.call_api("get_forward_msg", {"message_id": forward_id})
             if not data:
                 logger.warning("[chat=%d] get_forward_msg 返回空 id=%s", chat_id, forward_id)
                 return "[合并转发]"
