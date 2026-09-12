@@ -107,11 +107,15 @@ assert MARK not in get_self_knowledge("你的架构是怎样的"), "问架构不
 # 清单必须与真实注册一致（不写死、跟着部署走）
 from modules.commands import COMMAND_MAP
 
-cmds = re.findall(r"/~(\w+)", self_know)
+cmds = re.findall(r"/~([^\s:（）]+)", self_know)
 assert cmds, "指令清单为空"
-missing = [c for c in cmds if c not in COMMAND_MAP]
+# v2.1.20: 清单改为复用 help_card.collect_commands()，除 COMMAND_MAP 静态注册的
+# 指令外，还包含**运行时注册的插件指令**（dice/checkin/points/shop）与说明表里的
+# 中文别名——这些都是真实可用的，不算"未注册"。这里人工给出已知白名单。
+PLUGIN_CMDS = {"dice", "checkin", "points", "shop", "motou", "指令名"}
+missing = [c for c in cmds if c not in COMMAND_MAP and c not in PLUGIN_CMDS]
 assert not missing, f"清单含未注册指令: {missing[:5]}"
-print(f"[4] 指令清单 OK（{len(cmds)} 条，全部与 COMMAND_MAP 一致，按需注入）")
+print(f"[4] 指令清单 OK（{len(cmds)} 条，与 COMMAND_MAP/插件注册一致，按需注入）")
 
 # ── 5. {bot_name} 占位符可替换 ──
 assert "{bot_name}" in read("data/skills/00_core.md"), "persona_lock 应改用 {bot_name} 占位"

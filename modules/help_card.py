@@ -26,13 +26,17 @@ _OUTPUT = _ROOT / "data" / "help_card.png"
 
 # ── 分类定义：硬编码（name → 分类）优先，未匹配再按描述关键词兜底 ──
 # 排除：内部测试指令、辅助函数
+# v2.1.20 修复：此前 search/search_web/s 三个键全被排除（注释写的"仅显示 search"
+# 与代码不符），导致「联网搜索」这一核心能力在 ~help 卡片和 LLM 指令清单里
+# 完全消失——LLM 不知道自己会搜索，用户问"能搜吗"也查不到。现只排除纯别名，
+# 主名 search 保留（别名归并会把 s / search_web 并到 search 名下）。
 _EXCLUDE = {
     "testsys", "testok", "jsonraw", "md",
     "add_relation",   # 内部入口
     "friend_add", "friend_reject", "friend_list",  # 别名合并到「添加/拒绝/好友列表」
-    "roll_dice", "calc", "write_code", "search_web",  # FC 工具别名（已注册但仅内部用）
+    "roll_dice", "calc", "write_code",  # FC 工具别名（已注册但仅内部用）
     "agent_think", "get_time",
-    "s", "search", "search_web",  # 内部别名 → 仅显示 search
+    "s", "search_web",  # 纯别名 → 归并显示主名 search
 }
 
 # 硬编码分类（主分类依据，name 是权威）
@@ -263,7 +267,7 @@ def _extract_desc(main: str, handler, keys: list[str], cap_desc: dict) -> str:
         cleaned = re.sub(r'\s{2,}', ' ', cleaned)
         if cleaned:
             return cleaned[:48]
-    # 兜底链
+    # 描述兜底链
     try:
         from services.llm import _CMD_DESC
     except Exception:
@@ -271,11 +275,16 @@ def _extract_desc(main: str, handler, keys: list[str], cap_desc: dict) -> str:
     return (cap_desc.get(main) or _CMD_DESC.get(main) or _CMD_DESC.get(keys[0], ""))[:48]
 
 
-def build_help_html(bot_name: str = "幻梦") -> str:
-    """收集全部指令 → 填充三列网格 HTML
+def collect_commands() -> dict[str, list[tuple]]:
+    """收集全部指令 → {分类: [(主名, 描述, 是否插件, 别名表), ...]}
 
-    指令源 = COMMAND_MAP 的键（用户实际输入），别名归并显示主名；
-    描述 = capability description / _CMD_DESC / 兜底。
+    v2.1.20: 从 build_help_html 抽出来，供 **LLM 动态指令清单**（services/llm.py）
+    复用同一份数据。此前 LLM 那边的 _CMD_DESC 是零散副本，与这里的 103 条精校
+    描述严重不同步（实测 25 条注册指令无说明、5 条有说明未注册），LLM 眼中的
+    指令表和真实能力对不上 → 该调的指令不调、不该调的瞎编。
+
+    权威顺序：_EXTRA_DESC（人工精校）→ docstring 作用段 → _CMD_DESC（副本兜底）
+             → capability description → 兜底链。
     """
     # 1. COMMAND_MAP 键 = 用户实际可输入指令（权威）
     try:
@@ -284,7 +293,7 @@ def build_help_html(bot_name: str = "幻梦") -> str:
         logger.warning("无法加载 COMMAND_MAP: %s", e)
         COMMAND_MAP = {}
 
-    # 2. 描述来源（capability 注册表合并插件 description；_CMD_DESC 核心描述）
+    # 2. 描述来源（capability 注册表合并插件 description）
     cap_desc: dict[str, str] = {}
     cap_plugin: set[str] = set()
     try:
@@ -307,43 +316,45 @@ def build_help_html(bot_name: str = "幻梦") -> str:
     except Exception as e:
         logger.warning("capability 枚举失败（降级仅 COMMAND_MAP）: %s", e)
 
-    try:
-        from services.llm import _CMD_DESC
-    except Exception:
-        _CMD_DESC = {}
-
-    # 3. 别名归并：COMMAND_MAP 多个键指向同一 handler → 保留「主名」（最长键=完整名）
-    #    卡片显示主名，例如 五子棋/wzq → 显示 wzq
+    # 3. 别名归并：多个键指向同一 handler → 保留「主名」（非中文优先）
     handler_groups: dict[object, list[str]] = {}
     for key in COMMAND_MAP:
         if key in _EXCLUDE:
             continue
         handler_groups.setdefault(COMMAND_MAP[key], []).append(key)
 
-    shown: dict[str, tuple] = {}  # name → (desc, is_plugin, aliases)
+    shown: dict[str, tuple] = {}
     for keys in handler_groups.values():
-        # 主名选择：优先英文键（非中文），否则取注册顺序第一
         main = next((k for k in keys if not any('\u4e00' <= ch <= '\u9fff' for ch in k)), keys[0])
         handler = COMMAND_MAP[main]
         desc = _extract_desc(main, handler, keys, cap_desc)
-        # 别名列表（中文 + 其他英文别名），如 /~五子棋 /~wzq
         aliases = [k for k in keys if k != main]
         shown[main] = (desc, main in cap_plugin, aliases)
 
-    # 3b. 合并插件指令（运行时动态注册，静态不可见 → 手动维护表，按功能归并）
+    # 3b. 合并插件指令（运行时动态注册，静态 import 不可见 → 手动维护表）
     for cname, (cdesc, caliases) in _PLUGIN_COMMANDS.items():
         if cname in shown or cname in _EXCLUDE:
             continue
         shown[cname] = (cdesc, True, list(caliases))
 
-    # 3. 按分类分组（保持注册顺序，别名紧凑排列）
+    # 4. 按分类分组
     groups: dict[str, list] = {}
     for name, (desc, is_plugin, aliases) in shown.items():
-        g = _group(name, desc)
-        groups.setdefault(g, []).append((name, desc, is_plugin, aliases))
+        groups.setdefault(_group(name, desc), []).append((name, desc, is_plugin, aliases))
+    return groups
+
+
+def build_help_html(bot_name: str = "幻梦") -> str:
+    """收集全部指令 → 填充三列网格 HTML
+
+    指令源 = COMMAND_MAP 的键（用户实际输入），别名归并显示主名；
+    描述 = capability description / _CMD_DESC / 兜底。
+    """
+    groups = collect_commands()
+    shown_count = sum(len(v) for v in groups.values())
 
     # 4. 渲染分类 HTML
-    total = len(shown)
+    total = shown_count
     order = ["聊天", "工具", "数据", "游戏", "创作", "系统", "admin", "插件"]
     sec_htmls = []
     for g in order:

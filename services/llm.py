@@ -252,6 +252,17 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
                 _face_inline_part = sec.get("private_face_inline", "")
         except Exception:
             _face_inline_part = sec.get("private_face_inline", "")
+    # v2.1.20: 私聊"贴贴风格"章节（private_sweet_style），测试项 sweet_style 控制。
+    #   默认关——激活后注入参考图逆向出的配方（关系自指/节奏切换/短句爆破），
+    #   关闭时连提示词都不出现，恢复默认 private_tone 行为。
+    _sweet_part = ""
+    if not is_group:
+        try:
+            from modules.features import is_enabled as _feat_on
+            if _feat_on("sweet_style"):
+                _sweet_part = sec.get("private_sweet_style", "")
+        except Exception:
+            _sweet_part = sec.get("private_sweet_style", "")
     # v2.1.17: self_awareness 只在 custom_persona 分支需要单独补。
     #   常规分支的 header 已通过 personality(=cfg.system_prompt) 带入**替换好变量**的版本；
     #   这里若再取一次 skills 原始模板，会导致：
@@ -269,6 +280,7 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         sec.get("persona_lock", "") if not custom_persona else "",
         sec.get(fmt_key, ""),
         _face_inline_part,
+        _sweet_part,
         sec.get("command_tools", ""),
         sec.get("fav_format", ""),
         sec.get("fav_tiers", ""),
@@ -310,6 +322,8 @@ _OPTIONAL_SECTIONS = frozenset((
     # v2.1.19: 逐句配图规则：由测试项 face_inline 控制注入（见 _build_system_text），
     # 不能走关键词热加载，否则关掉开关后只要消息里带"表情"就又被注入
     "private_face_inline",
+    # v2.1.20: 贴贴风格规则：由测试项 sweet_style 控制注入（同上，不走关键词热加载）
+    "private_sweet_style",
 ))
 
 # 工具/指令意图触发词（宽松匹配：宁可多带，漏带会导致不会调指令）
@@ -482,19 +496,59 @@ def _build_reminder(name: str, **vars) -> str:
 
 
 def _build_dynamic_command_list() -> str:
-    """从 COMMAND_MAP 动态生成全部指令用法列表（含中文说明）"""
+    """从真实注册表生成全部指令清单（含中文说明与别名）
+
+    v2.1.20: 改为**直接复用 modules.help_card.collect_commands()** —— 那是 /~help
+    卡片的数据源（103 条人工精校描述 + 分类 + 别名归并 + 插件指令合并）。
+    此前这里只读 COMMAND_MAP 的名字 + _CMD_DESC 的碎片副本，实测导致：
+      · 25 条已注册指令在 LLM 眼里没有说明（只能靠猜）
+      · 5 条有说明但没注册（幻觉调用）
+      · 经济系统（points/sign/shop/dice…）等插件指令完全不可见
+    现在两边同源，加指令只需要在 help_card 的表里补一条，LLM 与卡片自动同步。
+    """
+    try:
+        from modules.help_card import collect_commands
+        groups = collect_commands()
+    except Exception:
+        groups = None
+
+    if groups:
+        order = ["聊天", "工具", "数据", "游戏", "创作", "系统", "admin", "插件"]
+        lines = ["【全部可调用指令】（按类别，/~指令名 即用户输入格式）"]
+        for g in order:
+            items = groups.get(g)
+            if not items:
+                continue
+            lines.append(f"\n▎{g}")
+            for name, desc, is_plugin, aliases in items:
+                alias_txt = ""
+                cn = [a for a in aliases if any('\u4e00' <= ch <= '\u9fff' for ch in a)]
+                en = [a for a in aliases if a not in cn]
+                if cn:
+                    alias_txt = f"（别名 {'/'.join(cn)}）"
+                elif en:
+                    alias_txt = f"（别名 {'/'.join(en)}）"
+                d = (desc or "").split("\n")[0][:60]
+                lines.append(f"  /~{name}: {d}{alias_txt}" if d else f"  /~{name}{alias_txt}")
+        # 不在 order 里的分类兜底补上（新增分类不会静默丢失）
+        for g, items in groups.items():
+            if g in order:
+                continue
+            lines.append(f"\n▎{g}")
+            for name, desc, is_plugin, aliases in items:
+                d = (desc or "").split("\n")[0][:60]
+                lines.append(f"  /~{name}: {d}" if d else f"  /~{name}")
+        return "\n".join(lines)
+
+    # 极端兜底：help_card 不可用（依赖缺失等）→ 至少列出指令名
     try:
         from modules.commands import COMMAND_MAP
     except ImportError:
         return ""
-    lines = ["【全部可调用指令】"]
-    for name in sorted(set(COMMAND_MAP)):
-        desc = _CMD_DESC.get(name)
-        if desc:
-            lines.append(f"  /~{name}: {desc}")
-        else:
-            lines.append(f"  /~{name}")
-    return "\n".join(lines)
+    names = sorted(set(COMMAND_MAP))
+    if not names:
+        return ""
+    return "【全部可调用指令】\n" + "、".join(f"/~{n}" for n in names)
 
 # ── 指令说明（精简，面向 LLM）─────────────────────────────
 _CMD_DESC = {
@@ -504,7 +558,7 @@ _CMD_DESC = {
     "tokens":  "查今日各模型 Token 用量明细",
     "ctx":     "查当前对话的上下文用量统计（system/参考资料/历史/注入各占多少token）",
     "say":     "代发消息到指定群或指定私聊（仅管理员）。用法: /~say g<群号> <内容> 或 /~say u<QQ号> <内容>，纯数字默认群号；内容里的 @123456 会变成真的@",
-    "key":     "实验测试项开关（仅管理员）。/~key 看列表 ｜ /~key <名称> 激活 ｜ /~key <名称> off 恢复默认。当前测试项: face_inline（逐句配图）",
+    "key":     "实验测试项开关（仅管理员）。/~key 看列表 ｜ /~key <名称> 激活 ｜ /~key <名称> off 恢复默认。当前测试项: face_inline（逐句配图）、sweet_style（私聊贴贴风格）",
     "测试项":  "同 key，实验测试项开关（仅管理员）",
     "stats":   "查自身统计（回复次数/好感度/被@次数）",
     "setstats":"设置自身统计数据（主人用）",
@@ -529,13 +583,12 @@ _CMD_DESC = {
     "memory":  "显示当前群聊的记忆（管理员）",
     "recall":  "召回历史聊天中与当前话题相关的记忆",
     # 经济系统
+    # v2.1.20: 经济指令由插件运行时注册（dice/checkin/points/shop…），静态
+    # COMMAND_MAP 看不到。权威登记表在 help_card._PLUGIN_COMMANDS，清单从那里取；
+    # 这里只保留描述兜底（gift/buy/bag/use 从未注册过，已删——原先留着会诱导幻觉调用）。
     "points":  "查看自己的积分和全服排行榜",
     "sign":    "每日签到领取随机积分",
-    "gift":    "把自己的积分转赠给其他用户",
     "shop":    "查看积分商店里的权益物品",
-    "buy":     "用积分购买权益物品",
-    "bag":     "查看自己的权益背包",
-    "use":     "使用背包里的权益（如好感券）",
     "persona": "查看机器人的性格描述/adoptable persona",
     # 群管理
     "op":      "移交特权/管理员",
@@ -578,7 +631,7 @@ _CMD_DESC = {
     "象棋":    "发起象棋对战",
     "tr":      "翻译文本到指定语言",
     "翻译":    "同 tr，翻译文本",
-    "xq":      "查看大群在线信息",
+    "xq":      "中国象棋对战",
     # 战绩 / TUFD
     "wdsj":    "查我的数据",
     "tufd":    "查 TUFD 信息",
