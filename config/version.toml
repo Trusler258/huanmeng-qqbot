@@ -4,4 +4,4 @@
 # 注意: 提示词 self_awareness 的 ${version} 与 /~changelog 均以此为唯一来源。
 
 [version]
-current = "v2.1.13"
+current = "v2.1.14"
