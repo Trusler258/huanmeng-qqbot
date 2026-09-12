@@ -242,6 +242,18 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         )
 
     fmt_key = "group_format" if is_group else "private_format"
+    # v2.1.17: self_awareness 只在 custom_persona 分支需要单独补。
+    #   常规分支的 header 已通过 personality(=cfg.system_prompt) 带入**替换好变量**的版本；
+    #   这里若再取一次 skills 原始模板，会导致：
+    #     ① 重复注入（实测"最新更新"在 system 里出现两次）
+    #     ② 残留 ${bot_name}/${version}/${changelog}/${architecture}/${admin_qq} 等
+    #        字面占位符——白烧 ~400 token，还让模型看到一堆废信息
+    _self_aware = ""
+    if custom_persona:
+        try:
+            _self_aware = get_config()._build_self_awareness()
+        except Exception:
+            _self_aware = ""
     core_parts = [
         header,
         sec.get("persona_lock", "") if not custom_persona else "",
@@ -249,10 +261,13 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         sec.get("command_tools", ""),
         sec.get("fav_format", ""),
         sec.get("fav_tiers", ""),
-        sec.get("self_awareness", ""),
+        _self_aware,
         sec.get("anti_repeat", ""),
         sec.get("private_tone", "") if (not is_group and not custom_persona) else "",
     ]
+    # v2.1.17: 允许在任意常驻章节里用 {bot_name} 占位——换名字部署时只改配置，
+    # 不用逐条改提示词。prompt_header 已由 .format 处理，这里的 replace 对它是空操作。
+    core_parts = [p.replace("{bot_name}", bot_name) for p in core_parts]
     return "\n\n".join(p for p in core_parts if p)
 
 

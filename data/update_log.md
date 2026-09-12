@@ -8,6 +8,39 @@
 > 3. 版本号以 `config/version.toml` 为准，本条目标题应与它一致。
 
 
+
+## v2.1.17 — 自身认知修复 + replies 纯文本化 + 提示词通用化 (2026.9.12)
+一句话总结：修好了「机器人自报的版本/更新日志其实是一堆 ${占位符}」「正文里写指令会被乱执行」，提示词里的写死配置也全部改成通用的了。
+- 起因（用户三点反馈）：① 提示词写死了 Trusler，别人部署会坏事 ② 没有指令清单，机器人不知道能调什么 ③ replies 里不该触发指令，直接当正常文本就行
+- **【P0 修复】self_awareness 重复注入 + 占位符残留**（最影响"聪明程度"的一个）
+  - 现象：system prompt 里 self_awareness 出现两次，其中一份是 skills 原始模板，
+    含 `${bot_name}` `${version}` `${changelog}` `${architecture}` `${admin_qq}` 等**未替换字面量**
+  - 根因：`_build_system_text` 里 `sec.get("self_awareness")` 直接取 skills 原文，
+    而 header 已通过 personality(=cfg.system_prompt) 带入一份替换好的版本
+  - 影响：机器人问自己版本时看到的是 `${version}`；白烧 ~300 字符 token/轮
+  - 修复：常规分支不再重复注入（header 已含），仅 custom_persona 分支补一份替换后的
+  - 实测：system 7718 → 7412 字符，"最新更新"出现次数 2 → 1，未替换占位符 0
+- **replies 纯文本化（用户要求：正文里指令不该被触发）**
+  - 数据依据：近 7 天「从回复中自动提取CALL」只命中 **1 次且是误伤**
+    （"400tok/s 都快赶上本地推理了" 里的 `/s` 被当 search 别名，白跑 28s 搜索）；
+    同期 `calls` 字段正常工作 **21 次**（note 11 / search_web 4 / draw / wdsj…）
+  - 结论：扫描执行零收益、纯风险 → 改为"只清理语法、绝不执行"，并打 warning 便于观察
+  - 指令的唯一渠道＝JSON 的 `calls` 字段；同步更新 20_command_tools.md 里过时的"写进 replies 会被真实执行"红线描述
+- **通用化（换部署不会坏事）**
+  - skills：`Trusler` → "消息里标着 [admin] 的人"（20_command_tools.md / 30_fav.md）
+  - skills：删掉 `20_command_tools.md` 里 `${host}` 未替换 + 硬编码监控端口 58888/58889 那行（部署细节，LLM 用不上还泄露架构）
+  - `00_core.md`：persona_lock 的"这就是幻梦" → `{bot_name}`，并让 `_build_system_text` 支持在**任意常驻章节**替换 `{bot_name}`
+  - 代码：pipeline 的 3 处错误提示 `请联系管理员 @Trusler` → `@{cfg.admin_qq}`（测试抓到第 3 处漏改）
+  - `config/example.bot_config.toml` 模板：Trusler → `<你的名字/昵称>` 占位符
+  - `core/logger.py`：日志高亮规则去掉写死的人名
+- **指令清单动态注入**
+  - `self_knowledge.md` 的「能力清单」章节原本只有笼统描述 → 现在追加**运行时生成**的真实指令表
+  - 数据源：`modules.commands.COMMAND_MAP` + `services.llm._CMD_DESC`（延迟导入避免 core↔services 循环）
+  - 共 **104 条**（含别名），与真实注册完全一致 → 加指令/换部署自动跟随，不用改提示词
+  - 按需注入：只有问"你会什么/能调什么指令"才带（2477 字符），问记忆/架构不带
+- 测试: `tests/_test_phase_v2117_generic.py` 5 组（重复注入/纯文本化/通用化/指令清单真实性/占位符）
+- ⚠️ 教训：写死配置的排查不能靠肉眼 grep——本轮第 3 处硬编码就是回归测试抓出来的
+
 ## v2.1.16 — 自身认知文档 + 脱敏防线（问"记忆存哪"能准确回答了） (2026.9.12)
 一句话总结：现在问「你的记忆存在哪」「你的架构是怎样的」，能准确回答且不会漏出服务器路径和密钥。
 - 起因: 用户要求"让 bot 更了解自身架构，问『你的记忆存在哪里』要准确回答但是脱敏"
