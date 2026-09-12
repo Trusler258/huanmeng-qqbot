@@ -152,7 +152,22 @@ class BotConfig:
         if log_path.exists():
             try:
                 ltext = log_path.read_text(encoding="utf-8")
-                vm = re.search(r"## (v[\d.]+ .+?)(?=\n## |\Z)", ltext, re.DOTALL)
+                # v2.1.16: 优先按 version.toml 的版本号精确匹配对应条目。
+                # 旧实现只取"文件里第一个 ## vX.Y.Z"——依赖"最新在上"的物理顺序，
+                # 一旦有人把新日志追加到末尾（今天就踩了），bot 自报的「最新更新」
+                # 会停在旧版本上、版本号与内容错位。精确匹配从根上避免这个问题。
+                vm = None
+                if version and version != "v0.0.0":
+                    vm = re.search(rf"## ({re.escape(version)} .+?)(?=\n## |\Z)", ltext, re.DOTALL)
+                    if vm is None:
+                        try:
+                            from core.logger import get_logger as _gl
+                            _gl("config").warning(
+                                "update_log 中找不到版本 %s 的条目，回退取首条（检查是否漏写日志或编号不一致）", version)
+                        except Exception:
+                            pass
+                if vm is None:
+                    vm = re.search(r"## (v[\d.]+ .+?)(?=\n## |\Z)", ltext, re.DOTALL)
                 if vm:
                     if not version or version == "v0.0.0":
                         version = vm.group(1).strip().split("\n")[0].strip("#- ")

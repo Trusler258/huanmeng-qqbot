@@ -382,16 +382,36 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     related_memories = get_top_memories(msg_content, ctx.get_context(chat_id), chat_id=chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
 
+    # ------自身认知注入（v2.1.16）------
+    # 用户问"你的记忆存在哪""你的架构是怎样的""你会什么"时，要答得准。
+    # 旧实现只认 architecture.mermaid（提取成节点列表）——那张图停在 v0.9.6，
+    # 还写着 deepseek-chat，且完全没有"数据存哪"的信息，所以 bot 答不准。
+    # 现在优先走 data/self_knowledge.md（按需取章节、内容准确、已脱敏），
+    # 取不到再回退旧的 mermaid 提取。
+    # 注：版本/更新日志已由 system 的 self_awareness 常驻，这里不再重复触发，省 token。
     arch_context = ""
-    arch_keywords = ["版本", "更新", "更新日志", "架构", "能力", "配置", "changelog", "version", "模型", "model"]
+    _self_keywords = [
+        "记忆", "记住", "存哪", "存在哪", "存储", "存到", "数据放", "笔记", "笔记本",
+        "数据库", "回顾", "遗忘", "架构", "模块", "结构", "分层", "组成",
+        "会什么", "会啥", "能做什么", "能干啥", "能力", "功能",
+        "模型", "用的什么", "怎么实现", "怎么做的", "你的实现", "介绍你自己",
+    ]
     msg_for_arch = msg_content[-200:].lower()
-    if any(kw in msg_for_arch for kw in arch_keywords):
+    if any(kw in msg_for_arch for kw in _self_keywords):
         try:
-            from core.config import get_architecture_context
-            arch_context = get_architecture_context()
-            logger.debug("架构上下文已注入 (%d chars)", len(arch_context))
-        except Exception:
-            pass
+            from core.arch_loader import get_self_knowledge
+            arch_context = get_self_knowledge(msg_content)
+        except Exception as e:
+            logger.debug("自我认知加载失败: %s", e)
+            arch_context = ""
+        if not arch_context:
+            try:
+                from core.config import get_architecture_context
+                arch_context = get_architecture_context()
+            except Exception:
+                arch_context = ""
+        if arch_context:
+            logger.debug("自身认知已注入 (%d chars)", len(arch_context))
 
     extra_info_parts = []
     from datetime import datetime
