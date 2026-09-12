@@ -16,6 +16,7 @@
         ...默认逻辑...
 
 v2.1.19: 首个测试项 face_inline（逐句配图）。
+v2.1.20: 第二个测试项 sweet_style（私聊贴贴风格）。
 """
 
 from __future__ import annotations
@@ -41,6 +42,13 @@ FEATURES: dict[str, dict] = {
         "default": True,
         "desc": "逐句配图：表情包写在哪句后面就跟在哪句发（情绪节拍）",
         "affects": "关闭后回到旧行为：一条回复只发 1 张表情，且发在所有文字之后",
+    },
+    # v2.1.20: 私聊"贴贴风格"测试项（参考图逆向配方：关系自指/节奏切换/短句爆破）
+    "sweet_style": {
+        "aliases": ("测试风格", "贴贴风格", "养成风格", "sweet"),
+        "default": False,
+        "desc": "私聊贴贴风格：被养成的叙事自指、节奏切换（撩完掉下来关心）、短句爆破",
+        "affects": "关闭后回到默认私聊语气（private_tone 常驻规则）",
     },
 }
 
