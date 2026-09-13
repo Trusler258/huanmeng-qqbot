@@ -4,7 +4,7 @@
 import axios from 'axios';
 
 export interface AssistantAction {
-  type: 'navigate' | 'highlight';
+  type: 'navigate' | 'highlight' | 'locate-config';
   target: string;
 }
 

@@ -60,12 +60,22 @@ SELECTOR_MAP: dict[str, str] = {
     "备份": ".backup-item",
 }
 
+# 配置键定位：允许跳到「具体输入框」级别。
+# key 格式："<toml文件名>|<点分路径>"，如 "bot_config.toml|personality"
+# 文件名必须严格在 FILE_KEYS 里（前端 locateKey 也按文件名精确切换）
+CONFIG_FILES = [
+    "bot_config.toml",
+    "lang.toml",
+    "roles.toml",
+    "adapter_config.toml",
+]
+
 SYSTEM_PROMPT = """你是幻梦 QQ Bot 控制面板的 AI 助手，运行在管理后台悬浮窗里。
 用户是面板管理员，他会问你"XX 在哪改 / 怎么用 / 出了什么问题"之类的问题。
 
 # 你的能力边界
 - 你只负责指路、解释、答疑，你不能执行任何操作
-- 你可以引导用户跳转页面，或让前端高亮某个元素
+- 你可以引导用户跳转页面，或让前端高亮某个元素（可精确到具体配置输入框）
 - 面板共 17 个页面，页面名 → 前端路由：
 """ + "\n".join(f"  {k} → {v}" for k, v in PAGE_MAP.items()) + """
 
@@ -100,7 +110,18 @@ SYSTEM_PROMPT = """你是幻梦 QQ Bot 控制面板的 AI 助手，运行在管�
 - navigate 的 target 必须严格取自上表路由，禁止编造
 - highlight 的 target 是 CSS 选择器，只在用户问"页面上某个元素"时用：
   可选值：""" + "、".join(f'"{k}"→{v}' for k, v in SELECTOR_MAP.items()) + """
-- 不要输出 Markdown 代码块标记，就是裸 JSON
+- 当用户想改某个具体配置项（如"改人格""改管理员""改模型"）时，优先用
+  locate-config 动作，能直接跳到那个输入框：
+  {"type": "locate-config", "target": "<配置文件名>|<点分路径>"}
+  配置文件只能是：bot_config.toml / lang.toml / roles.toml / adapter_config.toml
+  点分路径写 section.key（顶层键就只写 key），例如：
+  - 改人格 → "bot_config.toml|personality"
+  - 改管理员 QQ → "bot_config.toml|admin_qq"
+  - 改模型名 → "bot_config.toml|model"
+  - 改 NapCat 地址 → "adapter_config.toml|napcat.ws_url"
+  - 改指令文案 → "lang.toml|<指令名>"
+  路径不确定时宁可降级用 navigate 跳页面，禁止编造路径
+- 一次只输出一个 action；不要输出 Markdown 代码块标记，就是裸 JSON
 - reply 保持简短（一两句话），管理员没耐心读长篇大论"""
 
 
@@ -147,6 +168,18 @@ def _validate_action(act: dict | None) -> dict | None:
         if target in SELECTOR_MAP.values():
             return {"type": "highlight", "target": target}
         return None
+    if t == "locate-config":
+        # 格式 "<文件名>|<点分路径>"：文件名校验 + 路径基本合法性（防注入/编造）
+        if "|" not in target:
+            return None
+        file_name, _, path = target.partition("|")
+        file_name = file_name.strip()
+        path = path.strip().strip("`").strip()
+        if file_name not in CONFIG_FILES:
+            return None
+        if not path or not re.fullmatch(r"[\w\u4e00-\u9fff.\-]+", path):
+            return None
+        return {"type": "locate-config", "target": f"{file_name}|{path}"}
     return None
 
 

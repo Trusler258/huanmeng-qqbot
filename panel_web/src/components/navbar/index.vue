@@ -7,10 +7,10 @@
           src="//p3-armor.byteimg.com/tos-cn-i-49unhts6dw/dfdba5317c0c20ce20e64fac803d52bc.svg~tplv-49unhts6dw-image.image"
         />
         <a-typography-title
-          :style="{ margin: 0, fontSize: '18px' }"
+          :style="{ margin: 0, fontSize: '18px', color: '#fff' }"
           :heading="5"
         >
-          Arco Pro
+          幻梦面板
         </a-typography-title>
         <icon-menu-fold
           v-if="!topMenu && appStore.device === 'mobile'"
@@ -267,14 +267,21 @@
     display: flex;
     justify-content: space-between;
     height: 100%;
-    background-color: var(--color-bg-2);
-    border-bottom: 1px solid var(--color-border);
+    /* 主题主视觉：紫色渐变导航条，一眼可辨 */
+    background: linear-gradient(
+      135deg,
+      rgb(var(--primary-5)),
+      rgb(var(--primary-7))
+    );
+    border-bottom: 1px solid rgb(var(--primary-7));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   }
 
   .left-side {
     display: flex;
     align-items: center;
     padding-left: 20px;
+    color: #fff;
   }
 
   .center-side {
@@ -295,13 +302,19 @@
     }
 
     a {
-      color: var(--color-text-1);
+      color: #fff;
       text-decoration: none;
     }
+    /* 导航按钮：白色玻璃感（深紫底上白描边） */
     .nav-btn {
-      border-color: rgb(var(--gray-2));
-      color: rgb(var(--gray-8));
+      border-color: rgba(255, 255, 255, 0.55);
+      background-color: rgba(255, 255, 255, 0.12);
+      color: #fff;
       font-size: 16px;
+      &:hover {
+        background-color: rgba(255, 255, 255, 0.24);
+        border-color: #fff;
+      }
     }
     .trigger-btn,
     .ref-btn {

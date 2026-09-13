@@ -11,6 +11,33 @@
 
 
 
+## v2.3.2 — 主题全面紫色化 + AI 助手定位到输入框级 (2026.9.13)
+一句话总结：面板主题紫色终于"看得出来了"（导航条/侧栏/菜单全紫色化），AI 助手从"只能跳页面"升级为"直接定位到某个配置输入框并紫色脉冲高亮"。
+
+**一、主题视觉强化（用户反馈"太普通了，截图看看"→ 实测紫色像素占比 0.24%，确实看不出）**
+- **菜单选中态修复**：`menu/index.vue` 叶子节点的 `:key` 原放在 `<template v-for>` 上，
+  Vue3 里 key 挂在 fragment 上，Arco `useMenu()` 读 `vnode.key` 拿到 undefined，
+  永远不等于 selectedKeys → `arco-menu-selected` 类从未出现（菜单选中态全靠瞎猜）。
+  现 key 移到 `<a-menu-item>` 上，选中态正常。
+- **导航条紫色渐变**：navbar 背景 `linear-gradient(135deg, primary-5, primary-7)`，
+  标题「Arco Pro」→「幻梦面板」，右侧圆形按钮改白色玻璃感（白描边+半透明白底）。
+- **侧栏品牌条**：菜单顶部新增 56px 紫色渐变「幻梦面板」品牌区（default-layout）。
+- **菜单主题化**（global.less）：选中项 = 紫字加粗 + 浅紫底 + 3px 紫色左条；
+  hover = 浅紫底；折叠弹出气泡同款；暗色模式单独适配。
+- **主按钮**：加同色阴影增强存在感。
+
+**二、AI 助手定位到输入框级（用户反馈"至少要到那个输入框"）**
+- 新动作 `locate-config`：LLM 返回 `{"type":"locate-config","target":"bot_config.toml|personality"}`，
+  前端自动：跳配置页 → 切到指定 toml 文件 → 表单模式 → 搜索/选段锁定该字段 →
+  紫色脉冲高亮那一行（`.form-row[data-path]`）。
+- 后端白名单校验：文件名限 4 个已知 toml，路径限 `[\w.\-]+` 防注入编造。
+- config-editor 字段行埋 `data-path="section.key"` 锚点（搜索平铺区+section 列表区两处）；
+  页面监听 `ai-locate-config-key` CustomEvent 与悬浮助手解耦联动。
+- 系统提示词同步教学：改人格/管理员/模型 → 对应点分路径示例；不确定时降级 navigate。
+
+**验证**：构建通过；菜单 selected 类出现、紫色占比显著提升；助手说"改人格"→ 自动跳到
+bot_config.toml 的 personality 输入框并高亮。
+
 ## v2.3.0 — 面板全可写（106 接口）+ 崩溃自愈经实测可用 (2026.9.13)
 一句话总结：面板从"能看"变成"啥都能改、啥都能管"，并且加了崩溃自愈——改配置把 bot 改崩了，它会自己回滚并救活；这条机制是真把 bot 弄崩验证过的。
 

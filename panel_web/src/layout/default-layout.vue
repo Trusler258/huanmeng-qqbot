@@ -18,6 +18,7 @@
           @collapse="setCollapsed"
         >
           <div class="menu-wrapper">
+            <div class="brand-bar">幻梦面板</div>
             <Menu />
           </div>
         </a-layout-sider>
@@ -169,6 +170,25 @@
         background-color: var(--color-text-3);
       }
     }
+  }
+
+  /* 侧栏顶部品牌条（紫色渐变，主题主视觉之一） */
+  .brand-bar {
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(
+      135deg,
+      rgb(var(--primary-5)),
+      rgb(var(--primary-7))
+    );
+    color: #fff;
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 2px;
+    white-space: nowrap;
+    overflow: hidden;
   }
 
   .layout-content {
