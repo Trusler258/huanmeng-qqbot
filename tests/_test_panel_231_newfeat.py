@@ -61,7 +61,18 @@ with sync_playwright() as p:
     check("navigate 自动跳转", "/config/editor" in page.url, page.url)
 
     # 配置页分层导航
+    # v2.3.3+ 助手对"改人格"可能返回 locate-config（直接定位 section/搜索视图），
+    # 落地后停在字段视图而非卡片总览。复位顺序：清搜索框（搜索视图里
+    # 面包屑「全部」根本不渲染）→ 再点「全部」退出 section 视图 → 数卡片
     page.wait_for_timeout(1000)
+    srch = page.query_selector(".form-toolbar input")
+    if srch:
+        srch.fill("")
+        page.wait_for_timeout(400)
+    root_crumb = page.query_selector(".crumb-item.root")
+    if root_crumb:
+        root_crumb.click()
+        page.wait_for_timeout(400)
     cards = page.query_selector_all(".section-card")
     check("section 摘要卡片渲染", len(cards) > 0, f"{len(cards)} 张卡")
     if cards:
