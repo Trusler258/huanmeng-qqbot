@@ -19,14 +19,24 @@
         <component :is="iconComp(item.meta?.icon)" v-if="item.meta?.icon" />
       </template>
       <template #title>{{ t(item.meta?.locale || '') }}</template>
-      <template v-for="child in item.children || []" :key="child.name">
-        <a-menu-item v-if="!child.children || !child.children.length" @click="goto(child)">
+      <!-- ⚠️ :key 必须放在 a-menu-item 上而非 template 上：
+           Arco item.js 的 useMenu() 读 instance.vnode.key 来判断选中态，
+           key 放在 template（fragment）上时 item vnode 无 key → 永远不选中 -->
+      <template v-for="child in item.children || []">
+        <a-menu-item
+          v-if="!child.children || !child.children.length"
+          :key="child.name"
+          @click="goto(child)"
+        >
           <template #icon>
             <component :is="iconComp(child.meta?.icon)" v-if="child.meta?.icon" />
           </template>
           {{ t(child.meta?.locale || '') }}
         </a-menu-item>
-        <a-sub-menu v-else :key="`sub-${child.name}`">
+        <a-sub-menu
+          v-else
+          :key="`sub-${child.name}`"
+        >
           <template #icon>
             <component :is="iconComp(child.meta?.icon)" v-if="child.meta?.icon" />
           </template>

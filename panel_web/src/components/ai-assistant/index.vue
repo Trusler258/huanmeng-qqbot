@@ -49,7 +49,13 @@
         <div class="ai-msg-bubble">{{ m.content }}</div>
         <div v-if="m.action" class="ai-msg-action">
           <a-button size="mini" type="primary" status="success" @click="execAction(m.action)">
-            {{ m.action.type === 'navigate' ? '前往' : '高亮' }}
+            {{
+              m.action.type === 'navigate'
+                ? '前往'
+                : m.action.type === 'locate-config'
+                  ? '去改'
+                  : '高亮'
+            }}
           </a-button>
         </div>
       </div>
@@ -195,13 +201,30 @@
     messages.value = [];
   };
 
-  /** 执行 LLM 指令：navigate 跳页面 / highlight 高亮元素 */
+  /** 执行 LLM 指令：navigate 跳页面 / highlight 高亮元素 / locate-config 定位到配置输入框 */
   const execAction = (act: AssistantAction) => {
     if (act.type === 'navigate') {
       router.push(act.target).catch(() => {});
       Message.success({ content: '助手已带你到对应页面', duration: 2000 });
     } else if (act.type === 'highlight') {
       nextTick(() => highlight(act.target));
+    } else if (act.type === 'locate-config') {
+      // target = "<toml文件名>|<点分路径>"；先跳到配置页，再派发定位事件
+      const [fileName, keyPath] = act.target.split('|');
+      router
+        .push('/config/editor')
+        .catch(() => {})
+        .finally(() => {
+          // 等页面路由切换+组件挂载后再派发
+          setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent('ai-locate-config-key', {
+                detail: { path: keyPath, file: fileName },
+              })
+            );
+          }, 400);
+        });
+      Message.success({ content: '助手已定位到对应配置项', duration: 2000 });
     }
   };
 

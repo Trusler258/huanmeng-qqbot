@@ -31,6 +31,67 @@ body[arco-theme='dark'] {
   --primary-10: var(--purple-10);
 }
 
+/* ═══ 主题视觉强化 ═══
+   1) 菜单选中项：紫字 + 浅紫底 + 紫色左条（Arco 默认只有文字变色，太弱）
+   2) 菜单 hover：浅紫底
+   3) 侧栏顶部品牌条：紫色渐变 */
+.arco-menu {
+  .arco-menu-item.arco-menu-selected {
+    color: rgb(var(--primary-6));
+    font-weight: 600;
+    background-color: var(--color-primary-light-1);
+    box-shadow: inset 3px 0 0 rgb(var(--primary-6));
+  }
+  .arco-menu-item:hover,
+  .arco-menu-pop-header .arco-menu-item:hover {
+    background-color: var(--color-primary-light-2);
+  }
+  /* 折叠弹出气泡里的选中项也保持同款视觉 */
+  .arco-menu-pop .arco-menu-item.arco-menu-selected {
+    background-color: var(--color-primary-light-1);
+  }
+}
+
+/* 折叠态弹出菜单头部（横向窄条） */
+.arco-menu-pop-header.arco-menu-selected {
+  color: rgb(var(--primary-6));
+}
+
+/* ── 暗色模式：浅紫色在暗底上太亮，换深紫 ── */
+body[arco-theme='dark'] {
+  .arco-menu {
+    .arco-menu-item.arco-menu-selected {
+      color: rgb(var(--primary-6));
+      background-color: var(--color-primary-light-1);
+      box-shadow: inset 3px 0 0 rgb(var(--primary-6));
+    }
+  }
+}
+
+/* 侧栏品牌区（logo 上方渐变条），由 default-layout 的 sider 渲染 */
+.arco-layout-sider {
+  .brand-bar {
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(
+      135deg,
+      rgb(var(--primary-5)),
+      rgb(var(--primary-7))
+    );
+    color: #fff;
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 2px;
+  }
+}
+
+/* 主按钮加一点同色阴影增强存在感 */
+.arco-btn-primary:not(.arco-btn-status-danger):not(.arco-btn-status-warning) {
+  box-shadow: 0 2px 6px rgba(var(--primary-6), 0.35);
+}
+
 html,
 body {
   width: 100%;

@@ -109,7 +109,7 @@
                       <span>搜索结果</span>
                       <span class="form-group-count">{{ searchHits.length }} 项</span>
                     </div>
-                    <div v-for="f in searchHits" :key="f.path" class="form-row">
+                    <div v-for="f in searchHits" :key="f.path" class="form-row" :data-path="f.path">
                       <div class="form-row-info">
                         <div class="form-row-key">
                           <a-tag size="small" color="purple" class="section-jump" @click="jumpToSection(f)">
@@ -163,7 +163,7 @@
                         <span>{{ curSection === '(顶层)' ? '顶层' : `[${curSection}]` }}</span>
                         <span class="form-group-count">{{ curGroup?.fields.length || 0 }} 项</span>
                       </div>
-                      <div v-for="f in curGroup?.fields || []" :key="f.path" class="form-row">
+                      <div v-for="f in curGroup?.fields || []" :key="f.path" class="form-row" :data-path="f.path">
                         <div class="form-row-info">
                           <div class="form-row-key">
                             {{ f.key }}
@@ -224,6 +224,7 @@
     ref,
     computed,
     onMounted,
+    nextTick,
     defineComponent,
     type PropType,
   } from 'vue';
@@ -429,11 +430,6 @@
     }
   };
 
-  /** 字符串输入框：v-model 已同步 f.value，直接保存 */
-  const saveKeyInput = (f: FormField) => {
-    saveKey(f, f.value);
-  };
-
   /** 源码模式：整文件保存 */
   const saveRaw = async () => {
     if (!currentName.value) return;
@@ -472,6 +468,62 @@
     }
   };
 
+  /**
+   * AI 助手联动：外部 dispatch 'ai-locate-config-key' 事件（detail = 点分路径，
+   * 如 "personality"），本页自动：切到对应文件 → 进表单模式 → 搜索/选段定位
+   * 该字段 → 紫色脉冲高亮那一行（精确到输入框级）。
+   */
+  const locateKey = async (payload: { path: string; file?: string }) => {
+    const filePath = payload.file || 'bot_config.toml';
+    if (!files.value.length) {
+      await loadFiles();   // 页面刚挂载还没加载完，补拉一次
+    }
+    if (currentName.value !== filePath) {
+      const meta = files.value.find((f) => f.name === filePath);
+      if (!meta) {
+        Message.warning(`助手没找到配置文件 ${filePath}`);
+        return;
+      }
+      await doSelect(filePath);
+    }
+    await nextTick();
+    if (mode.value !== 'form' || !fields.value.length) return;
+    const target = fields.value.find((f) => f.path === payload.path);
+    if (target) {
+      // 精确命中：清空 section，用搜索平铺视图锁定（搜索视图的行也带 data-path）
+      searchKey.value = '';
+      curSection.value = '';
+      await nextTick();
+      searchKey.value = target.key;
+    } else {
+      // 未精确命中：按第一段当 section 兜底
+      const sec = payload.path.split('.')[0];
+      const hasSec = groups.value.some((g) => g.section === sec);
+      if (hasSec) {
+        searchKey.value = '';
+        curSection.value = sec;
+      } else {
+        Message.warning(`没找到配置项 ${payload.path}，可试试顶部搜索`);
+        return;
+      }
+    }
+    // 触发高亮（等搜索结果渲染完）
+    await nextTick();
+    setTimeout(() => {
+      const el = document.querySelector(
+        `.form-row[data-path="${CSS.escape(payload.path)}"]`
+      );
+      if (el) {
+        document
+          .querySelectorAll('.ai-highlight')
+          .forEach((n) => n.classList.remove('ai-highlight'));
+        el.classList.add('ai-highlight');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => el.classList.remove('ai-highlight'), 3000);
+      }
+    }, 350);
+  };
+
   onMounted(async () => {
     await loadFiles();
     // 默认选中主配置，进入即可编辑
@@ -482,6 +534,11 @@
         files.value[0];
       doSelect(first.name);
     }
+    // AI 助手联动：监听全局定位事件（ai-assistant 悬浮组件派发）
+    window.addEventListener('ai-locate-config-key', (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && typeof detail.path === 'string') locateKey(detail);
+    });
   });
 </script>
 
