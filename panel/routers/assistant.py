@@ -61,14 +61,80 @@ SELECTOR_MAP: dict[str, str] = {
 }
 
 # 配置键定位：允许跳到「具体输入框」级别。
-# key 格式："<toml文件名>|<点分路径>"，如 "bot_config.toml|personality"
-# 文件名必须严格在 FILE_KEYS 里（前端 locateKey 也按文件名精确切换）
+# key 格式："<toml文件名>|<点分路径>"，如 "bot_config.toml|personality.identity"
+# 文件名必须严格在 CONFIG_FILES 里（前端 locateKey 也按文件名精确切换）
 CONFIG_FILES = [
     "bot_config.toml",
     "lang.toml",
     "roles.toml",
     "adapter_config.toml",
 ]
+
+
+def _collect_config_keys() -> str:
+    """扫描真实配置文件，生成「文件名 → 键路径清单」文本注入系统提示词。
+
+    为什么动态扫而不是写死示例：上一版示例路径是凭印象写的
+    （adapter_config.toml|napcat.ws_url，实际键是 napcat_server.host），
+    LLM 照抄示例 → 编造路径 → 前端定位失败。单一来源铁律：提示词里的
+    路径必须来自真实文件，与 help_card 同理。
+
+    键量控制：roles.toml 的 qq_name_map 有 220 个键（QQ号→昵称映射），
+    全量注入约 3-4K token 且对指路无意义，故每个 section 最多列 8 个键、
+    超出的用 "(+N more)" 折叠，LLM 知道该 section 存在即可。
+    """
+    import contextlib
+
+    lines: list[str] = []
+    for fname in CONFIG_FILES:
+        p = config.ROOT / "config" / fname
+        if not p.is_file():
+            continue
+        data = None
+        with contextlib.suppress(Exception):
+            import tomllib  # py3.11+；服务器 3.10 没有 → 走正则兜底
+            data = tomllib.loads(p.read_text(encoding="utf-8"))
+        if data is not None:
+            # 扁平化：section.key / 顶层 key
+            paths: list[str] = []
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    for k2 in v:
+                        paths.append(f"{k}.{k2}")
+                else:
+                    paths.append(k)
+        else:
+            paths = []
+            sec = ""
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                m = re.match(r"^\[([^\]]+)\]$", line)
+                if m:
+                    sec = m.group(1).strip().strip('"').strip("'")
+                    continue
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key = line.split("=", 1)[0].strip().strip('"').strip("'").strip()
+                if not key:
+                    continue
+                paths.append(f"{sec}.{key}" if sec else key)
+        # 去重保序 + 折叠长 section
+        seen: list[str] = []
+        by_sec: dict[str, list[str]] = {}
+        for path in paths:
+            if path in seen:
+                continue
+            seen.append(path)
+            sec = path.rsplit(".", 1)[0] if "." in path else "(顶层)"
+            by_sec.setdefault(sec, []).append(path)
+        parts = [f"【{fname}】"]
+        for sec, ps in by_sec.items():
+            if len(ps) <= 8:
+                parts.append("  " + ", ".join(ps))
+            else:
+                parts.append("  " + ", ".join(ps[:8]) + f" …(+{len(ps) - 8} more in {sec})")
+        lines.append("\n".join(parts))
+    return "\n".join(lines)
 
 SYSTEM_PROMPT = """你是幻梦 QQ Bot 控制面板的 AI 助手，运行在管理后台悬浮窗里。
 用户是面板管理员，他会问你"XX 在哪改 / 怎么用 / 出了什么问题"之类的问题。
@@ -114,13 +180,10 @@ SYSTEM_PROMPT = """你是幻梦 QQ Bot 控制面板的 AI 助手，运行在管�
   locate-config 动作，能直接跳到那个输入框：
   {"type": "locate-config", "target": "<配置文件名>|<点分路径>"}
   配置文件只能是：bot_config.toml / lang.toml / roles.toml / adapter_config.toml
-  点分路径写 section.key（顶层键就只写 key），例如：
-  - 改人格 → "bot_config.toml|personality"
-  - 改管理员 QQ → "bot_config.toml|admin_qq"
-  - 改模型名 → "bot_config.toml|model"
-  - 改 NapCat 地址 → "adapter_config.toml|napcat.ws_url"
-  - 改指令文案 → "lang.toml|<指令名>"
-  路径不确定时宁可降级用 navigate 跳页面，禁止编造路径
+  点分路径写 section.key（顶层键就只写 key）。**真实键路径目录**（只能从这里选，
+  不在目录里的路径一律降级用 navigate，严禁编造）：
+""" + _collect_config_keys() + """
+
 - 一次只输出一个 action；不要输出 Markdown 代码块标记，就是裸 JSON
 - reply 保持简短（一两句话），管理员没耐心读长篇大论"""
 
