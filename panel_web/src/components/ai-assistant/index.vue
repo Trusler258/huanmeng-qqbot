@@ -46,7 +46,7 @@
         class="ai-msg"
         :class="`ai-msg-${m.role}`"
       >
-        <div class="ai-msg-bubble">{{ m.content }}</div>
+        <div class="ai-msg-bubble" :class="{ 'ai-streaming': m.streaming }">{{ m.content }}</div>
         <div v-if="m.action" class="ai-msg-action">
           <a-button size="mini" type="primary" status="success" @click="execAction(m.action)">
             {{
@@ -59,7 +59,7 @@
           </a-button>
         </div>
       </div>
-      <div v-if="pending" class="ai-msg ai-msg-assistant">
+      <div v-if="showTyping" class="ai-msg ai-msg-assistant">
         <div class="ai-msg-bubble ai-typing"><span /><span /><span /></div>
       </div>
     </div>
@@ -89,14 +89,32 @@
   import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
   import { useRouter } from 'vue-router';
   import { Message } from '@arco-design/web-vue';
-  import { chatWithAssistant, type AssistantAction } from '@/api/assistant';
+  import {
+    chatWithAssistant,
+    streamWithAssistant,
+    type AssistantAction,
+  } from '@/api/assistant';
 
   const router = useRouter();
 
   const open = ref(false);
   const pending = ref(false);
   const draft = ref('');
-  const messages = ref<{ role: 'user' | 'assistant'; content: string; action?: AssistantAction }[]>([]);
+  const messages = ref<{
+    role: 'user' | 'assistant';
+    content: string;
+    action?: AssistantAction;
+    streaming?: boolean;
+  }[]>([]);
+
+  /** 打字气泡只在「流还没吐出第一个字」时显示 */
+  const showTyping = computed(() => {
+    const last = messages.value[messages.value.length - 1];
+    return (
+      pending.value &&
+      (!last || last.role !== 'assistant' || (!last.content && !last.action))
+    );
+  });
 
   const quickQuestions = [
     '改机器人人格在哪？',
@@ -181,20 +199,46 @@
     messages.value.push({ role: 'user', content: text });
     scrollBottom();
     pending.value = true;
+    const history = messages.value.slice(0, -1).slice(-8).map((m) => ({
+      role: m.role, content: m.content,
+    }));
+    // 流式：先占一个空 assistant 气泡，delta 逐字追加
+    messages.value.push({ role: 'assistant', content: '', streaming: true });
+    // 取响应式代理（push 后从数组里拿，直接改原始对象不触发更新）
+    const entry = messages.value[messages.value.length - 1];
+    let failed = false;
     try {
-      const history = messages.value.slice(0, -1).slice(-8).map((m) => ({
-        role: m.role, content: m.content,
-      }));
-      const res = await chatWithAssistant(text, history);
-      const { reply, action } = res.data;
-      messages.value.push({ role: 'assistant', content: reply, action });
-      if (action) execAction(action);
+      await streamWithAssistant(text, history, {
+        onDelta: (t) => {
+          entry.content += t;
+          scrollBottom();
+        },
+        onDone: (act) => {
+          entry.action = act ?? undefined;
+          if (act) execAction(act);
+        },
+        onError: (msg) => {
+          entry.content += `（${msg}）`;
+        },
+      });
     } catch {
-      messages.value.push({ role: 'assistant', content: '（请求失败，稍后再试）' });
-    } finally {
-      pending.value = false;
-      scrollBottom();
+      failed = true;
     }
+    entry.streaming = false;
+    // 连接层失败 → 回退非流式接口
+    if (failed && !entry.content) {
+      messages.value.splice(messages.value.indexOf(entry), 1);
+      try {
+        const res = await chatWithAssistant(text, history);
+        const { reply, action } = res.data;
+        messages.value.push({ role: 'assistant', content: reply, action });
+        if (action) execAction(action);
+      } catch {
+        messages.value.push({ role: 'assistant', content: '（请求失败，稍后再试）' });
+      }
+    }
+    pending.value = false;
+    scrollBottom();
   };
 
   const clearChat = () => {
@@ -387,6 +431,17 @@
   }
   .ai-msg-action {
     margin-top: 4px;
+  }
+
+  /* 流式打字光标 */
+  .ai-streaming::after {
+    content: '▍';
+    margin-left: 2px;
+    color: rgb(var(--primary-6));
+    animation: ai-cursor 0.9s steps(1) infinite;
+  }
+  @keyframes ai-cursor {
+    50% { opacity: 0; }
   }
 
   .ai-typing {
