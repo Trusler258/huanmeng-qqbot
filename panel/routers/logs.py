@@ -13,7 +13,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 
 from panel import auth, config
 from panel.security import sanitize_text
@@ -115,6 +116,63 @@ async def get_logs(
     if not path.exists() or not path.is_file():
         return {"ok": False, "error": f"日志文件不存在: {file}", "logs": []}
     return {"ok": True, "file": file, "logs": _tail(path, lines, keyword, level)}
+
+
+@router.get("/export", summary="导出日志（原始文本下载）")
+async def export_logs(
+    request: Request,
+    file: str = Query("huanmeng.log", max_length=100),
+    lines: int = Query(0, ge=0, le=100000,
+                       description="尾部行数，0 = 整个文件"),
+    token: str = Query("", max_length=2000,
+                       description="免 blob 下载用的认证（与 /ws 同款 query token 先例）"),
+):
+    """下载日志原文（去 ANSI 色码）。
+
+    认证双通道：Authorization header 或 ?token=（前端用 location.href 原生下载，
+    不走 blob，大文件由 nginx 流式转发不占内存）。
+    上限保护：单次最多读 64MB（超大日志截取尾部），防止把面板进程内存打爆。
+    """
+    cand = token
+    if not cand:
+        auth_hdr = request.headers.get("authorization", "")
+        if auth_hdr.lower().startswith("bearer "):
+            cand = auth_hdr[7:].strip()
+    try:
+        auth.decode_token(cand)
+    except Exception:
+        raise HTTPException(401, "未登录或登录已过期")
+
+    if "/" in file or "\\" in file or ".." in file:
+        raise HTTPException(400, "非法文件名")
+    path = LOG_DIR / file
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, f"日志文件不存在: {file}")
+
+    max_bytes = 64 * 1024 * 1024
+    size = path.stat().st_size
+    try:
+        with open(path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+            raw = f.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        raise HTTPException(500, f"读取失败：{e}")
+
+    text = _ANSI.sub("", raw)
+    if lines > 0:
+        text = "\n".join(text.splitlines()[-lines:]) + "\n"
+
+    stamp = datetime.now(CST).strftime("%Y%m%d_%H%M%S")
+    download_name = f"{path.stem}_{stamp}{path.suffix or '.log'}"
+    return Response(
+        content=text,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_name}"',
+            "X-Log-File": file,
+        },
+    )
 
 
 # ── WebSocket 实时推送 ────────────────────────────────────
