@@ -28,7 +28,7 @@ data/Message_frequency_cache.txt
 data/features.json
 
 # === 日志 ===
-logs/
+/logs/
 *.log
 
 # === 插件下载缓存 ===

@@ -77,7 +77,7 @@ def toml_available() -> str:
 # 兼容旧引用（panel/routers/config_editor.py 曾用 panel_config.tomllib）
 tomllib = _toml_loose or _toml_strict
 
-PANEL_API_VERSION = "v2.3.4"
+PANEL_API_VERSION = "v2.3.5"
 
 # 项目根目录（panel/ 的上一级）
 ROOT = Path(__file__).resolve().parent.parent
