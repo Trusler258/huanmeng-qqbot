@@ -475,9 +475,9 @@
    */
   const locateKey = async (payload: { path: string; file?: string }) => {
     const filePath = payload.file || 'bot_config.toml';
-    if (!files.value.length) {
-      await loadFiles();   // 页面刚挂载还没加载完，补拉一次
-    }
+    // 等初始加载完成（若已在加载中则复用同一个 Promise，避免双 doSelect 竞态）
+    await ensureReady();
+    if (!files.value.length) return;
     if (currentName.value !== filePath) {
       const meta = files.value.find((f) => f.name === filePath);
       if (!meta) {
@@ -524,16 +524,31 @@
     }, 350);
   };
 
-  onMounted(async () => {
-    await loadFiles();
-    // 默认选中主配置，进入即可编辑
-    if (files.value.length) {
-      const first =
-        files.value.find((f) => f.name === 'bot_config.toml') ||
-        files.value.find((f) => f.known) ||
-        files.value[0];
-      doSelect(first.name);
+  /**
+   * 页面初始化（加载文件列表 + 默认选主配置）。
+   * 用共享 Promise 串行化：AI 助手 locateKey 跳转进来时与 onMounted 的
+   * 初始加载是竞态——两边都 doSelect 的话，后完成的一方会把 searchKey/
+   * curSection 重置掉，导致定位高亮偶发失效（v2.3.4 修）。
+   */
+  let readyPromise: Promise<void> | null = null;
+  const ensureReady = (): Promise<void> => {
+    if (!readyPromise) {
+      readyPromise = (async () => {
+        await loadFiles();
+        if (files.value.length) {
+          const first =
+            files.value.find((f) => f.name === 'bot_config.toml') ||
+            files.value.find((f) => f.known) ||
+            files.value[0];
+          await doSelect(first.name);
+        }
+      })();
     }
+    return readyPromise;
+  };
+
+  onMounted(async () => {
+    ensureReady();
     // AI 助手联动：监听全局定位事件（ai-assistant 悬浮组件派发）
     window.addEventListener('ai-locate-config-key', (e: Event) => {
       const detail = (e as CustomEvent).detail;
