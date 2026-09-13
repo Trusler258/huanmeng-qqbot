@@ -46,7 +46,17 @@
         class="ai-msg"
         :class="`ai-msg-${m.role}`"
       >
-        <div class="ai-msg-bubble" :class="{ 'ai-streaming': m.streaming }">{{ m.content }}</div>
+        <div
+          v-if="m.role === 'user'"
+          class="ai-msg-bubble"
+          :class="{ 'ai-streaming': m.streaming }"
+        >{{ m.content }}</div>
+        <div
+          v-else
+          class="ai-msg-bubble ai-md"
+          :class="{ 'ai-streaming': m.streaming }"
+          v-html="mdRender(m.content)"
+        ></div>
         <div v-if="m.action" class="ai-msg-action">
           <a-button size="mini" type="primary" status="success" @click="execAction(m.action)">
             {{
@@ -115,6 +125,49 @@
       (!last || last.role !== 'assistant' || (!last.content && !last.action))
     );
   });
+
+  // ── 打字机节流：模型出字太快，缓冲后按舒适速度渲染 ──
+  // 基础 ~90 字/秒（3 字 / 33ms）；积压多时自动加速，保证长回复 ~4 秒内追上
+  const renderBuf = ref('');
+  let drainTimer: ReturnType<typeof setInterval> | null = null;
+  let streamClosed = false;
+  let drainEntry:
+    | { content: string; streaming?: boolean; action?: AssistantAction }
+    | null = null;
+  let drainAction: AssistantAction | null = null;
+
+  const stopDrain = () => {
+    if (drainTimer) {
+      clearInterval(drainTimer);
+      drainTimer = null;
+    }
+  };
+  const startDrain = () => {
+    if (drainTimer) return;
+    drainTimer = setInterval(() => {
+      const buf = renderBuf.value;
+      if (!buf) {
+        // 流已结束且缓冲排空 → 收尾
+        if (streamClosed) {
+          stopDrain();
+          if (drainEntry) {
+            drainEntry.streaming = false;
+            if (drainAction) drainEntry.action = drainAction;
+          }
+          if (drainAction) execAction(drainAction);
+          drainEntry = null;
+          drainAction = null;
+          pending.value = false;
+          scrollBottom();
+        }
+        return;
+      }
+      const speed = Math.max(3, Math.ceil(buf.length / 100));
+      if (drainEntry) drainEntry.content += buf.slice(0, speed);
+      renderBuf.value = buf.slice(speed);
+      scrollBottom();
+    }, 33);
+  };
 
   const quickQuestions = [
     '改机器人人格在哪？',
@@ -185,6 +238,51 @@
     open.value = true;
   };
 
+  // ── Markdown 渲染（轻量自写，不引依赖）──
+  // 安全：先整体 HTML 转义，再转换标记；链接只允许 http(s)，防 javascript: 注入
+  const escapeHtml = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const mdRender = (src: string): string => {
+    if (!src) return '';
+    const codeBlocks: string[] = [];
+    let text = escapeHtml(src);
+    // 1. 代码块 → 占位符（避免内部被行内规则误伤）
+    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
+      codeBlocks.push(
+        `<pre class="ai-md-pre"><code>${code.replace(/\n$/, '')}</code></pre>`
+      );
+      return `\u0000B${codeBlocks.length - 1}\u0000`;
+    });
+    // 2. 行内代码
+    text = text.replace(/`([^`\n]+)`/g, '<code class="ai-md-code">$1</code>');
+    // 3. 加粗
+    text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    // 4. 列表（- / * / 1.）在斜体前处理，避免行首 * 被吃
+    text = text.replace(/^[-*] (.*)$/gm, '<div class="ai-md-li">· $1</div>');
+    text = text.replace(/^(\d+)\. (.*)$/gm, '<div class="ai-md-li">$1. $2</div>');
+    // 5. 斜体（单个 *，排除已转换的标签）
+    text = text.replace(/(^|[^<>/\w*])\*([^*\n]+)\*(?![\w*])/g, '$1<em>$2</em>');
+    // 6. 删除线
+    text = text.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+    // 7. 链接（仅 http/https）
+    text = text.replace(
+      /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener">$1</a>'
+    );
+    // 8. 标题 / 引用
+    text = text.replace(/^#{1,4} (.*)$/gm, '<div class="ai-md-h">$1</div>');
+    text = text.replace(/^&gt; (.*)$/gm, '<div class="ai-md-quote">$1</div>');
+    // 9. 换行 + 还原代码块
+    text = text.replace(/\n/g, '<br>');
+    text = text.replace(/\u0000B(\d+)\u0000/g, (_m, i) => codeBlocks[+i] ?? '');
+    return text;
+  };
+
   // ── 对话 ──
   const listRef = ref<HTMLElement>();
   const scrollBottom = async () => {
@@ -202,31 +300,38 @@
     const history = messages.value.slice(0, -1).slice(-8).map((m) => ({
       role: m.role, content: m.content,
     }));
-    // 流式：先占一个空 assistant 气泡，delta 逐字追加
+    // 流式：先占一个空 assistant 气泡，delta 进缓冲按打字机速度渲染
     messages.value.push({ role: 'assistant', content: '', streaming: true });
     // 取响应式代理（push 后从数组里拿，直接改原始对象不触发更新）
     const entry = messages.value[messages.value.length - 1];
+    renderBuf.value = '';
+    streamClosed = false;
+    drainEntry = entry;
+    drainAction = null;
     let failed = false;
     try {
       await streamWithAssistant(text, history, {
         onDelta: (t) => {
-          entry.content += t;
-          scrollBottom();
+          renderBuf.value += t;
+          startDrain();
         },
         onDone: (act) => {
-          entry.action = act ?? undefined;
-          if (act) execAction(act);
+          streamClosed = true;
+          drainAction = act;
+          // 动作在缓冲排空后才执行（startDrain 收尾），字打完再跳页
         },
         onError: (msg) => {
-          entry.content += `（${msg}）`;
+          renderBuf.value += `（${msg}）`;
         },
       });
     } catch {
       failed = true;
     }
-    entry.streaming = false;
-    // 连接层失败 → 回退非流式接口
-    if (failed && !entry.content) {
+    // 连接层失败（流没建立）→ 回退非流式接口
+    if (failed && !entry.content && !renderBuf.value) {
+      stopDrain();
+      streamClosed = false;
+      drainEntry = null;
       messages.value.splice(messages.value.indexOf(entry), 1);
       try {
         const res = await chatWithAssistant(text, history);
@@ -236,9 +341,10 @@
       } catch {
         messages.value.push({ role: 'assistant', content: '（请求失败，稍后再试）' });
       }
+      pending.value = false;
+      scrollBottom();
     }
-    pending.value = false;
-    scrollBottom();
+    // 成功建立流的情况由 startDrain 排空后收尾（streaming=false / execAction / pending=false）
   };
 
   const clearChat = () => {
@@ -294,6 +400,7 @@
 
   onUnmounted(() => {
     if (hlTimer) clearTimeout(hlTimer);
+    stopDrain();
   });
 </script>
 
@@ -336,6 +443,7 @@
     display: flex;
     flex-direction: column;
     background: var(--color-bg-2);
+    color: var(--color-text-1);
     border: 1px solid var(--color-border-2);
     border-radius: 12px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
@@ -428,6 +536,8 @@
     background: var(--color-bg-2);
     border: 1px solid var(--color-border-2);
     border-bottom-left-radius: 2px;
+    /* 显式主题文字色：不设会继承到浏览器默认纯黑 #000，比面板其他文字死黑 */
+    color: var(--color-text-1);
   }
   .ai-msg-action {
     margin-top: 4px;
@@ -487,6 +597,63 @@
     50% {
       box-shadow: 0 0 0 6px rgba(114, 46, 209, 0.35);
       background-color: rgba(114, 46, 209, 0.08);
+    }
+  }
+
+  /* ── 助手气泡 Markdown（v-html 内容不受 scoped 约束，挂全局） ── */
+  .ai-msg-bubble.ai-md {
+    white-space: normal;
+    word-break: break-word;
+    .ai-md-h {
+      font-weight: 600;
+      font-size: 13px;
+      margin: 4px 0 2px;
+      color: var(--color-text-1);
+    }
+    .ai-md-li {
+      padding-left: 10px;
+      margin: 1px 0;
+    }
+    .ai-md-quote {
+      border-left: 3px solid rgb(var(--primary-6));
+      padding-left: 8px;
+      margin: 2px 0;
+      color: var(--color-text-2);
+    }
+    .ai-md-code {
+      font-family: 'JetBrains Mono', Consolas, monospace;
+      background: var(--color-fill-2);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: rgb(var(--primary-6));
+    }
+    .ai-md-pre {
+      background: var(--color-fill-2);
+      border-radius: 6px;
+      padding: 8px 10px;
+      overflow-x: auto;
+      margin: 4px 0;
+      code {
+        font-family: 'JetBrains Mono', Consolas, monospace;
+        font-size: 12px;
+        color: var(--color-text-1);
+        background: none;
+        padding: 0;
+      }
+    }
+    a {
+      color: rgb(var(--primary-6));
+      text-decoration: none;
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+    strong {
+      font-weight: 600;
+    }
+    del {
+      color: var(--color-text-3);
     }
   }
 </style>
