@@ -14,17 +14,70 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-# ⚠️ 服务器是 Python 3.10（/usr/bin/python3 = 3.10.12），而 tomllib 是 3.11+ 才有的。
-# 本地测试环境是 3.12 有 tomllib，所以这里必须做兼容，否则服务器上 import 就炸。
+# ── TOML 解析器选择：为什么优先用第三方 `toml` 而不是标准库 `tomllib` ──
+#
+# ⚠️ 这不是随便选的，是踩出来的：
+#
+# 服务器的 `config/bot_config.toml` 里有**裸中文键名**（`bot的名字 = "幻梦"`、
+# `回复兴趣 = 8`），而 TOML 1.0 规范要求含非 ASCII 的键必须加引号。
+#
+#   tomllib（标准库，严格）→ 直接报错 "Expected '=' after a key"
+#   toml  （PyPI 包，宽松）→ 正常解析
+#
+# 而 bot 自己的 `core/config.py` 用的是 `import toml`（宽松版），
+# 所以它一直跑得好好的。面板若坚持用 tomllib，就会出现
+# "bot 能读、面板读不了"的荒唐局面 —— 面板必须跟 bot 保持一致。
+#
+# 优先级：toml（跟 bot 一致）→ tomllib → tomli → 正则兜底
 try:
-    import tomllib                      # Python 3.11+
-except ModuleNotFoundError:             # Python 3.10
-    try:
-        import tomli as tomllib         # type: ignore  # 若装了 tomli
-    except ModuleNotFoundError:
-        tomllib = None                  # type: ignore  # 退化为极简解析
+    import toml as _toml_loose          # 与 core/config.py 保持一致
+except ModuleNotFoundError:
+    _toml_loose = None
 
-PANEL_API_VERSION = "v0.1.0"
+try:
+    import tomllib as _toml_strict      # Python 3.11+
+except ModuleNotFoundError:
+    try:
+        import tomli as _toml_strict    # type: ignore  # Python 3.10 的替代品
+    except ModuleNotFoundError:
+        _toml_strict = None             # type: ignore
+
+
+def toml_loads(text: str) -> dict:
+    """按与 bot 一致的宽松规则解析 toml。
+
+    抛 ValueError 表示两个解析器都不认这个文件。
+    """
+    if _toml_loose is not None:
+        try:
+            return _toml_loose.loads(text)
+        except Exception as e:
+            last = e
+    else:
+        last = RuntimeError("未安装 toml 包")
+
+    if _toml_strict is not None:
+        try:
+            return _toml_strict.loads(text)
+        except Exception as e:
+            last = e
+
+    raise ValueError(str(last)[:300])
+
+
+def toml_available() -> str:
+    """返回当前可用的解析器名字，供 /api/system/info 展示"""
+    if _toml_loose is not None:
+        return "toml(宽松，与 bot 一致)"
+    if _toml_strict is not None:
+        return "tomllib(严格)"
+    return "无(仅正则兜底)"
+
+
+# 兼容旧引用（panel/routers/config_editor.py 曾用 panel_config.tomllib）
+tomllib = _toml_loose or _toml_strict
+
+PANEL_API_VERSION = "v2.3.0"
 
 # 项目根目录（panel/ 的上一级）
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,6 +90,8 @@ AUDIT_FILE = PANEL_DIR / "audit.log"
 CORS_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://localhost:5173",
+    "http://127.0.0.1:5174",
+    "http://localhost:5174",
 ]
 
 

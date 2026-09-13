@@ -21,7 +21,19 @@ CST = timezone(timedelta(hours=8))
 _bearer = HTTPBearer(auto_error=False)
 
 # ── 登录失败限速（内存计数，重启即清，够用） ──────────────
+#
+# v2.3.0 起从"固定阈值"升级为"递增封禁"。
+# 原因：去掉 nginx BasicAuth 后应用层成了唯一防线，固定 5 次/5 分钟
+# 挡不住慢速爆破（每 5 分钟试 5 次，一天 1440 次）。
+#
+# 现在按**连续失败轮次**递增：每再触发一轮，锁定时间翻倍。
+#   第 1 轮 → 5 分钟
+#   第 2 轮 → 10 分钟
+#   第 3 轮 → 20 分钟 …直到上限 24 小时
+# 成功登录立刻清零 —— 正常用户打错一次密码不受影响。
 _fails: dict[str, list[float]] = {}
+_rounds: dict[str, int] = {}          # ip -> 已触发过几轮封禁
+_banned_until: dict[str, float] = {}  # ip -> 解封时间戳
 
 
 def _client_ip(request: Request) -> str:
@@ -35,10 +47,22 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# 递增封禁的上限（秒）。24 小时 —— 再往上就没意义了，攻击者换个 IP 成本更低
+_MAX_LOCK = 24 * 3600
+
+
 def login_locked(ip: str) -> int:
     """返回剩余锁定秒数，0 表示未锁定"""
-    cfg = config.load()
     now = time.time()
+    cfg = config.load()
+
+    # 递增封禁优先
+    until = _banned_until.get(ip, 0)
+    if until > now:
+        return int(until - now) + 1
+    if until:
+        _banned_until.pop(ip, None)
+
     rec = [t for t in _fails.get(ip, []) if now - t < cfg.login_lock_seconds]
     _fails[ip] = rec
     if len(rec) >= cfg.login_max_fail:
@@ -46,12 +70,42 @@ def login_locked(ip: str) -> int:
     return 0
 
 
-def record_fail(ip: str) -> None:
-    _fails.setdefault(ip, []).append(time.time())
+def record_fail(ip: str) -> int:
+    """记一次失败。达到阈值时升级为递增封禁，返回封禁秒数（0 表示未封）。"""
+    cfg = config.load()
+    now = time.time()
+    _fails.setdefault(ip, []).append(now)
+
+    recent = [t for t in _fails[ip] if now - t < cfg.login_lock_seconds]
+    if len(recent) < cfg.login_max_fail:
+        return 0
+
+    # 触发一轮封禁
+    rounds = _rounds.get(ip, 0) + 1
+    _rounds[ip] = rounds
+    lock = min(cfg.login_lock_seconds * (2 ** (rounds - 1)), _MAX_LOCK)
+    _banned_until[ip] = now + lock
+    _fails[ip] = []          # 清空计数，下一轮重新累积
+    return int(lock)
 
 
 def clear_fails(ip: str) -> None:
+    """登录成功：计数与轮次全清。正常用户不该被历史拖累。"""
     _fails.pop(ip, None)
+    _rounds.pop(ip, None)
+    _banned_until.pop(ip, None)
+
+
+def fail_stats(ip: str) -> dict:
+    """给登录接口用，返回当前这个 IP 的状态（便于前端提示还要等多久）"""
+    cfg = config.load()
+    now = time.time()
+    return {
+        "recent_fails": len([t for t in _fails.get(ip, [])
+                             if now - t < cfg.login_lock_seconds]),
+        "rounds": _rounds.get(ip, 0),
+        "locked_seconds": login_locked(ip),
+    }
 
 
 # ── Token ────────────────────────────────────────────────
