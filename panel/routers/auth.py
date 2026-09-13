@@ -31,7 +31,17 @@ async def auth_status():
         "ok": True,
         "initialized": cfg.secret_configured,
         "token_ttl_hours": cfg.token_ttl_hours,
+        "api_version": config.PANEL_API_VERSION,
     }
+
+
+def _fmt_wait(sec: int) -> str:
+    """把秒数说成人话 —— "还要等 300 秒" 不如 "5 分钟" """
+    if sec >= 3600:
+        return f"{sec // 3600} 小时 {(sec % 3600) // 60} 分钟"
+    if sec >= 60:
+        return f"{sec // 60} 分钟"
+    return f"{sec} 秒"
 
 
 @router.post("/login", summary="登录")
@@ -45,13 +55,23 @@ async def login(body: LoginReq, request: Request):
     locked = auth.login_locked(ip)
     if locked:
         auth.audit(None, "login_blocked", ip, f"锁定中，剩余{locked}秒", request)
-        raise HTTPException(429, f"尝试过于频繁，请 {locked} 秒后再试")
+        raise HTTPException(
+            429, f"尝试过于频繁，请 {_fmt_wait(locked)}后再试"
+        )
 
     if not auth.verify_password(body.password):
-        auth.record_fail(ip)
-        auth.audit(None, "login_fail", ip, "密码错误", request)
-        left = cfg.login_max_fail - len(auth._fails.get(ip, []))
-        raise HTTPException(401, f"密码错误（还可尝试 {max(left, 0)} 次）")
+        ban = auth.record_fail(ip)
+        auth.audit(None, "login_fail", ip,
+                   f"密码错误（封禁 {ban}s）" if ban else "密码错误", request)
+        if ban:
+            raise HTTPException(
+                429,
+                f"失败次数过多，已临时封禁 {_fmt_wait(ban)}。"
+                "连续失败会导致封禁时间翻倍。",
+            )
+        st = auth.fail_stats(ip)
+        left = max(cfg.login_max_fail - st["recent_fails"], 0)
+        raise HTTPException(401, f"密码错误（还可尝试 {left} 次）")
 
     auth.clear_fails(ip)
     token, exp = auth.issue_token("admin")

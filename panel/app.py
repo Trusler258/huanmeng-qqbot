@@ -2,10 +2,12 @@
 
 设计要点（见 docs/panel_plan.md）：
   - 与 bot.service **完全平级的独立进程**，端口 59300，只绑 127.0.0.1
-  - 只读为主：本模块绝不 import bot.py / 不建 NapCat WS 连接
+  - 不 import bot.py / 不建 NapCat WS 连接 —— 只读它的文件和 systemd 状态
   - 默认拒绝：除登录接口外，所有 /api/* 都要求有效 token
-  - 四层防御：网络层(127.0.0.1) → 隧道层(CF Tunnel + nginx BasicAuth)
-              → 应用层(JWT) → 操作层(审计 + 二次确认)
+  - 四层防御：网络层(127.0.0.1) → 隧道层(CF Tunnel)
+              → 应用层(JWT + 递增封禁) → 操作层(审计 + 二次确认 + 自愈回滚)
+  - v2.3.0 起：可写面扩展到全部配置/提示词/数据/运行控制，
+    并由 selfheal 看门狗保证"改崩了能自己退回来"
 """
 
 from __future__ import annotations
@@ -17,19 +19,25 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from panel import config
+from panel import config, selfheal
 from panel.routers import (
+    assistant,
     auth,
     commands,
+    config_editor,
+    database,
     economy,
     earthquake,
     features,
     games,
+    groups,
     logs,
+    media,
     memory,
     messages,
     overview,
     plugins,
+    prompts,
     social,
     system,
 )
@@ -47,16 +55,20 @@ async def lifespan(app: FastAPI):
             "⚠️ 面板未初始化管理员密码，/api/auth/login 将拒绝所有登录。"
             "请执行: python -m panel.cli init"
         )
+    # 崩溃自愈看门狗：只有面板独立进程才能做这件事
+    await selfheal.get_state().start()
     yield
+    await selfheal.get_state().stop()
     log.info("幻梦面板 API 已停止")
 
 
 app = FastAPI(
     title="幻梦 Bot 控制面板 API",
     version=config.PANEL_API_VERSION,
-    description="幻梦 QQ Bot 后台管理接口。所有写操作均记审计日志。",
+    description="幻梦 QQ Bot 后台管理接口。所有写操作均记审计日志，"
+                "并可经操作栈一键回滚。",
     lifespan=lifespan,
-    docs_url="/api/docs",          # 仅本机可达，公网需过 BasicAuth + Token
+    docs_url="/api/docs",          # 仅本机可达，公网需过隧道 + Token
     redoc_url=None,
     openapi_url="/api/openapi.json",
 )
@@ -109,6 +121,14 @@ for r in (
     earthquake.router,
     system.router,
     plugins.router,
+    # v2.3.0 新增
+    groups.router,
+    media.router,
+    database.router,
+    config_editor.router,
+    prompts.router,
+    # v2.3.1 AI 助手
+    assistant.router,
 ):
     app.include_router(r, prefix="/api")
 
