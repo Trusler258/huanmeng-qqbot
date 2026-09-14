@@ -1,19 +1,19 @@
 # 洛花星雨 Nexus API 反扒文档
 
-> 最后更新: 2026-09-14（第三次反扒）
+> 最后更新: 2026-09-14（第三次反扒）>   
 > 本文件记录 `https://www.wdsj.net/nexus` 公开 API 的实测结构与变更，供 `services/wdsj_api.py` 及后续开发参考。
 
 ---
 
 ## 1. 基址与通用约定
 
-| 项 | 值 |
-|---|---|
-| API 基址 | `https://www.wdsj.net/nexus` |
-| 鉴权 | 无（公开 API） |
-| 必须请求头 | `Referer: https://www.wdsj.net/nexus/stats`（缺失时部分端点被风控） |
-| 响应码 | `{"code": 0, "message": "success", "data": {...}}`，`code != 0` 为业务错误 |
-| 404 错误体 | Spring Boot 风格 `{"timestamp","status","error","path"}`（端点不存在或玩家不存在） |
+| 项       | 值                                                                    |
+| ------- | -------------------------------------------------------------------- |
+| API 基址  | `https://www.wdsj.net/nexus`                                         |
+| 鉴权      | 无（公开 API）                                                            |
+| 必须请求头   | `Referer: https://www.wdsj.net/nexus/stats`（缺失时部分端点被风控）              |
+| 响应码     | `{"code": 0, "message": "success", "data": {...}}`，`code != 0` 为业务错误 |
+| 404 错误体 | Spring Boot 风格 `{"timestamp","status","error","path"}`（端点不存在或玩家不存在）  |
 
 **风控注意**：服务器 IP 曾因高频请求被 CrowdSec 封禁（HTTP 403）。项目内置 `WDSJ_PROXY` 环境变量走 Cloudflare Worker 中转；实测本地（广东家用宽带）直连正常。
 
@@ -21,16 +21,16 @@
 
 ## 2. 端点总览
 
-| 端点 | 说明 | 状态 |
-|---|---|---|
-| `GET /api/v1/templates` | 战绩模板列表（含中文名、卡片背景） | ✅ |
-| `GET /api/v1/leaderboards` | 排行榜领域/榜单列表 | ✅ |
-| `GET /api/v1/leaderboards/{boardId}?type={period}` | 某榜单某周期的排名 | ✅ |
-| `GET /api/v1/players/{identity}/templates/{template}` | 玩家指定模板战绩 | ✅ |
-| `GET /api/v1/player-heads/{name}/head.png` | 玩家头像 | ✅ |
-| `GET /api/v1/images/{snapshotKey}` | 战绩快照图（webp） | ✅ 新增 |
-| `GET /api/v1/players/{identity}` | 玩家档案 | 404（未开放） |
-| `GET /api/v1/guilds` `titles` `tags` `status` | 其他 | 404（未开放） |
+| 端点                                                    | 说明                | 状态       |
+| ----------------------------------------------------- | ----------------- | -------- |
+| `GET /api/v1/templates`                               | 战绩模板列表（含中文名、卡片背景） | ✅        |
+| `GET /api/v1/leaderboards`                            | 排行榜领域/榜单列表        | ✅        |
+| `GET /api/v1/leaderboards/{boardId}?type={period}`    | 某榜单某周期的排名         | ✅        |
+| `GET /api/v1/players/{identity}/templates/{template}` | 玩家指定模板战绩          | ✅        |
+| `GET /api/v1/player-heads/{name}/head.png`            | 玩家头像              | ✅        |
+| `GET /api/v1/images/{snapshotKey}`                    | 战绩快照图（webp）       | ✅ 新增     |
+| `GET /api/v1/players/{identity}`                      | 玩家档案              | 404（未开放） |
+| `GET /api/v1/guilds` `titles` `tags` `status`         | 其他                | 404（未开放） |
 
 ---
 
@@ -57,26 +57,26 @@ GET /api/v1/templates
 
 **18 个模板全表**（2026-09-14 实测）：
 
-| id | displayName |
-|---|---|
-| bedwars-stats | 起床战争 |
-| knockbackwars-stats | 击退战场 |
-| arena-stats | 竞技场 |
+| id                     | displayName   |
+| ---------------------- | ------------- |
+| bedwars-stats          | 起床战争          |
+| knockbackwars-stats    | 击退战场          |
+| arena-stats            | 竞技场           |
 | **arena-modern-stats** | **高版本竞技场** 🆕 |
-| kitpvp-stats | 职业战争 |
-| skywars-stats | 空岛战争 |
-| thepit-stats | 天坑乱斗 |
-| colorwars-stats | 色盲战争 |
-| drawguess-stats | 你画我猜 |
-| hideandseek-stats | 躲猫猫 |
-| murdermystery-stats | 神秘谋杀 |
-| uhc-stats | 极限生存 |
-| watercube-stats | 星跃水立方 |
-| buildbattle-stats | 建筑战争 |
-| villagedefense-stats | 村庄保卫战 |
-| naturaldisasters-stats | 天灾逃生 |
-| csgo-stats | 反恐精英 |
-| **luckypillars-stats** | **幸运之柱** 🆕 |
+| kitpvp-stats           | 职业战争          |
+| skywars-stats          | 空岛战争          |
+| thepit-stats           | 天坑乱斗          |
+| colorwars-stats        | 色盲战争          |
+| drawguess-stats        | 你画我猜          |
+| hideandseek-stats      | 躲猫猫           |
+| murdermystery-stats    | 神秘谋杀          |
+| uhc-stats              | 极限生存          |
+| watercube-stats        | 星跃水立方         |
+| buildbattle-stats      | 建筑战争          |
+| villagedefense-stats   | 村庄保卫战         |
+| naturaldisasters-stats | 天灾逃生          |
+| csgo-stats             | 反恐精英          |
+| **luckypillars-stats** | **幸运之柱** 🆕   |
 
 > 🆕 = v2（2026-08-27）之后新增。`arena-modern-stats` 与 `luckypillars-stats` 是本次发现。
 
@@ -128,13 +128,13 @@ GET /api/v1/leaderboards/{boardId}?type={period}
 
 `period` 取值（以 `periods` 字段为准）：
 
-| 值 | 说明 | 实测 |
-|---|---|---|
-| `ALLTIME` | 总榜 | ✅ |
-| `MONTHLY` | 月榜 | ✅ |
-| `WEEKLY` | 周榜 | ✅ |
-| `DAILY` | 日榜 | ✅ |
-| `SEASON` | 赛季榜 | ✅ 2026-s3（26S3，ACTIVE） |
+| 值          | 说明              | 实测                                     |
+| ---------- | --------------- | -------------------------------------- |
+| `ALLTIME`  | 总榜              | ✅                                      |
+| `MONTHLY`  | 月榜              | ✅                                      |
+| `WEEKLY`   | 周榜              | ✅                                      |
+| `DAILY`    | 日榜              | ✅                                      |
+| `SEASON`   | 赛季榜             | ✅ 2026-s3（26S3，ACTIVE）                 |
 | `SEASONAL` | ❌ 不存在的拼写，返回 400 | 400 `排行榜 bedwars-wins 不支持周期: SEASONAL` |
 
 返回 `data`:
@@ -168,12 +168,12 @@ GET /api/v1/players/{identity}/templates/{template}
 
 `identity` 前缀：
 
-| 前缀 | 含义 | 实测 |
-|---|---|---|
-| `name:` | 玩家名 | ✅ 默认 |
-| `nick:` | 昵称 | ✅ |
-| `uuid:` | UUID | ❌ **服务端已禁用** |
-| `uid:` | 数字 UID | ❌ **400「当前服务器不允许使用 uid 查询玩家」** |
+| 前缀      | 含义     | 实测                             |
+| ------- | ------ | ------------------------------ |
+| `name:` | 玩家名    | ✅ 默认                           |
+| `nick:` | 昵称     | ✅                              |
+| `uuid:` | UUID   | ❌ **服务端已禁用**                   |
+| `uid:`  | 数字 UID | ❌ **400「当前服务器不允许使用 uid 查询玩家」** |
 
 > 注意：`templates` API 返回 `allowedIdentityTypes: ["name", "nick"]` —— uid/uuid 均已停用。项目代码 `IDENTITY_TYPES` 仍含 uid/uuid，属误导（保留仅作兼容）。
 
@@ -221,6 +221,7 @@ GET /api/v1/players/{identity}/templates/{template}
 ```
 GET /api/v1/player-heads/{name}/head.png
 ```
+
 - 玩家名（URL 编码）
 - 返回 `image/png`（实测 552B 小图，864³ 级别像素头像）
 
@@ -228,16 +229,16 @@ GET /api/v1/player-heads/{name}/head.png
 
 ## 4. 与项目现有代码的差异（2026-09-14）
 
-| 差异 | 现有代码 | 线上实际 | 影响 |
-|---|---|---|---|
-| 模板 | 16 个 | **18 个** | `arena-modern-stats`、`luckypillars-stats` 缺失 |
-| 榜单 | 别名覆盖 62/86 | 86 个 | **24 个新榜单查不到**（见 §5） |
-| 条目字段 | 已用 `owner` ✅ | `owner` | 无（HTML 构建处正确） |
-| 周期 | `ALLTIME/MONTHLY/WEEKLY/DAILY` | **+ `SEASON`** | `PERIOD_LABELS` 缺 SEASON |
-| 战绩 | 只用 `headerCards` | labels/values/summaryCards/imageUrl | 摘要可更丰富 |
-| uid 查询 | 声明支持 | **400 禁用** | 用 uid 会失败 |
-| **标识类型** | `name/nick/uid/uuid` | **仅 `name`/`nick`** | **uuid 也被禁用**，`IDENTITY_TYPES` 误导 |
-| 周期支持 | 假定每榜都全支持 | **按榜可选** | `periods` 字段为准（见 §3.3） |
+| 差异       | 现有代码                           | 线上实际                                | 影响                                           |
+| -------- | ------------------------------ | ----------------------------------- | -------------------------------------------- |
+| 模板       | 16 个                           | **18 个**                            | `arena-modern-stats`、`luckypillars-stats` 缺失 |
+| 榜单       | 别名覆盖 62/86                     | 86 个                                | **24 个新榜单查不到**（见 §5）                         |
+| 条目字段     | 已用 `owner` ✅                   | `owner`                             | 无（HTML 构建处正确）                                |
+| 周期       | `ALLTIME/MONTHLY/WEEKLY/DAILY` | **+ `SEASON`**                      | `PERIOD_LABELS` 缺 SEASON                     |
+| 战绩       | 只用 `headerCards`               | labels/values/summaryCards/imageUrl | 摘要可更丰富                                       |
+| uid 查询   | 声明支持                           | **400 禁用**                          | 用 uid 会失败                                    |
+| **标识类型** | `name/nick/uid/uuid`           | **仅 `name`/`nick`**                 | **uuid 也被禁用**，`IDENTITY_TYPES` 误导            |
+| 周期支持     | 假定每榜都全支持                       | **按榜可选**                            | `periods` 字段为准（见 §3.3）                       |
 
 ---
 
@@ -267,10 +268,10 @@ GET /api/v1/player-heads/{name}/head.png
 
 实测原始 JSON 存于本地 `_probe/data/`（不入库）：
 
-| 文件 | 内容 |
-|---|---|
-| `templates.json` | 18 模板 + templateItems |
-| `boards.json` | 86 榜单全量 |
+| 文件                         | 内容                                |
+| -------------------------- | --------------------------------- |
+| `templates.json`           | 18 模板 + templateItems             |
+| `boards.json`              | 86 榜单全量                           |
 | `real_player_bedwars.json` | 真实玩家起床战争战绩（含 labels/values/cards） |
 
 ---
