@@ -43,6 +43,7 @@ TEMPLATES = {
     "uhc-stats": "极限生存", "watercube-stats": "星跃水立方",
     "buildbattle-stats": "建筑战争", "villagedefense-stats": "村庄保卫战",
     "naturaldisasters-stats": "天灾逃生", "csgo-stats": "反恐精英",
+    "arena-modern-stats": "高版本竞技场", "luckypillars-stats": "幸运之柱",
 }
 
 ALIASES = {
@@ -53,9 +54,15 @@ ALIASES = {
     "uhc": "uhc-stats", "wc": "watercube-stats", "bb": "buildbattle-stats",
     "vd": "villagedefense-stats", "nd": "naturaldisasters-stats",
     "cs": "csgo-stats", "csgo": "csgo-stats",
+    "am": "arena-modern-stats", "modern": "arena-modern-stats",
+    "lp": "luckypillars-stats", "pillar": "luckypillars-stats",
 }
 
+# 模板中文名 -> id（支持 /~wdsj 幸运之柱 xxx 这种自然说法）
+TEMPLATE_CN = {v: k for k, v in TEMPLATES.items()}
+
 # v2: 玩家标识类型（templates API 返回 allowedIdentityTypes）
+# 注意: uid 已被服务端禁用（实测返回 400 "当前服务器不允许使用 uid 查询玩家"），保留仅作兼容
 IDENTITY_TYPES = ("name", "nick", "uid", "uuid")
 
 BOARD_ALIASES = {
@@ -86,12 +93,13 @@ BOARD_SHORTHAND = {
     ("cw", "kill"): "色盲战争-杀敌", ("has", "win"): "躲猫猫-获胜",
 }
 
-PERIOD_LABELS = {"ALLTIME": "总榜", "MONTHLY": "月榜", "WEEKLY": "周榜", "DAILY": "日榜"}
+PERIOD_LABELS = {"ALLTIME": "总榜", "MONTHLY": "月榜", "WEEKLY": "周榜", "DAILY": "日榜", "SEASON": "赛季"}
 
 
 def resolve_template(raw: str) -> str | None:
     raw = raw.lower()
     if raw in TEMPLATES: return raw
+    if raw in TEMPLATE_CN: return TEMPLATE_CN[raw]
     return ALIASES.get(raw)
 
 
