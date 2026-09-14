@@ -4,7 +4,7 @@
   <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=28&duration=3200&pause=900&color=8B7BFF&center=true&vCenter=true&width=620&lines=HuanMeng+%C2%B7+%E5%B9%BB%E6%A2%A6;LLM-Powered+QQ+Bot;NapCat+%2B+OneBot+v11+%2B+DeepSeek;Memory+that+doesn%27t+forget" alt="HuanMeng QQ Bot" />
 </a>
 
-**记得住，能扩展。**
+**记得住，能扩展**
 
 <sub>189 个 Python 文件 · 45 个模块 · 76 条指令 · 131 次提交</sub>
 
@@ -33,21 +33,21 @@
 ---
 
 > [!IMPORTANT]
-> QQ 平台上有个第三方公开的同名「幻梦」机器人，跟这个项目无关。「幻梦」只是默认角色名。
-> 本项目基于 [NapCat](https://github.com/NapNeko/NapCatQQ) 协议适配，与官方接口、机器人平台无关。
+> QQ 平台上有个第三方公开的同名「幻梦」机器人，跟这个项目无关；「幻梦」只是默认角色名
+> 本项目基于 [NapCat](https://github.com/NapNeko/NapCatQQ) 协议适配，与官方接口、机器人平台无关
 >
-> 社区开源版，部分私有模块未包含。
+> 社区开源版，部分私有模块未包含
 
 ---
 
 <a id="overview"></a>
 ## 概览
 
-上下文不是 `history[-N:]`。
+上下文不是 `history[-N:]`
 
-对话历史按 200 条切块，封存后不再改动；攒够 20 块交给便宜模型压成摘要，摘要只往后追加。整段历史只追加，前缀不会被打散。
+对话历史按 200 条切块，封存后不再改动；攒够 20 块交给便宜模型压成摘要，摘要只往后追加；整段历史只追加，前缀不会被打散
 
-另一条线是扩展性：插件热插拔，指令和工具都通过能力注册表挂载，KOOK 的插件能直接拿来跑。
+另一条线是扩展性：插件热插拔，指令和工具都通过能力注册表挂载，KOOK 的插件能直接拿来跑
 
 <table>
 <tr>
@@ -104,7 +104,7 @@
 <a id="arch"></a>
 ## 架构
 
-四层：核心、服务、模块、工具。任何一层缺失都不影响聊天主流程。
+四层：核心、服务、模块、工具；任何一层缺失都不影响聊天主流程
 
 ```mermaid
 flowchart TB
@@ -233,12 +233,6 @@ flowchart TB
 SYSTEM  →  长期记忆  →  会话摘要  →  BLOCK 1..N（冻结）  →  当前块  →  当前消息
 ```
 
-### 为什么是分块
-
-前缀缓存按 token 逐个匹配，中间改一个字后面全废。`history[-200:]` 每来一条新消息就整体前移一位，等于每轮把前缀打碎，实测只有 58% 命中。
-
-分块之后历史只追加：新消息只进当前块，封存块不改，摘要也只追加。
-
 ### 层级
 
 | 层 | 存在哪 | 说明 |
@@ -251,7 +245,7 @@ SYSTEM  →  长期记忆  →  会话摘要  →  BLOCK 1..N（冻结）  →  
 
 ### 跨会话记忆
 
-同一个人在私聊和群聊说的话本来互不相通。`/~mlink` 让指定会话共享记忆，但不合并身份，LLM 始终知道每条来自哪里。
+同一个人在私聊和群聊说的话本来互不相通；`/~mlink` 让指定会话共享记忆，但不合并身份，LLM 始终知道每条来自哪里
 
 ```
 /~mlink add p123456789    关联私聊
@@ -269,14 +263,14 @@ SYSTEM  →  长期记忆  →  会话摘要  →  BLOCK 1..N（冻结）  →  
 幻梦: 那个确实值得优化
 ```
 
-群聊来源只注入机器人自己的发言，群成员原话不出群。关联别人的私聊要对方同意，拒绝不告知请求方。
+群聊来源只注入机器人自己的发言，群成员原话不出群；关联别人的私聊要对方同意，拒绝不告知请求方
 
 ---
 
 <a id="plugin"></a>
 ## 插件系统
 
-插件 = `plugins/<name>/manifest.json` + `main.py`（类名 `Plugin`，构造函数收 `ctx`）。
+插件 = `plugins/<name>/manifest.json` + `main.py`（类名 `Plugin`，构造函数收 `ctx`）
 
 ```mermaid
 flowchart LR
@@ -310,7 +304,7 @@ flowchart LR
 
 </details>
 
-插件库里大部分 `.hmp` 是给 KOOK 机器人写的，加载时注入 `khl` / `kook` 假模块并剥掉 KMarkdown 标记，不用改插件源码。
+插件库里大部分 `.hmp` 是给 KOOK 机器人写的，加载时注入 `khl` / `kook` 假模块并剥掉 KMarkdown 标记，不用改插件源码
 
 ```bash
 /~plugin list              # 已装插件
@@ -353,7 +347,7 @@ flowchart TB
 ## 部署
 
 > [!WARNING]
-> QQ 账号等级 16 级以上，建议开 VIP。生产环境用 Linux。
+> QQ 账号等级 16 级以上，建议开 VIP；生产环境用 Linux
 
 <details>
 <summary><b>第一步 · Python 3.10+</b></summary>
@@ -381,7 +375,7 @@ napcat                # 打开 TUI 扫码登录
 napcat start <QQ号>   # 启动，默认 WebSocket 8099
 ```
 
-Windows 从 [NapCatQQ Releases](https://github.com/NapNeko/NapCatQQ/releases) 下解压包。
+Windows 从 [NapCatQQ Releases](https://github.com/NapNeko/NapCatQQ/releases) 下解压包
 
 | 资源 | 地址 |
 |------|------|
@@ -416,7 +410,7 @@ python main.py
 
 <br>
 
-默认 `ws://127.0.0.1:8099/`。要改：
+默认 `ws://127.0.0.1:8099/`；要改：
 
 ```toml
 [napcat_server]
@@ -437,7 +431,7 @@ port = 8099
 <a id="commands"></a>
 ## 指令手册
 
-共 **76 条指令**，含别名共 108 个触发词。`/~help` 会按当前功能开关生成卡片。
+共 **76 条指令**，含别名共 108 个触发词；`/~help` 会按当前功能开关生成卡片
 
 <details>
 <summary><b>聊天</b>（1 条）</summary>
@@ -585,7 +579,7 @@ port = 8099
 <a id="persona"></a>
 ## 自定义人设
 
-角色自己写，默认那个猫娘只是示范。`config/bot_config.toml` 三段：
+角色自己写，默认那个猫娘只是示范；`config/bot_config.toml` 三段：
 
 ```toml
 [personality]
@@ -602,7 +596,7 @@ identity = """
 """
 ```
 
-好感度随对话变化，不同档位语气不同，跟角色无关，你写什么角色都照常跑。
+好感度随对话变化，不同档位语气不同，跟角色无关，你写什么角色都照常跑
 
 提示词分层放 `data/skills/*.md`，改完 `/~reload` 热加载：
 
@@ -630,24 +624,24 @@ identity = """
 
 </div>
 
-版本演进见 [`data/update_log.md`](data/update_log.md)。
+版本演进见 [`data/update_log.md`](data/update_log.md)
 
 ---
 
 ## 赞赏
 
-赞赏码不在仓库里，要用自己放 `data/images/reward_qrcode.png`。
+赞赏码 `data/images/reward_qrcode.png`，不在仓库内
 
 ---
 
 ## 贡献
 
-欢迎 PR。几个约定：
+PR 约定：
 
 1. 新指令在 `modules/commands.py` 的 `COMMAND_MAP` 注册
 2. 同时在 `modules/help_card.py` 补 `_CATEGORY` 和 `_EXTRA_DESC`，这两处是 `/~help` 和 LLM 指令清单的共同来源
-3. 提示词写进 `data/skills/*.md`，别硬编码到 Python
-4. `data/update_log.md` 最新版本写最上面
+3. 提示词写进 `data/skills/*.md`，不写进 Python
+4. `data/update_log.md` 最新版本在最上面
 
 ---
 
@@ -664,10 +658,3 @@ identity = """
 - [DeepSeek](https://platform.deepseek.com/) — 大语言模型
 - [智谱 AI](https://open.bigmodel.cn/) — 视觉模型
 
-<br>
-
-<div align="center">
-
-<sub>有帮助的话点个 Star</sub>
-
-</div>
