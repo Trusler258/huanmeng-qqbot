@@ -280,7 +280,7 @@ _MC_COLOR_RE = None
 
 
 def _strip_mc_color(s) -> str:
-    """剥离 Minecraft 颜色码（如 §3 铂金 III -> 铂金 III）"""
+    """剥离 Minecraft 颜色码（备用；卡片渲染已改为保留颜色码由前端着色）"""
     import re as _re
     global _MC_COLOR_RE
     if _MC_COLOR_RE is None:
@@ -301,13 +301,16 @@ def build_dual_card_html(bw_data: Optional[dict], ar_data: Optional[dict]) -> st
         return _html.escape(str(s), quote=True)
 
     def fields_of(data) -> list:
-        """按 API 返回顺序全量提取 [key, label, value]"""
+        """按 API 返回顺序全量提取 [key, label, value]
+
+        注意：值保留 Minecraft 颜色码（如 §3铂金 III），由前端渲染成真实颜色。
+        """
         data = data or {}
         labels = data.get("labels") or {}
         values = data.get("values") or {}
         out = []
         for k, v in values.items():
-            out.append([k, esc(labels.get(k, k)), esc(_strip_mc_color(v))])
+            out.append([k, esc(labels.get(k, k)), esc(v)])
         return out
 
     def display_of(data, default: str) -> str:
@@ -336,7 +339,7 @@ def build_dual_card_html(bw_data: Optional[dict], ar_data: Optional[dict]) -> st
         },
         "ar": {
             "displayName": display_of(ar_data, "竞技场"),
-            "division": _strip_mc_color(ar_values.get("division", "")),
+            "division": ar_values.get("division", ""),
             "fields": fields_of(ar_data),
         },
     }
