@@ -76,10 +76,30 @@ async def is_writing_request(msg: str, chat_history: list[str] | None = None) ->
         return not _CODE_KEYWORDS.search(msg)
 
 
-# ★ 写作专用系统提示词（无 ||| 格式约束）
-WRITING_SYSTEM_PROMPT = """你是一个写作助手。请根据用户的要求写完整的文章/信件/代码。
+# ★ 写作提示词统一放 data/skills/80_writing.md（v2.3.9 从本文件硬编码抽出）
+#   读取失败时用下面的最小兜底，保证管道不会因为缺文件而写不出东西。
+_WRITING_SYS_FALLBACK = """你是一个写作助手。请根据用户的要求写完整的文章/信件/代码。
 输出格式：第一行是标题。第二行空行。第三行开始是正文。
 不要用|||分隔符，不要加任何解释或聊天语气。"""
+
+_FOLLOWUP_FALLBACK = ("你刚刚帮对方写完文件并发给对方了。用 1 句简短猫娘语气收尾，"
+                      "15 字以内，称呼固定用「主人」。")
+
+
+def _writing_sections() -> tuple[str, str]:
+    """取写作提示词章节（writing_system / writing_followup）。
+
+    单一来源：data/skills/80_writing.md —— 改文案只需改那个文件，不用动代码。
+    """
+    try:
+        from services.llm import _load_skill_sections
+        sec = _load_skill_sections()
+        sys_txt = (sec.get("writing_system") or "").strip() or _WRITING_SYS_FALLBACK
+        fol_txt = (sec.get("writing_followup") or "").strip() or _FOLLOWUP_FALLBACK
+        return sys_txt, fol_txt
+    except Exception as e:
+        logger.warning("读取写作提示词章节失败，用兜底: %s", e)
+        return _WRITING_SYS_FALLBACK, _FOLLOWUP_FALLBACK
 
 
 async def generate_and_send_file(
@@ -102,12 +122,17 @@ async def generate_and_send_file(
 
     cfg = get_config()
 
+    # ★ v2.3.9: 提示词已抽到 data/skills/80_writing.md；且按要求**带上原有提示词**——
+    #   system 用 cfg.system_prompt（人设）+ 写作章节，让模型知道自己是幻梦，
+    #   同时章节里明确"正文不许出现猫娘语气/称呼"，两者不打架。
+    _writing_sys, _followup_tpl = _writing_sections()
+
     # ★ 构建写作专用 messages
     history_text = "\n".join(msg_history[-5:]) if msg_history else ""
     full_prompt = f"最近聊天记录:\n{history_text}\n\n当前请求:\n{msg}"
 
     messages = [
-        {"role": "system", "content": WRITING_SYSTEM_PROMPT},
+        {"role": "system", "content": f"{cfg.system_prompt}\n\n{_writing_sys}"},
         {"role": "user", "content": full_prompt},
     ]
 
@@ -182,12 +207,10 @@ async def generate_and_send_file(
         await asyncio.sleep(0.5)
         await send_by_chat_type(file_cq, chat_id, is_group=False, user_id=user_id)
 
-    # ★ 猫娘收尾回复
+    # ★ 猫娘收尾回复（提示词同样来自 80_writing.md 的 writing_followup 章节）
+    #   称呼固定「主人」，不看触发人是谁（用户要求，v2.3.7 起）
     from services.llm import call_llm
-    followup_prompt = (
-        f"你刚刚帮{speaker_name}写了一篇《{title}》并发给了ta。"
-        f"现在用1句简短猫娘语气收尾（如'写完了喵~ 主人看看怎么样'），15字以内，不要用|||。"
-    )
+    followup_prompt = f"你刚刚帮对方写了《{title}》并把文件发给对方了。\n{_followup_tpl}"
     try:
         followup = await call_llm(cfg.reply_model, [
             {"role": "system", "content": cfg.system_prompt},

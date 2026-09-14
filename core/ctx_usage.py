@@ -16,8 +16,11 @@ from core.logger import get_logger
 
 logger = get_logger("ctx")
 
-# 上下文窗口上限（deepseek-flash = DeepSeek-V4.1-Flash，1M 上下文；留安全余量按 960K 计）
-CTX_WINDOW = 960_000
+# 上下文窗口上限：deepseek-flash = DeepSeek-V4.1-Flash，真实 1M = 1,048,576 tokens。
+# v2.3.10 用户指正：原来写 960K（"留安全余量"）导致 /~ctx 显示与实际窗口对不上——
+# 改为真实值；安全余量改由告警阈值体现，而不是谎报窗口大小。
+CTX_WINDOW = 1_048_576
+CTX_WARN_RATIO = 0.9
 
 # 超长注入的内容要截断，避免 /~ctx 自己也把上下文撑爆
 _MAX_PREVIEW = 60
@@ -173,7 +176,8 @@ def build_ctx_report(chat_id: int, user_id: int = 0, is_group: bool = True, samp
     reminder_text = ""
     try:
         from services.llm import _build_reminder
-        reminder_text = _build_reminder("reply_reminder", ctx_hint=ctx_hint, max_chars=max_chars)
+        reminder_text = _build_reminder("reply_reminder", ctx_hint=ctx_hint,
+                                        max_chars=max_chars, no_repeat="")
     except Exception as e:
         logger.warning("ctx: 格式提醒读取失败 %s", e)
         reminder_text = ""
@@ -198,12 +202,26 @@ def build_ctx_report(chat_id: int, user_id: int = 0, is_group: bool = True, samp
     lines = []
     lines.append(f"上下文用量 {pct:.1f}% · {fmt_tokens(total)} / {fmt_tokens(CTX_WINDOW)}")
     lines.append(f"`{bar(total, CTX_WINDOW)}`")
+    # 接近窗口上限的显式告警（安全余量在这里体现，而不是谎报窗口大小）
+    if pct >= CTX_WARN_RATIO * 100:
+        lines.append(f"⚠️ 已用 {pct:.1f}%，超过 {CTX_WARN_RATIO:.0%} 警戒线——该压缩历史了")
     lines.append("")
     # 固定部分
     lines.append(f"System Prompt  ~{fmt_tokens(tokens['System Prompt'])}   {fmt_pct(tokens['System Prompt'], CTX_WINDOW)}")
     lines.append(f"参考资料     ~{fmt_tokens(tokens['参考资料'])}   {fmt_pct(tokens['参考资料'], CTX_WINDOW)}")
     lines.append("")
-    lines.append(f"Conversation   ~{fmt_tokens(tokens['Conversation'])}   {fmt_pct(tokens['Conversation'], CTX_WINDOW)}  ({len(history[-max_lines:])}条/上限{max_lines}条)")
+    # 会话历史（v2.3.10 起是分块结构：摘要 + 封存块 + 当前块）
+    cap_txt = f"分块上限{max_lines}条"
+    try:
+        from core.context_manager import get_context_mgr, BLOCK_SIZE, MAX_BLOCKS
+        st = get_context_mgr().block_stats(chat_id)
+        cap_txt = (f"{st['closed_blocks']}块+当前{st['current']}条"
+                   f"/容量{(MAX_BLOCKS + 1) * BLOCK_SIZE}条")
+        if st.get("summaries"):
+            cap_txt += f"·摘要{st['summaries']}段"
+    except Exception:
+        pass
+    lines.append(f"Conversation   ~{fmt_tokens(tokens['Conversation'])}   {fmt_pct(tokens['Conversation'], CTX_WINDOW)}  ({len(history)}条 {cap_txt})")
     lines.append(f"注入信息     ~{fmt_tokens(tokens['注入信息'])}   {fmt_pct(tokens['注入信息'], CTX_WINDOW)}")
     lines.append(f"格式提醒     ~{fmt_tokens(tokens['格式提醒'])}   {fmt_pct(tokens['格式提醒'], CTX_WINDOW)}")
     lines.append(f"当前消息     ~{fmt_tokens(tokens['当前消息'])}   {fmt_pct(tokens['当前消息'], CTX_WINDOW)}")
