@@ -17,6 +17,7 @@ v2.3.3 流式改造：
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -26,6 +27,8 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from panel import auth, config
+
+logger = logging.getLogger("panel.assistant")
 
 router = APIRouter(prefix="/assistant", tags=["AI 助手"],
                    dependencies=[Depends(auth.require_user)])
@@ -69,7 +72,13 @@ CONFIG_FILES = [
     "lang.toml",
     "roles.toml",
     "adapter_config.toml",
+    "version.toml",
 ]
+
+# 可预填的数据类目标（fill 动作白名单）：kind -> 允许的参数名
+FILL_TARGETS: dict[str, set[str]] = {
+    "luck": {"qq", "value", "date"},
+}
 
 
 def _collect_config_keys() -> str:
@@ -138,6 +147,26 @@ def _collect_config_keys() -> str:
     return "\n".join(lines)
 
 
+# ── 项目知识库（单一来源：data/assistant_kb.md）──
+# 为什么不写进本文件：知识库要经常改（页面能力变了就得更新），
+# 单独成文件便于维护，也让 assistant.py 专注逻辑。
+KB_FILE = config.DATA_DIR / "assistant_kb.md"
+
+
+def _load_kb() -> str:
+    """读项目知识库。缺失 → 返回提示串（而不是静默空着，否则助手会瞎猜）"""
+    try:
+        txt = KB_FILE.read_text(encoding="utf-8").strip()
+        if txt:
+            return txt
+    except Exception as e:
+        logger.warning("assistant_kb.md 读取失败: %s", e)
+    return "（知识库缺失：data/assistant_kb.md 不存在，请谨慎回答，不确定就说不确定）"
+
+
+KB_TEXT = _load_kb()
+
+
 # ── 人设：bot 人设核心的精简版（bot_config.toml [personality] 提炼） ──
 # 为什么不直接读 personality_core 全文：那 1500+ 字含群聊标签/好感度/外貌等
 # 与面板助手无关的设定，稀释动作标记的执行力。精简版只保留语气与长短规则。
@@ -152,24 +181,38 @@ PERSONA = """你是幻梦，一只会写代码的猫娘，也是这个管理面�
 
 SYSTEM_PROMPT_STATIC = """
 
+# 项目知识库（最重要 —— 回答任何"在哪/怎么改"的问题都以它为准）
+以下是本项目的真实结构。**宁可说"我不确定"，也不许凭常识猜**——
+比如版本号在 config/version.toml，绝不能说成 pyproject.toml：
+
+""" + KB_TEXT + """
+
 # 你的能力边界
-- 你只负责指路、解释、答疑，你不能执行任何写操作
+- 你能回答问题、指路，也能**替主人把改动准备好**（跳到页面 + 填好参数，他点保存就行）
+- 你不能直接改数据/配置（那是主人点确认的事），也不能改代码文件
 - 面板共 17 个页面，页面名 → 路由：
 """ + "\n".join(f"  {k} → {v}" for k, v in PAGE_MAP.items()) + """
 
-# 常见任务指路
+# 常见任务指路（详见上面知识库）
 - 改 bot 人格/模型/权限/回复风格 → 配置编辑 → bot_config.toml（主配置）
-- 改指令提示文案 → 配置编辑 → lang.toml；管理员权限 → roles.toml；NapCat 连接 → adapter_config.toml
+- 改指令提示文案 → 配置编辑 → lang.toml；管理员 → roles.toml；NapCat → adapter_config.toml
+- **改版本号 → 配置编辑 → version.toml**（不是 pyproject.toml！）
 - .env 密钥（DEEPSEEK_KEY 等）→ 配置编辑左栏底部「.env 密钥」，只看填没填
-- bot 崩了/重启/服务管理 → 系统状态；看运行日志 → 日志；查消息记录 → 消息
-- 记忆/笔记/自认知 → 记忆；群发图片 → 图片；数据库表/SQL → 数据库；群资料 → 群管理
-- 系统提示词/skills → 提示词；好感度/用户画像 → 社交；积分/物品 → 经济；游戏数据 → 游戏
-- 地震订阅 → 地震；插件/.hmp → 插件；指令清单 → 指令；实验开关 → 实验特性
+- bot 崩了/重启/服务管理/崩溃自愈 → 系统状态；看运行日志（可导出）→ 日志
+- 查消息记录/全文搜索 → 消息；记忆/笔记/自认知 → 记忆；数据库/SQL → 数据库
+- 群资料/群成员统计 → 群管理；提示词/skills → 提示词；图片/表情库 → 图片
+- 好感度/用户画像/**幸运值** → 社交；积分/物品 → 经济；游戏数据 → 游戏
+- 地震订阅 → 地震；插件/.hmp → 插件；指令清单/LLM 可见性审计 → 指令
+- **实验开关 + 许可码生成** → 实验特性
 
-# 跳转/定位标记（可选，写在回复最后一行，最多一个）
+# 跳转/定位/预填标记（可选，写在回复最后一行，最多一个）
 - 带主人去某页：单独一行 [[goto:路由]]，路由取自上面页面表（写页面中文名也行）
-- 定位到具体配置输入框：单独一行 [[cfg:配置文件名|点分路径]]，路径只能从下方真实键目录里选
+- 定位到某个配置输入框：单独一行 [[cfg:配置文件名|点分路径]]，路径只能从上方真实键目录里选
 - 高亮页面元素（少用）：[[hl:名称]]，可选：表单、搜索框、文件列表、备份
+- **替他填好数据类改动**（如"把某人的幸运值改成 X"）：
+  单独一行 [[fill:目标|参数]]，目前支持：[[fill:luck|qq=3483585417&value=100&date=2026-09-13]]
+  参数说明：qq 必填；value 是值；date 留空 = 今天。前端会跳到社交页并填好表单，
+  主人点一下保存即可，所以你回复时要说"我已经帮你填好了，点保存就行"
 - 标记是给程序执行的，主人看不到；不需要就什么都不写；正文里禁止出现 "[[" 这两个字符
 - 当前真实键路径目录（只能从这里选，目录外的路径禁止编造）：
 
@@ -249,12 +292,39 @@ def _validate_action(act: dict | None) -> dict | None:
         if not path or not re.fullmatch(r"[\w\u4e00-\u9fff.\-]+", path):
             return None
         return {"type": "locate-config", "target": f"{file_name}|{path}"}
+    if t == "fill":
+        # 格式 "<目标>|k=v&k=v"，目标限白名单（目前只有 luck）
+        # 这是"替主人把改动准备好"的动作：跳页 + 预填表单，保存仍由用户点。
+        if "|" not in target:
+            return None
+        kind, _, qs = target.partition("|")
+        kind = kind.strip().lower()
+        if kind not in FILL_TARGETS:
+            return None
+        params: dict[str, str] = {}
+        for pair in qs.split("&"):
+            if not pair or "=" not in pair:
+                continue
+            k, _, v = pair.partition("=")
+            k, v = k.strip(), v.strip()
+            if not k or len(v) > 60:
+                continue
+            params[k] = v
+        if not params:
+            return None
+        allowed = FILL_TARGETS[kind]
+        params = {k: v for k, v in params.items() if k in allowed}
+        if not params or "qq" not in params:
+            return None
+        if not re.fullmatch(r"\d{4,12}", params["qq"]):
+            return None
+        return {"type": "fill", "target": kind, "params": params}
     return None
 
 
-_TAG_RE = re.compile(r"\[\[(goto|hl|cfg):([^\]]+)\]\]")
+_TAG_RE = re.compile(r"\[\[(goto|hl|cfg|fill):([^\]]+)\]\]")
 # 疑似半截标记：[[ 后到结尾之间不能有空白（标记内容不含空格），否则是普通正文
-_TAG_PARTIAL_RE = re.compile(r"\[\[(?:goto|hl|cfg)?:?[^\s\]]*$")
+_TAG_PARTIAL_RE = re.compile(r"\[\[(?:goto|hl|cfg|fill)?:?[^\s\]]*$")
 
 
 def _parse_reply(text: str) -> tuple[str, dict | None]:
@@ -273,6 +343,8 @@ def _parse_reply(text: str) -> tuple[str, dict | None]:
         action = _validate_action({"type": "navigate", "target": target})
     elif kind == "cfg":
         action = _validate_action({"type": "locate-config", "target": target})
+    elif kind == "fill":
+        action = _validate_action({"type": "fill", "target": target})
     else:
         action = _validate_action({"type": "highlight", "target": target})
     return clean, action

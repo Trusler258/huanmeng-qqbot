@@ -37,6 +37,56 @@
           </a-table>
         </a-tab-pane>
 
+        <!-- 幸运值 -->
+        <a-tab-pane key="luck" title="幸运值">
+          <a-card class="general-card" title="设置幸运值" style="margin-bottom: 12px">
+            <a-space wrap>
+              <span class="luck-label">QQ</span>
+              <a-input v-model="luckForm.qq" placeholder="QQ 号" style="width: 150px" />
+              <span class="luck-label">幸运值</span>
+              <a-input v-model="luckForm.value" placeholder="数值或文本" style="width: 120px" />
+              <span class="luck-label">日期</span>
+              <a-input v-model="luckForm.date" :placeholder="luckToday || '今天（留空）'" style="width: 150px" allow-clear />
+              <a-button type="primary" :loading="luckSaving" @click="saveLuck">保存</a-button>
+            </a-space>
+            <div class="luck-tip">
+              数据存于 data/luck.json（按日期分层）。留空日期 = 改今天。改完 bot 侧 /~luck 立刻能查到。
+            </div>
+          </a-card>
+
+          <a-table
+            v-for="d in luckDays"
+            :key="d.date"
+            :data="d.rows"
+            :loading="luckLoading"
+            :pagination="{ pageSize: 10, hideOnSinglePage: true }"
+            size="small"
+            style="margin-bottom: 12px"
+          >
+            <template #title>
+              <span :class="{ 'luck-today': d.is_today }">
+                {{ d.date }}{{ d.is_today ? '（今天）' : '' }}
+              </span>
+              <span class="luck-count">{{ d.count }} 人</span>
+            </template>
+            <template #columns>
+              <a-table-column title="QQ" data-index="qq" :width="150" />
+              <a-table-column title="幸运值" data-index="value" />
+              <a-table-column title="操作" :width="140">
+                <template #cell="{ record }">
+                  <a-space size="mini">
+                    <a-button size="mini" type="text" @click="fillLuck(d.date, record)">填入表单</a-button>
+                    <a-popconfirm content="删除这条记录？" @ok="delLuck(d.date, record.qq)">
+                      <a-button size="mini" type="text" status="danger">删</a-button>
+                    </a-popconfirm>
+                  </a-space>
+                </template>
+              </a-table-column>
+            </template>
+          </a-table>
+          <a-empty v-if="!luckDays.length" description="还没有幸运值记录" />
+        </a-tab-pane>
+
         <!-- 用户画像 -->
         <a-tab-pane key="profiles" title="用户画像">
           <a-table :data="profiles" :loading="profLoading" :pagination="{ pageSize: 15 }" size="small">
@@ -110,11 +160,16 @@
     getProfiles,
     getStatsGroups,
     getGroupStats,
+    getLuckList,
+    setLuck,
+    deleteLuck,
   } from '@/api/panelC';
 
   const { loading: favLoading, setLoading: setFavLoading } = useLoading();
   const { loading: profLoading, setLoading: setProfLoading } = useLoading();
   const { loading: statsLoading, setLoading: setStatsLoading } = useLoading();
+  const { loading: luckLoading, setLoading: setLuckLoading } = useLoading();
+  const { loading: luckSaving, setLoading: setLuckSaving } = useLoading();
 
   const favItems = ref<any[]>([]);
   const favGroup = ref('');
@@ -124,6 +179,65 @@
   const groupStats = ref<any[]>([]);
   const profVisible = ref(false);
   const profDetail = ref('');
+
+  // ── 幸运值 ──
+  const luckDays = ref<any[]>([]);
+  const luckToday = ref('');
+  const luckForm = ref({ qq: '', value: '', date: '' });
+
+  const loadLuck = async () => {
+    setLuckLoading(true);
+    try {
+      const res = await getLuckList();
+      luckDays.value = res.data.days || [];
+      luckToday.value = res.data.today || '';
+    } finally {
+      setLuckLoading(false);
+    }
+  };
+
+  const saveLuck = async () => {
+    if (!luckForm.value.qq.trim()) {
+      Message.warning('先填 QQ 号');
+      return;
+    }
+    if (!luckForm.value.value.trim()) {
+      Message.warning('先填幸运值');
+      return;
+    }
+    setLuckSaving(true);
+    try {
+      await setLuck(luckForm.value.qq.trim(), luckForm.value.value.trim(), luckForm.value.date.trim());
+      Message.success('已保存');
+      await loadLuck();
+    } finally {
+      setLuckSaving(false);
+    }
+  };
+
+  const fillLuck = (date: string, row: any) => {
+    luckForm.value = { qq: row.qq, value: String(row.value), date };
+  };
+
+  const delLuck = async (date: string, qq: string) => {
+    await deleteLuck(qq, date);
+    Message.success('已删除');
+    await loadLuck();
+  };
+
+  /**
+   * AI 助手联动：助手要"改某人某天的幸运值"时派发此事件预填表单。
+   * detail = {qq, value?, date?}
+   */
+  const onAiFillLuck = (e: Event) => {
+    const d = (e as CustomEvent).detail || {};
+    if (!d.qq) return;
+    luckForm.value = {
+      qq: String(d.qq),
+      value: d.value === undefined || d.value === null ? '' : String(d.value),
+      date: d.date ? String(d.date) : '',
+    };
+  };
 
   const summarize = (d: any) => {
     if (!d) return '';
@@ -192,7 +306,9 @@
   };
 
   onMounted(async () => {
-    await Promise.all([loadFav(), loadProfiles(), loadStatsGroups()]);
+    await Promise.all([loadFav(), loadProfiles(), loadStatsGroups(), loadLuck()]);
+    // AI 助手联动：预填幸运值表单（助手派发 ai-fill-luck 事件）
+    window.addEventListener('ai-fill-luck', onAiFillLuck);
   });
 </script>
 

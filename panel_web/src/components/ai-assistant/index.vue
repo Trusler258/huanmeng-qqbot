@@ -64,7 +64,9 @@
                 ? '前往'
                 : m.action.type === 'locate-config'
                   ? '去改'
-                  : '高亮'
+                  : m.action.type === 'fill'
+                    ? '一键填好'
+                    : '高亮'
             }}
           </a-button>
         </div>
@@ -351,7 +353,7 @@
     messages.value = [];
   };
 
-  /** 执行 LLM 指令：navigate 跳页面 / highlight 高亮元素 / locate-config 定位到配置输入框 */
+  /** 执行 LLM 指令：navigate / highlight / locate-config / fill */
   const execAction = (act: AssistantAction) => {
     if (act.type === 'navigate') {
       router.push(act.target).catch(() => {});
@@ -375,6 +377,34 @@
           }, 400);
         });
       Message.success({ content: '助手已定位到对应配置项', duration: 2000 });
+    } else if (act.type === 'fill') {
+      // target = 目标类型（如 luck），params = 预填参数；跳页 + 填好，用户点保存
+      const routeMap: Record<string, string> = {
+        luck: '/fun/social',
+      };
+      const eventMap: Record<string, string> = {
+        luck: 'ai-fill-luck',
+      };
+      const path = routeMap[act.target];
+      const evt = eventMap[act.target];
+      if (!path || !evt) {
+        Message.warning('助手没找到对应的表单');
+        return;
+      }
+      router
+        .push(path)
+        .catch(() => {})
+        .finally(() => {
+          setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent(evt, { detail: act.params || {} })
+            );
+          }, 500);
+        });
+      Message.success({
+        content: '助手已帮你填好了，检查一下点保存就行',
+        duration: 3000,
+      });
     }
   };
 

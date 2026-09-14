@@ -75,3 +75,20 @@ export const toggleFeature = (key: string, enabled: boolean) =>
   axios.post('/api/features', { key, enabled, confirm: key });
 export const resetFeature = (key: string) =>
   axios.post(`/api/features/reset?key=${encodeURIComponent(key)}`);
+
+// ── licenses（/~key 许可码）────────────────────────────────
+export const getLicenses = () => axios.get('/api/licenses');
+export const createLicense = (type: string, note: string, count = 1) =>
+  axios.post('/api/licenses', { type, note, count });
+export const deleteLicense = (code: string) =>
+  axios.delete(`/api/licenses?code=${encodeURIComponent(code)}`);
+export const revokeLicense = (qq: string) =>
+  axios.post('/api/licenses/revoke', { qq });
+
+// ── luck（幸运值）────────────────────────────────────────
+export const getLuckList = (params?: { date?: string; q?: string }) =>
+  axios.get('/api/social/luck', { params });
+export const setLuck = (qq: string, value: string, date = '') =>
+  axios.post('/api/social/luck', { qq, value, date, confirm: 'luck' });
+export const deleteLuck = (qq: string, date = '') =>
+  axios.delete('/api/social/luck', { params: { qq, date } });
