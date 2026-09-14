@@ -8,8 +8,10 @@ import axios from 'axios';
 import { getToken } from '@/utils/auth';
 
 export interface AssistantAction {
-  type: 'navigate' | 'highlight' | 'locate-config';
+  type: 'navigate' | 'highlight' | 'locate-config' | 'fill';
   target: string;
+  /** fill 动作的预填参数（如 luck 的 qq/value/date） */
+  params?: Record<string, string>;
 }
 
 export interface AssistantChatResult {

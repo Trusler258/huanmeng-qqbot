@@ -31,6 +31,7 @@ from panel.routers import (
     features,
     games,
     groups,
+    licenses,
     logs,
     media,
     memory,
@@ -129,6 +130,8 @@ for r in (
     prompts.router,
     # v2.3.1 AI 助手
     assistant.router,
+    # v2.3.6 许可码
+    licenses.router,
 ):
     app.include_router(r, prefix="/api")
 

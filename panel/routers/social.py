@@ -233,3 +233,104 @@ async def stats_detail(
         "hour_distribution": hour_totals,
         "members": members[:limit],
     }
+
+
+# ── 幸运值 luck（{"日期": {"QQ": 值}}，与 modules/admin.py 同源）────
+
+LUCK_FILE = DATA / "luck.json"
+
+
+@router.get("/luck", summary="幸运值列表（按日期）")
+async def luck_list(
+    date: str = Query("", max_length=20, description="留空 = 全部日期"),
+    q: str = Query("", max_length=20, description="按 QQ 过滤"),
+    limit: int = Query(30, ge=1, le=365),
+):
+    obj = read_json(LUCK_FILE, {}) or {}
+    if not isinstance(obj, dict):
+        obj = {}
+    today = datetime.now(CST).date().isoformat()
+    days = []
+    if date:
+        src = {date: obj.get(date, {})} if date in obj else {}
+    else:
+        src = obj
+    for day, users in sorted(src.items(), reverse=True)[:limit]:
+        if not isinstance(users, dict):
+            continue
+        rows = []
+        for qq, val in users.items():
+            if q and q not in str(qq):
+                continue
+            rows.append({"qq": str(qq), "value": val})
+        rows.sort(key=lambda x: x["qq"])
+        days.append({"date": day, "is_today": day == today, "count": len(rows), "rows": rows})
+    return {
+        "ok": True,
+        "today": today,
+        "days": days,
+        "total_days": len(obj),
+        "file": str(LUCK_FILE),
+    }
+
+
+class LuckSetReq(BaseModel):
+    qq: str = Field(..., max_length=20)
+    value: str = Field(..., max_length=30, description="数值或任意文本")
+    date: str = Field("", max_length=20, description="留空 = 今天")
+    confirm: str = Field("", max_length=20)
+
+
+@router.post("/luck", summary="设置某人某天的幸运值（写操作，记审计）")
+async def luck_set(
+    body: LuckSetReq,
+    user: auth.CurrentUser = Depends(auth.require_user),
+):
+    if body.confirm not in ("luck", body.qq):
+        raise HTTPException(400, "写操作需确认：confirm 填 luck 或该 QQ 号")
+
+    day = body.date.strip() or datetime.now(CST).date().isoformat()
+    # 值：纯数字存数字，否则原样存字符串（admin.py 的 _parse_value 允许文本）
+    raw = body.value.strip()
+    val: object = raw
+    try:
+        num = float(raw)
+        val = int(num) if num.is_integer() else num
+    except Exception:
+        pass
+
+    obj = read_json(LUCK_FILE, {}) or {}
+    if not isinstance(obj, dict):
+        obj = {}
+    day_map = obj.get(day)
+    if not isinstance(day_map, dict):
+        day_map = {}
+    old = day_map.get(body.qq)
+    day_map[body.qq] = val
+    obj[day] = day_map
+    bak = atomic_write_json(LUCK_FILE, obj)
+
+    auth.audit(user, "luck_set", f"{day}:{body.qq}", f"{old} -> {val}")
+    return {
+        "ok": True, "date": day, "qq": body.qq, "old": old, "value": val,
+        "backup": bak.name if bak else None,
+    }
+
+
+@router.delete("/luck", summary="删除某人某天的幸运值（写操作，记审计）")
+async def luck_del(
+    qq: str = Query(..., max_length=20),
+    date: str = Query("", max_length=20),
+    user: auth.CurrentUser = Depends(auth.require_user),
+):
+    day = date.strip() or datetime.now(CST).date().isoformat()
+    obj = read_json(LUCK_FILE, {}) or {}
+    if not isinstance(obj, dict) or day not in obj:
+        raise HTTPException(404, f"{day} 没有记录")
+    day_map = obj.get(day)
+    if not isinstance(day_map, dict) or qq not in day_map:
+        raise HTTPException(404, f"{qq} 在 {day} 没有记录")
+    old = day_map.pop(qq)
+    atomic_write_json(LUCK_FILE, obj)
+    auth.audit(user, "luck_del", f"{day}:{qq}", f"was {old}")
+    return {"ok": True, "date": day, "qq": qq, "deleted": old}
