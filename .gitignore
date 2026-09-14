@@ -99,3 +99,17 @@ panel_web/node_modules/
 panel_web/dist/
 panel_web/.vite/
 panel_web/src/api/generated/
+
+# ── 赞赏码 / 赞助名单（部署方私有，不进仓库）────────────────────
+# 理由：赞赏码是部署者个人的收款二维码，写死在仓库里别人 clone 后会出现
+# 部署者的收款码（违反"通用化：写死的别人部署会坏事"原则）。
+# 部署时手动放置：data/images/reward_qrcode.png；缺失时 /~赞赏 会提示管理员检查路径。
+data/images/reward_qrcode.png
+data/rewards.json
+data/memory_links.json
+data/context_cache.json
+# 部署/改造前的备份文件（本地留档用，不进仓库）
+*.bak_*
+# 版本史长图产物（临时生成，单张 10MB+）
+幻梦版本演进史_*.png
+幻梦版本演进史_*.jpg
