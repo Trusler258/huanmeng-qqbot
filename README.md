@@ -94,7 +94,7 @@
 | 音游 | TUF 谱面搜索、详情、下载直链 |
 | 经济 | 积分、签到、商店、背包 |
 | 插件 | `.hmp` 打包安装、插件库更新、人工审批 |
-| 面板 | 独立进程 Web 后台，配置 / 日志 / 数据 / 崩溃自愈 |
+| 面板 | 独立进程 Web 后台（配置 / 日志 / 数据 / 崩溃自愈），见 [huanmeng-panel](https://github.com/Trusler258/huanmeng-panel) |
 | 安全 | 提示词注入拦截、沙箱黑名单、指令权限分级 |
 
 </details>
@@ -133,10 +133,6 @@ flowchart TB
         M["45 个模块<br/>指令 · 记忆 · 判断 · 地震 · 经济"]
     end
 
-    subgraph Panel["panel/ 控制面板"]
-        PA["FastAPI + Vue<br/>配置 / 日志 / 数据"]
-    end
-
     U --> NC --> D --> P
     P --> C
     P --> L
@@ -145,7 +141,6 @@ flowchart TB
     L --> S
     PL --> SB
     S --> NC --> U
-    PA -. "独立进程，bot 崩了也能用" .-> Core
 ```
 
 <details>
@@ -186,7 +181,6 @@ huanmeng-qqbot/
 │   ├── templates/             # HTML 卡片模板
 │   └── update_log.md          # 更新日志
 │
-├── panel/ + panel_web/        # 控制面板
 └── utils/                     # 工具函数
 ```
 
@@ -653,6 +647,7 @@ PR 约定：
 
 ## 相关项目
 
+- [huanmeng-panel](https://github.com/Trusler258/huanmeng-panel) — 配套的 Web 控制面板（独立项目）
 - [NapCat](https://github.com/NapNeko/NapCatQQ) — QQ 协议适配
 - [OneBot v11](https://github.com/botuniverse/onebot) — 机器人接口标准
 - [DeepSeek](https://platform.deepseek.com/) — 大语言模型
