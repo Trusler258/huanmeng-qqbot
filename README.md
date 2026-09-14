@@ -1,14 +1,11 @@
 <div align="center">
 
+<img src="docs/preview.png" width="820" alt="HuanMeng · 幻梦 — 记得住聊过什么，装得上插件" />
+
 <a href="https://github.com/Trusler258/huanmeng-qqbot">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=28&duration=3200&pause=900&color=8B7BFF&center=true&vCenter=true&width=620&lines=HuanMeng+%C2%B7+%E5%B9%BB%E6%A2%A6;LLM-Powered+QQ+Bot;NapCat+%2B+OneBot+v11+%2B+DeepSeek;Memory+that+doesn%27t+forget" alt="HuanMeng QQ Bot" />
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=26&duration=3200&pause=900&color=8B7BFF&center=true&vCenter=true&width=600&lines=HuanMeng+%C2%B7+%E5%B9%BB%E6%A2%A6;LLM-Powered+QQ+Bot;NapCat+%2B+OneBot+v11+%2B+DeepSeek;Memory+that+doesn%27t+forget" alt="HuanMeng QQ Bot" />
 </a>
 
-**记得住聊过什么，装得上插件**
-
-<sub>189 个 Python 文件 · 45 个模块 · 76 条指令 · 131 次提交</sub>
-
-<br>
 <br>
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
