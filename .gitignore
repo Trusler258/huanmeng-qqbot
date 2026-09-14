@@ -110,6 +110,3 @@ data/memory_links.json
 data/context_cache.json
 # 部署/改造前的备份文件（本地留档用，不进仓库）
 *.bak_*
-# 版本史长图产物（临时生成，单张 10MB+）
-幻梦版本演进史_*.png
-幻梦版本演进史_*.jpg
