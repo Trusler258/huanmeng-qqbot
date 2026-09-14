@@ -1,41 +1,54 @@
 <div align="center">
 
-<a href="https://github.com/Trusler258/huanmeng-qqbot">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=28&duration=3200&pause=900&color=8B7BFF&center=true&vCenter=true&width=620&lines=HuanMeng+%C2%B7+%E5%B9%BB%E6%A2%A6;LLM-Powered+QQ+Bot;NapCat+%2B+OneBot+v11+%2B+DeepSeek;Memory+that+doesn%27t+forget" alt="HuanMeng QQ Bot" />
+<a href="https://github.com/Trusler258/huanmeng-qqbot">  
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code\&size=28\&duration=3200\&pause=900\&color=8B7BFF\&center=true\&vCenter=true\&width=620\&lines=HuanMeng+%C2%B7+%E5%B9%BB%E6%A2%A6;LLM-Powered+QQ+Bot;NapCat+%2B+OneBot+v11+%2B+DeepSeek;Memory+that+doesn%27t+forget" alt="HuanMeng QQ Bot" />  
 </a>
 
 **让机器人真的记得住。记忆与插件，都是一等公民。**
 
 <sub>189 个 Python 文件 · 45 个功能模块 · 212 条指令 · 131 次提交</sub>
 
-<br>
-<br>
+  
+  
+  
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v2.3.12-8B7BFF)](data/update_log.md)
-[![License](https://img.shields.io/badge/license-MIT-3DA639)](LICENSE)
-[![OneBot](https://img.shields.io/badge/protocol-OneBot%20v11-00BFFF)](https://github.com/botuniverse/onebot)
-[![NapCat](https://img.shields.io/badge/adapter-NapCat-ff69b4)](https://github.com/NapNeko/NapCatQQ)
-[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE)](https://platform.deepseek.com/)
 
-[![Stars](https://img.shields.io/github/stars/Trusler258/huanmeng-qqbot?style=flat&color=FFD700)](https://github.com/Trusler258/huanmeng-qqbot/stargazers)
-[![Last Commit](https://img.shields.io/github/last-commit/Trusler258/huanmeng-qqbot?color=34D399)](https://github.com/Trusler258/huanmeng-qqbot/commits/main)
-[![Commits](https://img.shields.io/github/commit-activity/t/Trusler258/huanmeng-qqbot?color=8B7BFF)](https://github.com/Trusler258/huanmeng-qqbot/commits/main)
-[![Repo Size](https://img.shields.io/github/repo-size/Trusler258/huanmeng-qqbot?color=9CA3AF)](https://github.com/Trusler258/huanmeng-qqbot)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python\&logoColor=white)
 
-<br>
+![Version](https://img.shields.io/badge/version-v2.3.12-8B7BFF)
 
-<a href="https://github.com/Trusler258/huanmeng-qqbot">
-  <img height="140" src="https://github-readme-stats.vercel.app/api/pin/?username=Trusler258&repo=huanmeng-qqbot&theme=midnight-purple&hide_border=true" />
-</a>
-<img height="140" src="https://github-readme-stats.vercel.app/api/top-langs/?username=Trusler258&layout=compact&theme=midnight-purple&hide_border=true&langs_count=6" />
+![License](https://img.shields.io/badge/license-MIT-3DA639)
+
+
+
+![OneBot](https://img.shields.io/badge/protocol-OneBot%20v11-00BFFF)
+
+![NapCat](https://img.shields.io/badge/adapter-NapCat-ff69b4)
+
+![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE)
+
+![Stars](https://img.shields.io/github/stars/Trusler258/huanmeng-qqbot?style=flat\&color=FFD700)
+
+![Last Commit](https://img.shields.io/github/last-commit/Trusler258/huanmeng-qqbot?color=34D399)
+
+![Commits](https://img.shields.io/github/commit-activity/t/Trusler258/huanmeng-qqbot?color=8B7BFF)
+
+![Repo Size](https://img.shields.io/github/repo-size/Trusler258/huanmeng-qqbot?color=9CA3AF)
+
+  
+
+
+<a href="https://github.com/Trusler258/huanmeng-qqbot">  
+  <img height="140" src="https://github-readme-stats.vercel.app/api/pin/?username=Trusler258\&repo=huanmeng-qqbot\&theme=midnight-purple\&hide_border=true" />  
+</a>  
+<img height="140" src="https://github-readme-stats.vercel.app/api/top-langs/?username=Trusler258\&layout=compact\&theme=midnight-purple\&hide_border=true\&langs_count=6" />
 
 </div>
 
 ---
 
-> [!IMPORTANT]
-> **与同名机器人无关。** QQ 平台上存在第三方公开的「幻梦」机器人，本项目与它**没有任何关系**；「幻梦」只是本项目的默认角色昵称。
+> [!IMPORTANT]>   
+> **与同名机器人无关。** QQ 平台上存在第三方公开的「幻梦」机器人，本项目与它**没有任何关系**；「幻梦」只是本项目的默认角色昵称。>   
 > 本项目基于 [NapCat](https://github.com/NapNeko/NapCatQQ) 社区协议适配，与任何官方接口、机器人平台无关。
 >
 > **本仓库是社区开源版。** 服务器运行版含额外私有模块，不在此仓库；克隆后可直接运行，缺失模块自动优雅降级。
@@ -43,14 +56,15 @@
 ---
 
 <a id="overview"></a>
+
 ## 概览
 
 绝大多数 QQ 机器人的上下文是 `history[-N:]`——一个滑动窗口，聊过就忘。幻梦把**记忆**当基础设施来做：会话历史分块冻结、长期记忆自动压缩、不同会话之间可以授权共享记忆。
 
 同时它把**扩展性**也当基础设施：插件热插拔、能力注册表统一抽象、KOOK 生态插件能直接跑。
 
-<table>
-<tr>
+<table>  
+<tr>  
 <td width="50%" valign="top">
 
 **记忆优先**
@@ -60,7 +74,7 @@
 - 长期记忆、笔记本、用户画像各自独立
 - 跨会话记忆共享，带来源标识
 
-</td>
+</td>  
 <td width="50%" valign="top">
 
 **扩展优先**
@@ -70,8 +84,8 @@
 - KOOK 插件加载时自动兼容，无需改写
 - 事件总线与沙箱执行
 
-</td>
-</tr>
+</td>  
+</tr>  
 </table>
 
 其余能力（对话、搜索、图片识别、群管理、娱乐、音游、工具、经济、安全防护）见下方功能清单。
@@ -79,33 +93,38 @@
 ---
 
 <a id="features"></a>
+
 ## 功能清单
 
 <details>
+
 <summary><b>完整能力一览</b></summary>
 
-<br>
+  
 
-| 分类 | 能力 |
-|------|------|
-| 对话 | 多轮对话、三级回复判断、防复读、刷屏拦截、@ 触发、私聊与群聊风格分离 |
-| 记忆 | 分块会话历史、长期记忆压缩、笔记本、跨会话关联、用户画像 |
-| 搜索 | 自动判断是否需要联网、搜索结果诚实归因、聊天历史全文检索（SQLite FTS5） |
-| 图片 | 异步图片识别注入上下文、文本生图、图生视频、表情库逐句配图 |
-| 群管理 | 发言统计、成员信息、群笔记、退群清理、撤回记录 |
-| 娱乐 | 五子棋（人机与对战）、掷骰、抽签、每日运气 |
-| 工具 | 天气、快递、翻译、倒计时、定时提醒、域名 WHOIS、代码生成与运行 |
-| 音游 | TUF 谱面搜索、详情、下载直链 |
-| 经济 | 积分、签到、商店、背包（以插件形式提供，可卸载） |
-| 插件 | `.hmp` 打包安装、插件库更新、人工审批 |
-| 面板 | 独立进程 Web 后台：配置编辑、日志、数据管理、崩溃自愈 |
-| 安全 | 提示词注入拦截、沙箱黑名单、指令权限分级 |
+
+| 分类  | 能力                                        |
+| --- | ----------------------------------------- |
+| 对话  | 多轮对话、三级回复判断、防复读、刷屏拦截、@ 触发、私聊与群聊风格分离       |
+| 记忆  | 分块会话历史、长期记忆压缩、笔记本、跨会话关联、用户画像              |
+| 搜索  | 自动判断是否需要联网、搜索结果诚实归因、聊天历史全文检索（SQLite FTS5） |
+| 图片  | 异步图片识别注入上下文、文本生图、图生视频、表情库逐句配图             |
+| 群管理 | 发言统计、成员信息、群笔记、退群清理、撤回记录                   |
+| 娱乐  | 五子棋（人机与对战）、掷骰、抽签、每日运气                     |
+| 工具  | 天气、快递、翻译、倒计时、定时提醒、域名 WHOIS、代码生成与运行        |
+| 音游  | TUF 谱面搜索、详情、下载直链                          |
+| 经济  | 积分、签到、商店、背包（以插件形式提供，可卸载）                  |
+| 插件  | `.hmp` 打包安装、插件库更新、人工审批                    |
+| 面板  | 独立进程 Web 后台：配置编辑、日志、数据管理、崩溃自愈             |
+| 安全  | 提示词注入拦截、沙箱黑名单、指令权限分级                      |
 
 </details>
 
 ---
 
 <a id="arch"></a>
+
+
 ## 架构
 
 四层模块化：核心基础设施、外部服务、功能模块、工具函数。任何一层缺失都不影响聊天主流程——这是刻意的设计，让功能可以逐个拆掉而不炸。
@@ -153,9 +172,11 @@ flowchart TB
 ```
 
 <details>
+
 <summary><b>目录结构</b></summary>
 
-<br>
+  
+
 
 ```
 huanmeng-qqbot/
@@ -199,6 +220,7 @@ huanmeng-qqbot/
 ---
 
 <a id="memory"></a>
+
 ## 记忆系统
 
 这是整个项目投入最多的地方。
@@ -222,13 +244,13 @@ LLM 的前缀缓存按「消息序列前缀」逐 token 匹配：前缀里哪怕
 
 ### 层级
 
-| 层级 | 存储 | 说明 |
-|------|------|------|
-| 瞬时 | 内存 | 当前块，最多 200 条，满则封存 |
-| 会话块 | 内存与磁盘 | 封存块冻结；累计 20 块触发压缩 |
-| 长期 | `data/memory_<id>.md` | 周期性压缩沉淀，永久保存 |
-| 笔记本 | `data/notes/<id>.md` | LLM 主动维护的事实条目 |
-| 跨会话 | `data/memory_links.json` | 会话之间授权共享 |
+| 层级  | 存储                       | 说明                |
+| --- | ------------------------ | ----------------- |
+| 瞬时  | 内存                       | 当前块，最多 200 条，满则封存 |
+| 会话块 | 内存与磁盘                    | 封存块冻结；累计 20 块触发压缩 |
+| 长期  | `data/memory_<id>.md`    | 周期性压缩沉淀，永久保存      |
+| 笔记本 | `data/notes/<id>.md`     | LLM 主动维护的事实条目     |
+| 跨会话 | `data/memory_links.json` | 会话之间授权共享          |
 
 ### 跨会话记忆
 
@@ -255,6 +277,8 @@ LLM 的前缀缓存按「消息序列前缀」逐 token 匹配：前缀里哪怕
 ---
 
 <a id="plugin"></a>
+
+
 ## 插件系统
 
 插件 = `plugins/<name>/manifest.json` + `main.py`（类名 `Plugin`，构造接收 `ctx`）。
@@ -270,24 +294,26 @@ flowchart LR
 ```
 
 <details>
+
 <summary><b>插件可用能力 ctx.*</b></summary>
 
-<br>
+  
 
-| 能力 | 说明 |
-|---|---|
-| `ctx.message.send / send_file` | 发文本与文件（群聊、私聊） |
-| `ctx.memory.remember / recall` | 记忆写入与检索 |
-| `ctx.event.on / publish` | 事件总线订阅与发布 |
-| `ctx.timer.every(秒)` | 周期定时器，卸载自动取消 |
-| `ctx.capability.register_command` | 注册指令，自动挂进 `COMMAND_MAP` |
-| `ctx.capability.register_tool` | 注册 Function Calling 工具（可常驻） |
-| `ctx.economy` | 积分与库存 |
-| `ctx.vision.describe` | 图片识别 |
-| `ctx.llm.generate` | 文本生成 |
-| `ctx.approval.request` | 人工审批，私聊管理员回执 |
-| `ctx.sandbox.run_python / cpp / shell` | 沙箱执行，黑名单与超时与输出截断 |
-| `ctx.logger` | 插件命名空间日志 |
+
+| 能力                                     | 说明                          |
+| -------------------------------------- | --------------------------- |
+| `ctx.message.send / send_file`         | 发文本与文件（群聊、私聊）               |
+| `ctx.memory.remember / recall`         | 记忆写入与检索                     |
+| `ctx.event.on / publish`               | 事件总线订阅与发布                   |
+| `ctx.timer.every(秒)`                   | 周期定时器，卸载自动取消                |
+| `ctx.capability.register_command`      | 注册指令，自动挂进 `COMMAND_MAP`     |
+| `ctx.capability.register_tool`         | 注册 Function Calling 工具（可常驻） |
+| `ctx.economy`                          | 积分与库存                       |
+| `ctx.vision.describe`                  | 图片识别                        |
+| `ctx.llm.generate`                     | 文本生成                        |
+| `ctx.approval.request`                 | 人工审批，私聊管理员回执                |
+| `ctx.sandbox.run_python / cpp / shell` | 沙箱执行，黑名单与超时与输出截断            |
+| `ctx.logger`                           | 插件命名空间日志                    |
 
 </details>
 
@@ -302,6 +328,7 @@ flowchart LR
 ---
 
 <a id="pipeline"></a>
+
 ## 消息管道
 
 ```mermaid
@@ -333,28 +360,34 @@ flowchart TB
 ---
 
 <a id="deploy"></a>
+
+
 ## 部署
 
-> [!WARNING]
+> [!WARNING]>   
 > 前置要求：QQ 账号等级不低于 16 级（建议开通 VIP，低等级容易被风控拦截）。生产环境推荐 Linux。
 
 <details>
+
 <summary><b>第一步 · 安装 Python 3.10+</b></summary>
 
-<br>
+  
 
-| 系统 | 命令 |
-|------|------|
-| Windows | [python.org/downloads](https://www.python.org/downloads/)，安装时勾选 *Add Python to PATH* |
-| Debian / Ubuntu | `sudo apt install python3 python3-pip -y` |
-| CentOS / RHEL | `sudo yum install python3 python3-pip -y` |
+
+| 系统              | 命令                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------ |
+| Windows         | [python.org/downloads](https://www.python.org/downloads/)，安装时勾选 *Add Python to PATH* |
+| Debian / Ubuntu | `sudo apt install python3 python3-pip -y`                                            |
+| CentOS / RHEL   | `sudo yum install python3 python3-pip -y`                                            |
 
 </details>
 
 <details>
+
 <summary><b>第二步 · 安装 NapCat</b></summary>
 
-<br>
+  
+
 
 ```bash
 # Linux 一键安装
@@ -366,17 +399,19 @@ napcat start <QQ号>   # 启动，默认 WebSocket 端口 8099
 
 Windows 用户可从 [NapCatQQ Releases](https://github.com/NapNeko/NapCatQQ/releases) 下载一键包。
 
-| 资源 | 地址 |
-|------|------|
+| 资源   | 地址                                                                 |
+| ---- | ------------------------------------------------------------------ |
 | 官方仓库 | [github.com/NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) |
-| 官方文档 | [napneko.github.io](https://napneko.github.io/guide/napcat) |
+| 官方文档 | [napneko.github.io](https://napneko.github.io/guide/napcat)        |
 
 </details>
 
 <details>
+
 <summary><b>第三步 · 克隆并配置</b></summary>
 
-<br>
+  
+
 
 ```bash
 git clone https://github.com/Trusler258/huanmeng-qqbot.git
@@ -395,9 +430,11 @@ python main.py
 </details>
 
 <details>
+
 <summary><b>第四步 · 连接 NapCat</b></summary>
 
-<br>
+  
+
 
 NapCat 默认在 `ws://127.0.0.1:8099/` 提供 WebSocket，通常无需改动。要改端口：
 
@@ -411,15 +448,17 @@ port = 8099
 
 **第三方依赖**
 
-| 用途 | 服务 |
-|------|------|
+| 用途           | 服务                                         |
+| ------------ | ------------------------------------------ |
 | LLM 回复与判断与摘要 | [DeepSeek](https://platform.deepseek.com/) |
-| 图片识别 | [智谱 AI](https://open.bigmodel.cn/)，可选 |
-| 联网搜索 | DuckDuckGo，免费无需 Key |
+| 图片识别         | [智谱 AI](https://open.bigmodel.cn/)，可选      |
+| 联网搜索         | DuckDuckGo，免费无需 Key                        |
 
 ---
 
 <a id="commands"></a>
+
+
 ## 指令手册
 
 共 212 条（含别名）。`/~help` 会按当前功能开关自动生成卡片。
