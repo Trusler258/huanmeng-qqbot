@@ -1,6 +1,7 @@
 # 洛花星雨 Nexus API 反扒文档
 
-> 最后更新: 2026-09-14（第三次反扒）>   
+> 最后更新: 2026-09-14（第三次反扒）
+>   
 > 本文件记录 `https://www.wdsj.net/nexus` 公开 API 的实测结构与变更，供 `services/wdsj_api.py` 及后续开发参考。
 
 ---
@@ -275,6 +276,55 @@ GET /api/v1/player-heads/{name}/head.png
 | `real_player_bedwars.json` | 真实玩家起床战争战绩（含 labels/values/cards） |
 
 ---
+
+## 6.5 双模式横屏战绩卡（bot 截图用）
+
+**命令**：`/~wdsj me`（用 `/~wdsj bd` 绑定的玩家名）｜`/~wdsj <玩家名> me`（指定，不需绑定）
+（旧写法 `/~wdsj dual <玩家名>` 保留为兼容别名）
+
+**产出**：1920×1735 横屏图，一图三段：
+
+| 区块 | 内容 | 配色 |
+|---|---|---|
+| 顶部 | API 真实皮肤头像 + 玩家名 + UID/UUID/注册时间 | 中性 |
+| 左段 | 起床战争 **33 项**全字段（4 列） | 暖红 |
+| 右段 | 竞技场 **17 项**全字段（2 列）+ 段位卡 | 冷蓝 |
+| 底段 | **18 项衍生比率指标**（4 组配色） | 青绿 |
+
+**文件与数据流**
+
+```
+data/templates/wdsj_dual_card.html      # 自包含模板（图标 + 字体 base64 内联）
+  ↑ build_dual_card_html(bw, ar) 注入 window.WDSJ_DATA（JSON 替换 /*__WDSJ_DATA__*/null）
+services/wdsj_api.py :: build_dual_card_html()
+modules/commands.py  :: _handle_wdsj_dual()  # Playwright 截 .card 元素 → 发图
+```
+
+**素材来源**
+
+- **图标（53 个）**：Minecraft Wiki `Invicon_<物品>.png`（中文站 zh.minecraft.wiki / 英文站）。
+  Wiki 有 Cloudflare 保护，直接下载 403 —— 需 **Playwright 打开图片页 → 页面内 canvas 导出 base64**（同源不污染画布）。
+  映射表在模板内 `FIELD_ICON`；常用语义：段位=钻石、回春床=金苹果、打飞火球=光灵箭、
+  最高连胜=信标、吃素食=胡萝卜、爆炸=火药、等级=梯子、BedFight 败=灰床、FireballFight 败=水桶。
+- **字体**：Monocraft（MIT，MC 风格开源等宽 TTF）base64 内联，只作用于玩家名/缩写徽章/数值等英文数字，
+  中文自动回退系统字体（Monocraft 无中文字形）。原版 MC 字体是位图图集（jar 内 png+json），**不能当 web font**。
+- **头像**：`/api/v1/player-heads/{name}/head.png`（真实皮肤），失败回退 Steve 头。
+  注意 `/api/v1/players/name:X/head.png` 是 404。
+
+**渲染特性**
+
+- **Minecraft 颜色码**：值保留 `§x` 原样传入，前端 `mcColor()` 渲染成真颜色（如 `§3铂金 III` → `#00AAAA` 深青）。
+- **截图视口须 ≥ 卡片宽度**（现卡片 1920，视口 2000×1300），否则右侧被裁。
+- **本地测不了渲染**：项目 `_ensure_browser()` 指向服务器 `/usr/bin/chromium-browser`，
+  本地无此文件 → handler 的截图分支只能在服务器验证（本地仅能测参数解析/提示文案）。
+
+**维护要点**
+
+- 改原型 `_probe/wdsj_card/index.html` 后，**必须同步生成** `data/templates/wdsj_dual_card.html`
+  （加注入标记 `window.WDSJ_DATA = /*__WDSJ_DATA__*/null;`），否则 bot 仍用旧模板。
+- 注入标记在文件内**必须唯一**；曾因把标记写进 `/* */` 注释导致出现两次 + 嵌套注释，
+  `replace(..., 1)` 只替换注释里那个 → 数据回退到内联示例（表现为"渲染出的玩家名不对"）。
+- 验收必查：字段数 33/17、比率 18、坏图 0、JS 错误 0、**渲染出的玩家名/UID 是目标玩家**。
 
 ## 7. 待办建议
 
