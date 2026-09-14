@@ -4,7 +4,7 @@
   <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=28&duration=3200&pause=900&color=8B7BFF&center=true&vCenter=true&width=620&lines=HuanMeng+%C2%B7+%E5%B9%BB%E6%A2%A6;LLM-Powered+QQ+Bot;NapCat+%2B+OneBot+v11+%2B+DeepSeek;Memory+that+doesn%27t+forget" alt="HuanMeng QQ Bot" />
 </a>
 
-**记得住，能扩展**
+**记得住聊过什么，装得上插件**
 
 <sub>189 个 Python 文件 · 45 个模块 · 76 条指令 · 131 次提交</sub>
 
@@ -43,7 +43,7 @@
 <a id="overview"></a>
 ## 概览
 
-上下文不是 `history[-N:]`
+上下文不是只留最近 N 条
 
 对话历史按 200 条切块，封存后不再改动；攒够 20 块交给便宜模型压成摘要，摘要只往后追加；整段历史只追加，前缀不会被打散
 
