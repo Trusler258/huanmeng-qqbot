@@ -638,7 +638,7 @@ PR 约定：
 
 ## 开源协议
 
-[MIT License](LICENSE) © 2024 Trusler
+[MIT License](LICENSE) © 2026 Trusler
 
 ---
 
@@ -649,4 +649,12 @@ PR 约定：
 - [OneBot v11](https://github.com/botuniverse/onebot) — 机器人接口标准
 - [DeepSeek](https://platform.deepseek.com/) — 大语言模型
 - [智谱 AI](https://open.bigmodel.cn/) — 视觉模型
+
+<br>
+
+<div align="center">
+
+<sub>code by deepseek v4.1 flash & Trusler</sub>
+
+</div>
 
