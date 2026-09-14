@@ -80,6 +80,18 @@ GET /api/v1/templates
 
 > 🆕 = v2（2026-08-27）之后新增。`arena-modern-stats` 与 `luckypillars-stats` 是本次发现。
 
+`data` 另有字段（前端实际使用，探针早期忽略）：
+
+```json
+{
+  "images": {"arena-stats": "arena-stats", "bedwars-stats": "bedwars-stats", ...},  // 模板→图片标识
+  "defaultLocale": "zh-CN", "fallbackLocale": "zh-CN", "locale": "zh-CN",
+  "allowedIdentityTypes": ["name", "nick"]
+}
+```
+
+> ⚠️ `allowedIdentityTypes` 实测仅 `["name", "nick"]` —— **uid、uuid 均被服务端禁用**（见 §3.4）。
+
 ---
 
 ### 3.2 排行榜列表
@@ -160,10 +172,10 @@ GET /api/v1/players/{identity}/templates/{template}
 |---|---|---|
 | `name:` | 玩家名 | ✅ 默认 |
 | `nick:` | 昵称 | ✅ |
-| `uuid:` | UUID | ✅ |
+| `uuid:` | UUID | ❌ **服务端已禁用** |
 | `uid:` | 数字 UID | ❌ **400「当前服务器不允许使用 uid 查询玩家」** |
 
-> 注意：`templates` API 曾返回 `allowedIdentityTypes: [name, nick, uid, uuid]`，但 **uid 实际被服务端禁用**（400）。项目代码 `IDENTITY_TYPES` 仍含 uid，属误导。
+> 注意：`templates` API 返回 `allowedIdentityTypes: ["name", "nick"]` —— uid/uuid 均已停用。项目代码 `IDENTITY_TYPES` 仍含 uid/uuid，属误导（保留仅作兼容）。
 
 返回 `data`（v3 新增三件套）：
 
@@ -200,6 +212,8 @@ GET /api/v1/players/{identity}/templates/{template}
 
 **快照图** `GET /api/v1/images/{snapshotKey}` → `image/webp`（实测 223KB），可直接下载当战绩图发送。
 
+**前端反扒结论**（2026-09-14 抓 `_next` chunk 分析）：战绩页只调 `templates` + `players/{id}/templates/{tpl}` 两个端点，图片直接用返回的 `imageUrl`（无 `imageUrl` 时用 `snapshotKey` 拼 `/api/v1/images/...`）。**无隐藏端点**。
+
 ---
 
 ### 3.5 玩家头像
@@ -222,6 +236,8 @@ GET /api/v1/player-heads/{name}/head.png
 | 周期 | `ALLTIME/MONTHLY/WEEKLY/DAILY` | **+ `SEASON`** | `PERIOD_LABELS` 缺 SEASON |
 | 战绩 | 只用 `headerCards` | labels/values/summaryCards/imageUrl | 摘要可更丰富 |
 | uid 查询 | 声明支持 | **400 禁用** | 用 uid 会失败 |
+| **标识类型** | `name/nick/uid/uuid` | **仅 `name`/`nick`** | **uuid 也被禁用**，`IDENTITY_TYPES` 误导 |
+| 周期支持 | 假定每榜都全支持 | **按榜可选** | `periods` 字段为准（见 §3.3） |
 
 ---
 
@@ -261,8 +277,9 @@ GET /api/v1/player-heads/{name}/head.png
 
 ## 7. 待办建议
 
-- [ ] `TEMPLATES` 补 `arena-modern-stats`(高版本竞技场)、`luckypillars-stats`(幸运之柱)
-- [ ] `PERIOD_LABELS` 补 `SEASON: 赛季`；确认 `query_leaderboard` 对 SEASON 的错误降级
-- [ ] `IDENTITY_TYPES` 移除/注释 uid（服务端禁用）
-- [ ] 按 §5 补常用新榜单别名（至少幸运之柱、高版本竞技场、凌空乱斗）
+- [x] `TEMPLATES` 补 `arena-modern-stats`(高版本竞技场)、`luckypillars-stats`(幸运之柱)（v2.3.15 已做）
+- [x] `PERIOD_LABELS` 补 `SEASON: 赛季`（v2.3.15 已做）
+- [x] `IDENTITY_TYPES` 注释说明 uid/uuid 服务端禁用（v2.3.15 已做，保留兼容）
+- [x] `BOARD_ALIASES`/`BOARD_SHORTHAND` 补齐 86 榜单全量别名（v2.3.15 已做，86/86 覆盖）
 - [ ] 战绩摘要 `_build_wdsj_summary` 可扩展：用 `labels` 全量 + `imageUrl` 快照图
+- [ ] `/~wdsj lb` 选周期时参考榜单 `periods` 字段（当前假定全支持，会 400）
