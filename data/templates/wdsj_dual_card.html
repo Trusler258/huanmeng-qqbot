@@ -181,6 +181,14 @@
     padding:2px 8px;border-radius:7px;background:rgba(150,130,110,.09);
     border:1px solid rgba(150,130,110,.14);
   }
+  .bwratios{margin-top:16px;padding-top:14px;border-top:1px dashed rgba(240,120,90,.32)}
+  .bwratios .ast{font-size:13.5px;font-weight:700;color:#c96a4e;margin-bottom:10px;letter-spacing:.4px}
+  .rgrid.bw-grid{grid-template-columns:repeat(6,1fr);gap:8px}
+  .bw-grid .rcell{padding:7px 9px;gap:7px}
+  .bw-grid .rcell .rb{width:30px;height:30px;font-size:9.5px}
+  .bw-grid .rcell .rn{font-size:11.5px}
+  .bw-grid .rcell .rv{font-size:15px}
+  .bw-grid .rl-note{margin-left:0;width:100%;margin-top:6px}
   .arsect{margin-top:16px;padding-top:14px;border-top:1px dashed rgba(111,150,255,.3)}
   .arsect .ast{font-size:13.5px;font-weight:700;color:#5b7fd4;margin-bottom:10px;letter-spacing:.4px}
   .rgrid.ar-grid{grid-template-columns:repeat(4,1fr)}
@@ -272,7 +280,18 @@
         <span class="pm">BedWars · 综合</span>
       </div>
       <div class="grid" id="g-bw"></div>
-      <div class="hint">* 33 项完整统计 · 数据来源 wdsj.net/nexus</div>
+      <div class="bwratios">
+        <div class="ast">衍生比率指标 · 18 项</div>
+        <div class="rgrid bw-grid" id="r-grid"></div>
+        <div class="rlegend">
+          <span><i style="background:#ef7a63"></i>主流对战评估</span>
+          <span><i style="background:#5b8def"></i>通用衍生对战比率</span>
+          <span><i style="background:#43c4b0"></i>建造相关</span>
+          <span><i style="background:#c89bf0"></i>武器细分</span>
+          <span class="rl-note">FKDR 终局死亡按败场数估算</span>
+        </div>
+      </div>
+      <div class="hint">* 33 项完整统计 + 18 项衍生比率 · 数据来源 wdsj.net/nexus</div>
     </section>
 
     <!-- 竞技场（冷蓝） -->
@@ -298,22 +317,6 @@
 
   </div>
 
-  <!-- 衍生比率指标（基于起床战争数据计算） -->
-  <section class="panel rt" style="margin-top:30px">
-    <div class="ph">
-      <div class="pi"><canvas id="pv-ratio" width="16" height="16"></canvas></div>
-      <h2>衍生比率指标</h2>
-      <span class="pm">基于起床战争数据计算 · 共 18 项</span>
-    </div>
-    <div class="rgrid" id="r-grid"></div>
-    <div class="rlegend">
-      <span><i style="background:#ef7a63"></i>主流对战评估</span>
-      <span><i style="background:#5b8def"></i>通用衍生对战比率</span>
-      <span><i style="background:#43c4b0"></i>建造相关</span>
-      <span><i style="background:#c89bf0"></i>武器细分</span>
-      <span class="rl-note">FKDR 的终局死亡按「败场数」估算（起床战争每局最多终局死亡一次）</span>
-    </div>
-  </section>
 
   <div class="foot">
     <span id="f-player">dongtians</span><span>·</span><span>双模式战绩</span>
