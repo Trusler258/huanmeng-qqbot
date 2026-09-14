@@ -275,6 +275,14 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
             _self_aware = get_config()._build_self_awareness()
         except Exception:
             _self_aware = ""
+    # v2.3.6: 赞赏名单常驻（用户明确要求"一直常驻提示词里以表感谢"）。
+    #   名单为空时不注入；上限 20 个名字（见 modules/reward.MAX_HINT_ITEMS）防 token 膨胀。
+    _sponsors = ""
+    try:
+        from modules.reward import sponsors_hint
+        _sponsors = sponsors_hint()
+    except Exception:
+        _sponsors = ""
     core_parts = [
         header,
         sec.get("persona_lock", "") if not custom_persona else "",
@@ -285,6 +293,7 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         sec.get("fav_format", ""),
         sec.get("fav_tiers", ""),
         _self_aware,
+        _sponsors,
         sec.get("anti_repeat", ""),
         sec.get("private_tone", "") if (not is_group and not custom_persona) else "",
     ]
@@ -382,6 +391,8 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
         if cl:
             parts.append(cl)
     if "face" in needs:
+        # v2.3.9: 群聊私聊都注入表情库章节（用户要求"表情包要常发"）。
+        # v2.3.6 曾因误判只对私聊注入（理由是"跟群聊硬规则打架"），该硬规则已废除。
         f = sec.get("face_lib", "")
         if f:
             parts.append(f)
@@ -404,7 +415,16 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
 
     if not parts:
         return ""
-    return "【本轮参考资料】\n" + "\n\n".join(parts)
+    # v2.3.9: 按需注入的章节也要支持占位符——原来只有常驻 system（_build_system_text）
+    #   会做替换，导致 face_lib 章节里写 {face_keywords} 会原样吐给模型（字面量）。
+    txt = "【本轮参考资料】\n" + "\n\n".join(parts)
+    _face_kw = ""
+    try:
+        from modules.face_lib import face_keywords_hint
+        _face_kw = face_keywords_hint()
+    except Exception:
+        pass
+    return txt.replace("{face_keywords}", _face_kw)
 
 
 # ── 格式提醒：统一从提示词文件读取（v2.2.2）────────────────────────
@@ -1014,10 +1034,13 @@ def _clean_sentences(raw: str) -> list[str]:
         raw = raw.replace("\n", " ").replace("\r", " ")
         sentences = [s.strip() for s in raw.split("||") if s.strip()]
     else:
-        # 没有分隔符 → 按双换行段落切分（适配长文回复如错误报告分析）
+        # 没有分隔符 → 先按双换行段落切分（适配长文回复如错误报告分析）
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', raw) if p.strip()]
         if len(paragraphs) <= 1:
-            sentences = [raw.strip()]
+            # 无空行分段：长诗文/歌词等常为每行一句（《蜀道难》事故复现：
+            # 整首塌成一句再被 [:5] 砍掉 2/3）→ 按物理行拆
+            lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+            sentences = lines if len(lines) > 1 else [raw.strip()]
         else:
             sentences = paragraphs
         # 不合并换行，保留段落格式
@@ -1035,6 +1058,69 @@ def _clean_sentences(raw: str) -> list[str]:
     ]
     sentences = [s for s in sentences if len(s) >= 2]
     return sentences[:5]
+
+
+# ── 句尾句号清洗（v2.3.6 用户硬要求：句尾不许有"。"）────────────
+# 为什么放代码而不是只靠提示词：提示词里已经强调三轮（group_format / 40_reminders），
+# 实测仍偶发（"背？。"、长文段末"。"）。这是确定性规则，代码兜底最可靠。
+_TAIL_PERIOD = re.compile(r"[。．]\s*$")
+
+
+def _strip_tail_period(s: str) -> str:
+    """去掉句子末尾的中文句号。
+
+    只处理**末尾**的句号：
+      · "背完了。"       → "背完了"
+      · "陪我一起背？。"  → "陪我一起背？"（保留问号）
+      · "好难啊……。"     → "好难啊……"（保留省略号）
+    句内部的句号、代码块、版本号（v2.3.6）一律不动。
+    去掉后若变空（整句就一个"。"），返回原串免得产生空句。
+    """
+    if not s:
+        return s
+    out = _TAIL_PERIOD.sub("", s.rstrip())
+    return out if out.strip() else s
+
+
+def _salvage_plain_reply(raw: str, min_chars: int = 40) -> str | None:
+    """把「非 JSON 但内容完整」的模型输出救回成标准 JSON。
+
+    ★ v2.3.6 修的是一个真实事故：
+      用户让 bot 背《蜀道难》，模型第一次就完整吐出了全诗（纯文本、非 JSON），
+      但下游「非 JSON → 强制 json_mode 重试」逻辑把它丢了，重试拿回来一版
+      敷衍话（"我背到第三句就打结了"），最终发出去的是后者。用户原话：
+      "但其实已经生成出来了"。
+
+    ★ 为什么不能再依赖 json_mode 重试兜底：
+      DeepSeek 官方文档（api-docs.deepseek.com/guides/json_mode）明确写着
+      "When using the JSON Output feature, the API may occasionally return
+      empty content."——JSON 模式偶发空返回是官方承认的未修问题，
+      长文本（诗文/长解释）尤其容易踩。所以：**首次输出的完整内容优先保留**，
+      JSON 模式只在内容确实残缺时当补救手段。
+
+    返回标准 JSON 字符串；内容太短（像碎片）时返回 None 交给上层重试。
+    """
+    if not raw:
+        return None
+    txt = raw.strip()
+    # 明显是代码块/工具参数等非自然语言 → 不救
+    if txt.startswith(("{", "[", "```")) or "/~" in txt:
+        return None
+
+    sentences = _clean_sentences(txt)
+    sentences = [s for s in sentences if s and s.strip()]
+    if not sentences:
+        return None
+    total = sum(len(s) for s in sentences)
+    if total < min_chars:
+        # 太短 → 可能是被截断的半句话，不适合当最终回复
+        return None
+    sentences = [_strip_tail_period(s) for s in sentences]
+    payload = {"replies": sentences, "fav": 0}
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return None
 
 
 def _build_history_messages(msg_history: list[str], bot_name: str) -> list[dict]:
@@ -1201,11 +1287,27 @@ async def generate_multi_reply_with_tools(
                         if json_raw and json_raw.startswith("{"):
                             result.content = json_raw
                 else:
-                    logger.info("LLM 输出非 JSON，强制重试...")
-                    json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.3, json_mode=True)  # v2.0.4w
-                    if json_raw and json_raw.startswith("{"):
-                        result.content = json_raw
-                        logger.info("json_mode 重试成功: %s...", json_raw[:80])
+                    # ★ v2.3.6: 首次非 JSON —— 先尝试「救回」，不再无脑重试覆盖。
+                    #   事故复盘：模型首次已吐出完整《蜀道难》全文，被强制 json_mode
+                    #   重试覆盖成敷衍版（详见 _salvage_plain_reply 注释）。
+                    #   而 DeepSeek 官方承认 json_mode 会偶发空返回，重试本身就不可靠。
+                    salvaged = _salvage_plain_reply(result.content)
+                    if salvaged:
+                        result.content = salvaged
+                        logger.info(
+                            "LLM 输出非 JSON 但内容完整，已救回直接使用（%d 字原始输出）",
+                            len(result.content),
+                        )
+                    else:
+                        logger.info("LLM 输出非 JSON 且内容残缺，走 json_mode 补救...")
+                        json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.3, json_mode=True)  # v2.0.4w
+                        if json_raw and json_raw.startswith("{"):
+                            result.content = json_raw
+                            logger.info("json_mode 补救成功: %s...", json_raw[:80])
+                        else:
+                            # 补救也失败：宁可留首次的残缺内容（下游 _parse_reply
+                            # 有纯文本兜底），也不要空手而归
+                            logger.warning("json_mode 补救失败，保留首次原始输出")
             break
 
         # ★ v2.0.4y(2026-09-04): 轮1有工具调用且 content 是短自然语 → 先发先导语。
@@ -1387,6 +1489,21 @@ async def generate_multi_reply_with_tools(
 
 
 
+def _polish_replies(replies: list) -> list:
+    """统一出口清洗：句尾句号（v2.3.6 用户硬要求）。
+
+    所有 returns 路径都过这里，保证无论走 JSON 正常解析、截断修复、
+    手工正则解析还是纯文本兜底，句尾都不会留"。"。
+    """
+    out = []
+    for r in replies or []:
+        s = str(r)
+        s = _strip_tail_period(s)
+        if s.strip():
+            out.append(s)
+    return out
+
+
 def _parse_reply(
     raw: str,
     speaker_name: str = "",
@@ -1409,7 +1526,7 @@ def _parse_reply(
         replies = data.get("replies", [])
         if not isinstance(replies, list) or not replies:
             raw_cleaned, fav_change = _extract_fav_change(raw)
-            replies = _clean_sentences(raw_cleaned)
+            replies = _polish_replies(_clean_sentences(raw_cleaned))
             return replies, fav_change, [], "", "", None, "", None, None, "user", {}, None
         if isinstance(replies[0], list):
             replies = [str(r) for r in replies[0]]
@@ -1438,6 +1555,7 @@ def _parse_reply(
         actor = data.get("actor") or {}
         instructs = data.get("instructs")
 
+        replies = _polish_replies(replies)
         logger.info("JSON回复解析: %d句 fav=%+d calls=%d mood=%s",
                    len(replies), fav_change, len(calls), mood)
         return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, instructs
@@ -1467,6 +1585,7 @@ def _parse_reply(
                         origin = data.get("origin", "user")
                         actor = data.get("actor") or {}
                         instructs = data.get("instructs")
+                        replies = _polish_replies(replies)
                         logger.info("JSON截断修复: %d句", len(replies))
                         return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, instructs
                 except Exception:
@@ -1503,7 +1622,7 @@ def _parse_reply(
                     if parts:
                         fm = re.search(r'"fav"\s*:\s*(-?\d+)', raw)
                         fv = int(fm.group(1)) if fm else 0
-                        return parts, fv, [], "", "", None, "", None, None, "user", {}, None
+                        return _polish_replies(parts), fv, [], "", "", None, "", None, None, "user", {}, None
         except Exception:
             pass
         return [], 0, [], "", "", None, "", None, None, "user", {}, None

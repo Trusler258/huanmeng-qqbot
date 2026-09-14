@@ -185,6 +185,21 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
 
 # ------消息处理主入口------
+def _ctx_safe(text: str, limit: int = 200) -> str:
+    """写进对话上下文前的清洗（v2.3.10）。
+
+    为什么需要：调用结果里常带完整 CQ 码（如 /~赞赏 的 `[CQ:image,file=...]`）
+    和大段成品文案，原样写进上下文会白烧 token 还会让模型看到裸 CQ 码犯迷糊。
+    统一把 CQ 码换成占位符并截断。
+    """
+    s = str(text or "")
+    s = re.sub(r"\[CQ:image[^\]]*\]", "[图片]", s)
+    s = re.sub(r"\[CQ:face[^\]]*\]", "[表情]", s)
+    s = re.sub(r"\[CQ:at[^\]]*\]", "@", s)
+    s = re.sub(r"\[CQ:[^\]]*\]", "[消息]", s)
+    return s[:limit]
+
+
 async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
                           raw_event=None, raw_message="", quoted_msg="", error_report=None,
                           **extra_kwargs):
@@ -279,7 +294,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------引用消息注入------
     if quoted_msg:
         quote_line = f"[引用原文] {quoted_msg}"
-        ctx.append_to_context(chat_id, quote_line)
+        ctx.append_to_context(chat_id, _ctx_safe(quote_line, 300))
         logger.info("📎 引用消息已注入上下文 [%d]: '%s'...", chat_id, quoted_msg[:50])
 
     # ------上下文记录------
@@ -445,6 +460,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             extra_info_parts.append(_notes_text)
     except Exception:
         pass
+
+    # ★ v2.3.11 跨聊天记忆关联：来自其他会话的近期交流（带来源标识，放末尾对缓存友好）
+    try:
+        from modules.memory_link import build_linked_context, chat_key as _mlink_key
+        _linked_txt = build_linked_context(_mlink_key(chat_id, is_group), ctx)
+        if _linked_txt:
+            extra_info_parts.append(_linked_txt)
+            logger.info("跨聊天记忆注入: %d 字", len(_linked_txt))
+    except Exception as e:
+        logger.debug("跨聊天记忆注入失败: %s", e)
 
     if not related_memories or len(related_memories) < 300:
         try:
@@ -870,6 +895,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if _inline_face_count:
         logger.info("逐句配图: 正文内联 %d 张 / 共 %d 句", _inline_face_count, len(sentences))
 
+    # ── 群聊表情包：v2.3.9 起恢复正常发送（用户要求"表情包要常发"）──
+    #   历史：v2.3.6 曾加过"群聊一律拦截表情、改用括号动作"的硬兜底，属误判
+    #   （用户并未要求禁表情）——已移除。群聊与私聊一致，按 _faces_per_sentence 交错发送。
+
     # ------上下文回写------
     _context_reply = re.sub(r'\s*\[系统\]\s*已调用:\s*\S+', '', " || ".join(sentences)).strip()
     # ★ CQ 码简化写入上下文（避免 [CQ:image,file=...] 污染 LLM 上下文）
@@ -962,10 +991,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.debug("取消旧发送任务 chat=%d", chat_id)
 
     # 工具调用通知 → 追加到最后
+    # ★ 这是**有意设计**（用户 2026-09-14 明确说明）：把 bot 调用了哪个指令作为一条
+    #   消息发给用户看，效果类似"展示工具调用"。
+    #   ⚠️ 不要当调试残留删掉！曾误判为泄漏并删除，被用户纠正后已恢复。
     if executed_calls:
         call_hints = []
         for name, args_str in executed_calls:
-            call_hints.append(f"[工具调用: {name} {args_str}]")
+            _a = (args_str or "").strip()
+            # args 为空时不留尾空格（原来会拼出 "[工具调用: reward ]"）
+            call_hints.append(f"[工具调用: {name}{' ' + _a if _a else ''}]")
         sentences.append("\n".join(call_hints))
 
     # v2.1.12: 主回复首句 + [已思考N秒]（先导语未挂过才挂，且思考时长满足阈值）
@@ -1018,13 +1052,30 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     short = r[:200] + "..." if len(r) > 200 else r
                     logger.info("CALL结果: %s", short[:80])
 
+            # ★ v2.3.6: 结果自带图片（如 /~赞赏 的赞赏码）→ 原样直发，不进 LLM 转述。
+            #   根因：转述必丢 CQ 码——LLM 不会把 [CQ:image,file=…] 原样吐回来，
+            #   它只会用自己的话描述。实测 2026-09-14 私聊要赞赏码：文字来了 8 条、
+            #   图一张没发（msglog 无含图记录，可复现）。
+            #   这与 __EQ_CARD__ 分支的区别：那个是「返回 PNG 路径」，这个是「返回文本里带 CQ」。
+            _cq_texts = [r for r in call_results
+                         if isinstance(r, str) and "[CQ:image" in r
+                         and not r.startswith("__EQ_CARD__:")]
+            if _cq_texts:
+                for r in _cq_texts:
+                    ctx.append_to_context(chat_id, f"[系统] 调用结果: {_ctx_safe(r)}")
+                    logger.info("CALL结果含图，直发（跳过 LLM 转述）: %s", r[:60])
+                    await send_by_chat_type(r, chat_id if is_group else chat_id,
+                                           is_group=True if is_group else False,
+                                           user_id=user_id if not is_group else None)
+                return
+
             # ★ v2.1.1: 纯 note 调用不触发追加回复（首轮已说"记下了"，再回一次会重复）
             _note_only = bool(executed_calls) and all(name == "note" for name, _ in executed_calls)
             if call_results[0] and not _note_only:
                 effective_result = call_results[0]
                 is_call_error = isinstance(effective_result, str) and effective_result.startswith("[CALL错误]")
                 ctx_text = effective_result[:200] if not is_call_error else f"[执行失败] {effective_result[:200]}"
-                ctx.append_to_context(chat_id, f"[系统] 调用结果: {ctx_text}")
+                ctx.append_to_context(chat_id, f"[系统] 调用结果: {_ctx_safe(ctx_text)}")
                 try:
                     from services.llm import call_llm as raw_llm, _build_system_text
                     # ★ 私聊 follow-up 也要注入 persona（修复人设割裂：搜索后回复不能变回默认猫娘）
@@ -1078,7 +1129,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                                     for sentence in parsed["replies"]:
                                         sentence = sentence[:3000].strip()
                                         if sentence:
-                                            ctx.append_to_context(chat_id, f"{cfg.bot_name}: {sentence[:200]}")
+                                            ctx.append_to_context(chat_id, _ctx_safe(f"{cfg.bot_name}: {sentence}", 200))
                                             await send_by_chat_type(sentence, chat_id if is_group else chat_id,
                                                                    is_group=True if is_group else False,
                                                                    user_id=user_id if not is_group else None)
@@ -1090,7 +1141,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         # 纯文本回退
                         f_text = f_text[:3000]
                         f_text = re.sub(r'[\[［]fav:\s*[+-]?\d+[\]］]', '', f_text).strip()
-                        ctx.append_to_context(chat_id, f"{cfg.bot_name}: {f_text[:200]}")
+                        ctx.append_to_context(chat_id, _ctx_safe(f"{cfg.bot_name}: {f_text}", 200))
                         await send_by_chat_type(f_text, chat_id if is_group else chat_id,
                                                is_group=True if is_group else False,
                                                user_id=user_id if not is_group else None)
@@ -1113,6 +1164,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ── 后台提取用户画像（不阻塞）──
     asyncio.ensure_future(_async_extract_profile(user_id, sender_name, msg_content))
+
+    # ── 会话分块压缩（v2.3.10）：块数未超阈值时是空操作，超了才异步压最早的几块 ──
+    #   放后台跑：压缩要调一次便宜模型（秒级），不能拖慢本次回复。
+    asyncio.ensure_future(ctx.maybe_compress(chat_id))
 
 
 # ------用户画像后台提取------
