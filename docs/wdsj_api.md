@@ -281,5 +281,5 @@ GET /api/v1/player-heads/{name}/head.png
 - [x] `PERIOD_LABELS` 补 `SEASON: 赛季`（v2.3.15 已做）
 - [x] `IDENTITY_TYPES` 注释说明 uid/uuid 服务端禁用（v2.3.15 已做，保留兼容）
 - [x] `BOARD_ALIASES`/`BOARD_SHORTHAND` 补齐 86 榜单全量别名（v2.3.15 已做，86/86 覆盖）
-- [ ] 战绩摘要 `_build_wdsj_summary` 可扩展：用 `labels` 全量 + `imageUrl` 快照图
-- [ ] `/~wdsj lb` 选周期时参考榜单 `periods` 字段（当前假定全支持，会 400）
+- [x] `/~wdsj lb` 周期智能降级（v2.3.15 已做：`_align_board_period` 按榜单 periods 对齐，10 分钟缓存）
+- [ ] 战绩摘要 `_build_wdsj_summary` 可扩展：用 `labels` 全量 + `imageUrl` 快照图（text 模式已用 labels/summaryCards）

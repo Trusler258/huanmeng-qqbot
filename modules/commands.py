@@ -2175,6 +2175,38 @@ async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 # --- 排行榜处理 ---
 
+# 榜单周期缓存：board_id -> (periods_list, fetched_at)（10 分钟有效）
+_LB_PERIOD_CACHE: dict = {}
+_LB_PERIOD_TTL = 600
+
+
+async def _align_board_period(board_id: str, want: str) -> str:
+    """按榜单真实支持的 periods 对齐周期，避免撞 API 400。
+    例: arena-modern-global-elo 只有 ALLTIME，想查 WEEKLY 时降级为 ALLTIME。"""
+    global _LB_PERIOD_CACHE
+    now = time.time()
+    cached = _LB_PERIOD_CACHE.get(board_id)
+    if cached and now - cached[1] < _LB_PERIOD_TTL:
+        periods = cached[0]
+    else:
+        from services import wdsj_api as api
+        boards = await api.query_leaderboards()
+        if boards:
+            periods = next((b.get("periods", []) for b in boards if b.get("id") == board_id), [])
+            if not periods:
+                periods = ["ALLTIME", "MONTHLY", "WEEKLY", "DAILY", "SEASON"]
+            _LB_PERIOD_CACHE[board_id] = (periods, now)
+        else:
+            return want  # 列表拿不到就按用户原意走（反正 400 会回来）
+    if want in periods:
+        return want
+    # 降级顺序: ALLTIME > SEASON > MONTHLY > WEEKLY > DAILY
+    for cand in ("ALLTIME", "SEASON", "MONTHLY", "WEEKLY", "DAILY"):
+        if cand in periods:
+            return cand
+    return want
+
+
 async def _handle_wdsj_lb(args, is_group, group_id, user_id):
     import os
     from services import wdsj_api as api
@@ -2213,6 +2245,9 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
     period = period if period in api.PERIOD_LABELS else {
         "MONTH": "MONTHLY", "WEEK": "WEEKLY", "DAY": "DAILY", "ALL": "ALLTIME"
     }.get(period, "ALLTIME")
+
+    # ★ 周期智能对齐（榜单只支持部分周期时降级，避免 400）
+    period = await _align_board_period(board_id, period)
 
     data = await api.query_leaderboard(board_id, period)
     if not data:
