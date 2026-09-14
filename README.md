@@ -9,7 +9,7 @@
 <br>
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v2.3.13-8B7BFF)](data/update_log.md)
+[![Version](https://img.shields.io/badge/version-v2.3.14-8B7BFF)](data/update_log.md)
 [![License](https://img.shields.io/badge/license-MIT-3DA639)](LICENSE)
 [![OneBot](https://img.shields.io/badge/protocol-OneBot%20v11-00BFFF)](https://github.com/botuniverse/onebot)
 [![NapCat](https://img.shields.io/badge/adapter-NapCat-ff69b4)](https://github.com/NapNeko/NapCatQQ)

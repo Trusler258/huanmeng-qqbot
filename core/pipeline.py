@@ -84,6 +84,25 @@ def _clean_name(name):
 
 
 # ------戳一戳------
+# ★ 戳一戳**读会话上下文**（用户 2026-09-14 明确要求，别改成不读）。
+#   曾一度改成"不读上下文"被用户纠正（原话「读上下文!!!」）。
+#   下面这个缓冲是**补充**：上下文里只有 "[系统] 某某摸了摸幻梦的头" 这样的动作记录，
+#   没有 bot 自己上次的回应，防复读规则（poke_rules 第 2 条）缺料，所以单独记一份。
+_POKE_KEEP = 5
+_poke_replies: dict[int, list[str]] = {}
+
+
+def _poke_history(chat_id: int, bot_name: str) -> list[str]:
+    """我自己最近几次的戳一戳回应，拼成对话历史的样子（补充给防复读用）"""
+    return [f"{bot_name}: {r}" for r in _poke_replies.get(chat_id, [])]
+
+
+def _remember_poke_reply(chat_id: int, text: str) -> None:
+    buf = _poke_replies.setdefault(chat_id, [])
+    buf.append(text)
+    del buf[:-_POKE_KEEP]
+
+
 async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     from core.context_manager import get_context_mgr
     cfg = get_config()
@@ -151,7 +170,9 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     buffer_snapshot = list(ctx.get_buffer(chat_id))
 
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
-        msg_history=ctx.get_context(chat_id),
+        # v2.3.14: 读会话上下文（用户明确要求）+ 末尾附上自己最近的戳一戳回应，
+        #   后者是因为"自己说过什么"本来没写进上下文，防复读规则缺料
+        msg_history=ctx.get_context(chat_id) + _poke_history(chat_id, cfg.bot_name),
         speaker_name=speaker_label,
         current_msg=f"[系统] {system_msg}",
         bot_name=cfg.bot_name,
@@ -165,20 +186,44 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     )
 
     if sentences:
-        # 静默去除 [FACE:xxx] 残留文本，LLM 不该输出这个
-        sentences = [re.sub(r'\[FACE:[^\]]*\]?', '', s).strip() for s in sentences]
-        sentences = [_clean_reply(s) for s in sentences]
-        sentences = [s for s in sentences if s]
-        if not sentences:
-            sentences = ["喵~"]
+        # v2.3.14: 戳一戳也要发表情 —— 原来这里直接把 [FACE:xxx] 删掉
+        #   （注释写"LLM 不该输出这个"），是 v2.3.6"群聊禁表情"那批误判的残留。
+        #   戳一戳是纯情绪反应，正是最该配图的地方。改为主路径同样的逐句配图。
+        _face_re = re.compile(r'\[FACE:([^\]]*)\]?')
+        _poke_faces: list[str | None] = []
+        _clean: list[str] = []
+        for _s in sentences:
+            _kw = next((k.strip() for k in _face_re.findall(_s) if k.strip()), "")
+            _txt = _face_re.sub("", _s).strip()
+            _cq = None
+            if _kw:
+                try:
+                    from modules.face_lib import get_face, make_cq
+                    _fp = get_face(_kw)
+                    if _fp:
+                        _cq = make_cq(_fp)
+                    else:
+                        logger.debug("戳一戳表情未匹配关键词: %s", _kw)
+                except Exception:
+                    logger.warning("戳一戳表情解析失败: %s", _kw, exc_info=True)
+            if not _txt and not _cq:
+                continue
+            _clean.append(_clean_reply(_txt) if _txt else "")
+            _poke_faces.append(_cq)
+        # 文字与配图对齐（空文字只发图的情况也要保留）
+        sentences = [s for s in _clean if s] or ["喵~"]
+        if len(sentences) != len(_poke_faces):
+            _poke_faces = _poke_faces[:len(sentences)] or [None] * len(sentences)
 
         task = asyncio.create_task(send_sentences(
             sentences, chat_id, is_group,
             user_id=user_id if not is_group else None,
+            faces=_poke_faces,
         ))
         ctx.set_active_send_task(chat_id, task)
 
         update_fav(chat_id, user_id, 1, is_group)
+        _remember_poke_reply(chat_id, " ".join(sentences))   # 防复读缓冲
         logger.info("戳一戳回复完成: %d句 fav+1", len(sentences))
 
         await maybe_save_memory(system_msg, sentences[0], speaker_label, chat_id, user_id, buffer_snapshot)
