@@ -2207,6 +2207,55 @@ async def _align_board_period(board_id: str, want: str) -> str:
     return want
 
 
+async def _handle_wdsj_dual(args, is_group, group_id, user_id):
+    """双模式横屏战绩卡: /~wdsj dual <玩家名> — 起床战争 + 竞技场 一图双段"""
+    import re as _re
+    from services import wdsj_api as api
+    from services.sender import send_group_msg, send_private_msg
+    from pathlib import Path as _P
+
+    # 玩家名（忽略 img 之类后缀，支持绑定回退）
+    parts = [a for a in args if a.lower() not in ("img", "pic", "card", "图片")]
+    player = " ".join(parts).strip() if parts else (_get_bound_player(user_id) or "")
+    if not player:
+        return "用法: /~wdsj dual <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+
+    await (send_group_msg(f"正在生成 {player} 的双模式战绩卡喵~", group_id) if is_group
+           else send_private_msg(f"正在生成 {player} 的双模式战绩卡喵~", user_id))
+
+    bw = await api.query_player_stats(player, "bedwars-stats")
+    ar = await api.query_player_stats(player, "arena-stats")
+    if not bw and not ar:
+        return format_lang("wdsj.player_not_found", player=player, template="双模式")
+
+    html = api.build_dual_card_html(bw, ar)
+
+    # 卡片宽 1740，需大视口 + 元素截图
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe = _re.sub(r"[^\w.\-]", "_", player)[:24]
+    out = str(_P(__file__).resolve().parent.parent / "data" / "img_temp" / f"wdsj_dual_{safe}_{ts}.png")
+    try:
+        from modules.changelog import _ensure_browser
+        browser = await _ensure_browser()
+        page = await browser.new_page(viewport={"width": 1800, "height": 1200})
+        await page.set_content(html)
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(500)
+        el = await page.query_selector(".card")
+        if el:
+            await el.screenshot(path=out)
+        else:
+            await page.screenshot(path=out, full_page=True)
+        await page.close()
+    except Exception as e:
+        logger.warning("wdsj dual 卡片渲染失败: %s", e)
+        return f"双模式战绩卡渲染失败: {e}"
+
+    cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
+    await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
+    return None
+
+
 async def _handle_wdsj_lb(args, is_group, group_id, user_id):
     import os
     from services import wdsj_api as api
@@ -2373,6 +2422,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                 "洛花星雨战绩查询 /~wdsj",
                 "  <模式> <玩家> [img]     战绩",
                 "  lb <榜> [周期] [img]   排行榜",
+                "  dual <玩家名>          双模式横屏卡(起床+竞技场)",
                 "  boards                  简写速查",
                 "  list                    模式别名",
                 "简写: bw/kbw/sw/kp 周期: all/month/week/day"
@@ -2531,6 +2581,10 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
 
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
         return None
+
+    # ★ 双模式横屏卡（起床战争 + 竞技场）
+    if action in ("dual", "double", "双模式", "双段"):
+        return await _handle_wdsj_dual(args[1:], is_group, group_id, user_id)
 
     # ★ 折线图
     if action in ("trend", "趋势", "走势", "折线"):

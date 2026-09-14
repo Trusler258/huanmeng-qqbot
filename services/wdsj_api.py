@@ -276,6 +276,78 @@ def build_leaderboard_html(data: dict, bot_name: str) -> str:
     return html
 
 
+_MC_COLOR_RE = None
+
+
+def _strip_mc_color(s) -> str:
+    """剥离 Minecraft 颜色码（如 §3 铂金 III -> 铂金 III）"""
+    import re as _re
+    global _MC_COLOR_RE
+    if _MC_COLOR_RE is None:
+        _MC_COLOR_RE = _re.compile(r"[\u00a7&].")
+    return _MC_COLOR_RE.sub("", str(s))
+
+
+def build_dual_card_html(bw_data: Optional[dict], ar_data: Optional[dict]) -> str:
+    """双模式横屏战绩卡（起床战争 + 竞技场，一图双段）
+
+    从 API 返回的 labels/values 全量提取字段，注入 data/templates/wdsj_dual_card.html。
+    """
+    import html as _html
+    import json as _json
+    from pathlib import Path as _P
+
+    def esc(s) -> str:
+        return _html.escape(str(s), quote=True)
+
+    def fields_of(data) -> list:
+        """按 API 返回顺序全量提取 [key, label, value]"""
+        data = data or {}
+        labels = data.get("labels") or {}
+        values = data.get("values") or {}
+        out = []
+        for k, v in values.items():
+            out.append([k, esc(labels.get(k, k)), esc(_strip_mc_color(v))])
+        return out
+
+    def display_of(data, default: str) -> str:
+        return (data or {}).get("displayName") or default
+
+    pi = ((ar_data or bw_data) or {}).get("player") or {}
+
+    # 注册时间（起床战争的 headerCards 里有）
+    reg = ""
+    for c in (bw_data or {}).get("headerCards") or []:
+        if c.get("key") == "registerTime":
+            reg = c.get("value", "")
+            break
+
+    ar_values = (ar_data or {}).get("values") or {}
+    payload = {
+        "player": {
+            "uid": pi.get("uid", ""),
+            "name": pi.get("name", ""),
+            "uuid": pi.get("uuid", ""),
+        },
+        "registerTime": reg,
+        "bw": {
+            "displayName": display_of(bw_data, "起床战争"),
+            "fields": fields_of(bw_data),
+        },
+        "ar": {
+            "displayName": display_of(ar_data, "竞技场"),
+            "division": _strip_mc_color(ar_values.get("division", "")),
+            "fields": fields_of(ar_data),
+        },
+    }
+
+    tpl_path = _P(__file__).resolve().parent.parent / "data" / "templates" / "wdsj_dual_card.html"
+    tpl = tpl_path.read_text(encoding="utf-8")
+    # 防 </script> 提前闭合
+    js = _json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    return tpl.replace("/*__WDSJ_DATA__*/null", js, 1)
+
+
 def build_help_card_html(md_path: str, bot_name: str) -> str:
     """构建 MD 帮助卡片 HTML"""
     from pathlib import Path
