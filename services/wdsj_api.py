@@ -62,7 +62,8 @@ ALIASES = {
 TEMPLATE_CN = {v: k for k, v in TEMPLATES.items()}
 
 # v2: 玩家标识类型（templates API 返回 allowedIdentityTypes）
-# 注意: uid 已被服务端禁用（实测返回 400 "当前服务器不允许使用 uid 查询玩家"），保留仅作兼容
+# 注意: 线上仅允许 name/nick，uid 与 uuid 均已被服务端禁用
+# （templates 返回 allowedIdentityTypes=["name","nick"]；uid 实测 400 "不允许使用 uid 查询玩家"）
 IDENTITY_TYPES = ("name", "nick", "uid", "uuid")
 
 BOARD_ALIASES = {
