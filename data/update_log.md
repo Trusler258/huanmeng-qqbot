@@ -30,7 +30,11 @@
   - 新增 `TEMPLATE_CN`：支持 `/~wdsj 幸运之柱 xxx` 中文模板名直查
   - `PERIOD_LABELS` 补 `SEASON: 赛季`
   - uid 加注释说明服务端已禁用（保留兼容）
-- 本地验证：新模板查询 ok（幸运之柱 values=14）、SEASON 榜单 ok（26S3 赛季）、中文名 resolve 全通
+  - **86 榜单别名全量补齐**（BOARD_ALIASES + BOARD_SHORTHAND，86/86 覆盖）
+  - **`/~wdsj lb` 周期智能降级**：按榜单真实 periods 对齐，避免撞 400（`_align_board_period`，10 分钟缓存）
+  - `query_leaderboard` 遇 400/业务错误也写 last_error（原只记 403/404）
+- 本地验证：新模板查询 ok（幸运之柱 values=14）、SEASON 榜单 ok（26S3 赛季）、中文名 resolve 全通、
+  周期降级 4/4（ELO→ALLTIME、幸运之柱→ALLTIME、bedwars-wins 保留 WEEKLY）
 
 ## v2.3.14 — 群聊表情修好（三处打架）+ 戳一戳读上下文并能发图 (2026.9.14)
 一句话总结：查出群聊一直不发图的根因是提示词里三处互相打架（词表缺失、action 字段说"比图片更自然"、示例不带 FACE），全部修掉；戳一戳恢复读会话上下文并支持发表情。
