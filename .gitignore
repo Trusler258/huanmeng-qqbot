@@ -114,3 +114,6 @@ data/context_cache.json
 # 面板已拆出为独立项目（huanmeng-panel），本地残留不跟踪
 panel/
 panel_web/
+
+# 反扒探测脚本与快照（临时工具，不入库）
+/_probe/
