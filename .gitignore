@@ -110,3 +110,7 @@ data/memory_links.json
 data/context_cache.json
 # 部署/改造前的备份文件（本地留档用，不进仓库）
 *.bak_*
+
+# 面板已拆出为独立项目（huanmeng-panel），本地残留不跟踪
+panel/
+panel_web/
