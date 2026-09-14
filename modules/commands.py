@@ -2243,7 +2243,7 @@ async def _handle_wdsj_dual(args, is_group, group_id, user_id):
     try:
         from modules.changelog import _ensure_browser
         browser = await _ensure_browser()
-        page = await browser.new_page(viewport={"width": 2000, "height": 1300})  # 卡片宽 1920，视口须 >= 卡片宽
+        page = await browser.new_page(viewport={"width": 2400, "height": 1400})  # 卡片宽 2200，视口须 >= 卡片宽
         await page.set_content(html)
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(500)
