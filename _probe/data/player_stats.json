@@ -1,0 +1,138 @@
+{
+ "code": 0,
+ "message": "success",
+ "data": {
+  "player": {
+   "uid": 801123,
+   "name": "None",
+   "uuid": "2bb5543f-8c66-3f4e-ad48-c87397e76a16"
+  },
+  "template": "bedwars-stats",
+  "displayName": "起床战争",
+  "locale": "zh-CN",
+  "labels": {
+   "score": "积分",
+   "kills": "击杀",
+   "deaths": "死亡",
+   "kd": "KD",
+   "voidDeaths": "自走虚空",
+   "wins": "胜利",
+   "losses": "失败",
+   "breakBed": "拆床",
+   "bedRestore": "回春床",
+   "firstKill": "首杀",
+   "finalKills": "最终击杀",
+   "airKill": "滞空击杀",
+   "shoot": "发射投掷物",
+   "projectileKillPlayer": "投掷物击杀",
+   "eggKill": "蛋蛋击杀",
+   "fireballKill": "火球击杀",
+   "hitFirework": "PY击杀",
+   "landmineKill": "地雷击杀",
+   "explosionKill": "爆炸击杀",
+   "hitFireball": "打飞火球",
+   "shootingHitFireball": "射飞火球",
+   "blockBreak": "破坏方块",
+   "blockPlace": "放置方块",
+   "killBridgeBuildChicken": "击杀搭路鸡",
+   "killRoadBuildCat": "击杀搭路猫",
+   "luckBlock": "挖幸运方块",
+   "partyNoobPlayed": "爱萌新",
+   "perishTogether": "同归于尽",
+   "paint": "使用喷漆",
+   "eatVegetarianDiet": "吃素食",
+   "eatMeat": "吃荤食",
+   "noBed3Kill": "无床三杀",
+   "bedAbandonment3minSurvive": "无床存活三分钟"
+  },
+  "values": {
+   "score": "15",
+   "kills": "0",
+   "deaths": "0",
+   "voidDeaths": "0",
+   "wins": "0",
+   "losses": "0",
+   "breakBed": "0",
+   "bedRestore": "0",
+   "firstKill": "0",
+   "finalKills": "0",
+   "airKill": "0",
+   "shoot": "0",
+   "projectileKillPlayer": "0",
+   "eggKill": "0",
+   "fireballKill": "0",
+   "hitFirework": "0",
+   "landmineKill": "0",
+   "explosionKill": "0",
+   "hitFireball": "0",
+   "shootingHitFireball": "0",
+   "blockBreak": "0",
+   "blockPlace": "0",
+   "killBridgeBuildChicken": "0",
+   "killRoadBuildCat": "0",
+   "luckBlock": "0",
+   "partyNoobPlayed": "0",
+   "perishTogether": "0",
+   "paint": "0",
+   "eatVegetarianDiet": "0",
+   "eatMeat": "0",
+   "noBed3Kill": "0",
+   "bedAbandonment3minSurvive": "0",
+   "kd": "0.00"
+  },
+  "headerCards": [
+   {
+    "key": "player",
+    "label": "玩家",
+    "value": "None",
+    "hint": null
+   },
+   {
+    "key": "uid",
+    "label": "UID",
+    "value": "801123",
+    "hint": "UID不能代表注册顺序，UID系统于2020年左右启用，只计算在此时间之后首次进入服务器的顺序。且在2024年左右注销了80w个长期未登录的账号，因此部分老号再次登录会重新注册。"
+   },
+   {
+    "key": "template",
+    "label": "模板",
+    "value": "起床战争",
+    "hint": null
+   },
+   {
+    "key": "registerTime",
+    "label": "注册时间",
+    "value": "null",
+    "hint": null
+   }
+  ],
+  "summaryCards": [
+   {
+    "key": "score",
+    "label": "积分",
+    "value": "15",
+    "hint": null
+   },
+   {
+    "key": "wins",
+    "label": "胜利",
+    "value": "0",
+    "hint": null
+   },
+   {
+    "key": "kd",
+    "label": "KD",
+    "value": "0.00",
+    "hint": null
+   },
+   {
+    "key": "seasonRank",
+    "label": "赛季排名",
+    "value": "--",
+    "hint": null
+   }
+  ],
+  "snapshotKey": "20260914_06740d6e",
+  "imageUrl": "/api/v1/images/20260914_06740d6e"
+ }
+}
