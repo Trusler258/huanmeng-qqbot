@@ -74,6 +74,25 @@ BOARD_ALIASES = {
     # 单词直接别名 (兼容 /~wdsj lb beds month 等简化写法)
     "beds": "bedwars-beds", "wins": "bedwars-wins",
     "tnt": "击退战场-TNT击杀",
+    # v2.3.15 第三轮反扒新增: 起床战争
+    "bwde": "bedwars-deaths", "bwscore": "bedwars-overall", "overall": "bedwars-overall",
+    "bwns": "bedwars-normal-win-streak", "bwms": "bedwars-moe-win-streak",
+    "bwos": "bedwars-oneblock-win-streak", "bwss": "bedwars-solo-win-streak",
+    # 幸运之柱
+    "lpw": "luckypillars-wins", "lpk": "luckypillars-kills",
+    "lpt": "luckypillars-total-survival-seconds",
+    # 高版本竞技场
+    "amw": "arena-modern-wins", "amk": "arena-modern-kills",
+    "ams": "arena-modern-best-streak", "amelo": "arena-modern-global-elo",
+    # 空岛战争
+    "sws": "skywars-best-win-streak", "swl": "skywars-highest-loss-streak",
+    # 凌空乱斗
+    "abk": "aerial-battle-kills", "abl": "aerial-battle-loot-chests",
+    # 其他英文 id
+    "pitk": "thepit-kills", "bbw": "buildbattle-wins",
+    "mmk": "murdermystery-kills", "sheep": "sheepwars-kills",
+    "sbw": "speedbuilders-wins", "coins": "wealth-coins",
+    "kpd": "kitpvp-deaths",
 }
 
 BOARD_SHORTHAND = {
@@ -91,6 +110,20 @@ BOARD_SHORTHAND = {
     ("title", ""): "全服-称号数量", ("guild", ""): "公会-总贡献",
     ("dg", "win"): "你画我猜-获胜", ("cw", "win"): "色盲战争-获胜",
     ("cw", "kill"): "色盲战争-杀敌", ("has", "win"): "躲猫猫-获胜",
+    # v2.3.15 第三轮反扒新增
+    ("bw", "dead"): "bedwars-deaths", ("bw", "score"): "bedwars-overall",
+    ("bw", "ns"): "bedwars-normal-win-streak", ("bw", "ms"): "bedwars-moe-win-streak",
+    ("bw", "os"): "bedwars-oneblock-win-streak", ("bw", "ss"): "bedwars-solo-win-streak",
+    ("lp", "win"): "luckypillars-wins", ("lp", "kill"): "luckypillars-kills",
+    ("lp", "time"): "luckypillars-total-survival-seconds",
+    ("am", "win"): "arena-modern-wins", ("am", "kill"): "arena-modern-kills",
+    ("am", "streak"): "arena-modern-best-streak", ("am", "elo"): "arena-modern-global-elo",
+    ("sw", "streak"): "skywars-best-win-streak", ("sw", "loss"): "skywars-highest-loss-streak",
+    ("ab", "kill"): "aerial-battle-kills", ("ab", "chest"): "aerial-battle-loot-chests",
+    ("pit", "kill"): "thepit-kills", ("bb", "win"): "buildbattle-wins",
+    ("mm", "kill"): "murdermystery-kills", ("sheep", "kill"): "sheepwars-kills",
+    ("sb", "win"): "speedbuilders-wins", ("wealth", "coin"): "wealth-coins",
+    ("kp", "dead"): "kitpvp-deaths",
 }
 
 PERIOD_LABELS = {"ALLTIME": "总榜", "MONTHLY": "月榜", "WEEKLY": "周榜", "DAILY": "日榜", "SEASON": "赛季"}
@@ -185,9 +218,14 @@ async def query_leaderboards() -> Optional[list]:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, headers={**HEADERS, "Referer": "https://www.wdsj.net/nexus/leaderboards"})
-            if resp.status_code != 200: return None
+            if resp.status_code != 200:
+                last_error = f"HTTP {resp.status_code}"
+                return None
             data = resp.json()
-            if data.get("code") != 0: return None
+            if data.get("code") != 0:
+                last_error = f"API error {data.get('code')}: {data.get('message')}"
+                logger.warning("wdsj 榜单业务错误: %s", last_error)
+                return None
             return data["data"]["boards"]
     except Exception as e:
         logger.error("获取排行榜列表失败: %s", e)
