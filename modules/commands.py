@@ -59,6 +59,8 @@ from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
 from core.bot_notes import cmd_note
 from core.ctx_usage import cmd_ctx
 from modules.msg_relay import cmd_say
+from modules.reward import cmd_reward   # ★ 赞赏码 / 赞助名单
+from modules.memory_link import cmd_mlink   # ★ 跨聊天记忆关联（单一入口）
 
 # ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
 
@@ -3362,19 +3364,48 @@ async def cmd_apy(args, user_id, group_id, sender_name, is_group, bot_qq):
 #  实验测试项开关 /~key
 # ════════════════════════════════════════════════════════════
 async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """实验测试项开关（仅管理员）
+    """实验测试项开关（全员可用，非管理员需先兑换许可码）
 
     用法:
-      /~key                列出全部测试项与当前状态
-      /~key <code>         激活该测试项
-      /~key <code> off     恢复默认行为（关闭）
-      /~key <code> reset   恢复为注册表默认值
+      /~key                      列出全部测试项与当前状态
+      /~key 兑换 <许可码>         兑换许可码换取使用权
+      /~key <code>               激活该测试项
+      /~key <code> off           恢复默认行为（关闭）
+      /~key <code> reset         恢复为注册表默认值
     """
     cfg = get_config()
-    if not cfg.is_admin(user_id, group_id):
-        return "这是测试项开关，只有管理员能用喵~"
+    is_admin = cfg.is_admin(user_id, group_id)
 
+    from modules import licenses
     from modules.features import FEATURES, list_features, resolve, reset, set_enabled
+
+    # ── 兑换许可码（任何人可兑换，不需要先有权限）──
+    if args and args[0] in ("兑换", "激活码", "许可", "redeem", "cdk"):
+        if len(args) < 2:
+            return "用法：/~key 兑换 <许可码>"
+        res = licenses.redeem(args[1], user_id)
+        if not res.get("ok"):
+            return res.get("msg", "兑换失败")
+        return (
+            f"{res['msg']}\n"
+            f"{res['desc']}\n"
+            f"现在可以正常用了，发 /~key 看测试项列表"
+        )
+
+    # ── 权限校验：管理员免码，其他人必须有有效许可 ──
+    if not is_admin:
+        st = licenses.check(user_id)
+        if not st.get("ok"):
+            reason = {
+                "expired": "你的许可已经过期了",
+                "used_up": "你的许可次数用完了",
+            }.get(st.get("reason"), "你还没有许可码")
+            kind = "、".join(f'{v["label"]}（{v["desc"]}）' for v in licenses.TYPES.values())
+            return (
+                f"{reason}，/~key 需要许可码才能用\n"
+                f"找管理员要一个，然后发：/~key 兑换 <许可码>\n"
+                f"许可码共三档：{kind}"
+            )
 
     # 无参 → 列表
     if not args:
@@ -3391,6 +3422,9 @@ async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
             lines.append(f"     {it['desc']}")
             if not it["on"]:
                 lines.append(f"     关闭后：{it['affects']}")
+        if not is_admin:
+            lines.append("")
+            lines.append(f"你的许可：{licenses.describe(user_id)}")
         lines.append("")
         lines.append("用法：/~key <名称> 激活 ｜ /~key <名称> off 恢复默认")
         return "\n".join(lines)
@@ -3405,10 +3439,18 @@ async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if action in ("on", "开", "启用", "激活", "1", "true"):
         set_enabled(code, True)
-        return f"已激活测试项「{code}」喵~\n{meta['desc']}\n想恢复默认发：/~key {code} off"
+        tail = ""
+        if not is_admin:
+            licenses.consume(user_id)     # 一次性许可在这里扣次数
+            tail = f"\n（{licenses.describe(user_id)}）"
+        return f"已激活测试项「{code}」喵~\n{meta['desc']}{tail}\n想恢复默认发：/~key {code} off"
     if action in ("off", "关", "关闭", "恢复", "0", "false"):
         set_enabled(code, False)
-        return f"已关闭测试项「{code}」，恢复默认行为喵~\n{meta['affects']}"
+        tail = ""
+        if not is_admin:
+            licenses.consume(user_id)
+            tail = f"\n（{licenses.describe(user_id)}）"
+        return f"已关闭测试项「{code}」，恢复默认行为喵~\n{meta['affects']}{tail}"
     if action in ("reset", "重置", "默认"):
         reset(code)
         default_state = "开启" if meta.get("default") else "关闭"
@@ -3522,6 +3564,14 @@ COMMAND_MAP: dict[str, callable] = {
     # ── 实验测试项开关（仅管理员）──
     "key":        cmd_key,
     "测试项":     cmd_key,
+    # ── 跨聊天记忆关联（单一英文入口 + 中文别名）──
+    "mlink":      cmd_mlink,
+    "记忆关联":   cmd_mlink,
+    # ── 赞赏码 / 赞助名单 ──
+    "reward":     cmd_reward,
+    "赞赏":       cmd_reward,
+    "赞助":       cmd_reward,
+    "sponsor":    cmd_reward,
 }
 
 
