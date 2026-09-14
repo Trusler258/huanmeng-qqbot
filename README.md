@@ -1,224 +1,413 @@
-# 🌙 幻梦 HuanMeng
+<div align="center">
 
-> 一个高度可定制的 LLM 驱动 QQ 机器人 —— 基于 NapCat + OneBot v11 + DeepSeek。默认附带猫娘人设，角色完全自定义。
+<a href="https://github.com/Trusler258/huanmeng-qqbot">
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=28&duration=3200&pause=900&color=8B7BFF&center=true&vCenter=true&width=620&lines=HuanMeng+%C2%B7+%E5%B9%BB%E6%A2%A6;LLM-Powered+QQ+Bot;NapCat+%2B+OneBot+v11+%2B+DeepSeek;Memory+that+doesn%27t+forget" alt="HuanMeng QQ Bot" />
+</a>
 
-<p align="center">
-  <b>Built with DeepSeek V4 Pro · by Trusler</b>
-</p>
+**一个把「记忆」和「插件」都做成基础设施的 LLM QQ 机器人**
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v2.0.0-ff69b4)](https://github.com)
-[![Stars](https://img.shields.io/github/stars/Trusler258/huanmeng-qqbot?style=flat)](https://github.com)
-[![Language](https://img.shields.io/github/languages/top/Trusler258/huanmeng-qqbot)](https://github.com)
-[![Downloads](https://img.shields.io/github/downloads/Trusler258/huanmeng-qqbot/total)](https://github.com)
-[![Repo Size](https://img.shields.io/github/repo-size/Trusler258/huanmeng-qqbot)](https://github.com)
+*长时记忆 · 会话分块冻结 · Function Calling · 热插拔插件 · Web 控制面板*
 
 <br>
-<img src="https://img.shields.io/badge/powered_by-DeepSeek-8B5CF6?style=flat" />
-<img src="https://img.shields.io/badge/adapter-NapCat%20OneBot%20v11-00BFFF?style=flat" />
 
-> ⚠️ **本仓库为社区开源 Lite 版**，服务器运行版含额外功能模块，不在此仓库。<br>
-> 克隆后可直接运行，缺失模块自动优雅降级。
+<!-- 状态徽章 -->
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-v2.3.12-8B7BFF)](data/update_log.md)
+[![License](https://img.shields.io/badge/license-MIT-3DA639)](LICENSE)
+[![OneBot](https://img.shields.io/badge/protocol-OneBot%20v11-00BFFF)](https://github.com/botuniverse/onebot)
+[![NapCat](https://img.shields.io/badge/adapter-NapCat-ff69b4)](https://github.com/NapNeko/NapCatQQ)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE)](https://platform.deepseek.com/)
 
-> ⚠️ **本项目与腾讯 QQ 内置的「幻梦」官方 Bot 没有关系。** 这是社区开源的第三方项目，项目名仅指 Bot 的默认角色昵称。<br>
-> 本项目基于 [NapCat](https://github.com/NapNeko/NapCatQQ) 协议适配，与 QQ 官方接口、机器人平台无关。
+<!-- 仓库动态徽章 -->
+[![Stars](https://img.shields.io/github/stars/Trusler258/huanmeng-qqbot?style=flat&color=FFD700)](https://github.com/Trusler258/huanmeng-qqbot/stargazers)
+[![Last Commit](https://img.shields.io/github/last-commit/Trusler258/huanmeng-qqbot?color=34D399)](https://github.com/Trusler258/huanmeng-qqbot/commits/main)
+[![Commits](https://img.shields.io/github/commit-activity/t/Trusler258/huanmeng-qqbot?color=8B7BFF)](https://github.com/Trusler258/huanmeng-qqbot/commits/main)
+[![Repo Size](https://img.shields.io/github/repo-size/Trusler258/huanmeng-qqbot?color=9CA3AF)](https://github.com/Trusler258/huanmeng-qqbot)
+
+<br>
+
+<a href="https://github.com/Trusler258/huanmeng-qqbot">
+  <img height="150" src="https://github-readme-stats.vercel.app/api/pin/?username=Trusler258&repo=huanmeng-qqbot&theme=midnight-purple&hide_border=true" />
+</a>
+<img height="150" src="https://github-readme-stats.vercel.app/api/top-langs/?username=Trusler258&layout=compact&theme=midnight-purple&hide_border=true&langs_count=6" />
+
+</div>
 
 ---
 
-## ✨ 特性
+> [!IMPORTANT]
+> **本仓库是社区开源版。** 服务器运行版含额外私有模块，不在此仓库；克隆后可直接运行，缺失模块自动优雅降级。
+>
+> **本项目与腾讯 QQ 的官方机器人无关。** 基于 [NapCat](https://github.com/NapNeko/NapCatQQ) 社区协议适配，项目名「幻梦」只是默认角色昵称。
+
+---
+
+## 📑 目录
+
+| | | |
+|---|---|---|
+| [✨ 它能做什么](#features) | [🏗 架构](#arch) | [🧠 记忆系统](#memory) |
+| [🧩 插件系统](#plugin) | [🔌 消息管道](#pipeline) | [🚀 部署](#deploy) |
+| [⌨️ 指令手册](#commands) | [🎭 自定义人设](#persona) | [📊 项目数据](#stats) |
+
+---
+
+<a id="features"></a>
+## ✨ 它能做什么
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**💬 聊天与人格**
+- LLM 多轮对话，人设完全自定义
+- 好感度系统（-100~100，按会话隔离）
+- 逐句配图：表情包写在句子后面，跟在那句发
+- 三层记忆 + 使用者画像自动沉淀
+
+**🧠 记忆（重点）**
+- 会话历史按 200 条**分块冻结**
+- 满 20 块自动压成【会话摘要】
+- 跨聊天记忆共享（带来源标识）
+- 群聊 / 私聊 / 笔记本各自独立
+
+</td>
+<td width="50%" valign="top">
+
+**🧩 插件与扩展**
+- 热插拔插件（`.hmp` 一键安装）
+- 能力注册表：Command / Tool / Plugin 统一抽象
+- KOOK 生态插件自动兼容
+- 事件总线 + 沙箱执行
+
+**🛠 工程化**
+- 212 条指令（含别名），`/~help` 自动生成
+- Function Calling 多轮 Agent（最多 6 轮）
+- Web 控制面板：配置 / 日志 / 数据全可管
+- 崩溃自愈：配置改崩自动回滚
+
+</td>
+</tr>
+</table>
+
+<details>
+<summary><b>📦 完整功能清单（点开）</b></summary>
+
+<br>
 
 | 分类 | 功能 |
 |------|------|
-| 💬 聊天 | LLM 驱动多轮对话、自动回复、好感度系统（100档）、多角色人设 |
-| 🧠 三层记忆 | 瞬时记忆（上下文窗口）、短时记忆（JSON滚动30条）、长时记忆（MD文件永久保存，模板化压缩） |
-| 🔍 联网搜索 | 自动判断是否需要搜索，DuckDuckGo 免费接口 |
-| 🖼️ 图片识别 | 异步识别图片内容，注入上下文供 LLM 自然引用 |
-| ☁️ 天气 | 7 天天气预报（viki.moe），HTML 卡片渲染 |
-| 📦 快递 | 快递单号查询（快递100），HTML 卡片渲染 |
-| ♟️ 五子棋 | PVP 对战 + 人机 AI（4 级 LLM），禁手规则，棋盘卡片渲染 |
-| 🎵 音游 | TUF 谱面搜索/详情/下载直链 |
-| 🌍 翻译 | 中英日韩法德互译 |
-| 📊 群统计 | 昨日/今日发言统计 |
-| 🔔 提醒 | 定时提醒（相对/绝对时间） |
-| ⏰ 倒计时 | 自定义事件倒计时 |
-| 💾 配置管理 | 动态热重载、功能开关、白名单 |
+| 💬 聊天 | 多轮对话、三级回复判断、防复读、刷屏拦截、@ 触发 |
+| 🧠 记忆 | 分块会话历史、长期记忆压缩、笔记本、跨聊天关联、用户画像 |
+| 🔍 搜索 | 自动判断是否需要联网（DuckDuckGo）、搜索结果诚实归因 |
+| 🖼️ 图片 | 异步图片识别注入上下文、生图、图生视频、摸头 GIF |
+| 📊 群管理 | 发言统计、成员列表、群笔记、退群清理 |
+| 🎮 娱乐 | 五子棋（人机/对战）、掷骰、抽签、每日运气 |
+| 🎵 音游 | TUF 谱面搜索 / 详情 / 下载直链 |
+| 🛠 工具 | 天气 / 快递 / 翻译 / 倒计时 / 提醒 / 域名 WHOIS / 代码生成 |
+| 🌍 地震 | 5 源并行抓取 + 省订阅推送 + 地图卡片 |
+| 💰 经济 | 积分 / 签到 / 商店 / 背包（插件化） |
+| 🔌 插件 | `.hmp` 打包安装、插件库更新、人工审批 |
+| 🖥️ 面板 | 独立进程 Web 后台，bot 崩了也能看日志、改配置 |
+| 💜 赞赏 | 赞赏码 + 赞助名单常驻提示词 |
 
-### 完整指令列表
+</details>
+
+---
+
+<a id="arch"></a>
+## 🏗 架构
+
+**四层模块化**：核心基础设施 → 外部服务 → 功能模块 → 工具函数，任何一层缺失都不影响聊天主流程。
+
+```mermaid
+flowchart TB
+    subgraph Client["💬 QQ"]
+        U["用户 / 群消息"]
+    end
+
+    subgraph Adapter["🔌 协议层"]
+        NC["NapCat · OneBot v11<br/>WebSocket :8099"]
+    end
+
+    subgraph Core["⚙️ core/ — 核心基础设施"]
+        D["dispatcher<br/>事件分发"]
+        P["pipeline<br/>消息处理管道"]
+        C["context_manager<br/>分块上下文"]
+        PL["plugin / capability / eventbus<br/>插件与能力注册"]
+        SB["sandbox<br/>代码沙箱"]
+    end
+
+    subgraph Svc["🌐 services/ — 外部服务"]
+        L["llm.py<br/>DeepSeek 调用 + FC"]
+        S["sender.py<br/>消息发送"]
+        V["图片识别"]
+    end
+
+    subgraph Mod["🧩 modules/ — 功能模块"]
+        M1["commands · memory · judge"]
+        M2["earthquake · economy · reward"]
+        M3["memory_link · face_lib · …"]
+    end
+
+    subgraph Panel["🖥️ panel/ — Web 控制面板"]
+        PA["FastAPI<br/>配置 / 日志 / 数据"]
+    end
+
+    U --> NC --> D --> P
+    P --> C
+    P --> L
+    P --> PL
+    P --> M1 & M2 & M3
+    L --> S
+    PL --> SB
+    S --> NC --> U
+    PA -.->|"独立进程<br/>bot 崩了也能用"| Core
+```
+
+<details>
+<summary><b>📁 目录结构（点开）</b></summary>
+
+<br>
 
 ```
-/~help             帮助菜单
-/~ping             在线检测
-/~info             运行状态
-/~weather <城市>    天气查询
-/~box <单号>        快递查询
-/~wzq ai <难度>    五子棋人机
-/~wzq duel @人    五子棋对战
-/~tufsearch <曲名> 谱面搜索
-/~tr <语言> <文本>  翻译
-/~stats            群聊统计
-/~recall           撤回记录
-/~luck             每日运气
-/~countdown        倒计时
-/~favlist          好感度排行
-/~memory           记忆查询
-/~owner            配置管理（主人）
-/~reload           热重载配置
-
-# 移植自 huanmeng-kook-bot 的新模块
-/~points           积分查询（经济系统）
-/~sign             每日签到（连续签到加成）
-/~gift <qq> <数>   赠送积分给好友
-/~shop             积分商店（好感券等）
-/~buy <物品>       用积分购买物品
-/~bag              查看背包
-/~use <物品>       使用背包物品（如好感券 +10 好感）
-/~回顾 <关键词>    聊天历史全文检索（SQLite FTS5）
-
-# 插件系统（移植自 huanmeng-kook-bot Phase 13/14）
-/~plugin            插件管理（主人）：list/install/unload/reload/pack/update
-/~apy <token> 同意|拒绝   响应插件人工审批
-/~dice [面数]      示例插件：掷骰子（奖励 1 积分，插件加载后才有）
+huanmeng-qqbot/
+├── main.py                    # 入口
+├── bot.py                     # 主循环 · 并发分发 · 后台任务
+│
+├── core/                      # 核心基础设施
+│   ├── pipeline.py            # 消息处理管道
+│   ├── context_manager.py     # 会话上下文（分块冻结）
+│   ├── plugin/                # 插件系统（manifest/loader/manager）
+│   ├── capability/            # 能力注册表（Command/Tool/Plugin）
+│   ├── eventbus.py            # 事件总线
+│   ├── sandbox.py             # 沙箱执行
+│   └── bot_notes.py           # 笔记本
+│
+├── services/                  # 外部服务调用
+│   ├── llm.py                 # LLM + Function Calling 多轮 Agent
+│   └── sender.py              # WebSocket 发送 · 分批 · 表情节拍
+│
+├── modules/                   # 功能模块（45 个）
+│   ├── commands.py            # 指令注册表 COMMAND_MAP
+│   ├── help_card.py           # 指令卡片（描述单一来源）
+│   ├── memory.py              # 长期记忆
+│   ├── memory_link.py         # 跨聊天记忆关联
+│   ├── judge.py               # 三级回复判断
+│   ├── earthquake.py          # 地震速报
+│   ├── face_lib.py            # 表情库
+│   ├── reward.py              # 赞赏
+│   └── …                      # 天气 / 快递 / 五子棋 / 音游 …
+│
+├── data/
+│   ├── skills/*.md            # 提示词章节（常驻 + 按需注入）
+│   ├── templates/             # HTML 卡片模板
+│   └── update_log.md          # 更新日志（版本演进唯一权威）
+│
+├── panel/ + panel_web/        # Web 控制面板（FastAPI + Vue）
+└── utils/                     # 工具函数（写作管道等）
 ```
 
-> 经济系统数据存 `data/economy.json`；聊天全文检索存 `data/search.db`。
-> 模块化提示词放 `data/skills/*.md`，会被 `data/main_skill.md` 自动叠加到 system 提示词。
-> 以上均为 **ADDITIVE 层**：模块缺失/失败不影响聊天主流程。
+</details>
 
-## 🧩 插件系统（huanmeng-kook-bot Phase 13 完整移植）
+---
+
+<a id="memory"></a>
+## 🧠 记忆系统
+
+这是整个项目最用心的地方——**让机器人真的记得住，而且记得便宜。**
+
+```mermaid
+flowchart LR
+    A["💬 新消息"] --> B["当前块<br/>（增长中）"]
+    B -->|"满 200 条"| C["封存的 BLOCK<br/>（冻结 · 永不再改）"]
+    C -->|"累计超过 20 块"| D["最早 10 块<br/>→ 便宜模型压缩"]
+    D --> E["📝 会话摘要<br/>（只追加 · 不回改）"]
+
+    style C fill:#8B7BFF22,stroke:#8B7BFF
+    style E fill:#34D39922,stroke:#34D399
+```
+
+**为什么这么设计**：LLM 的前缀缓存按「消息序列前缀」逐 token 匹配——只要前面有一个字变了，后面的缓存全部作废。所以这里让历史变成**只追加、老块不动**的序列，缓存命中率才会高。
+
+| 层级 | 存储 | 说明 |
+|------|------|------|
+| 瞬时 | 内存 | 当前块（最多 200 条），超过即封存 |
+| 会话块 | 内存 + 磁盘 | 封存块冻结；满 20 块触发压缩为【会话摘要】 |
+| 长期 | `data/memory_<id>.md` | 周期性压缩沉淀，永久保存 |
+| 笔记本 | `data/notes/<id>.md` | LLM 主动维护的事实条目 |
+| 跨聊天 | `data/memory_links.json` | 会话之间共享记忆（见下） |
+
+### 🔗 跨聊天记忆
+
+同一个人在私聊和群聊里说过的话，本来互不相通。`/~mlink` 可以让指定会话**共享记忆但不合并身份**——LLM 始终知道每条信息来自哪个会话。
+
+```
+/~mlink add p123456789    关联某个私聊
+/~mlink add g123456789    关联某个群聊（需管理员）
+/~mlink list              查看已关联
+/~mlink del [目标]        断开（不带目标 = 全部断开）
+```
+
+注入时每个来源都带标识，并强制遵守会话边界：
+
+```
+【跨聊天记忆 · 来自其他会话（不是当前这条对话）】
+—— 来源：私聊 123456789（最近 12 条）——
+[admin] 小明: 我最近在研究缓存机制
+幻梦: 那个确实值得优化
+```
+
+> **隐私设计**：群聊来源**只注入机器人自己的发言**，群成员的原话永远不会流出那个群；关联别人的私聊必须对方 `/~mlink yes` 同意，拒绝也不会告知请求方。
+
+---
+
+<a id="plugin"></a>
+## 🧩 插件系统
 
 插件 = `plugins/<name>/manifest.json` + `main.py`（类名 `Plugin`，构造接收 `ctx`）。
 
-```
-plugins/
-├── dice/                  # 示例插件
-│   ├── manifest.json      # name/version/runtime/entrypoint/permissions/config
-│   └── main.py            # class Plugin(ctx) + on_load/on_enable/on_disable/on_unload
-└── _down/                 # .hmp 下载临时目录（自动跳过加载）
+```mermaid
+flowchart LR
+    H[".hmp 插件包"] --> L["loader<br/>加载"]
+    L --> M["manifest 解析<br/>权限校验"]
+    M --> K["KOOK 兼容层<br/>stub + 文本剥离"]
+    K --> R["注册能力"]
+    R --> CMD["ctx.capability.register_command<br/>→ 挂进 COMMAND_MAP"]
+    R --> TL["ctx.capability.register_tool<br/>→ LLM 可用工具"]
 ```
 
-**插件可用能力（`ctx.*`，全部惰性解耦）**
+<details>
+<summary><b>🔧 插件可用能力 ctx.*（点开）</b></summary>
+
+<br>
 
 | 能力 | 说明 |
 |---|---|
-| `ctx.message.send/send_file` | 发文本/文件（群聊/私聊） |
-| `ctx.memory.remember/recall` | 记忆写入/检索（SQLite 检索层优先） |
-| `ctx.event.on/subscribe/publish` | 事件总线订阅/发布 |
+| `ctx.message.send / send_file` | 发文本 / 文件（群聊、私聊） |
+| `ctx.memory.remember / recall` | 记忆写入 / 检索 |
+| `ctx.event.on / publish` | 事件总线订阅与发布 |
 | `ctx.timer.every(秒)` | 周期定时器（卸载自动取消） |
-| `ctx.capability.register_command` | 注册指令，自动挂进 COMMAND_MAP（/~name 可调） |
-| `ctx.capability.register_tool` | 注册 FC 工具（`always_on=True` 常驻，LLM 普通聊天可用） |
-| `ctx.config(key)` | 读 manifest.config |
-| `ctx.economy` | 积分/库存（modules.economy，唯一锁+原子写） |
+| `ctx.capability.register_command` | 注册指令，自动挂进 `COMMAND_MAP` |
+| `ctx.capability.register_tool` | 注册 FC 工具（`always_on` 可常驻） |
+| `ctx.economy` | 积分 / 库存 |
 | `ctx.vision.describe` | 图片识别 |
-| `ctx.identity.is_admin` | 权限判定 |
-| `ctx.llm.generate` | 文本生成（reply_model） |
-| `ctx.approval.request` | 人工审批（私聊管理员 + /~apy 回执） |
-| `ctx.sandbox.run_python/cpp/shell` | 沙箱真实执行（黑名单+超时+输出截断） |
+| `ctx.llm.generate` | 文本生成 |
+| `ctx.approval.request` | 人工审批（私聊管理员回执） |
+| `ctx.sandbox.run_python / cpp / shell` | 沙箱真实执行（黑名单 + 超时 + 输出截断） |
 | `ctx.logger` | 插件命名空间日志 |
 
-**架构组件**（与 kook 对齐）：`core/eventbus.py` 事件总线、`core/capability/` 能力注册表（Capability→Command/Tool/Plugin 统一抽象）、`core/plugin/`（manifest/loader/manager/api）、`core/sandbox.py`、`modules/plugin_share.py`（.hmp 打包/解包/插件库客户端）。
+</details>
 
-**插件库一键更新**：`/~plugin update` 从 `PLUGIN_LIB_BASE`（默认 `http://01240820.xyz:20030`）拉取插件列表与更新，`/~plugin install <名|url>` 安装，`/~plugin pack <名>` 打包 `.hmp` 分享。
+**KOOK 生态兼容**：插件库里的 `.hmp` 是为 KOOK 机器人写的，本仓库加载时自动注入 `khl` / `kook` / `kaiheila` 假模块并剥离 KMarkdown 标记（`(met)` `(emj)` 等），KOOK 专属调用安全降级，插件照常运行。
 
-### 🔄 KOOK 生态插件自动兼容（加载时剥离 KOOK 格式）
-
-插件库里的 `.hmp` 插件是为 KOOK 机器人写的，qqbot 加载时自动兼容：
-
-- **KOOK 模块 stub**：加载前向 `sys.modules` 注入 `khl` / `kook` / `kaiheila` 假模块（含 `khl.api`、`Card`、`MessageTypes` 等），`import khl` 不再报错，KOOK 专属调用（发卡片、khl API）安全降级，插件照常加载运行。
-- **KMarkdown 剥离**：`core/plugin/kook_compat.py` 的 `strip_kook_text()` 自动去除 `(met)/(rol)/(chn)/(emj)/(file)` 等 KOOK 专属标记，插件返回的文本转成 QQ 可读纯文本。
-- **不落盘不改源**：纯内存注入，插件卸载不影响；真实能力走 `ctx.*`（message/economy/vision/sandbox 等）与 qqbot 原生一致。
-
-**从 kook 移植的运行时优化**（168 commits 通读筛选）：单工具超时表（`TOOL_TIMEOUTS`，防慢工具拖死整轮）、工具输出截断保头尾折叠中间（防 LLM 编造尾部结果）、LLM 回复 `calls` 多形态解析（tool/name + arguments/args）、FC 轮数放宽至 6 + 连续相同调用防死循环、`max_tokens<=0` 视为不设上限（防 400）、msglog 回溯上限 500→5000 提升召回。
+```bash
+/~plugin list              # 查看已装插件
+/~plugin install <名|url>  # 从插件库安装
+/~plugin pack <名>         # 打包成 .hmp 分享
+```
 
 ---
 
-## 🚀 完整部署指南
+<a id="pipeline"></a>
+## 🔌 消息管道
 
-### ⚠️ 重要前提
+每条消息经历的完整旅程：
 
-- **QQ 账号等级 >= 16 级（建议开通 VIP）** — 低等级账号可能被腾讯风控拦截
-- **运行环境推荐 Linux**（Ubuntu 20.04+ / Debian 10+ / CentOS 9+）— 生产环境首选
-- Windows 也可运行，建议仅用于开发测试
+```mermaid
+flowchart TB
+    A["📩 收到消息"] --> B["@ 替换 / 引用原文获取"]
+    B --> C["提示词注入拦截"]
+    C --> D["上下文写入 + 记忆缓冲"]
+    D --> E["指令拦截 /~xxx"]
+    E --> F["三级回复判断<br/>关键词 → 粗判 → 精判"]
+    F --> G["刷屏检测"]
+    G --> H["自动搜索（按需）"]
+    H --> I["记忆检索 + 笔记本注入"]
+    I --> J["LLM 生成（FC 多轮 Agent）"]
+    J --> K["CALL 执行 / 表情配对 / 分批发送"]
+    K --> L["上下文回写 + 好感度 + 记忆"}
+```
+
+**几个工程细节**：
+
+- **并发分发**：每条消息独立任务，生图 / 视频这类慢操作不阻塞后续消息
+- **FC 多轮**：最多 6 轮工具调用，连续相同调用自动熔断防死循环
+- **工具超时表**：单个慢工具不会拖死整轮
+- **输出折叠**：工具长输出保头尾折叠中段，防 LLM 编造尾部结果
+- **结果直发**：指令返回带图片时原样直发，不经 LLM 转述（否则 CQ 码会丢）
+- **缓存友好**：system 与会话块保持稳定前缀，按需内容一律注入到消息末尾
 
 ---
 
-### 第一步：安装 Python 3.10+
+<a id="deploy"></a>
+## 🚀 部署
 
-| 系统 | 说明 |
+> [!WARNING]
+> **前置要求**：QQ 账号等级 ≥ 16 级（建议开通 VIP，低等级易被风控）；生产环境推荐 Linux。
+
+<details>
+<summary><b>① 安装 Python 3.10+</b></summary>
+
+<br>
+
+| 系统 | 命令 |
 |------|------|
-| Windows | [python.org/downloads](https://www.python.org/downloads/) — 安装时勾选 "Add Python to PATH" |
-| Linux (apt) | `sudo apt install python3 python3-pip -y` |
-| Linux (源码) | [python.org/downloads/source](https://www.python.org/downloads/source/) |
+| Windows | [python.org/downloads](https://www.python.org/downloads/) — 安装时勾选 *Add Python to PATH* |
+| Debian / Ubuntu | `sudo apt install python3 python3-pip -y` |
+| CentOS / RHEL | `sudo yum install python3 python3-pip -y` |
 
----
+</details>
 
-### 第二步：安装 NapCat（QQ 协议适配）
+<details>
+<summary><b>② 安装 NapCat（QQ 协议适配）</b></summary>
 
-NapCat 负责与 QQ 服务器通信，提供 OneBot v11 WebSocket 接口。
-
-**Linux 一键安装脚本：**
+<br>
 
 ```bash
+# Linux 一键安装
 curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh && bash napcat.sh --docker n --cli y
+
+napcat                # 打开 TUI，扫码登录
+napcat start <QQ号>   # 启动（默认 WS 端口 8099）
 ```
 
-安装完成后扫码登录并启动：
+Windows 用户前往 [NapCatQQ Releases](https://github.com/NapNeko/NapCatQQ/releases) 下载一键包。
 
-```bash
-napcat                    # 打开 TUI 配置界面，扫码登录 QQ
-napcat start <QQ号>       # 启动 Bot 服务（默认 WS 端口 8099）
-```
-
-**Windows 安装：**
-
-前往 [NapCatQQ Releases](https://github.com/NapNeko/NapCatQQ/releases) 下载 `NapCat.Win.zip` 一键包，解压运行。
-
-**相关链接：**
 | 资源 | 地址 |
 |------|------|
-| NapCat 官方 | [github.com/NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) |
+| 官方仓库 | [github.com/NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) |
 | 官方文档 | [napneko.github.io](https://napneko.github.io/guide/napcat) |
-| 使用教程 | [jianer.sr-studio.cn](https://jianer.sr-studio.cn/NapCatQQ使用教程.html) |
-| 一键安装脚本 | `curl -o napcat.sh https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh && bash napcat.sh --docker n --cli y` |
 
----
+</details>
 
-### 第三步：克隆项目并安装依赖
+<details>
+<summary><b>③ 克隆并配置</b></summary>
 
-- Python 3.10+
-- [NapCat](https://github.com/NapNeko/NapCatQQ) 或兼容的 OneBot v11 客户端
-- DeepSeek API Key（[platform.deepseek.com](https://platform.deepseek.com/)）
-- 智谱 API Key（[bigmodel.cn](https://open.bigmodel.cn/)），用于图片识别（可选）
-
-### 安装
+<br>
 
 ```bash
-# 1. 克隆项目
 git clone https://github.com/Trusler258/huanmeng-qqbot.git
 cd huanmeng-qqbot
 
-# 2. 安装依赖
 pip install -r requirements.txt
-playwright install chromium  # 卡片渲染需要
+playwright install chromium        # 卡片渲染需要
 
-# 3. 配置 API Key
-cp config/example.env config/.env
-# 编辑 config/.env，填入 DeepSeek 和 智谱 密钥
+cp config/example.env config/.env   # 填 API Key
+# 编辑 config/bot_config.toml      → bot 的 QQ 号、管理员 QQ 号
+# 编辑 config/adapter_config.toml  → group_list（允许的群）
 
-# 4. 配置基础信息
-# 编辑 config/bot_config.toml
-#   - bot的qq号: 你的机器人 QQ 号
-#   - 管理员的QQ号: 你的 QQ 号
-# 编辑 config/adapter_config.toml
-#   - group_list: 允许的群号列表
-
-# 5. 启动
 python main.py
 ```
 
-### 配置 NapCat
+</details>
 
-NapCat 启动后默认在 `ws://127.0.0.1:8099/` 提供 WebSocket 服务，无需额外配置。如需修改端口，编辑 `config/adapter_config.toml`：
+<details>
+<summary><b>④ 配置 NapCat 连接</b></summary>
+
+<br>
+
+NapCat 默认在 `ws://127.0.0.1:8099/` 提供 WebSocket，通常无需改动。要改端口：
 
 ```toml
 [napcat_server]
@@ -226,177 +415,212 @@ host = "127.0.0.1"
 port = 8099
 ```
 
----
+</details>
 
+**依赖的第三方 API**
 
-
-## 📡 第三方 API
-
-| 功能 | API |
-|------|-----|
-| LLM 回复/判断 | [DeepSeek](https://platform.deepseek.com/) |
-| 图片识别 | [智谱 AI](https://open.bigmodel.cn/)（可选）|
-| 搜索 | DuckDuckGo（免费，无需 Key） |
+| 用途 | 服务 |
+|------|------|
+| LLM 回复 / 判断 / 摘要 | [DeepSeek](https://platform.deepseek.com/) |
+| 图片识别 | [智谱 AI](https://open.bigmodel.cn/)（可选） |
+| 联网搜索 | DuckDuckGo（免费，无需 Key） |
 
 ---
 
-## 📁 项目结构
+<a id="commands"></a>
+## ⌨️ 指令手册
 
+共 **212 条**（含别名），`/~help` 会按当前功能开关自动生成卡片。
 
-```
-huanmeng-qqbot/
-├── main.py                # 入口
-├── bot.py                 # 主循环、初始化、后台任务
-├── config/                # 配置文件
-│   ├── bot_config.toml    # 人设、模型、阈值
-│   ├── adapter_config.toml # 白名单、群设置
-│   ├── features.toml      # 功能开关
-│   └── .env               # API 密钥（不上传 git）
-├── core/                  # 核心基础设施
-│   ├── pipeline.py        # 14 步消息处理管道
-│   ├── dispatcher.py      # 事件分发
-│   ├── config.py          # 配置管理
-│   ├── context_manager.py # 上下文管理
-│   └── logger.py          # 日志
-├── services/              # 外部服务调用
-│   ├── llm.py             # LLM 调用（DeepSeek/SiliconFlow）
-│   ├── sender.py          # WebSocket 消息发送
-│   └── image_api.py       # 图片识别
-├── modules/               # 功能模块
-│   ├── commands.py        # 指令系统（18+ 指令）
-│   ├── memory.py          # 长时记忆
-│   ├── stm.py             # 短时记忆
-│   └── ...                # 天气、快递、五子棋等
-├── data/                  # 数据文件
-│   ├── templates/         # HTML 卡片模板
-│   └── architecture.mermaid  # 架构图
-└── utils/                 # 工具函数
-```
+<details>
+<summary><b>🛠 工具类</b></summary>
 
-### 消息处理管道
+<br>
 
 ```
-消息 → dispatcher → pipeline (14步)
-  ├─ Step 1: 提示词注入拦截
-  ├─ Step 2: 引用消息注入
-  ├─ Step 3: 上下文写入 + 短时记忆
-  ├─ Step 4: 指令拦截
-  ├─ Step 5: 三级回复判断（关键词→粗判→精判）
-  ├─ Step 6: 刷屏检测
-  ├─ Step 7: 自动搜索
-  ├─ Step 8: 记忆检索 + 好感度
-  ├─ Step 9: LLM 多句生成
-  └─ Step 10~13: 上下文回写 + 好感度更新 + 记忆保存
+/~help                指令手册（卡片）
+/~ping                在线检测 / 延迟
+/~info                运行状态
+/~weather <城市>      天气查询（卡片）
+/~box <单号>          快递查询（卡片）
+/~search <关键词>      联网搜索
+/~read <url>          网页正文读取
+/~whois <域名>        域名注册信息
+/~tr <语言> <文本>     翻译
+/~remind <时间> <事>   定时提醒
+/~countdown           倒计时
+/~ctx                 上下文用量（含分块详情）
+/~cost / ~tokens      用量与开销
 ```
+
+</details>
+
+<details>
+<summary><b>🧠 记忆类</b></summary>
+
+<br>
+
+```
+/~memory              记忆查询
+/~note                笔记本查看 / 手动添加
+/~回顾 <关键词>        聊天历史全文检索（SQLite FTS5）
+/~mlink add <目标>     跨聊天记忆关联
+/~mlink list / del    查看 / 断开
+/~favlist             好感度排行
+```
+
+</details>
+
+<details>
+<summary><b>🎮 娱乐与其他</b></summary>
+
+<br>
+
+```
+/~wzq ai <难度>        五子棋人机
+/~wzq duel @某人       五子棋对战
+/~dice [面数]          掷骰子
+/~luck                每日运气
+/~抽 <选项A> <选项B>   随机抽取
+/~tufsearch <曲名>     TUF 谱面搜索
+/~stats               群发言统计
+/~recall              撤回记录
+/~eq                  地震速报与订阅
+/~draw / ~video       生图 / 视频
+```
+
+</details>
+
+<details>
+<summary><b>🔌 插件与经济</b></summary>
+
+<br>
+
+```
+/~plugin list         插件列表
+/~plugin install <名>  安装插件
+/~plugin pack <名>     打包 .hmp
+/~apy <token> 同意|拒绝 插件审批回执
+/~points              积分余额
+/~sign                每日签到
+/~shop / ~buy         积分商店
+/~bag / ~use          背包与使用
+```
+
+</details>
+
+<details>
+<summary><b>🛡 管理员</b></summary>
+
+<br>
+
+```
+/~owner               配置管理
+/~reload              热重载配置
+/~preset              提示词注入
+/~key                 实验特性开关（许可码）
+/~reward add <人> <额> 记赞助（赞赏名单常驻提示词）
+/~say <目标> <内容>    管理员代发
+/~ignore / ~unignore  忽略某用户
+```
+
+</details>
 
 ---
 
-## 🔧 功能开关
-
-编辑 `config/features.toml` 按需开启/关闭功能，`/~help` 自动隐藏已关闭的功能：
-
-```toml
-[features]
-weather = false      # 天气
-express = false      # 快递
-wzq = false          # 五子棋
-group_stats = false  # 群统计
-recall_record = false # 撤回记录
-tuf = false          # 音游
-translate = false    # 翻译
-countdown = false    # 倒计时
-preset = false       # 提示词注入
-```
-
----
-
+<a id="persona"></a>
 ## 🎭 自定义人设
 
-角色由 `config/bot_config.toml` 三部分组成，**完全由你定义**——默认的猫娘只是示范：
+角色完全由你定义，猫娘只是默认示范。`config/bot_config.toml` 三段式：
 
 ```toml
-核心人格 = """
-# 这里是角色的内在性格、说话方式、行为准则
-# 可以是任何角色：猫娘、龙娘、傲娇、冷酷、技术宅...
+[personality]
+personality_core = """
+# 核心人格：内在性格、说话方式、行为准则
+# 可以是任何角色：猫娘、龙娘、傲娇、技术宅、冷面秘书…
 """
 
-侧面人格 = """
-# 细微的性格侧面，如"有时候会钻牛角尖" "特别讨厌下雨天"
+personality_side = """
+# 侧面人格：细微的性格特征，如「有时会钻牛角尖」
 """
 
-固定身份 = """
-名字：xxx | 种族：xxx | 年龄：xx | 身高/体重
-外貌：xxx
-性格：xxx
-行为守则：xxx
+identity = """
+# 固定身份：名字 / 种族 / 年龄 / 外貌 / 人际关系 / 行为底线
 """
 ```
 
-角色的好感度会随对话自然变化（0~100），不同档位对应不同的语气和态度。好感度系统同样与角色无关——无论你定义的是什么角色，它都会按照规则工作。
+好感度（-100~100）会随对话自然变化，不同档位对应不同语气；这套机制与角色无关，你定义什么角色它都照常工作。
+
+**提示词分层**（`data/skills/*.md`，改完 `/~reload` 热加载）：
+
+| 文件 | 作用 |
+|------|------|
+| `00_core.md` | 常驻核心规则 |
+| `10/11_format_*.md` | 群聊 / 私聊格式与风格 |
+| `40_reminders.md` | 每轮提醒（紧跟当前消息，效力最高） |
+| `70_deep_explain.md` | 深度讲解模式（知识类提问时注入） |
+| `80_writing.md` | 写作管道（作文 / 文件生成） |
+| `90_summary.md` | 会话摘要压缩 |
 
 ---
 
-## 💾 记忆系统
+<a id="stats"></a>
+## 📊 项目数据
 
-| 层级 | 存储 | 容量 | 说明 |
-|------|------|------|------|
-| 瞬时 | 内存 | 15 条 | 当前对话上下文，FIFO |
-| 短时 | JSON | 30 条 | 跨重启保留，滚动窗口 |
-| 长时 | MD 文件 | 永久保存 | 模板化压缩，零幻觉，不设上限 |
+<div align="center">
 
-溢出的短时记忆自动写入长时记忆。
+| 📄 Python 文件 | 🧩 功能模块 | ⌨️ 指令 | 📝 提交 |
+|:---:|:---:|:---:|:---:|
+| **189** | **45** | **212** | **131+** |
+
+<sub>数据来自仓库实时统计 · 更新于 2026-09-14</sub>
+
+</div>
+
+**版本演进**：完整更新日志见 [`data/update_log.md`](data/update_log.md)（从 Beta 0.4.3 到 v2.3.11，每个版本都写清楚改了什么、为什么改）。
 
 ---
 
-## ⚙️ 高级配置
+## 💜 赞赏
 
-### 系统提示词注入
+幻梦的服务器和模型开销全靠大家的心意撑着。赞赏过我的朋友会被记在感谢名单里，并**常驻在机器人的提示词里**——它会一直记得谁支持过它。
 
-bot 启动时会自动组装完整系统提示词：
-
-```
-系统人设（bot_config.toml）
-+ 格式规则（回复格式、防重复）
-+ 好感度档位表
-+ 自我认知（版本信息、运行配置）
-+ [按需] 完整架构（仅用户询问时注入）
-```
-
-### 负载均衡
-
-- **回复/判断/摘要模型**：全部 DeepSeek（deepseek-chat）
-- **视觉模型**：智谱 glm-4v-plus（可选）
-
-### 缓存策略
-
-利用 DeepSeek 前缀缓存机制，system 提示词和锚点消息每次相同 → 缓存命中率 ~89%。
+> 部署自己的实例时，把赞赏码放到 `data/images/reward_qrcode.png` 即可（该文件不入仓库，避免把个人收款码带进别人的部署）。
 
 ---
 
 ## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request。在提交前请确保：
+欢迎 Issue 和 Pull Request。提交前请确认：
 
-1. `python _check_all.py` 通过
-2. 功能变动同步更新 `features.toml` 开关
-3. 新增指令在 `/_CMD_FEATURES` 中注册
+1. 新增指令在 `modules/commands.py` 的 `COMMAND_MAP` 注册
+2. 同步在 `modules/help_card.py` 补**两处**：`_CATEGORY`（分类）+ `_EXTRA_DESC`（描述）
+   —— 这是 `/~help` 与 LLM 指令清单的共同来源
+3. 提示词改动写进 `data/skills/*.md`，不要硬编码进 Python
+4. 更新 `data/update_log.md`（最新版本写在最上面）
 
 ---
 
 ## 📄 开源协议
 
-MIT License © 2024 Trusler
+[MIT License](LICENSE) © 2024 Trusler
 
 ---
 
 ## 🔗 相关项目
 
-- [NapCat](https://github.com/NapNeko/NapCatQQ) - QQ Bot 协议适配
-- [DeepSeek](https://platform.deepseek.com/) - 大语言模型 API
-- [智谱 AI](https://open.bigmodel.cn/) - 视觉模型 API
+- [NapCat](https://github.com/NapNeko/NapCatQQ) — QQ 协议适配
+- [OneBot v11](https://github.com/botuniverse/onebot) — 机器人应用接口标准
+- [DeepSeek](https://platform.deepseek.com/) — 大语言模型 API
+- [智谱 AI](https://open.bigmodel.cn/) — 视觉模型 API
 
----
+<br>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/built_with-%E2%9D%A4%EF%B8%8F_DeepSeek_V4_Pro-2B5FD4?style=for-the-badge" />
-</p>
+<div align="center">
+
+<img src="https://img.shields.io/badge/Built_with-%F0%9F%92%9C_by_Trusler-8B7BFF?style=for-the-badge" />
+<img src="https://img.shields.io/badge/Made_for-QQ-12B7F5?style=for-the-badge&logo=tencentqq&logoColor=white" />
+
+<sub>如果这个项目对你有帮助，点个 ⭐ 是最好的支持</sub>
+
+</div>
