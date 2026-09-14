@@ -2218,7 +2218,13 @@ async def _handle_wdsj_dual(args, is_group, group_id, user_id):
     parts = [a for a in args if a.lower() not in ("img", "pic", "card", "图片")]
     player = " ".join(parts).strip() if parts else (_get_bound_player(user_id) or "")
     if not player:
-        return "用法: /~wdsj dual <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+        return ("用法: /~wdsj me（用绑定玩家）或 /~wdsj <玩家名> me\n"
+                "未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~")
+    # 误把模式名当玩家名（如 /~wdsj bw me）→ 提示正确用法
+    if parts and len(parts) == 1 and api.resolve_template(parts[0]):
+        return (f"「{player}」是模式名不是玩家名喵~\n"
+                f"查双模式卡: /~wdsj me 或 /~wdsj <玩家名> me\n"
+                f"查单模式: /~wdsj {parts[0]} <玩家名>")
 
     await (send_group_msg(f"正在生成 {player} 的双模式战绩卡喵~", group_id) if is_group
            else send_private_msg(f"正在生成 {player} 的双模式战绩卡喵~", user_id))
@@ -2422,7 +2428,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                 "洛花星雨战绩查询 /~wdsj",
                 "  <模式> <玩家> [img]     战绩",
                 "  lb <榜> [周期] [img]   排行榜",
-                "  dual <玩家名>          双模式横屏卡(起床+竞技场)",
+                "  me / <玩家名> me       双模式横屏卡(起床+竞技场)",
                 "  boards                  简写速查",
                 "  list                    模式别名",
                 "简写: bw/kbw/sw/kp 周期: all/month/week/day"
@@ -2583,8 +2589,15 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         return None
 
     # ★ 双模式横屏卡（起床战争 + 竞技场）
-    if action in ("dual", "double", "双模式", "双段"):
-        return await _handle_wdsj_dual(args[1:], is_group, group_id, user_id)
+    #    主用法: /~wdsj me（用绑定玩家） | /~wdsj <玩家名> me（指定玩家）
+    #    兼容旧写法: /~wdsj dual <玩家名>
+    _ME_WORDS = ("me", "我", "我的", "my")
+    if action in ("dual", "double", "双模式", "双段") or args[-1].lower() in _ME_WORDS:
+        if action in ("dual", "double", "双模式", "双段"):
+            name_args = args[1:]
+        else:
+            name_args = args[:-1]
+        return await _handle_wdsj_dual(name_args, is_group, group_id, user_id)
 
     # ★ 折线图
     if action in ("trend", "趋势", "走势", "折线"):

@@ -36,14 +36,22 @@
 - 本地验证：新模板查询 ok（幸运之柱 values=14）、SEASON 榜单 ok（26S3 赛季）、中文名 resolve 全通、
   周期降级 4/4（ELO→ALLTIME、幸运之柱→ALLTIME、bedwars-wins 保留 WEEKLY）
 
-### 双模式横屏战绩卡 `/~wdsj dual <玩家名>`（新增指令）
+### 双模式横屏战绩卡 `/~wdsj me` / `/~wdsj <玩家名> me`（新增指令）
 - **一张横屏图**：左段起床战争（暖红）、右段竞技场（冷蓝），字段全量（33 + 17），亮色毛玻璃圆角
 - **图标全部用 Minecraft 原版贴图**：从 zh.minecraft.wiki 抓 `Invicon_*`（Playwright 过 CF 后 canvas 导出），
   48 个字段图标 + 顶栏装饰，base64 内联（截图零外部依赖）
   - 语义对齐：吃素食=胡萝卜、爆炸=火药、射飞火球=弓、回春床=红床、等级=梯子、
     BedFight 败=灰床、FireballFight 败=水桶、段位=旗帜、失败=屏障、喷漆=青染料
 - 模板 `data/templates/wdsj_dual_card.html`，`build_dual_card_html()` 注入 `window.WDSJ_DATA`
-- 支持绑定回退；实测 3 个玩家各自渲染真实数据（uid/段位/数值均不同），0 坏图
+- 模板 `data/templates/wdsj_dual_card.html`，`build_dual_card_html()` 注入 `window.WDSJ_DATA`
+- **用法**: `/~wdsj me`（用 `/~wdsj bd` 绑定的玩家名）/ `/~wdsj <玩家名> me`（指定，不需绑定）
+  - 误把模式名当玩家名（如 `/~wdsj bw me`）会提示正确用法
+- 底部新增 **衍生比率指标区（18 项）**：KD/WLR/FKDR/PK R/AKR/VDR/BPG/KPG/FPG/BBPW/TPR/FKR/
+  FBPR/N3KR/BPR/FbKR/FwKR/HFR，按 4 组配色（主流/衍生/建造/武器），FKDR 终局死亡按败场数估算
+- **MC 颜色码着色**: 原值带 §x（如 §3铂金 III）→ 前端渲染成真颜色（§3=#00AAAA 深青）
+- **头像**: API 真实皮肤 `player-heads/{name}/head.png`（失败回退 Steve 头）
+- **字体**: 内联 Monocraft（MC 风格开源等宽体），作用于玩家名/缩写徽章/数值，中文回退系统字体
+- 实测 3 个玩家各自渲染真实数据（uid/段位/数值均不同），0 坏图
 
 ## v2.3.14 — 群聊表情修好（三处打架）+ 戳一戳读上下文并能发图 (2026.9.14)
 一句话总结：查出群聊一直不发图的根因是提示词里三处互相打架（词表缺失、action 字段说"比图片更自然"、示例不带 FACE），全部修掉；戳一戳恢复读会话上下文并支持发表情。
