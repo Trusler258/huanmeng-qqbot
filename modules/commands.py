@@ -2830,7 +2830,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                 label_date = f"{datetime.now().year}-{int(a[:2]):02d}-{int(a[2:]):02d}"
 
         if mode == "are":
-            rows, today, time_start, time_end = build_arena_daily_rankings(label_date=label_date)
+            rows, today, time_start, time_end, fb = build_arena_daily_rankings(label_date=label_date)
         else:
             from datetime import date as _date, timedelta as _td
             # ★ push 模式强制用跨天（昨天 0:01 → 今天 0:01）
@@ -2839,7 +2839,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                 label_date = (_date.today() - _td(days=1)).isoformat()
             # ★ 查询过去日期时自动用跨天模式
             use_cross = label_date and label_date != _date.today().isoformat()
-            rows, today, new_players, time_start, time_end = build_daily_rankings(
+            rows, today, time_start, time_end, new_players, fb = build_daily_rankings(
                 label_date=label_date, cross_day=use_cross)
 
             if not rows:
@@ -4108,9 +4108,13 @@ def _build_daily_rank_html(rows, today, new_players, time_start="", time_end="")
         "nextTime": next_time,
         "brand": _bot_name(),
     }
+    # v2.3.22: 模板标题固定为"今日增量"，统计区间可能是昨日跨天（自动回退时）
+    #           → 用 date 字段覆盖标题显示真实归属日期
     tpl = (_P(__file__).resolve().parent.parent / "data" / "templates" / "daily_rank_card.html").read_text(encoding="utf-8")
     js = _json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
-    return tpl.replace("/*__DAILY_DATA__*/null", js, 1)
+    html = tpl.replace("/*__DAILY_DATA__*/null", js, 1)
+    # 副标题已含 date+range（D.date + " · " + D.range），无需额外处理
+    return html
 
 
 def _bot_name() -> str:

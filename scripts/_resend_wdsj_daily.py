@@ -14,8 +14,8 @@ async def main():
     yesterday = datetime.now() - timedelta(days=1)
     label = yesterday.strftime("%Y-%m-%d")
     print(f"[1] 生成 {label} 日榜数据...")
-    rows, today, new_players, t_start, t_end = build_daily_rankings(label_date=label, cross_day=True)
-    arena_rows, _, a_start, a_end = build_arena_daily_rankings(label_date=label, cross_day=True)
+    rows, today, t_start, t_end, new_players, _fb = build_daily_rankings(label_date=label, cross_day=True)
+    arena_rows, _, a_start, a_end, _fb_a = build_arena_daily_rankings(label_date=label, cross_day=True)
     print(f"    普通榜 {len(rows)} 人, 竞技榜 {len(arena_rows)} 人")
 
     pngs = []
