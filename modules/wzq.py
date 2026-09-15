@@ -21,6 +21,15 @@ _AI_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wzq_ai")
 
 logger = get_logger("wzq")
 
+def _bot_name() -> str:
+    """bot 自己的显示名（AI 对手在棋盘/文案里用它，而不是"AI"/"玩家0"）"""
+    try:
+        from core.config import get_config
+        return get_config().bot_name or "幻梦"
+    except Exception:
+        return "幻梦"
+
+
 # ════════════════════════════════════════════════════════════
 #  数据结构
 # ════════════════════════════════════════════════════════════
@@ -673,6 +682,9 @@ async def render_board(chat_id: int, cfg, test_mode: bool = False,
     else:
         def qq_name(qq: int) -> str:
             # ★ 分群感知：棋盘渲染用当前局所在群的昵称
+            # qq=0 表示 AI 对手 → 直接显示 bot 自己的名字（别显示"玩家0"/"Player2"）
+            if not qq:
+                return _bot_name()
             return cfg.get_display_name(str(qq), group_id=chat_id)
         black_name = qq_name(game.black)
         white_name = qq_name(game.white)
@@ -704,6 +716,10 @@ async def render_board(chat_id: int, cfg, test_mode: bool = False,
     date_str = history_date if history_date else (datetime.now().strftime("%Y-%m-%d %H:%M") if not test_mode else "12:34:56")
 
     html = tmpl \
+        .replace("${BOARD_N}", str(BOARD_SIZE)) \
+        .replace("${CELL}", "32") \
+        .replace("${STONE}", "26") \
+        .replace("${TITLE_EN}", "GOMOKU") \
         .replace("${SUB_TEXT}", sub_text) \
         .replace("${DATE}", date_str) \
         .replace("${BLACK_NAME}", black_name) \
