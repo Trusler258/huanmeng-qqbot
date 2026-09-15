@@ -282,39 +282,45 @@ GET /api/v1/player-heads/{name}/head.png
 **命令**：`/~wdsj me`（用 `/~wdsj bd` 绑定的玩家名）｜`/~wdsj <玩家名> me`（指定，不需绑定）
 （旧写法 `/~wdsj dual <玩家名>` 保留为兼容别名）
 
-**产出**：1920×1735 横屏图，一图三段：
+**产出**：**2200×1316**（1.67:1 横屏）单张图，左右两栏等高 + 顶部玩家条 + 底注：
 
 | 区块 | 内容 | 配色 |
 |---|---|---|
-| 顶部 | API 真实皮肤头像 + 玩家名 + UID/UUID/注册时间 | 中性 |
-| 左段 | 起床战争 **33 项**全字段（4 列） | 暖红 |
-| 右段 | 竞技场 **17 项**全字段（2 列）+ 段位卡 | 冷蓝 |
-| 底段 | **18 项衍生比率指标**（4 组配色） | 青绿 |
+| 顶部 | API 真实皮肤头像 + 玩家名 + 完整 UUID + UID/注册时间 | 中性 |
+| 左段 | 起床战争 **33 项**字段（5 列）+ **衍生比率 18 项**（6 列，4 组配色） | 暖红 |
+| 右段 | 竞技场 **17 项**字段（3 列）+ 段位卡 + **对抗指标 8 项** | 冷蓝 |
+| 底注 | 「由 {bot_name} 生成」+ 时间 + 8 位任务 hash（淡灰胶囊） | 中性 |
+
+**指标清单**
+
+- 起床衍生比率 18 项：KD / WLR / FKDR(估) / PKR / AKR / VDR / BPG / KPG / FPG / BBPW / TPR / FKR / FBPR / N3KR / BPR / FbKR / FwKR / HFR
+  （FKDR 的终局死亡按**败场数**估算）
+- 竞技场对抗指标 8 项：KD / WLR / WR 胜率 / KPG 场均击杀 / DPG 场均死亡 / BedFight 胜率 / FireballFight 胜率 / 连胜保持率
 
 **文件与数据流**
 
 ```
-data/templates/wdsj_dual_card.html      # 自包含模板（图标 + 字体 base64 内联）
+data/templates/wdsj_dual_card.html      # 自包含模板（58 图标 + Monocraft 字体 base64 内联）
   ↑ build_dual_card_html(bw, ar) 注入 window.WDSJ_DATA（JSON 替换 /*__WDSJ_DATA__*/null）
 services/wdsj_api.py :: build_dual_card_html()
-modules/commands.py  :: _handle_wdsj_dual()  # Playwright 截 .card 元素 → 发图
+modules/commands.py  :: _handle_wdsj_dual()   # Playwright 截 .card 元素 → 发图
 ```
 
 **素材来源**
 
-- **图标（53 个）**：Minecraft Wiki `Invicon_<物品>.png`（中文站 zh.minecraft.wiki / 英文站）。
-  Wiki 有 Cloudflare 保护，直接下载 403 —— 需 **Playwright 打开图片页 → 页面内 canvas 导出 base64**（同源不污染画布）。
-  映射表在模板内 `FIELD_ICON`；常用语义：段位=钻石、回春床=金苹果、打飞火球=光灵箭、
-  最高连胜=信标、吃素食=胡萝卜、爆炸=火药、等级=梯子、BedFight 败=灰床、FireballFight 败=水桶。
-- **字体**：Monocraft（MIT，MC 风格开源等宽 TTF）base64 内联，只作用于玩家名/缩写徽章/数值等英文数字，
-  中文自动回退系统字体（Monocraft 无中文字形）。原版 MC 字体是位图图集（jar 内 png+json），**不能当 web font**。
+- **图标（58 个）**：Minecraft Wiki `Invicon_<物品>.png`（中文站 zh.minecraft.wiki / 英文站）。
+  Wiki 有 Cloudflare 保护，直接下载 403 —— 需 **Playwright 打开图片页 → 页面内 canvas 导出 base64**。
+  映射表在模板内 `FIELD_ICON`；关键语义：段位=信标、最高连胜=钻石、回春床=粉色床、地雷=石质压力板、
+  吃素食=胡萝卜、爆炸=火药、射飞火球=弓、打飞火球=光灵箭、等级=梯子、BedFight 败=灰床、FireballFight 败=水桶。
+- **字体**：Monocraft（MIT，MC 风格开源等宽 TTF，202KB）base64 内联，只作用于玩家名/缩写徽章/数值等英文数字；
+  中文自动回退系统字体。原版 MC 字体是位图图集（jar 内 png+json），**不能当 web font**。
 - **头像**：`/api/v1/player-heads/{name}/head.png`（真实皮肤），失败回退 Steve 头。
   注意 `/api/v1/players/name:X/head.png` 是 404。
 
 **渲染特性**
 
 - **Minecraft 颜色码**：值保留 `§x` 原样传入，前端 `mcColor()` 渲染成真颜色（如 `§3铂金 III` → `#00AAAA` 深青）。
-- **截图视口须 ≥ 卡片宽度**（现卡片 1920，视口 2000×1300），否则右侧被裁。
+- **截图视口须 ≥ 卡片宽度**（现卡片 2200 → 视口 2400×1400），否则右侧被裁。
 - **本地测不了渲染**：项目 `_ensure_browser()` 指向服务器 `/usr/bin/chromium-browser`，
   本地无此文件 → handler 的截图分支只能在服务器验证（本地仅能测参数解析/提示文案）。
 
@@ -324,7 +330,38 @@ modules/commands.py  :: _handle_wdsj_dual()  # Playwright 截 .card 元素 → �
   （加注入标记 `window.WDSJ_DATA = /*__WDSJ_DATA__*/null;`），否则 bot 仍用旧模板。
 - 注入标记在文件内**必须唯一**；曾因把标记写进 `/* */` 注释导致出现两次 + 嵌套注释，
   `replace(..., 1)` 只替换注释里那个 → 数据回退到内联示例（表现为"渲染出的玩家名不对"）。
-- 验收必查：字段数 33/17、比率 18、坏图 0、JS 错误 0、**渲染出的玩家名/UID 是目标玩家**。
+- **图标键名容易踩坑**：`ICON_REAL` 里金锭的键是 `winstreak`（不是 `gold_ingot`）、书的键是 `kd`（不是 `book`）；
+  段位字段应映射到 `beacon`/`diamond`，**不要直取 `ICON_REAL.division`**（那是早期的白色旗帜图）。
+- 验收必查：字段数 33/17、比率 18+8、坏图 0、JS 错误 0、**渲染出的玩家名/UID 是目标玩家**、卡片比例 ≈1.67:1。
+
+## 6.6 每日排行榜卡片（模板化改造，本地完成待部署）
+
+**触发**：`/~wdsj daily`（手动）与每日 0/4/8/12/16/20 点自动推送；竞技场用 `mode=are`。
+
+**改造前**：深色渐变窄图（起床 520px 蓝黑 / 竞技场 560px 暗红）+ emoji 奖牌 + 内联 f-string HTML。
+
+**改造后**（与双模式卡同一套设计语言）：亮色毛玻璃 + 圆角 + Monocraft + MC 原版图标
+
+| 区块 | 起床日榜 | 竞技场日榜 |
+|---|---|---|
+| 宽度 | 620px | 660px |
+| 表头图标 | 击杀=铁剑 / 胜场=绿宝石 / 死亡=骷髅头 / KD=书 | 另加 段位=信标 / 败场=屏障 |
+| 前三名 | 金锭 / 铁锭 / 铜锭 + 序号 | 同左 |
+| 段位列 | — | `§x` 颜色码渲染成真颜色 |
+| 底注 | 「由 {bot_name} 生成」+ 下一轮时间 + 8 位 hash | 同左 |
+| 新玩家 | 鸡蛋图标 + 胶囊提示（仅起床榜） | — |
+
+**模板与函数**
+
+```
+data/templates/daily_rank_card.html      # 起床（620px）
+data/templates/daily_arena_card.html     # 竞技场（660px）
+  ↑ commands.py :: _build_daily_rank_html()     注入 window.DAILY_DATA
+  ↑ commands.py :: _build_arena_daily_html()    同上
+  ↑ commands.py :: _render_html_to_png(html, prefix, width=740, height=900)   # 视口已加宽（原 540 会裁）
+```
+
+**状态**：⚠️ **仅本地完成，尚未部署**（用户要求先看效果）。部署时需要同时上传两个模板与 `modules/commands.py`。
 
 ## 7. 待办建议
 

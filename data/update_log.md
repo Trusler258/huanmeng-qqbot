@@ -37,21 +37,28 @@
   周期降级 4/4（ELO→ALLTIME、幸运之柱→ALLTIME、bedwars-wins 保留 WEEKLY）
 
 ### 双模式横屏战绩卡 `/~wdsj me` / `/~wdsj <玩家名> me`（新增指令）
-- **一张横屏图**：左段起床战争（暖红）、右段竞技场（冷蓝），字段全量（33 + 17），亮色毛玻璃圆角
-- **图标全部用 Minecraft 原版贴图**：从 zh.minecraft.wiki 抓 `Invicon_*`（Playwright 过 CF 后 canvas 导出），
-  48 个字段图标 + 顶栏装饰，base64 内联（截图零外部依赖）
-  - 语义对齐：吃素食=胡萝卜、爆炸=火药、射飞火球=弓、回春床=红床、等级=梯子、
-    BedFight 败=灰床、FireballFight 败=水桶、段位=旗帜、失败=屏障、喷漆=青染料
-- 模板 `data/templates/wdsj_dual_card.html`，`build_dual_card_html()` 注入 `window.WDSJ_DATA`
-- 模板 `data/templates/wdsj_dual_card.html`，`build_dual_card_html()` 注入 `window.WDSJ_DATA`
-- **用法**: `/~wdsj me`（用 `/~wdsj bd` 绑定的玩家名）/ `/~wdsj <玩家名> me`（指定，不需绑定）
+- **成品**：2200×1316 横屏（1.67:1），亮色毛玻璃 + 圆角，左右两栏等高
+  - 左段 **起床战争**（暖红）：33 项全字段（5 列）+ 衍生比率 18 项（6 列，4 组配色）
+  - 右段 **竞技场**（冷蓝）：17 项全字段（3 列）+ 段位卡 + **对抗指标 8 项**
+  - 顶部：API 真实皮肤头像 + 玩家名 + 完整 UUID + UID/注册时间
+  - 底部：署名「由 {bot_name} 生成」+ 生成时间 + 8 位任务 hash（淡灰胶囊）
+- **用法**：`/~wdsj me`（用 `/~wdsj bd` 绑定的玩家名）/ `/~wdsj <玩家名> me`（指定，不需绑定）
   - 误把模式名当玩家名（如 `/~wdsj bw me`）会提示正确用法
-- 底部新增 **衍生比率指标区（18 项）**：KD/WLR/FKDR/PK R/AKR/VDR/BPG/KPG/FPG/BBPW/TPR/FKR/
-  FBPR/N3KR/BPR/FbKR/FwKR/HFR，按 4 组配色（主流/衍生/建造/武器），FKDR 终局死亡按败场数估算
-- **MC 颜色码着色**: 原值带 §x（如 §3铂金 III）→ 前端渲染成真颜色（§3=#00AAAA 深青）
-- **头像**: API 真实皮肤 `player-heads/{name}/head.png`（失败回退 Steve 头）
-- **字体**: 内联 Monocraft（MC 风格开源等宽体），作用于玩家名/缩写徽章/数值，中文回退系统字体
-- 实测 3 个玩家各自渲染真实数据（uid/段位/数值均不同），0 坏图
+- **起床衍生比率 18 项**：KD/WLR/FKDR/PKR/AKR/VDR/BPG/KPG/FPG/BBPW/TPR/FKR/FBPR/N3KR/BPR/FbKR/FwKR/HFR
+  （FKDR 终局死亡按败场数估算）
+- **竞技场对抗指标 8 项**：KD/WLR/WR 胜率/KPG 场均击杀/DPG 场均死亡/BedFight 胜率/
+  FireballFight 胜率/连胜保持率
+- **图标全部用 Minecraft 原版贴图**：从 zh.minecraft.wiki 抓 `Invicon_*`（CF 403 → Playwright 打开图片页
+  + 页面内 canvas 导出），**58 个**图标 base64 内联（截图零外部依赖）
+  - 语义对齐：段位=**信标**、最高连胜=钻石、回春床=**粉色床**、地雷=**石质压力板**、吃素食=胡萝卜、
+    爆炸=火药、射飞火球=弓、打飞火球=光灵箭、等级=梯子、BedFight 败=灰床、FireballFight 败=水桶
+- **MC 颜色码着色**：原值带 `§x`（如 `§3铂金 III`）→ 前端 `mcColor()` 渲染成真颜色（§3=#00AAAA 深青），
+  段位卡/标题/字段三处都着色
+- **头像**：API 真实皮肤 `player-heads/{name}/head.png`（失败回退 Steve 头）
+- **字体**：内联 Monocraft（MC 风格开源等宽体）作用于玩家名/缩写徽章/数值，中文回退系统字体
+- 模板 `data/templates/wdsj_dual_card.html` + `build_dual_card_html()` 注入 `window.WDSJ_DATA`
+  - 截图视口须 ≥ 卡片宽度（现 2400×1400），否则右侧被裁
+- 实测 3 个玩家各自渲染真实数据（uid/段位/数值均不同），0 坏图、0 JS 错误
 
 ## v2.3.14 — 群聊表情修好（三处打架）+ 戳一戳读上下文并能发图 (2026.9.14)
 一句话总结：查出群聊一直不发图的根因是提示词里三处互相打架（词表缺失、action 字段说"比图片更自然"、示例不带 FACE），全部修掉；戳一戳恢复读会话上下文并支持发表情。
