@@ -28,8 +28,13 @@ def _bot_name() -> str:
         return "幻梦"
 
 
-BOARD_SIZE = 9
+BOARD_SIZE = 19          # 默认棋盘（19 标准 / 13 快棋 / 9 迷你），可用 /~go start [难度] [尺寸] 指定
+BOARD_SIZES = (9, 13, 19)
+# 每格像素尺寸：盘越大格子越小，保证出图宽度基本一致
+_CELL_SIZES = {9: 44, 13: 34, 19: 26}
 EMPTY, BLACK, WHITE = 0, 1, 2
+# 坐标字母：围棋惯例跳过 I
+_ALL_LETTERS = "ABCDEFGHJKLMNOPQRST"
 COLOR_NAME = {BLACK: "黑", WHITE: "白"}
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -64,8 +69,23 @@ def resolve_difficulty(raw: str) -> str | None:
 _games: dict[int, dict] = {}
 
 
-def _empty_board() -> list[list[int]]:
-    return [[EMPTY] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+def letters_of(size: int) -> str:
+    """该尺寸的列坐标字母（跳过 I）"""
+    return _ALL_LETTERS[:size]
+
+
+def star_points(size: int) -> set:
+    """该尺寸的星位"""
+    if size == 9:
+        return {(2, 2), (2, 6), (6, 2), (6, 6), (4, 4)}
+    if size == 13:
+        return {(3, 3), (3, 9), (9, 3), (9, 9), (6, 6)}
+    return {(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15),
+            (15, 3), (15, 9), (15, 15)}
+
+
+def _empty_board(size: int = BOARD_SIZE) -> list[list[int]]:
+    return [[EMPTY] * size for _ in range(size)]
 
 
 def _save():
@@ -104,11 +124,11 @@ def get_game(chat_id: int) -> dict | None:
 #  规则：气 / 提子 / 禁手 / 打劫
 # ════════════════════════════════════════════════════════════
 
-def _neighbors(r: int, c: int):
+def _neighbors(r: int, c: int, size: int):
     if r > 0: yield r - 1, c
-    if r < BOARD_SIZE - 1: yield r + 1, c
+    if r < size - 1: yield r + 1, c
     if c > 0: yield r, c - 1
-    if c < BOARD_SIZE - 1: yield r, c + 1
+    if c < size - 1: yield r, c + 1
 
 
 def _group(board: list, r: int, c: int) -> tuple[set, int]:
@@ -119,9 +139,10 @@ def _group(board: list, r: int, c: int) -> tuple[set, int]:
     stack = [(r, c)]
     seen = {(r, c)}
     libs = set()
+    size = len(board)
     while stack:
         cr, cc = stack.pop()
-        for nr, nc in _neighbors(cr, cc):
+        for nr, nc in _neighbors(cr, cc, size):
             v = board[nr][nc]
             if v == EMPTY:
                 libs.add((nr, nc))
@@ -137,7 +158,8 @@ def try_place(board: list, r: int, c: int, color: int,
 
     返回 (ok, 新盘面, 被提子列表, 新的打劫禁着点, 错误说明)
     """
-    if not (0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE):
+    size = len(board)
+    if not (0 <= r < size and 0 <= c < size):
         return False, board, [], None, "超出棋盘"
     if board[r][c] != EMPTY:
         return False, board, [], None, "这里已经有子了"
@@ -149,7 +171,7 @@ def try_place(board: list, r: int, c: int, color: int,
     opp = WHITE if color == BLACK else BLACK
 
     captured: list = []
-    for nr, nc in _neighbors(r, c):
+    for nr, nc in _neighbors(r, c, size):
         if nb[nr][nc] == opp:
             grp, libs = _group(nb, nr, nc)
             if libs == 0:
@@ -170,11 +192,12 @@ def try_place(board: list, r: int, c: int, color: int,
 
 def score(board: list) -> tuple[int, int]:
     """中国规则简化数子：己方子数 + 只被己方包围的空点（不做死活判定）"""
+    size = len(board)
     b = sum(row.count(BLACK) for row in board)
     w = sum(row.count(WHITE) for row in board)
     seen = set()
-    for r in range(BOARD_SIZE):
-        for c in range(BOARD_SIZE):
+    for r in range(size):
+        for c in range(size):
             if board[r][c] != EMPTY or (r, c) in seen:
                 continue
             # flood fill 空区，看邻接哪些颜色
@@ -183,7 +206,7 @@ def score(board: list) -> tuple[int, int]:
             touch = set()
             while stack:
                 cr, cc = stack.pop()
-                for nr, nc in _neighbors(cr, cc):
+                for nr, nc in _neighbors(cr, cc, size):
                     v = board[nr][nc]
                     if v == EMPTY and (nr, nc) not in region:
                         region.add((nr, nc))
@@ -213,7 +236,8 @@ def _move_score(board: list, r: int, c: int, color: int, ko_point) -> tuple:
     _, mylibs = _group(nb, r, c)
     s += min(mylibs, 6) * 1.5                   # 自己气越多越安全
     # 进攻：压缩对手气（打吃）
-    for nr, nc in _neighbors(r, c):
+    size = len(board)
+    for nr, nc in _neighbors(r, c, size):
         if board[nr][nc] == opp:
             _, ol = _group(board, nr, nc)
             if ol == 1:
@@ -221,33 +245,55 @@ def _move_score(board: list, r: int, c: int, color: int, ko_point) -> tuple:
             elif ol == 2:
                 s += 2.0
     # 连接：靠近己方棋子
-    for nr, nc in _neighbors(r, c):
+    for nr, nc in _neighbors(r, c, size):
         if board[nr][nc] == color:
             s += 1.2
     # 别填自己的眼：若自己某块棋只有这一个气，等于自杀式填眼
     if mylibs == 1 and len(caps) == 0:
         s -= 8.0
     # 线位偏好（3~5 线好，1 线差）
-    line = min(r, c, BOARD_SIZE - 1 - r, BOARD_SIZE - 1 - c) + 1
+    line = min(r, c, size - 1 - r, size - 1 - c) + 1
     s += {1: -3.0, 2: -0.5, 3: 1.2, 4: 1.2, 5: 0.6}.get(line, 0.0)
     # 空盘初期别往角上钻
     if not any(v != EMPTY for row in board for v in row):
-        cr = cc = BOARD_SIZE // 2
+        cr = cc = size // 2
         s -= (abs(r - cr) + abs(c - cc)) * 0.15
     return s, len(caps), nb
+
+
+def _candidates(board: list) -> list:
+    """邻近启发：只评估已有棋子周围 2 格内的空点。
+
+    19×19 全盘有 361 个点，每点还要 flood-fill 算气 —— 直接扫会慢到秒级；
+    围棋的有效着法几乎都在已有棋子附近，收敛候选集后速度提升一个数量级。
+    空盘时返回天元。
+    """
+    size = len(board)
+    if not any(v != EMPTY for row in board for v in row):
+        mid = size // 2
+        return [(mid, mid)]
+    pts = set()
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == EMPTY:
+                continue
+            for dr in (-2, -1, 0, 1, 2):
+                for dc in (-2, -1, 0, 1, 2):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < size and 0 <= nc < size and board[nr][nc] == EMPTY:
+                        pts.add((nr, nc))
+    return list(pts)
 
 
 def ai_pick(board: list, color: int, ko_point, difficulty: str = DEFAULT_DIFFICULTY):
     """AI 选点。返回 (r, c) 或 None（表示 pass）"""
     prof = DIFFICULTIES.get(difficulty) or DIFFICULTIES[DEFAULT_DIFFICULTY]
+    size = len(board)
     cands = []
-    for r in range(BOARD_SIZE):
-        for c in range(BOARD_SIZE):
-            if board[r][c] != EMPTY:
-                continue
-            sc, caps, nb = _move_score(board, r, c, color, ko_point)
-            if sc is not None:
-                cands.append((sc, r, c, nb))
+    for r, c in _candidates(board):
+        sc, caps, nb = _move_score(board, r, c, color, ko_point)
+        if sc is not None:
+            cands.append((sc, r, c, nb))
     if not cands:
         return None
     cands.sort(key=lambda x: -x[0])
@@ -262,10 +308,9 @@ def ai_pick(board: list, color: int, ko_point, difficulty: str = DEFAULT_DIFFICU
         refined = []
         for sc, r, c, nb in top:
             worst = 0.0
-            for rr in range(BOARD_SIZE):
-                for cc in range(BOARD_SIZE):
-                    if nb[rr][cc] != EMPTY:
-                        continue
+            for rr, cc in _candidates(nb):
+                if nb[rr][cc] != EMPTY:
+                    continue
                     osc, _, _ = _move_score(nb, rr, cc, opp, None)
                     if osc is not None and osc > worst:
                         worst = osc
@@ -280,19 +325,42 @@ def ai_pick(board: list, color: int, ko_point, difficulty: str = DEFAULT_DIFFICU
 #  对外：开局 / 落子 / pass / 认输
 # ════════════════════════════════════════════════════════════
 
-def start_game(user_id: int, chat_id: int, difficulty: str = DEFAULT_DIFFICULTY) -> str:
-    if chat_id in _games:
+def resolve_board_size(raw) -> int | None:
+    """解析棋盘尺寸参数（9/13/19，支持 99/小/中/大 等说法）"""
+    if raw is None or str(raw).strip() == "":
+        return BOARD_SIZE
+    s = str(raw).strip().lower()
+    alias = {"小": 9, "迷你": 9, "mini": 9, "99": 9, "小盘": 9,
+             "中": 13, "标准快棋": 13, "mid": 13,
+             "大": 19, "标准": 19, "大盘": 19, "full": 19, "标准盘": 19}
+    if s in alias:
+        return alias[s]
+    try:
+        n = int(s)
+        return n if n in BOARD_SIZES else None
+    except Exception:
+        return None
+
+
+def start_game(user_id: int, chat_id: int, difficulty: str = DEFAULT_DIFFICULTY,
+               size: int = BOARD_SIZE) -> str:
+    old = _games.get(chat_id)
+    if old and old.get("status") == "playing":
         return "这里已经有一局围棋在进行中喵~ 用 /~go resign 认输结束"
     diff = resolve_difficulty(difficulty) or DEFAULT_DIFFICULTY
+    if size not in BOARD_SIZES:
+        size = BOARD_SIZE
     _games[chat_id] = {
         "player_id": user_id,
-        "board": _empty_board(),
+        "size": size,
+        "board": _empty_board(size),
         "turn": BLACK,                 # 玩家执黑先行
         "player_color": BLACK,
         "captures": {BLACK: 0, WHITE: 0},
         "ko_point": None,
         "passes": 0,
         "move_count": 0,
+        "moves": [],
         "last_move": None,
         "status": "playing",
         "difficulty": diff,
@@ -302,20 +370,19 @@ def start_game(user_id: int, chat_id: int, difficulty: str = DEFAULT_DIFFICULTY)
     return f"ok:{DIFFICULTIES[diff]['label']}"
 
 
-def _coord_label(r: int, c: int) -> str:
-    letters = "ABCDEFGHJ"        # 围棋惯例跳过 I
-    return f"{letters[c]}{BOARD_SIZE - r}"
+def _coord_label(r: int, c: int, size: int = BOARD_SIZE) -> str:
+    return f"{letters_of(size)[c]}{size - r}"
 
 
-def parse_coord(raw: str) -> tuple[int, int] | None:
+def parse_coord(raw: str, size: int = BOARD_SIZE) -> tuple[int, int] | None:
     """解析落子坐标：D4 / d4 / 4,4 / 4 4"""
     s = str(raw).strip().upper().replace(",", " ").replace("，", " ")
     parts = [p for p in s.split() if p]
-    letters = "ABCDEFGHJ"
+    letters = letters_of(size)
     if len(parts) == 2:
         try:
             r0, c0 = int(parts[0]) - 1, int(parts[1]) - 1
-            if 0 <= r0 < BOARD_SIZE and 0 <= c0 < BOARD_SIZE:
+            if 0 <= r0 < size and 0 <= c0 < size:
                 return r0, c0
         except ValueError:
             pass
@@ -326,10 +393,30 @@ def parse_coord(raw: str) -> tuple[int, int] | None:
         except ValueError:
             return None
         c0 = letters.index(m[0])
-        r0 = BOARD_SIZE - num
-        if 0 <= r0 < BOARD_SIZE and 0 <= c0 < BOARD_SIZE:
+        r0 = size - num
+        if 0 <= r0 < size and 0 <= c0 < size:
             return r0, c0
     return None
+
+
+def _push_move(game: dict, r: int, c: int, color: int) -> None:
+    """记一手棋（供网页棋谱/复盘用）"""
+    size = len(game["board"])
+    game.setdefault("moves", []).append({
+        "n": len(game.get("moves") or []) + 1,
+        "r": r, "c": c,
+        "color": "black" if color == BLACK else "white",
+        "label": _coord_label(r, c, size),
+    })
+
+
+def _push_pass(game: dict, color: int) -> None:
+    game.setdefault("moves", []).append({
+        "n": len(game.get("moves") or []) + 1,
+        "pass": True,
+        "color": "black" if color == BLACK else "white",
+        "label": "pass",
+    })
 
 
 def _ai_turn(game: dict) -> str:
@@ -340,6 +427,7 @@ def _ai_turn(game: dict) -> str:
     if pick is None:
         game["passes"] += 1
         game["turn"] = game["player_color"]
+        _push_pass(game, color)
         if game["passes"] >= 2:
             _finish(game)
             return f"{_bot_name()} 选择停一手，双方连续 pass，终局！"
@@ -357,10 +445,12 @@ def _ai_turn(game: dict) -> str:
     game["move_count"] += 1
     game["passes"] = 0
     game["turn"] = game["player_color"]
+    _push_move(game, r, c, color)
     _save()
+    size = len(game["board"])
     extra = f"（提了 {len(caps)} 子）" if caps else ""
     extra += "（打劫）" if nko else ""
-    return f"{_bot_name()} 落子 {_coord_label(r, c)}{extra}"
+    return f"{_bot_name()} 落子 {_coord_label(r, c, size)}{extra}"
 
 
 def make_move(user_id: int, chat_id: int, raw: str) -> tuple:
@@ -375,7 +465,8 @@ def make_move(user_id: int, chat_id: int, raw: str) -> tuple:
     if game["turn"] != game["player_color"]:
         return False, "还没轮到你喵~", False
 
-    pos = parse_coord(raw)
+    size = len(game["board"])
+    pos = parse_coord(raw, size)
     if pos is None:
         return False, f"坐标「{raw}」看不懂喵~ 试试 D4 或 4,4（字母跳过 I）", False
     r, c = pos
@@ -391,8 +482,9 @@ def make_move(user_id: int, chat_id: int, raw: str) -> tuple:
     game["move_count"] += 1
     game["passes"] = 0
     game["turn"] = WHITE if game["player_color"] == BLACK else BLACK
+    _push_move(game, r, c, game["player_color"])
 
-    msg = f"你落子 {_coord_label(r, c)}"
+    msg = f"你落子 {_coord_label(r, c, size)}"
     if caps:
         msg += f"，提了 {len(caps)} 子"
     msg += "；" + _ai_turn(game)
@@ -402,18 +494,22 @@ def make_move(user_id: int, chat_id: int, raw: str) -> tuple:
 
 def do_pass(user_id: int, chat_id: int) -> tuple:
     game = _games.get(chat_id)
-    if not game or game["status"] != "playing":
+    if not game:
         return False, "这里没有进行中的围棋对局喵~", False
+    if game["status"] != "playing":
+        return False, "这局已经结束了喵~", False
     if user_id != game["player_id"]:
         return False, "这不是你的对局喵~", False
     game["passes"] += 1
     game["turn"] = WHITE if game["player_color"] == BLACK else BLACK
+    _push_pass(game, game["player_color"])
     msg = "你选择停一手；" + _ai_turn(game)
     return True, msg, game["status"] == "playing"
 
 
 def _finish(game: dict):
     game["status"] = "finished"
+    game["end_time"] = int(time.time())
     b, w = score(game["board"])
     game["final_score"] = {"black": b, "white": w}
     _save()
@@ -425,9 +521,11 @@ def resign_game(user_id: int, chat_id: int) -> str:
         return "这里没有围棋对局喵~"
     if user_id != game["player_id"]:
         return "这不是你的对局喵~"
+    if game.get("status") != "playing":
+        return "这局已经结束了喵~"
     _finish(game)
-    _record_go_context(chat_id, game, f"玩家认输，{_bot_name()} 获胜")
-    del _games[chat_id]
+    game["result_text"] = f"你认输，{_bot_name()} 获胜"
+    _record_go_context(chat_id, game, game["result_text"])
     _save()
     return f"你认输了喵~ {_bot_name()} 获胜！"
 
@@ -440,16 +538,20 @@ def end_game(chat_id: int) -> str:
     _finish(game)
     b, w = game["final_score"]["black"], game["final_score"]["white"]
     diff = game.get("difficulty", DEFAULT_DIFFICULTY)
-    del _games[chat_id]
+    verdict = "你赢了" if b > w else ((_bot_name() + " 赢") if w > b else "平局")
+    game["result_text"] = f"终局数子 黑{b} : 白{w}，{verdict}"
     _save()
     _record_go_context(chat_id, game, f"终局结算 黑{b} : 白{w}")
     return (f"终局！数子结果（中国规则简化，未判死活）：\n"
             f"  你(黑) {b} 子  ·  {_bot_name()}(白) {w} 子\n"
-            f"  {'你赢了' if b > w else ((_bot_name() + ' 赢') if w > b else '平局')}喵~（难度：{DIFFICULTIES.get(diff, {}).get('label', diff)}）")
+            f"  {verdict}喵~（难度：{DIFFICULTIES.get(diff, {}).get('label', diff)}）")
 
 
 def _record_go_context(group_id: int, game: dict, result: str) -> None:
-    """把围棋结果写进会话上下文（同五子棋/象棋）"""
+    """把围棋结果写进会话上下文（同五子棋/象棋）。同一局只写一次"""
+    if game.get("_ctx_done"):
+        return
+    game["_ctx_done"] = True
     try:
         from core.context_manager import get_context_mgr
         pid = game.get("player_id")
@@ -479,15 +581,17 @@ def build_board_html(game: dict) -> str:
 
     模板占位符：BOARD_N / CELL / STONE / TITLE_EN / CELLS / COL_LABELS 等
     """
+    size = len(game["board"]) or BOARD_SIZE
+    cell = _CELL_SIZES.get(size, 30)
     tmpl = (_ROOT / "data" / "templates" / "wzq_board.html").read_text(encoding="utf-8")
-    letters = "ABCDEFGHJ"          # 围棋惯例：跳过 I
+    letters = letters_of(size)      # 围棋惯例：跳过 I
     col_labels = "".join(f'<div class="col-label">{c}</div>' for c in letters)
-    star = {(2, 2), (2, 6), (6, 2), (6, 6), (4, 4)}
+    star = star_points(size)
     last = list(game.get("last_move") or [])
     cells = ""
-    for r in reversed(range(BOARD_SIZE)):
-        cells += f'<div class="row-label">{BOARD_SIZE - r}</div>'
-        for c in range(BOARD_SIZE):
+    for r in reversed(range(size)):
+        cells += f'<div class="row-label">{size - r}</div>'
+        for c in range(size):
             v = game["board"][r][c]
             content = ""
             if v != EMPTY:
@@ -501,14 +605,14 @@ def build_board_html(game: dict) -> str:
     my_turn = game.get("turn") == game.get("player_color")
     caps = game.get("captures", {})
     prof = DIFFICULTIES.get(game.get("difficulty", DEFAULT_DIFFICULTY), {})
-    sub = (f'围棋 9×9 · 难度{prof.get("label", "普通")} · 手数 {game.get("move_count", 0)}'
+    sub = (f'围棋 {size}×{size} · 难度{prof.get("label", "普通")} · 手数 {game.get("move_count", 0)}'
            f' · 提子 {caps.get(BLACK, 0)}:{caps.get(WHITE, 0)}')
     status_text = "该你落子（你执黑）" if my_turn else f"{_bot_name()} 思考中…"
     status_class = "playing" if game.get("status") == "playing" else "win"
     return (tmpl
-            .replace("${BOARD_N}", str(BOARD_SIZE))
-            .replace("${CELL}", "44")
-            .replace("${STONE}", "36")
+            .replace("${BOARD_N}", str(size))
+            .replace("${CELL}", str(cell))
+            .replace("${STONE}", str(int(cell * 0.82)))
             .replace("${TITLE_EN}", "GO")
             .replace("${SUB_TEXT}", sub)
             .replace("${DATE}", time.strftime("%Y-%m-%d %H:%M"))

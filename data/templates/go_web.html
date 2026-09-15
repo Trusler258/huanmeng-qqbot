@@ -2,178 +2,547 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>围棋 · 幻梦</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%231c2333'/%3E%3Ccircle cx='13' cy='12' r='4' fill='%235a626e'/%3E%3C/svg%3E">
+<title>围棋对局 · 幻梦</title>
 <style>
+@font-face{font-family:"Monocraft";src:url("${FONT_URL}") format("truetype");font-display:swap}
 :root{
-  --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--cyan:#22d3ee;
-  --text:#fff;--text-2:rgba(255,255,255,0.72);--text-3:rgba(255,255,255,0.40);
-  --success:#34d399;--warning:#fbbf24;
-  --board-bg:#2a1f15;--board-line:#4a3520;--board-edge:#1a1208;
-  --mono:'Consolas','JetBrains Mono','Courier New',monospace;
-  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;
-  --border:rgba(255,255,255,0.10);
+  --ink:#1c2333; --ink-2:#4a5568; --ink-3:#8794ab;
+  --line:#e3e8f2; --line-2:#eef2f9;
+  --paper:#ffffff; --paper-2:#fafbfe;
+  --cool:#2563eb; --cool-2:#eaf1ff; --cool-3:#cfdffb;
+  --warm:#e11d48; --warm-2:#fff0f3; --warm-3:#fbcfd8;
+  --gold:#b7791f; --gold-2:#fdf6e6;
+  --ok:#0f9d70;
+  --sans:'PingFang SC','HarmonyOS Sans SC','Microsoft YaHei UI','Noto Sans CJK SC',system-ui,sans-serif;
+  --mono:'Monocraft','JetBrains Mono','Consolas','SFMono-Regular',monospace;
+  --r:16px;
+  --shadow:0 1px 2px rgba(28,35,51,.04),0 8px 24px -8px rgba(28,35,51,.10);
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{min-height:100vh;background:radial-gradient(ellipse 80% 55% at 15% -10%,rgba(236,72,153,0.42) 0%,transparent 50%),radial-gradient(ellipse 70% 50% at 88% 110%,rgba(139,92,246,0.38) 0%,transparent 50%),linear-gradient(165deg,#07060f 0%,#0d0b1a 45%,#080a16 100%);font-family:var(--sans);color:var(--text);display:flex;justify-content:center;padding:20px 14px 32px}
-.card{width:100%;max-width:560px;background:rgba(20,18,32,0.55);border-radius:15px;padding:18px 18px 22px;backdrop-filter:blur(24px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,0.65),inset 0 1px 0 rgba(255,255,255,0.12);border:1px solid var(--border)}
-.title{font-family:var(--mono);font-size:15px;font-weight:700;display:flex;align-items:baseline;gap:8px}
-.title .nm{background:linear-gradient(135deg,#f472b6,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.title .tp{color:var(--text-2);font-size:11px;letter-spacing:1.5px}
-.sub{font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:4px}
-.players{display:flex;justify-content:space-around;align-items:center;padding:14px 0 12px}
-.player{text-align:center}
-.player .name{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text-2);margin-bottom:6px}
-.player.active .name{color:var(--primary-light);text-shadow:0 0 12px rgba(244,114,182,0.6)}
-.player .stone{width:26px;height:26px;border-radius:50%;margin:0 auto}
-.player .stone.black{background:radial-gradient(circle at 35% 35%,#666,#0a0a0a);box-shadow:0 2px 8px rgba(0,0,0,0.7)}
-.player .stone.white{background:radial-gradient(circle at 35% 35%,#fff,#b0b0b0);border:1px solid #888}
-.vs{font-family:var(--mono);font-size:14px;font-weight:800;color:var(--text-3)}
-.boardsection{display:flex;justify-content:center;padding:6px 0 14px}
-.board{display:grid;grid-template-columns:20px repeat(9,38px);grid-template-rows:20px repeat(9,38px);background:var(--board-bg);border:1px solid var(--board-edge);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.5)}
-.corner{background:var(--board-bg)}
-.col-label,.row-label{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;font-weight:600;color:var(--text-3)}
-.cell{width:38px;height:38px;display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer}
-.cell::before{content:'';position:absolute;width:100%;height:1px;background:var(--board-line);top:50%;left:0}
-.cell::after{content:'';position:absolute;width:1px;height:100%;background:var(--board-line);left:50%;top:0}
-.cell:hover .hoverdot{opacity:1}
-.hoverdot{width:10px;height:10px;border-radius:50%;background:rgba(244,114,182,0.5);opacity:0;z-index:3;transition:opacity .12s}
-.stone-piece{width:31px;height:31px;border-radius:50%;z-index:2;position:relative}
-.stone-piece.black{background:radial-gradient(circle at 35% 35%,#666,#0a0a0a);box-shadow:0 2px 6px rgba(0,0,0,0.8)}
-.stone-piece.white{background:radial-gradient(circle at 35% 35%,#fff,#b0b0b0);border:1px solid #888}
-.stone-piece.last-move{box-shadow:0 0 0 2px var(--primary),0 0 14px rgba(236,72,153,0.7)}
-.star-point{width:6px;height:6px;background:var(--board-line);border-radius:50%;z-index:1}
-.status{margin:6px 0 12px;padding:11px 14px;text-align:center;font-size:13.5px;font-weight:600;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:9px;color:var(--text-2)}
-.status.playing{color:var(--primary-light);border-color:rgba(236,72,153,0.40);background:rgba(236,72,153,0.10)}
-.status.win{color:var(--warning);border-color:rgba(251,191,36,0.40);background:rgba(251,191,36,0.10)}
-.btns{display:flex;gap:10px}
-.btn{flex:1;padding:10px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text-2);font-family:var(--mono);font-size:12.5px;font-weight:600;cursor:pointer}
-.btn:hover{background:rgba(255,255,255,0.10);color:var(--text)}
-.btn.primary{border-color:rgba(236,72,153,0.45);color:var(--primary-light)}
-.tip{margin-top:10px;font-size:11px;color:var(--text-3);text-align:center;min-height:16px}
+html,body{height:100%}
+body{
+  font-family:var(--sans);color:var(--ink);-webkit-font-smoothing:antialiased;
+  background:
+    radial-gradient(1100px 620px at 8% -12%,#e8f0ff 0%,rgba(232,240,255,0) 62%),
+    radial-gradient(1000px 600px at 96% 4%,#ffeef2 0%,rgba(255,238,242,0) 60%),
+    linear-gradient(180deg,#f7f9fd 0%,#f4f6fb 100%);
+  background-attachment:fixed;
+  padding:18px 16px 40px;
+}
+.wrap{max-width:1120px;margin:0 auto}
+
+/* ── 顶栏 ───────────────────────────────────── */
+.topbar{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  background:var(--paper);border:1px solid var(--line);border-radius:var(--r);
+  padding:13px 16px;box-shadow:var(--shadow);margin-bottom:16px;
+}
+.brand{display:flex;align-items:baseline;gap:7px;font-family:var(--mono);font-size:16px;font-weight:700}
+.brand .nm{background:linear-gradient(135deg,#2563eb,#e11d48);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.brand .sl{color:var(--line-2)}
+.brand .tp{font-size:11px;letter-spacing:2px;color:var(--ink-3)}
+.tb-sep{width:1px;height:20px;background:var(--line)}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin-left:auto}
+.chip{
+  font-family:var(--mono);font-size:11.5px;color:var(--ink-2);
+  background:var(--paper-2);border:1px solid var(--line);border-radius:999px;
+  padding:4px 11px;white-space:nowrap;
+}
+.chip b{color:var(--ink);font-weight:700}
+.chip.cool{background:var(--cool-2);border-color:var(--cool-3);color:#1d4ed8}
+.chip.warm{background:var(--warm-2);border-color:var(--warm-3);color:#be123c}
+
+/* ── 布局 ───────────────────────────────────── */
+.layout{display:grid;grid-template-columns:1fr;gap:16px}
+@media(min-width:960px){.layout{grid-template-columns:minmax(0,1.02fr) minmax(0,.98fr);align-items:start}}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+
+/* ── 卡片 ───────────────────────────────────── */
+.card{
+  background:var(--paper);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);overflow:hidden;
+}
+.card-head{display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--line-2)}
+.card-head .bar{width:3px;height:13px;border-radius:2px;background:var(--ink-3)}
+.card-head .bar.cool{background:var(--cool)}
+.card-head .bar.warm{background:var(--warm)}
+.card-head h2{font-size:12.5px;font-weight:700;letter-spacing:1.6px;color:var(--ink-2)}
+.card-head .note{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.card-body{padding:16px}
+
+/* ── 棋盘 ───────────────────────────────────── */
+.board-body{display:flex;justify-content:center;padding:18px 16px 14px}
+.bwrap{display:grid}
+.clabels,.rlabels{display:grid;font-family:var(--mono);font-size:9.5px;color:#a97c4b}
+.clabels>*,.rlabels>*{display:flex;align-items:center;justify-content:center}
+.barea{position:relative;isolation:isolate}
+.barea svg{position:absolute;inset:0;overflow:visible;z-index:1}
+.barea svg line{stroke:#c39257;stroke-width:1;shape-rendering:crispEdges}
+.barea svg circle{fill:#c39257}
+.hits{position:absolute;inset:0;z-index:2}
+.hit{position:absolute;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.hit.locked{cursor:default}
+.stone{border-radius:50%;position:relative;animation:drop .15s cubic-bezier(.34,1.56,.64,1)}
+@keyframes drop{from{transform:scale(.55);opacity:.25}to{transform:scale(1);opacity:1}}
+.stone.b{background:radial-gradient(circle at 33% 28%,#5a626e 0%,#252a33 42%,#0b0e13 100%);box-shadow:0 2px 5px rgba(28,35,51,.42),inset 0 -1px 2px rgba(0,0,0,.5)}
+.stone.w{background:radial-gradient(circle at 33% 28%,#ffffff 0%,#f3f5f9 45%,#ccd3de 100%);box-shadow:0 2px 5px rgba(28,35,51,.30),inset 0 0 0 1px rgba(150,160,180,.55)}
+.stone.last::after{content:'';position:absolute;inset:29%;border-radius:50%;border:2px solid rgba(255,255,255,.92)}
+.stone.w.last::after{border-color:rgba(225,29,72,.95)}
+.ghost{border-radius:50%;opacity:0;transition:opacity .1s}
+.hit:hover .ghost{opacity:1}
+.ghost.gb{background:rgba(37,42,51,.28)}
+.ghost.gw{background:rgba(255,255,255,.6);box-shadow:inset 0 0 0 1px rgba(90,100,120,.35)}
+.board-bg{
+  position:absolute;inset:-5px;border-radius:12px;z-index:0;
+  background:linear-gradient(160deg,#f9e6c6 0%,#f2d6a8 46%,#e8c68e 100%);
+  box-shadow:inset 0 0 0 1px rgba(150,110,60,.28),inset 0 2px 10px rgba(120,80,30,.14),0 6px 20px -8px rgba(120,80,30,.35);
+}
+
+/* ── 状态行 ─────────────────────────────────── */
+.statusline{
+  margin:0 16px;padding:10px 13px;border-radius:11px;font-size:13px;font-weight:600;
+  display:flex;align-items:center;gap:8px;color:var(--ink-2);
+  background:var(--paper-2);border:1px solid var(--line);
+}
+.statusline .dot{width:7px;height:7px;border-radius:50%;background:var(--ink-3);flex:none}
+.statusline.you{background:var(--cool-2);border-color:var(--cool-3);color:#1d4ed8}
+.statusline.you .dot{background:var(--cool);animation:pulse 1.5s ease-in-out infinite}
+.statusline.bot{background:var(--gold-2);border-color:#f3e2bb;color:#96650f}
+.statusline.bot .dot{background:var(--gold);animation:pulse 1.5s ease-in-out infinite}
+.statusline.done{background:#eafaf3;border-color:#c6ecdd;color:#0b7a58}
+.statusline.done .dot{background:var(--ok)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}
+
+/* ── 按钮 ───────────────────────────────────── */
+.btns{display:flex;gap:9px;padding:14px 16px 16px}
+.btn{
+  flex:1;display:flex;align-items:center;justify-content:center;gap:7px;
+  padding:10px 12px;border-radius:11px;border:1px solid var(--line);
+  background:var(--paper);color:var(--ink-2);font-family:var(--sans);
+  font-size:13px;font-weight:600;cursor:pointer;transition:.14s;
+}
+.btn svg{width:14px;height:14px;flex:none}
+.btn:hover:not(:disabled){border-color:#c8d2e4;color:var(--ink);transform:translateY(-1px);box-shadow:var(--shadow)}
+.btn:active:not(:disabled){transform:translateY(0)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.cool{border-color:var(--cool-3);background:var(--cool-2);color:#1d4ed8}
+.btn.warm{border-color:var(--warm-3);background:var(--warm-2);color:#be123c}
+.btn.warm:hover:not(:disabled){border-color:#f6aebd;color:#9f1239}
+.tip{padding:0 16px 15px;font-size:11.5px;color:var(--ink-3);min-height:16px;line-height:1.5}
+
+/* ── 双战绩 ─────────────────────────────────── */
+.vs-grid{display:grid;grid-template-columns:1fr;gap:11px;padding:15px 16px 16px}
+@media(min-width:520px){.vs-grid{grid-template-columns:1fr auto 1fr;align-items:stretch}}
+.vspill{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--ink-3);padding:4px 0}
+@media(min-width:520px){.vspill{padding:0 2px}}
+.rec{border-radius:13px;padding:13px 13px 14px;border:1px solid var(--line);position:relative;overflow:hidden}
+.rec.cool{background:linear-gradient(165deg,#f2f7ff 0%,#e9f1ff 100%);border-color:var(--cool-3)}
+.rec.warm{background:linear-gradient(165deg,#fff5f7 0%,#ffe9ee 100%);border-color:var(--warm-3)}
+.rec-accent{position:absolute;left:0;top:0;bottom:0;width:3px}
+.rec.cool .rec-accent{background:var(--cool)}
+.rec.warm .rec-accent{background:var(--warm)}
+.rec-top{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+.stone-dot{width:19px;height:19px;border-radius:50%;flex:none}
+.stone-dot.b{background:radial-gradient(circle at 33% 28%,#5a626e,#0b0e13);box-shadow:0 1px 3px rgba(28,35,51,.4)}
+.stone-dot.w{background:radial-gradient(circle at 33% 28%,#fff,#ccd3de);box-shadow:inset 0 0 0 1px rgba(150,160,180,.6)}
+.rec-name{min-width:0}
+.rec-name b{display:block;font-size:13.5px;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rec-name i{display:block;font-family:var(--mono);font-size:9.5px;font-style:normal;letter-spacing:.8px;color:var(--ink-3);margin-top:1px}
+.rec.cool .rec-name i{color:#5b7fbf}
+.rec.warm .rec-name i{color:#c4788e}
+.turnbadge{margin-left:auto;flex:none;font-family:var(--mono);font-size:9.5px;font-weight:700;padding:3px 7px;border-radius:999px;background:rgba(255,255,255,.85);color:var(--ink-3);border:1px solid var(--line)}
+.rec.cool .turnbadge.on{background:var(--cool);color:#fff;border-color:var(--cool)}
+.rec.warm .turnbadge.on{background:var(--warm);color:#fff;border-color:var(--warm)}
+.rec-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:11px}
+.stat{background:rgba(255,255,255,.72);border:1px solid rgba(255,255,255,.9);border-radius:9px;padding:7px 6px 8px;text-align:center}
+.stat .k{display:block;font-size:9.5px;color:var(--ink-3);margin-bottom:3px;letter-spacing:.4px}
+.stat .v{display:block;font-family:var(--mono);font-size:15px;font-weight:700;color:var(--ink);line-height:1.1}
+.rec.cool .stat .v{color:#1d4ed8}
+.rec.warm .stat .v{color:#be123c}
+.rec-bar{height:5px;border-radius:999px;background:rgba(255,255,255,.8);overflow:hidden}
+.rec-bar i{display:block;height:100%;border-radius:999px;transition:width .35s ease}
+.rec.cool .rec-bar i{background:linear-gradient(90deg,#60a5fa,#2563eb)}
+.rec.warm .rec-bar i{background:linear-gradient(90deg,#fb7185,#e11d48)}
+.rec-bar-k{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9.5px;color:var(--ink-3);margin-top:6px}
+
+/* ── 对局信息 ───────────────────────────────── */
+.kv{display:grid;grid-template-columns:repeat(2,1fr);gap:9px 10px}
+@media(min-width:520px){.kv{grid-template-columns:repeat(4,1fr)}}
+.kv .item{background:var(--paper-2);border:1px solid var(--line-2);border-radius:10px;padding:9px 10px}
+.kv .item .k{display:block;font-size:9.5px;color:var(--ink-3);margin-bottom:4px;letter-spacing:.4px}
+.kv .item .v{display:block;font-family:var(--mono);font-size:14px;font-weight:700;color:var(--ink)}
+.result-banner{margin-top:11px;padding:11px 13px;border-radius:11px;font-size:13px;font-weight:600;background:#eafaf3;border:1px solid #c6ecdd;color:#0b7a58;display:flex;gap:8px;align-items:center}
+.result-banner svg{width:15px;height:15px;flex:none}
+
+/* ── 棋谱 ───────────────────────────────────── */
+.moves{display:flex;flex-wrap:wrap;gap:6px;padding:2px}
+.moves::-webkit-scrollbar{width:6px}
+.moves::-webkit-scrollbar-thumb{background:#dbe2ee;border-radius:99px}
+.mv{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;padding:4px 8px 4px 5px;border-radius:8px;border:1px solid var(--line);background:var(--paper-2);color:var(--ink-2)}
+.mv i{width:16px;height:16px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:8px;font-style:normal;color:#fff}
+.mv.b i{background:radial-gradient(circle at 33% 28%,#5a626e,#0b0e13)}
+.mv.w i{background:radial-gradient(circle at 33% 28%,#fff,#ccd3de);color:#5a626e;box-shadow:inset 0 0 0 1px rgba(150,160,180,.6)}
+.mv.pass{font-style:italic;color:var(--ink-3)}
+.empty{font-size:12px;color:var(--ink-3);padding:6px 2px}
+.skeleton{height:13px;border-radius:6px;background:linear-gradient(90deg,#eef2f9 25%,#f7f9fd 50%,#eef2f9 75%);background-size:200% 100%;animation:sk 1.2s linear infinite}
+@keyframes sk{to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="title"><span class="nm">幻梦</span><span>/</span><span class="tp">GO</span></div>
-  <div class="sub" id="sub">围棋 9×9</div>
+<div class="wrap">
 
-  <div class="players">
-    <div class="player" id="p-black"><div class="name">你</div><div class="stone black"></div></div>
-    <div class="vs">VS</div>
-    <div class="player" id="p-white"><div class="name">幻梦</div><div class="stone white"></div></div>
+  <div class="topbar">
+    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GO</span></div>
+    <div class="tb-sep"></div>
+    <span class="chip" id="chip-room">房间 <b>--</b></span>
+    <div class="chips">
+      <span class="chip" id="chip-size">棋盘 <b>--</b></span>
+      <span class="chip" id="chip-diff">难度 <b>--</b></span>
+      <span class="chip cool" id="chip-moves">手数 <b>0</b></span>
+      <span class="chip warm" id="chip-time">用时 <b>00:00</b></span>
+    </div>
   </div>
 
-  <div class="boardsection">
-    <div class="board" id="board"></div>
-  </div>
+  <div class="layout">
+    <div class="col">
+      <section class="card">
+        <div class="card-head">
+          <span class="bar cool"></span><h2>棋 盘</h2>
+          <span class="note" id="board-note">载入中…</span>
+        </div>
+        <div class="board-body">
+          <div class="bwrap" id="bwrap">
+            <div class="corner"></div>
+            <div class="clabels" id="clabels"></div>
+            <div class="rlabels" id="rlabels"></div>
+            <div class="barea" id="barea">
+              <div class="board-bg"></div>
+              <svg id="grid" xmlns="http://www.w3.org/2000/svg"></svg>
+              <div class="hits" id="hits"></div>
+            </div>
+          </div>
+        </div>
+        <div class="statusline" id="status"><span class="dot"></span><span id="status-text">载入中…</span></div>
+        <div class="btns">
+          <button class="btn cool" id="btn-pass">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5 7.4 8 4 11.5"/><path d="M8.6 4.5 12 8l-3.4 3.5"/></svg>
+            停一手
+          </button>
+          <button class="btn warm" id="btn-resign">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M4.2 13.6V2.6"/><path d="M4.2 3.3h7.4l-1.7 2.4 1.7 2.4H4.2z"/></svg>
+            认输
+          </button>
+          <button class="btn" id="btn-refresh">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 8a5 5 0 1 1-1.6-3.7"/><path d="M13 2.6V5h-2.4"/></svg>
+            刷新
+          </button>
+        </div>
+        <div class="tip" id="tip">点击交叉点落子，你执黑先行。</div>
+      </section>
+    </div>
 
-  <div class="status playing" id="status">载入中…</div>
-  <div class="btns">
-    <button class="btn" id="btn-pass">停一手</button>
-    <button class="btn primary" id="btn-resign">认输</button>
+    <div class="col">
+      <section class="card">
+        <div class="card-head"><span class="bar"></span><h2>双 方 战 绩</h2><span class="note" id="rec-note"></span></div>
+        <div class="vs-grid">
+          <div class="rec cool" id="rec-black">
+            <span class="rec-accent"></span>
+            <div class="rec-top">
+              <span class="stone-dot b"></span>
+              <span class="rec-name"><b>你</b><i>BLACK · 先行</i></span>
+              <span class="turnbadge" id="badge-black">等待</span>
+            </div>
+            <div class="rec-stats">
+              <div class="stat"><span class="k">盘上子</span><span class="v" id="sb">0</span></div>
+              <div class="stat"><span class="k">提子</span><span class="v" id="cb">0</span></div>
+              <div class="stat"><span class="k">落子</span><span class="v" id="mb">0</span></div>
+            </div>
+            <div class="rec-bar"><i id="bar-b" style="width:50%"></i></div>
+            <div class="rec-bar-k"><span id="k-b">盘面 50%</span><span>黑</span></div>
+          </div>
+
+          <div class="vspill">VS</div>
+
+          <div class="rec warm" id="rec-white">
+            <span class="rec-accent"></span>
+            <div class="rec-top">
+              <span class="stone-dot w"></span>
+              <span class="rec-name"><b id="nm-bot">幻梦</b><i>WHITE · 后手</i></span>
+              <span class="turnbadge" id="badge-white">等待</span>
+            </div>
+            <div class="rec-stats">
+              <div class="stat"><span class="k">盘上子</span><span class="v" id="sw">0</span></div>
+              <div class="stat"><span class="k">提子</span><span class="v" id="cw">0</span></div>
+              <div class="stat"><span class="k">落子</span><span class="v" id="mw">0</span></div>
+            </div>
+            <div class="rec-bar"><i id="bar-w" style="width:50%"></i></div>
+            <div class="rec-bar-k"><span id="k-w">盘面 50%</span><span>白</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><span class="bar warm"></span><h2>对 局 信 息</h2></div>
+        <div class="card-body">
+          <div class="kv">
+            <div class="item"><span class="k">AI 难度</span><span class="v" id="i-diff">--</span></div>
+            <div class="item"><span class="k">手数</span><span class="v" id="i-moves">0</span></div>
+            <div class="item"><span class="k">停一手</span><span class="v" id="i-pass">0</span></div>
+            <div class="item"><span class="k">用时</span><span class="v" id="i-time">00:00</span></div>
+          </div>
+          <div class="result-banner" id="result" style="display:none">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8.4 6.2 11.6 13 4.8"/></svg>
+            <span id="result-text"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><span class="bar"></span><h2>棋 谱</h2><span class="note" id="log-note"></span></div>
+        <div class="card-body"><div class="moves" id="moves"><div class="skeleton" style="width:60%"></div></div></div>
+      </section>
+    </div>
   </div>
-  <div class="tip" id="tip">点击棋盘交叉点落子（你执黑先行）</div>
 </div>
 
 <script>
 const ROOM = "${ROOM}", TOKEN = "${TOKEN}";
-const LETTERS = "ABCDEFGHJ";
-const STAR = new Set(["2,2","2,6","6,2","6,6","4,4"]);
-let busy = false, finished = false;
+const CELL_BASE = {9: 46, 13: 34, 19: 27};
+let busy = false, finished = false, curN = 0;
+let LETTERS = "", STAR = [], boardCache = null, lastCache = null, tipTimer = null;
 
-function buildBoard() {
-  const b = document.getElementById("board");
-  b.innerHTML = '<div class="corner"></div>';
-  for (let i = 0; i < 9; i++) b.innerHTML += `<div class="col-label">${LETTERS[i]}</div>`;
-  for (let r = 0; r < 9; r++) {
-    b.innerHTML += `<div class="row-label">${9 - r}</div>`;
-    for (let c = 0; c < 9; c++) {
-      b.innerHTML += `<div class="cell" data-r="${r}" data-c="${c}"><div class="hoverdot"></div></div>`;
-    }
-  }
-  b.querySelectorAll(".cell").forEach(cell => cell.onclick = () => play(cell));
+const $ = id => document.getElementById(id);
+
+function calcCell(n) {
+  const holder = $("barea").closest(".board-body");
+  const avail = holder.clientWidth - 32 - 26;
+  const base = CELL_BASE[n] || 27;
+  const fit = Math.floor(avail / n);
+  return Math.max(12, Math.min(base, fit > 0 ? fit : base));
 }
 
-async function play(cell) {
+function buildBoard(n, letters, stars) {
+  curN = n; LETTERS = letters; STAR = stars || [];
+  const cell = calcCell(n);
+  const side = n * cell, stone = Math.round(cell * 0.9);
+
+  const bw = $("bwrap");
+  bw.style.gridTemplateColumns = `26px ${side}px`;
+  bw.style.gridTemplateRows = `26px ${side}px`;
+
+  const cl = $("clabels"), rl = $("rlabels");
+  cl.style.gridTemplateColumns = `repeat(${n},${cell}px)`;
+  cl.innerHTML = letters.split("").map(c => `<div>${c}</div>`).join("");
+  rl.style.gridTemplateRows = `repeat(${n},${cell}px)`;
+  let rh = "";
+  for (let r = 0; r < n; r++) rh += `<div>${n - r}</div>`;
+  rl.innerHTML = rh;
+
+  const ba = $("barea");
+  ba.style.width = side + "px";
+  ba.style.height = side + "px";
+
+  const lo = cell / 2, hi = (n - 0.5) * cell;
+  let svg = "";
+  for (let i = 0; i < n; i++) {
+    const p = cell / 2 + i * cell;
+    svg += `<line x1="${lo}" y1="${p}" x2="${hi}" y2="${p}"/>`;
+    svg += `<line x1="${p}" y1="${lo}" x2="${p}" y2="${hi}"/>`;
+  }
+  const rDot = Math.max(1.5, +(cell * 0.055).toFixed(2));
+  STAR.forEach(k => {
+    const rc = k.split(",");
+    const r = +rc[0], c = +rc[1];
+    svg += `<circle cx="${cell / 2 + c * cell}" cy="${cell / 2 + r * cell}" r="${rDot}"/>`;
+  });
+  $("grid").innerHTML = svg;
+
+  let hits = "";
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      hits += `<div class="hit" data-r="${r}" data-c="${c}" style="left:${c * cell}px;top:${r * cell}px;width:${cell}px;height:${cell}px"></div>`;
+    }
+  }
+  const h = $("hits");
+  h.innerHTML = hits;
+  h.dataset.stone = stone;
+  h.dataset.cell = cell;
+  h.querySelectorAll(".hit").forEach(el => { el.onclick = () => play(el); });
+  paint();
+}
+
+function paint() {
+  if (!curN || !boardCache) return;
+  const stone = +$("hits").dataset.stone, cell = +$("hits").dataset.cell;
+  const pad = Math.round((cell - stone) / 2);
+  const last = lastCache || [];
+  $("hits").querySelectorAll(".hit").forEach(el => {
+    const r = +el.dataset.r, c = +el.dataset.c, v = boardCache[r][c];
+    let inner = "";
+    if (v) {
+      const cls = v === 1 ? "b" : "w";
+      const lm = (last[0] === r && last[1] === c) ? " last" : "";
+      inner = `<div class="stone ${cls}${lm}" style="width:${stone}px;height:${stone}px"></div>`;
+    } else if (!finished) {
+      inner = `<div class="ghost gb" style="width:${stone}px;height:${stone}px"></div>`;
+    }
+    if (el.innerHTML !== inner) el.innerHTML = inner;
+    el.style.padding = pad + "px";
+    el.classList.toggle("locked", !!v || finished);
+  });
+}
+
+async function play(el) {
   if (busy || finished) return;
+  const r = +el.dataset.r, c = +el.dataset.c;
+  if (boardCache && boardCache[r][c]) return;
   busy = true;
-  const r = +cell.dataset.r, c = +cell.dataset.c;
+  tip("落子中…");
   try {
     const res = await fetch(`/api/go/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({coord: `${r + 1},${c + 1}`})
     }).then(x => x.json());
     if (!res.ok) { tip(res.msg || "这手不行"); await refresh(); return; }
-    tip(res.msg || "");
+    tip(res.msg || "落子成功");
     await refresh();
-  } catch (e) { tip("网络错误"); } finally { busy = false; }
+  } catch (e) { tip("网络错误，稍后重试"); }
+  finally { busy = false; }
 }
 
-async function doAction(path) {
+async function act(path) {
   if (busy) return;
   busy = true;
   try {
     const res = await fetch(`/api/go/${ROOM}/${path}?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
     tip(res.msg || "");
     await refresh();
-  } catch (e) { tip("网络错误"); } finally { busy = false; }
+  } catch (e) { tip("网络错误，稍后重试"); }
+  finally { busy = false; }
 }
 
-function tip(s) { document.getElementById("tip").textContent = s; }
+function tip(s) {
+  $("tip").textContent = s;
+  clearTimeout(tipTimer);
+  if (s) tipTimer = setTimeout(() => { $("tip").textContent = ""; }, 6000);
+}
+
+function fmtTime(sec) {
+  sec = Math.max(0, sec | 0);
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  const p = n => String(n).padStart(2, "0");
+  return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+}
+
+function setStatus(cls, text) {
+  $("status").className = "statusline " + cls;
+  $("status-text").textContent = text;
+}
 
 function render(st) {
-  if (!st.ok) { tip("链接无效"); return; }
+  if (!st.ok) { tip("链接无效或已过期"); return; }
   finished = !!st.finished;
-  const board = st.board;
-  document.getElementById("sub").textContent =
-    `围棋 9×9 · 难度${st.difficulty} · 手数 ${st.move_count} · 提子 ${st.captures.black}:${st.captures.white}`;
-  if (!board) {
-    document.getElementById("status").textContent = "对局已结束";
-    document.getElementById("status").className = "status win";
+  if (st.bot) $("nm-bot").textContent = st.bot;
+  $("chip-room").innerHTML = `房间 <b>${ROOM}</b>`;
+
+  if (!st.size) {
+    setStatus("done", "对局已结束（记录已归档）");
+    $("result").style.display = "flex";
+    $("result-text").textContent = "对局已归档，去群里用 /~go start 再开一局";
+    $("btn-pass").disabled = true;
+    $("btn-resign").disabled = true;
     return;
   }
-  const last = st.last_move || [];
-  document.querySelectorAll(".cell").forEach(cell => {
-    const r = +cell.dataset.r, c = +cell.dataset.c;
-    const key = `${r},${c}`;
-    let inner = "";
-    const v = board[r][c];
-    if (v) {
-      const color = v === 1 ? "black" : "white";
-      const lm = (last[0] === r && last[1] === c) ? " last-move" : "";
-      inner = `<div class="stone-piece ${color}${lm}"></div>`;
-    } else if (STAR.has(key)) {
-      inner = '<div class="star-point"></div>';
-    }
-    const hover = (!finished && !v) ? '<div class="hoverdot"></div>' : "";
-    cell.innerHTML = inner + hover;
-  });
-  const myTurn = st.turn === st.player_color;
-  document.getElementById("p-black").className = "player" + (myTurn ? " active" : "");
-  document.getElementById("p-white").className = "player" + (myTurn ? "" : " active");
-  const stEl = document.getElementById("status");
-  if (finished) {
-    stEl.textContent = "对局已结束";
-    stEl.className = "status win";
-  } else {
-    stEl.textContent = myTurn ? "该你落子" : `${st.bot} 思考中…`;
-    stEl.className = "status playing";
+
+  // 先落数据再建盘，避免重建瞬间用到旧盘面
+  boardCache = st.board; lastCache = st.last_move || [];
+  if (st.size !== curN || STAR.length !== st.stars.length) buildBoard(st.size, st.letters, st.stars);
+
+  $("chip-size").innerHTML = `棋盘 <b>${st.size} 路</b>`;
+  $("chip-diff").innerHTML = `难度 <b>${st.difficulty}</b>`;
+  $("chip-moves").innerHTML = `手数 <b>${st.move_count}</b>`;
+  $("chip-time").innerHTML = `用时 <b>${fmtTime(st.elapsed)}</b>`;
+  $("board-note").textContent = `${st.size} × ${st.size}`;
+
+  const sB = st.stones.black, sW = st.stones.white, tot = Math.max(1, sB + sW);
+  $("sb").textContent = sB; $("sw").textContent = sW;
+  $("cb").textContent = st.captures.black; $("cw").textContent = st.captures.white;
+
+  const mv = st.moves || [];
+  let mB = mv.filter(m => m.color === "black" && !m.pass).length;
+  let mW = mv.filter(m => m.color === "white" && !m.pass).length;
+  if (st.move_count > mv.length && mB + mW === 0) {
+    const half = Math.round(st.move_count / 2);
+    if (st.player_color === 1) { mB = half; mW = st.move_count - half; }
+    else { mW = half; mB = st.move_count - half; }
   }
+  $("mb").textContent = mB; $("mw").textContent = mW;
+
+  const pB = Math.round(sB / tot * 100);
+  $("bar-b").style.width = pB + "%";
+  $("bar-w").style.width = (100 - pB) + "%";
+  $("k-b").textContent = `盘面 ${pB}%`;
+  $("k-w").textContent = `盘面 ${100 - pB}%`;
+
+  const myTurn = !finished && st.turn === st.player_color;
+  $("badge-black").textContent = myTurn ? "行棋中" : (finished ? "已结束" : "等待");
+  $("badge-white").textContent = finished ? "已结束" : (myTurn ? "等待" : "思考中");
+  $("badge-black").classList.toggle("on", myTurn);
+  $("badge-white").classList.toggle("on", !myTurn && !finished);
+
+  $("i-diff").textContent = st.difficulty;
+  $("i-moves").textContent = st.move_count;
+  $("i-pass").textContent = st.passes;
+  $("i-time").textContent = fmtTime(st.elapsed);
+  $("rec-note").textContent = `共 ${st.move_count} 手`;
+
+  if (finished) {
+    setStatus("done", st.result_text || "对局已结束");
+    $("result").style.display = "flex";
+    const fs = st.final_score;
+    $("result-text").textContent = fs ? `数子结果 黑 ${fs.black} : 白 ${fs.white}` : (st.result_text || "对局已结束");
+    $("btn-pass").disabled = true;
+    $("btn-resign").disabled = true;
+  } else {
+    setStatus(myTurn ? "you" : "bot", myTurn ? "轮到你了 · 点击交叉点落子" : `${st.bot} 正在思考…`);
+    $("result").style.display = "none";
+    $("btn-pass").disabled = false;
+    $("btn-resign").disabled = false;
+  }
+
+  const list = mv.slice().reverse();
+  $("log-note").textContent = mv.length ? `最近 ${mv.length} 手` : "";
+  $("moves").innerHTML = list.length
+    ? list.map(m => m.pass
+        ? `<span class="mv pass"><i class="${m.color === "black" ? "b" : "w"}">${m.n}</i>停一手</span>`
+        : `<span class="mv ${m.color === "black" ? "b" : "w"}"><i>${m.n}</i>${m.label}</span>`).join("")
+    : `<div class="empty">还没有落子</div>`;
+
+  paint();
 }
 
 async function refresh() {
   try {
     const st = await fetch(`/api/go/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
     render(st);
-  } catch (e) { /* 静默，下次轮询再试 */ }
+  } catch (e) { /* 静默，下轮再试 */ }
 }
 
-buildBoard();
-document.getElementById("btn-pass").onclick = () => doAction("pass");
-document.getElementById("btn-resign").onclick = () => doAction("resign");
+buildBoard(19, "ABCDEFGHJKLMNOPQRST", []);
+$("btn-pass").onclick = () => act("pass");
+$("btn-resign").onclick = () => { if (confirm("确定认输吗？")) act("resign"); };
+$("btn-refresh").onclick = () => { tip("已刷新"); refresh(); };
+let rt = null;
+window.addEventListener("resize", () => {
+  clearTimeout(rt);
+  rt = setTimeout(() => { if (curN) buildBoard(curN, LETTERS, STAR); }, 140);
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
-setInterval(refresh, 1500);
+setInterval(() => { if (!document.hidden) refresh(); }, 1500);
 </script>
 </body>
 </html>

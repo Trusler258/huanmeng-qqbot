@@ -15,11 +15,12 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from core.logger import get_logger
 
@@ -90,44 +91,84 @@ def _get_game(room: int):
     return g
 
 
+def _auth_player(room: int, t: str):
+    """校验链接令牌，并确认持有者就是这局的主人。
+
+    返回 (user_id, game, err)；err 非空表示拒绝访问。
+    """
+    who = parse_token(t)
+    if not who or who[0] != room:
+        return None, None, "链接无效或已过期"
+    game = _get_game(room)
+    if game is not None and game.get("player_id") != who[1]:
+        return None, None, "这条链接不属于你"
+    return who[1], game, None
+
+
+# ── 静态资源 ─────────────────────────────────────────────────
+
+@app.get("/static/monocraft.ttf")
+async def monocraft():
+    """像素字体（MC 风格），单独成文件便于浏览器缓存"""
+    f = _ROOT / "data" / "web_assets" / "monocraft.ttf"
+    if not f.exists():
+        return JSONResponse({"ok": False, "error": "font missing"}, status_code=404)
+    return FileResponse(str(f), media_type="font/ttf",
+                        headers={"Cache-Control": "public, max-age=604800"})
+
+
 # ── 围棋 ─────────────────────────────────────────────────────
 
 @app.get("/go/{room}", response_class=HTMLResponse)
-async def go_page(room: int, t: str = ""):
-    from modules import go_game as G
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return HTMLResponse("<h2 style='font-family:sans-serif;padding:40px'>链接无效或已过期喵~</h2>",
-                            status_code=403)
-    game = _get_game(room)
+async def go_page(room: int, request: Request, t: str = ""):
+    uid, game, err = _auth_player(room, t)
+    if err:
+        return HTMLResponse(
+            f"<h2 style='font-family:sans-serif;padding:40px'>{err}喵~</h2>", status_code=403)
     if not game:
         return HTMLResponse("<h2 style='font-family:sans-serif;padding:40px'>这局已经结束了喵~</h2>",
                             status_code=404)
+    # 静态资源用相对本页的前缀，兼容隧道挂在子路径的情况
+    prefix = request.url.path.rsplit("/", 2)[0]
     tmpl = (_ROOT / "data" / "templates" / "go_web.html").read_text(encoding="utf-8")
     return HTMLResponse(tmpl
                         .replace("${ROOM}", str(room))
+                        .replace("${FONT_URL}", f"{prefix}/static/monocraft.ttf")
                         .replace("${TOKEN}", t))
 
 
 @app.get("/api/go/{room}/state")
 async def go_state(room: int, t: str = ""):
     from modules import go_game as G
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return JSONResponse({"ok": False, "error": "链接无效"}, status_code=403)
-    game = _get_game(room)
+    uid, game, err = _auth_player(room, t)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=403)
     if not game:
         return JSONResponse({"ok": True, "finished": True, "board": None})
     caps = game.get("captures", {})
+    board = game.get("board") or []
+    size = len(board) or G.BOARD_SIZE
+    st_b = sum(row.count(G.BLACK) for row in board) if board else 0
+    st_w = sum(row.count(G.WHITE) for row in board) if board else 0
+    moves = list(game.get("moves") or [])
     return JSONResponse({
         "ok": True,
         "finished": game.get("status") != "playing",
         "board": game["board"],
+        "size": size,
+        "letters": G.letters_of(size),
+        "stars": sorted(f"{r},{c}" for r, c in G.star_points(size)),
         "turn": game.get("turn"),
         "player_color": game.get("player_color"),
         "move_count": game.get("move_count", 0),
         "last_move": game.get("last_move"),
         "captures": {"black": caps.get(G.BLACK, 0), "white": caps.get(G.WHITE, 0)},
+        "stones": {"black": st_b, "white": st_w},
+        "moves": moves[-60:],
+        "passes": game.get("passes", 0),
+        "elapsed": max(0, int(time.time()) - int(game.get("start_time") or 0)),
+        "final_score": game.get("final_score"),
+        "result_text": game.get("result_text"),
         "difficulty": G.DIFFICULTIES.get(game.get("difficulty", "normal"), {}).get("label", "普通"),
         "bot": G._bot_name(),
     })
@@ -136,23 +177,25 @@ async def go_state(room: int, t: str = ""):
 @app.post("/api/go/{room}/move")
 async def go_move(room: int, request: Request, t: str = ""):
     from modules import go_game as G
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return JSONResponse({"ok": False, "error": "链接无效"}, status_code=403)
-    _get_game(room)              # 确保内存里有该局（跨进程时从文件补）
+    uid, game, err = _auth_player(room, t)   # _auth_player 内部会补读棋局
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=403)
+    if not game:
+        return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
     body = await request.json()
-    ok, msg, _ = G.make_move(who[1], room, str(body.get("coord", "")))
+    ok, msg, _ = G.make_move(uid, room, str(body.get("coord", "")))
     return JSONResponse({"ok": ok, "msg": msg})
 
 
 @app.post("/api/go/{room}/pass")
 async def go_pass(room: int, t: str = ""):
     from modules import go_game as G
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return JSONResponse({"ok": False, "error": "链接无效"}, status_code=403)
-    _get_game(room)
-    ok, msg, _ = G.do_pass(who[1], room)
+    uid, game, err = _auth_player(room, t)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=403)
+    if not game:
+        return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
+    ok, msg, _ = G.do_pass(uid, room)
     if not ok:
         return JSONResponse({"ok": False, "msg": msg})
     game = _get_game(room)
@@ -164,11 +207,12 @@ async def go_pass(room: int, t: str = ""):
 @app.post("/api/go/{room}/resign")
 async def go_resign(room: int, t: str = ""):
     from modules import go_game as G
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return JSONResponse({"ok": False, "error": "链接无效"}, status_code=403)
-    _get_game(room)
-    return JSONResponse({"ok": True, "msg": G.resign_game(who[1], room)})
+    uid, game, err = _auth_player(room, t)
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=403)
+    if not game or game.get("status") != "playing":
+        return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
+    return JSONResponse({"ok": True, "msg": G.resign_game(uid, room)})
 
 
 # ── 启动 ─────────────────────────────────────────────────────
