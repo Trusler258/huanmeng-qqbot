@@ -2002,90 +2002,157 @@ async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_qq):
         return format_lang("translate.fail")
 
 
+# ─── 围棋 ────────────────────────────────────────────────────
+
+async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """围棋 9×9 /~go [start [难度]|坐标|pass|board|resign]（群聊/私聊均可用）"""
+    from modules import go_game as G
+    from services.sender import send_group_msg, send_private_msg
+
+    chat_id = group_id if is_group else user_id
+
+    async def _send(msg: str):
+        await (send_group_msg(msg, group_id) if is_group else send_private_msg(msg, user_id))
+
+    async def _send_board():
+        img = await G.render_board(chat_id)
+        if img:
+            await _send(f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]")
+        return img
+
+    if not args:
+        return (
+            "围棋 9×9 /~go <操作>\n"
+            "  start [难度]  开始新对局（新手/普通/困难/专家，默认普通）\n"
+            "  <坐标>        落子（D4 / 4,4，字母跳过 I）\n"
+            "  pass          停一手（双方连续 pass 即终局数子）\n"
+            "  board         查看棋盘\n"
+            "  resign        认输"
+        )
+
+    action = args[0].lower()
+
+    if action in ("start", "开始", "开局"):
+        diff_raw = args[1] if len(args) > 1 else ""
+        if diff_raw and not G.resolve_difficulty(diff_raw):
+            opts = " / ".join(v["label"] for v in G.DIFFICULTIES.values())
+            return f"难度「{diff_raw}」不认识喵~ 可选：{opts}"
+        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY)
+        if not r.startswith("ok"):
+            return r
+        label = r.split(":", 1)[1] if ":" in r else "普通"
+        try:
+            img = await G.render_board(chat_id)
+            cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
+            await _send(f"围棋开局！你执黑先行，AI 难度「{label}」\n落子用 /~go D4（字母跳过 I）\n{cq}")
+            return None
+        except Exception as e:
+            return f"棋盘渲染失败喵: {e}"
+
+    if action in ("board", "棋盘", "查看"):
+        game = G.get_game(chat_id)
+        if not game:
+            return "这里没有围棋对局喵~ 用 /~go start 开局"
+        await _send_board()
+        return f"当前局面 · 手数 {game.get('move_count', 0)}"
+
+    if action in ("pass", "停一手", "过"):
+        ok, msg, _ = G.do_pass(user_id, chat_id)
+        if not ok:
+            return msg
+        game = G.get_game(chat_id)
+        if game and game.get("status") == "finished":
+            tail = G.end_game(chat_id)
+            await _send_board()
+            return f"{msg}\n{tail}"
+        await _send_board()
+        return msg
+
+    if action in ("resign", "认输"):
+        return G.resign_game(user_id, chat_id)
+
+    # 落子
+    ok, msg, need_render = G.make_move(user_id, chat_id, " ".join(args))
+    if need_render:
+        await _send_board()
+    return msg
+
+
 # ─── 中国象棋 ────────────────────────────────────────────────
 
 async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """中国象棋 /~xq [start|走法|board|resign|history]"""
-    if not is_group:
-        return "象棋对战仅支持群聊喵~"
-
+    """中国象棋 /~xq [start [难度]|走法|board|resign|history]（群聊/私聊均可用）"""
+    # 注：原代码 import 的 _build_svg / INIT_BOARD 两个名字在模块里并不存在
+    # （实际是 _board_to_svg / build_initial_svg）—— 这是 /~xq 一直 ImportError 的根因
     from modules.chinese_chess import (
         start_game, make_move, resign_game, show_board, show_history,
-        _build_svg, _svg_to_png, _ROOT, INIT_BOARD, wait_render,
+        build_initial_svg, _svg_to_png, _ROOT, wait_render,
+        resolve_difficulty, DEFAULT_DIFFICULTY, DIFFICULTIES,
     )
-    from services.sender import send_group_msg
+    from services.sender import send_group_msg, send_private_msg
+
+    # 私聊也能玩：对局按 chat_id 隔离（私聊时用 user_id）
+    chat_id = group_id if is_group else user_id
+
+    async def _send(msg: str):
+        await (send_group_msg(msg, group_id) if is_group else send_private_msg(msg, user_id))
 
     if not args:
         return (
             "中国象棋 /~xq <操作>\n"
-            "  start        开始新对局\n"
-            "  <走法>       炮二平五 / h2e2\n"
-            "  board        查看棋盘\n"
-            "  resign       认输\n"
-            "  history      走棋记录"
+            "  start [难度]  开始新对局（新手/普通/困难/专家，默认普通）\n"
+            "  <走法>        炮二平五 / h2e2\n"
+            "  board         查看棋盘\n"
+            "  resign        认输\n"
+            "  history       走棋记录"
         )
 
     action = args[0].lower()
 
     if action == "start":
-        result = start_game(user_id, group_id)
-        if result != "ok":
+        diff_raw = args[1] if len(args) > 1 else ""
+        if diff_raw and not resolve_difficulty(diff_raw):
+            opts = " / ".join(v["label"] for v in DIFFICULTIES.values())
+            return f"难度「{diff_raw}」不认识喵~ 可选：{opts}"
+        result = start_game(user_id, chat_id, diff_raw or DEFAULT_DIFFICULTY)
+        if not result.startswith("ok"):
             return result
-        # 渲染初始棋盘
+        label = result.split(":", 1)[1] if ":" in result else "普通"
         try:
-            svg = _build_svg(INIT_BOARD)
-            out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png")
+            svg = build_initial_svg()
+            out = str(_ROOT / "data" / "img_temp" / f"xq_{chat_id}.png")
             await _svg_to_png(svg, out)
             cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
-            await send_group_msg("对局开始！你执红方，请落子喵~\n" + cq, group_id)
+            await _send(f"对局开始！你执红方，AI 难度「{label}」，请落子喵~\n{cq}")
             return None
         except Exception as e:
             return f"棋盘渲染失败喵: {e}"
 
     if action == "board":
-        msg, img = show_board(group_id)
+        msg, img = show_board(chat_id)
         if img:
             await wait_render()   # 渲染是异步的，不等就会发出上一手的旧盘面
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
-            await send_group_msg(cq, group_id)
+            await _send(cq)
         return msg
 
     if action == "resign":
-        return resign_game(user_id, group_id)
+        return resign_game(user_id, chat_id)
 
     if action == "history":
-        return show_history(group_id)
+        return show_history(chat_id)
 
     # 走棋
     notation = " ".join(args)
-    ok, msg, img = make_move(user_id, group_id, notation)
+    ok, msg, img = make_move(user_id, chat_id, notation)
     if img:
         try:
             await wait_render()   # 渲染是异步的，不等就会发出上一手的旧盘面
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
-            await send_group_msg(cq, group_id)
+            await _send(cq)
         except Exception:
             pass
     return msg
-
-
-# ─── 倒计时 ─────────────────────────────────────────────────
-
-_COUNTDOWN_FILE = Path(__file__).resolve().parent.parent / "data" / "countdown.json"
-
-
-def _load_countdowns() -> list[dict]:
-    if _COUNTDOWN_FILE.exists():
-        try:
-            return json.loads(_COUNTDOWN_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def _save_countdowns(data: list[dict]):
-    _COUNTDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _COUNTDOWN_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -3641,6 +3708,8 @@ COMMAND_MAP: dict[str, callable] = {
     "五子棋":     cmd_wzq,
     "xq":         cmd_xq,
     "象棋":       cmd_xq,
+    "go":         cmd_go,
+    "围棋":       cmd_go,
     "tr":         cmd_translate,
     "翻译":       cmd_translate,
     "countdown":  cmd_countdown,

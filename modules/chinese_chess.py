@@ -19,7 +19,33 @@ logger = get_logger("xq")
 
 _ROOT = Path(__file__).resolve().parent.parent
 _GAME_FILE = _ROOT / "data" / "xq_games.json"
-AI_DEPTH = 2
+AI_DEPTH = 2   # 兼容旧引用（= normal 档）
+
+# ★ 难度档位：搜索深度 + 随机失误率（低难度按概率直接随机走，模拟"新手漏着"）
+# 预算单位：秒。迭代加深会从 depth=1 逐层加深，到预算用尽就停（用当前最好的一层结果）。
+# 之所以用"时间预算"而不是固定深度：Python 纯 minimax 的深度-耗时是爆炸式的
+# （实测 depth2=0.3s / depth3=4s / depth4=20~37s），固定 depth4 会阻塞事件循环。
+DIFFICULTIES = {
+    "easy":   {"budget": 0.25, "max_depth": 2, "random": 0.35, "label": "新手"},
+    "normal": {"budget": 0.90, "max_depth": 3, "random": 0.12, "label": "普通"},
+    "hard":   {"budget": 1.80, "max_depth": 4, "random": 0.00, "label": "困难"},
+    "expert": {"budget": 3.00, "max_depth": 6, "random": 0.00, "label": "专家"},
+}
+DEFAULT_DIFFICULTY = "normal"
+# 中文/别名 → 档位
+DIFFICULTY_ALIAS = {
+    "新手": "easy", "简单": "easy", "easy": "easy",
+    "普通": "normal", "中等": "normal", "normal": "normal",
+    "困难": "hard", "hard": "hard", "难": "hard",
+    "专家": "expert", "地狱": "expert", "expert": "expert",
+}
+
+
+def resolve_difficulty(raw: str) -> str | None:
+    """解析难度参数，未知返回 None"""
+    if not raw:
+        return DEFAULT_DIFFICULTY
+    return DIFFICULTY_ALIAS.get(str(raw).strip().lower()) or DIFFICULTY_ALIAS.get(str(raw).strip())
 
 # 棋子估值
 PIECE_VALUES = {"k": 10000, "a": 200, "b": 200, "n": 400, "r": 600, "c": 300, "p": 100}
@@ -48,7 +74,16 @@ def _evaluate(board) -> int:
     return score
 
 
-def _minimax(board, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
+class _SearchTimeout(Exception):
+    """搜索超时（时间预算用尽）"""
+
+
+def _minimax(board, depth: int, alpha: int, beta: int, maximizing: bool,
+             deadline: float | None = None) -> int:
+    # ★ 时间预算检查：Python 纯 minimax 在 depth>=4 时节点数爆炸（实测 20-37s），
+    #   必须能在超时后中断，否则会阻塞事件循环几十秒。
+    if deadline is not None and time.time() > deadline:
+        raise _SearchTimeout
     if depth == 0 or board.is_game_over():
         return _evaluate(board)
     moves = list(board.legal_moves)
@@ -57,7 +92,7 @@ def _minimax(board, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
         best = -999999
         for move in moves:
             board.push(move)
-            best = max(best, _minimax(board, depth - 1, alpha, beta, False))
+            best = max(best, _minimax(board, depth - 1, alpha, beta, False, deadline))
             board.pop()
             alpha = max(alpha, best)
             if beta <= alpha:
@@ -67,7 +102,7 @@ def _minimax(board, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
         best = 999999
         for move in moves:
             board.push(move)
-            best = min(best, _minimax(board, depth - 1, alpha, beta, True))
+            best = min(best, _minimax(board, depth - 1, alpha, beta, True, deadline))
             board.pop()
             beta = min(beta, best)
             if beta <= alpha:
@@ -75,23 +110,40 @@ def _minimax(board, depth: int, alpha: int, beta: int, maximizing: bool) -> int:
         return best
 
 
-def ai_best_move(board) -> "cchess.Move":
+def ai_best_move(board, difficulty: str = DEFAULT_DIFFICULTY) -> "cchess.Move":
+    """迭代加深 + 时间预算地选一步。
+
+    从 depth=1 逐层加深，超预算就用上一层结果返回 —— 保证"深度不够有结果，
+    深度够了不超时"，避免纯固定深度在 Python 里爆掉（depth4 曾达 37s）。
+    """
+    prof = DIFFICULTIES.get(difficulty) or DIFFICULTIES[DEFAULT_DIFFICULTY]
     moves = list(board.legal_moves)
     random.shuffle(moves)
+    # 低难度：按概率直接随机走一步（模拟新手失误，否则 depth=1 也总能吃子显得太强）
+    if prof["random"] and random.random() < prof["random"]:
+        logger.debug("象棋AI[%s] 随机失误走子", prof["label"])
+        return moves[0]
+
+    deadline = time.time() + prof["budget"]
     best_move = moves[0]
-    best_score = -999999 if board.turn else 999999
-    for move in moves:
-        board.push(move)
-        score = _minimax(board, AI_DEPTH - 1, -999999, 999999, not board.turn)
-        board.pop()
-        if board.turn:
-            if score > best_score:
-                best_score = score
-                best_move = move
-        else:
-            if score < best_score:
-                best_score = score
-                best_move = move
+    reached = 0
+    maximizing_root = bool(board.turn)
+    for depth in range(1, prof["max_depth"] + 1):
+        try:
+            cur_best, cur_score = None, None
+            for move in moves:
+                board.push(move)
+                score = _minimax(board, depth - 1, -999999, 999999, not board.turn, deadline)
+                board.pop()
+                if cur_best is None or (score > cur_score if maximizing_root else score < cur_score):
+                    cur_best, cur_score = move, score
+            if cur_best is not None:
+                best_move, reached = cur_best, depth
+        except _SearchTimeout:
+            break
+        if time.time() > deadline:
+            break
+    logger.debug("象棋AI[%s] 迭代加深到 depth=%d（预算 %.2fs）", prof["label"], reached, prof["budget"])
     return best_move
 
 
@@ -161,6 +213,12 @@ def _board_to_svg(board, lastmove=None, checkers=None):
     return svg
 
 
+def build_initial_svg() -> str:
+    """初始棋盘的 SVG（命令层渲染开局棋盘用）"""
+    import cchess
+    return _board_to_svg(cchess.Board())
+
+
 async def _svg_to_png(svg_str: str, out_path: str) -> bool:
     try:
         from modules.changelog import _ensure_browser
@@ -183,21 +241,23 @@ async def _svg_to_png(svg_str: str, out_path: str) -> bool:
         return False
 
 
-def start_game(user_id: int, group_id: int) -> str:
+def start_game(user_id: int, group_id: int, difficulty: str = DEFAULT_DIFFICULTY) -> str:
     import cchess
     games = _load_games()
     key = str(group_id)
     if key in games:
-        return "当前群已经有一局象棋在进行中喵~ 用 /~xq resign 认输结束"
+        return "当前这里已经有一局象棋在进行中喵~ 用 /~xq resign 认输结束"
+    diff = resolve_difficulty(difficulty) or DEFAULT_DIFFICULTY
     board = cchess.Board()
     games[key] = {
         "player_id": user_id,
         "fen_history": [board.fen()],
         "move_history": [],
+        "difficulty": diff,
         "start_time": int(time.time()),
     }
     _save_games(games)
-    return "ok"
+    return f"ok:{DIFFICULTIES[diff]['label']}"
 
 
 def get_game(group_id: int) -> dict | None:
@@ -268,7 +328,7 @@ def make_move(user_id: int, group_id: int, notation: str) -> tuple:
         return True, "困毙！和棋喵~", None
 
     # AI
-    ai_move = ai_best_move(board)
+    ai_move = ai_best_move(board, game.get("difficulty", DEFAULT_DIFFICULTY))
     board.push(ai_move)
     game["move_history"].append(ai_move.uci())
     game["fen_history"].append(board.fen())
