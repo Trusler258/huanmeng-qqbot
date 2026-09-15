@@ -3766,142 +3766,120 @@ async def handle_command(
 
 # ------每日排名HTML渲染------
 def _build_daily_rank_html(rows, today, new_players, time_start="", time_end=""):
-    header = "击杀"  # 用于瀑布颜色
-    trs = ""
+    """起床战争日榜（模板 data/templates/daily_rank_card.html + 数据注入）"""
+    import json as _json
+    import html as _html
+    from pathlib import Path as _P
+    from datetime import datetime
+
+    def esc(x):
+        return _html.escape(str(x), quote=True)
+
+    now = datetime.now()
+    next_hour = ((now.hour // 4 + 1) * 4) % 24
+    next_time = f"{next_hour:02d}:01"
+
+    out_rows = []
     for i, item in enumerate(rows, 1):
         name, diffs, kd_val = item[0], item[1], item[2]
-        rank = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else str(i)
         kd = diffs.get("kills", 0)
         fd = diffs.get("finalKills", 0)
         wd = diffs.get("wins", 0)
         dd = diffs.get("deaths", 0)
-        k_info = f"+{kd}" if kd > 0 else "0"
-        if fd > 0:
-            k_info += f" (+{fd})"
-        w_info = f"+{wd}" if wd > 0 else "0"
-        d_info = f"+{dd}" if dd > 0 else "0"
-        kd_info = f"{kd_val:.1f}"
-        trs += f"""
-        <tr>
-            <td class='rank'>{rank}</td>
-            <td class='name'>{name}</td>
-            <td class='num'>{k_info}</td>
-            <td class='num'>{w_info}</td>
-            <td class='num death'>{d_info}</td>
-            <td class='num kd'>{kd_info}</td>
-        </tr>"""
-    footer = ''
-    if new_players:
-        names = ', '.join(new_players[:6])
-        more = f' 等{len(new_players)}人' if len(new_players) > 6 else ''
-        footer += f"<div class='footer new'>🆕 新玩家 (明天入榜): {names}{more}</div>"
-    # 下一轮采集时间
-    from datetime import datetime
-    now = datetime.now()
-    next_hour = ((now.hour // 4 + 1) * 4) % 24
-    next_time = f"{next_hour:02d}:01"
-    any_abs = any(len(item) > 3 and item[3] for item in rows) if rows else False
-    footer += f"<div class='footer hint'>⏰ 榜单每天 0/4/8/12/16/20 点更新 · 下一轮 {next_time}</div>"
-    return f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'>
-<style>
-* {{ margin:0; padding:0; box-sizing:border-box; }}
-html {{ height: auto; }}
-body {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: #e0e0e0; font-family: 'Microsoft YaHei', sans-serif; width: 520px; padding: 20px 20px 8px 20px; height: auto; }}
-.title {{ text-align: center; font-size: 20px; font-weight: bold; color: #00d4ff; margin-bottom: 2px; }}
-.date {{ text-align: center; font-size: 12px; color: #6a8; margin-bottom: 14px; }}
-table {{ width: 100%; border-collapse: collapse; }}
-th {{ padding: 8px 6px; font-size: 13px; color: #8ab; text-align: left; border-bottom: 2px solid #2a4a6a; }}
-th.num {{ text-align: center; }}
-td {{ padding: 8px 6px; font-size: 14px; border-bottom: 1px solid #1e2d50; }}
-td.rank {{ width: 36px; text-align: center; font-size: 16px; }}
-td.name {{ font-weight: 500; }}
-td.num {{ text-align: center; font-weight: bold; color: #ff6b6b; }}
-td.death {{ color: #6b8; }}
-td.kd {{ color: #f0a050; }}
-.footer {{ text-align: center; font-size: 11px; color: #888; margin-top: 10px; padding: 6px; background: rgba(255,255,255,0.05); border-radius: 4px; }}
-</style></head>
-<body>
-<div class='title'>洛花星雨 今日增量 - 起床战争</div>
-<div class='date'>{today} · {time_start} → {time_end}</div>
-<table>
-<tr><th>#</th><th>玩家</th><th class='num'>击杀(+终杀)</th><th class='num'>胜场</th><th class='num'>死亡</th><th class='num'>KD</th></tr>
-{trs}
-</table>
-{footer}
-</body></html>"""
+        out_rows.append({
+            "rank": i,
+            "name": name,
+            "cells": {
+                "name": esc(name),
+                "kills": f"+{kd}" if kd > 0 else "0",
+                "final": f"+{fd}" if fd > 0 else "",
+                "wins": f"+{wd}" if wd > 0 else "0",
+                "deaths": f"+{dd}" if dd > 0 else "0",
+                "kd": f"{kd_val:.2f}",
+            },
+        })
+
+    payload = {
+        "date": today,
+        "range": f"{time_start} → {time_end}" if (time_start or time_end) else "",
+        "when": "洛花星雨 Nexus",
+        "rows": out_rows,
+        "newPlayers": list(new_players or []),
+        "nextTime": next_time,
+        "brand": _bot_name(),
+    }
+    tpl = (_P(__file__).resolve().parent.parent / "data" / "templates" / "daily_rank_card.html").read_text(encoding="utf-8")
+    js = _json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    return tpl.replace("/*__DAILY_DATA__*/null", js, 1)
+
+
+def _bot_name() -> str:
+    """当前 bot 名称（用于卡片署名）"""
+    try:
+        from core.config import get_config
+        return get_config().bot_name or "幻梦Bot"
+    except Exception:
+        return "幻梦Bot"
 
 
 def _build_arena_daily_html(rows, today, time_start="", time_end=""):
+    """竞技场日榜（模板 data/templates/daily_arena_card.html + 数据注入）"""
+    import json as _json
+    import html as _html
+    from pathlib import Path as _P
     from datetime import datetime
+
+    def esc(x):
+        return _html.escape(str(x), quote=True)
+
     now = datetime.now()
     next_hour = ((now.hour // 4 + 1) * 4) % 24
     next_time = f"{next_hour:02d}:01"
 
-    trs = ""
-    for i, (name, diffs, kd_val, div) in enumerate(rows, 1):
-        rank = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else str(i)
+    out_rows = []
+    for i, item in enumerate(rows, 1):
+        name, diffs, kd_val, div = item[0], item[1], item[2], item[3]
+        name, div = esc(name), esc(div or "—")
         kd = diffs.get("kills", 0)
         wd = diffs.get("wins", 0)
         ld = diffs.get("losses", 0)
         dd = diffs.get("deaths", 0)
-        k_info = f"+{kd}" if kd > 0 else "0"
-        w_info = f"+{wd}" if wd > 0 else "0"
-        l_info = f"+{ld}" if ld > 0 else "0"
-        d_info = f"+{dd}" if dd > 0 else "0"
-        kd_info = f"{kd_val:.1f}"
-        trs += f"""
-        <tr>
-            <td class='rank'>{rank}</td>
-            <td class='name'>{name}</td>
-            <td class='div'>{div}</td>
-            <td class='num'>{k_info}</td>
-            <td class='num'>{w_info}</td>
-            <td class='num loss'>{l_info}</td>
-            <td class='num death'>{d_info}</td>
-            <td class='num kd'>{kd_info}</td>
-        </tr>"""
-    footer = f"<div class='footer hint'>⏰ 榜单每天 0/4/8/12/16/20 点更新 · 下一轮 {next_time}</div>"
-    return f"""<!DOCTYPE html>
-<html><head><meta charset='utf-8'>
-<style>
-* {{ margin:0; padding:0; box-sizing:border-box; }}
-html {{ height: auto; }}
-body {{ background: linear-gradient(135deg, #2d1b1b 0%, #3e1f1f 50%, #601f1f 100%); color: #e0e0e0; font-family: 'Microsoft YaHei', sans-serif; width: 560px; padding: 20px 20px 8px 20px; height: auto; }}
-.title {{ text-align: center; font-size: 20px; font-weight: bold; color: #ff6b6b; margin-bottom: 2px; }}
-.date {{ text-align: center; font-size: 12px; color: #a88; margin-bottom: 14px; }}
-table {{ width: 100%; border-collapse: collapse; }}
-th {{ padding: 8px 6px; font-size: 13px; color: #c9a; text-align: left; border-bottom: 2px solid #6a2a2a; }}
-th.num {{ text-align: center; }}
-td {{ padding: 8px 6px; font-size: 14px; border-bottom: 1px solid #3e1f1f; }}
-td.rank {{ width: 36px; text-align: center; font-size: 16px; }}
-td.name {{ font-weight: 500; }}
-td.div {{ font-size: 12px; color: #d4a; }}
-td.num {{ text-align: center; font-weight: bold; color: #ff6b6b; }}
-td.loss {{ color: #daa; }}
-td.death {{ color: #6b8; }}
-td.kd {{ color: #f0a050; }}
-.footer {{ text-align: center; font-size: 11px; color: #888; margin-top: 10px; padding: 6px; background: rgba(255,255,255,0.05); border-radius: 4px; }}
-</style></head>
-<body>
-<div class='title'>洛花星雨 今日战绩 - 竞技场</div>
-<div class='date'>{today} · {time_start} → {time_end}</div>
-<table>
-<tr><th>#</th><th>玩家</th><th>段位</th><th class='num'>击杀</th><th class='num'>胜场</th><th class='num'>败场</th><th class='num'>死亡</th><th class='num'>KD</th></tr>
-{trs}
-</table>
-{footer}
-</body></html>"""
+        out_rows.append({
+            "rank": i,
+            "name": name,
+            "cells": {
+                "name": name,
+                "div": div,
+                "kills": f"+{kd}" if kd > 0 else "0",
+                "wins": f"+{wd}" if wd > 0 else "0",
+                "losses": f"+{ld}" if ld > 0 else "0",
+                "deaths": f"+{dd}" if dd > 0 else "0",
+                "kd": f"{kd_val:.2f}",
+            },
+        })
+
+    payload = {
+        "date": today,
+        "range": f"{time_start} → {time_end}" if (time_start or time_end) else "",
+        "when": "洛花星雨 Nexus",
+        "rows": out_rows,
+        "newPlayers": [],
+        "nextTime": next_time,
+        "brand": _bot_name(),
+    }
+    tpl = (_P(__file__).resolve().parent.parent / "data" / "templates" / "daily_arena_card.html").read_text(encoding="utf-8")
+    js = _json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    return tpl.replace("/*__DAILY_DATA__*/null", js, 1)
 
 
-async def _render_html_to_png(html, prefix):
+async def _render_html_to_png(html, prefix, width=740, height=900):
     import time
     ts = time.strftime("%Y%m%d_%H%M%S")
     out = str(Path(__file__).resolve().parent.parent / "data" / "img_temp" / f"{prefix}_{ts}.png")
     from modules.changelog import _ensure_browser
     try:
         browser = await _ensure_browser()
-        page = await browser.new_page(viewport={"width": 540, "height": 600})
+        page = await browser.new_page(viewport={"width": width, "height": height})
         await page.set_content(html)
         await page.wait_for_load_state("networkidle")
         await page.screenshot(path=out, full_page=True)
