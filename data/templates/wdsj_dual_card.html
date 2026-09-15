@@ -81,13 +81,15 @@
   .avatar canvas{width:64px;height:64px;image-rendering:pixelated}
   .t-name{
     font-family:"Monocraft","PingFang SC","Microsoft YaHei",sans-serif;
-    font-size:42px;font-weight:800;letter-spacing:1px;color:#2c2622;
+    font-size:42px;font-weight:800;letter-spacing:-1px;color:#2c2622;
     text-shadow:0 1px 0 rgba(255,255,255,.8);
   }
   .t-sub{
     display:flex;gap:16px;margin-top:8px;font-size:19px;color:#8a7f76;
   }
   .t-sub b{color:#4a423c;font-weight:600;font-family:"Monocraft","PingFang SC",sans-serif}
+  /* 等宽字体里窄字符（i l j 1 …）两侧留白过多，单独收紧；MC 原版是比例字体所以不空 */
+  .nar{margin-left:-.05em;letter-spacing:-.05em}
   #t-uuid{font-size:16px;letter-spacing:0}   /* UUID 较长，字号略小保证完整显示 */
   .t-right{margin-left:auto;text-align:right}
   .t-badge{
@@ -1170,7 +1172,7 @@ function fmtTime(){
 function init(){
   const d = window.WDSJ_DATA || DATA;
   // 顶部
-  document.getElementById("t-name").textContent = d.player.name;
+  document.getElementById("t-name").innerHTML = tightenNarrow(d.player.name);
   document.getElementById("t-uid").textContent = d.player.uid;
   const u = d.player.uuid || "";
   document.getElementById("t-uuid").textContent = u;   // 完整 UUID
@@ -1199,6 +1201,13 @@ function init(){
   };
   const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
   const setHtml = (id, v) => { const e = document.getElementById(id); if (e) e.innerHTML = mcColor(escHtml(v)); };
+  // 窄字符单独收紧（等宽字体特性补偿）：split 带捕获组 -> 奇数段即窄字符
+  function tightenNarrow(s){
+    return String(s == null ? "" : s)
+      .split(/([iljI1|.,:;!])/)
+      .map((part, i) => (i % 2 === 1) ? '<span class="nar">' + part + '</span>' : escHtml(part))
+      .join("");
+  }
   function escHtml(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
   setHtml("dc-div", (d.ar && d.ar.division) || pick("division"));
   setTxt("dc-elo", pick("globalElo"));
