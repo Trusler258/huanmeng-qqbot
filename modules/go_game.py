@@ -83,7 +83,15 @@ def _load():
         return
     try:
         raw = json.loads(_GAME_FILE.read_text(encoding="utf-8"))
-        _games = {int(k): v for k, v in raw.items()}
+        # 合并语义：只补内存里没有的对局，不覆盖内存中更新的状态
+        # （web 服务与 bot 若是不同进程，靠这个也能看到对方创建的棋局）
+        for k, v in raw.items():
+            # ★ JSON 会把整数键转成字符串：captures={1:0,2:0} 存成 {"1":0,"2":0}，
+            #   直接读回会在 captures[BLACK] 处 KeyError → 这里转回 int 键
+            caps = v.get("captures")
+            if isinstance(caps, dict):
+                v["captures"] = {int(kk): vv for kk, vv in caps.items()}
+            _games.setdefault(int(k), v)
     except Exception as e:
         logger.warning("围棋读档失败: %s", e)
 

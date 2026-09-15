@@ -2042,12 +2042,25 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
             return r
         label = r.split(":", 1)[1] if ":" in r else "普通"
         try:
+            from services.game_web import game_link
+            link = game_link(chat_id, user_id, "go")
+        except Exception:
+            link = ""
+        try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-            await _send(f"围棋开局！你执黑先行，AI 难度「{label}」\n落子用 /~go D4（字母跳过 I）\n{cq}")
+            tip_line = f"\n🌐 网页下棋（推荐）：{link}" if link else ""
+            await _send(f"围棋开局！你执黑先行，AI 难度「{label}」{tip_line}\n落子用 /~go D4（字母跳过 I）\n{cq}")
             return None
         except Exception as e:
             return f"棋盘渲染失败喵: {e}"
+
+    if action in ("link", "链接", "网页"):
+        try:
+            from services.game_web import game_link
+            return f"网页下棋链接（点开即身份）：\n{game_link(chat_id, user_id, 'go')}"
+        except Exception as e:
+            return f"生成链接失败: {e}"
 
     if action in ("board", "棋盘", "查看"):
         game = G.get_game(chat_id)
