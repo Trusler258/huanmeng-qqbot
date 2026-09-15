@@ -298,7 +298,7 @@ def _fmt_rate(rate: float) -> str:
 
 
 async def cmd_cache(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """查看缓存命中率 /~cache [天数]"""
+    """查看 Token 缓存命中率趋势（默认近 7 天）"""
     try:
         days = int(args[0]) if args else 7
         days = max(1, min(days, 30))
