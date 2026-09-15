@@ -917,6 +917,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         if _fp:
                             _cq = make_cq(_fp)
                             _inline_face_count += 1
+                            # ★ v2.3.21: 解析到表情文件即打日志（文件名可从 CQ:image 提取）
+                            _fname = _fp.replace("\\", "/").split("/")[-1]
+                            logger.info("表情匹配: 关键词=%s → %s", _kw, _fname)
                             break
                         logger.debug("表情库未匹配关键词: %s", _kw)
                 except Exception:
@@ -936,6 +939,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # 挂在最后一句上（等价于历史行为），避免与内联表情重复发图。
     if face_cq and _inline_face_count == 0:
         _faces_per_sentence[-1] = face_cq
+        # ★ v2.3.21: JSON face 字段单表情路径也打日志（文件在 _parse_reply 里已生成）
+        _m = re.search(r'file=([^,\]]+)', face_cq or "")
+        _fname = (_m.group(1).split("/")[-1] if _m else "") or face_cq[:40]
+        logger.info("表情匹配: JSON face 字段 → %s", _fname)
         logger.debug("使用 JSON face 字段（末句配图）")
     if _inline_face_count:
         logger.info("逐句配图: 正文内联 %d 张 / 共 %d 句", _inline_face_count, len(sentences))

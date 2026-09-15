@@ -1104,7 +1104,18 @@ def _salvage_plain_reply(raw: str, min_chars: int = 40) -> str | None:
         return None
     txt = raw.strip()
     # 明显是代码块/工具参数等非自然语言 → 不救
-    if txt.startswith(("{", "[", "```")) or "/~" in txt:
+    # ★ v2.3.21: 放宽——元素周期表这类"以 [He] 开头的表格文本"会被旧逻辑误判成
+    #   "以 [ 开头的列表"直接丢弃（真实事故现场输出就是 [He]2s¹ 6.94 开头的长列表）。
+    #   仅当整段是纯 markdown 代码块围栏(/```/ 或整体被 ``` 包裹)才判定为代码。
+    if txt.startswith(("```", "{", "[")) and not re.match(r'^\[[A-Za-z0-9]{1,3}\][\s:：]', txt):
+        # 但是 "{" / "[" 开头且确实是 JSON 列表片段 → _parse_reply 的上游已试过 json，
+        #   到这里的是纯文本兜底，直接丢弃（无法安全转正文）
+        if txt.startswith("{") or ("```" not in txt and txt.rstrip().endswith("]")):
+            return None
+        # ``` 开头的代码块围栏
+        if txt.startswith("```"):
+            return None
+    if "/~" in txt:
         return None
 
     sentences = _clean_sentences(txt)
@@ -1117,6 +1128,52 @@ def _salvage_plain_reply(raw: str, min_chars: int = 40) -> str | None:
         return None
     sentences = [_strip_tail_period(s) for s in sentences]
     payload = {"replies": sentences, "fav": 0}
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return None
+
+
+def _salvage_fake_json(raw: str, min_chars: int = 10) -> str | None:
+    """把模型偶发输出的「假 JSON」救成标准 replies JSON。
+
+    v2.3.21 真实事故（2026-09-15 23:28 元素周期表事件）：
+      工具链末轮 json_mode 强制下，模型输出偶发形如
+        {"type": "json_object", "content": "…实际想说的完整长文…"}
+      或 "{\"replies\":[...]}" 外再包一层 response_format 元结构。
+      这类输出能被 json.loads 解析、但**不是约定的 replies 帧**，
+      原来直接当"JSON 解析失败"丢掉 → 整条回复变成失败提示。
+
+    判定：parsed 是 dict 且含可作正文的字段（content / message / text / reply），
+    且不含合法的 replies 数组 → 用正文字段构造标准帧返回。
+    """
+    if not raw or not raw.strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    # 已是合法 replies 帧（交给正常解析）
+    if isinstance(data.get("replies"), list) and data["replies"]:
+        return None
+    # 尝试从元结构里挖正文
+    body = None
+    for key in ("content", "message", "text", "reply", "output"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            body = v
+            break
+        if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+            body = "\n".join(x for x in v if x.strip())
+            break
+    if not body:
+        return None
+    total = sum(len(s) for s in _clean_sentences(body))
+    if total < min_chars:
+        return None
+    payload = {"replies": _clean_sentences(body), "fav": 0}
     try:
         return json.dumps(payload, ensure_ascii=False)
     except Exception:
@@ -1623,6 +1680,22 @@ def _parse_reply(
                         fm = re.search(r'"fav"\s*:\s*(-?\d+)', raw)
                         fv = int(fm.group(1)) if fm else 0
                         return _polish_replies(parts), fv, [], "", "", None, "", None, None, "user", {}, None
+
+            # ── v2.3.21: 最后兜底 —— 模型偶发输出"假 JSON"（真实事故现场复现：
+            #    【{"type":"json_object","content":"...长列表/表格..."}】或
+            #    【{"replies":[1,2,3]}】这类元结构/错位结构，或纯文本列表）。
+            #    此时回复内容其实完整（用户能看），直接按内容救回，别再让整条回复
+            #    变成"LLM 未返回有效句子"的失败提示。
+            #    判断：解析出的顶层 dict 不含 replies 数组 / 内容字段可作正文。
+            _json_obj_fallback = _salvage_fake_json(raw)
+            if _json_obj_fallback:
+                logger.warning("JSON结构异常，按内容字段救回 (%d 字)", len(_json_obj_fallback))
+                return _parse_reply(_json_obj_fallback, speaker_name, quiet=True)
+            # 纯文本整体救回（_salvage_plain_reply 处理不了长列表/表格时要放宽）
+            _plain_fallback = _salvage_plain_reply(raw, min_chars=10)
+            if _plain_fallback:
+                logger.warning("JSON解析失败，纯文本内容完整已救回 (%d 字)", len(raw))
+                return _parse_reply(_plain_fallback, speaker_name, quiet=True)
         except Exception:
             pass
         return [], 0, [], "", "", None, "", None, None, "user", {}, None

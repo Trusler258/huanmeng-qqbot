@@ -340,6 +340,9 @@ def build_daily_rankings(label_date=None, cross_day=False):
         rows.append((name, diffs, kd, is_zero))
     rows.sort(key=lambda x: -x[1].get("kills", 0))
     # 如果并非全员零增量，则过滤零增量玩家
+    # ★ v2.3.21: 全员零增量时【不要】把 rows 滤空——凌晨刚采完第一轮(00:01)时
+    #   所有玩家增量都是 0，旧逻辑会滤到只剩 1 人，看起来像"数据丢了"。
+    #   此时保留全部并显示 0 增量，至少把"今日已采集 N 人"展示出来。
     if rows and not all(r[-1] for r in rows):
         rows = [r for r in rows if not r[-1]]
     # 收集所有时间戳 → 计算时间段
@@ -404,13 +407,16 @@ def build_arena_daily_rankings(label_date=None, cross_day=False):
             pv = int(prev.get(k, 0))
             cv = int(curr.get(k, 0))
             diffs[k] = cv - pv
-        if all(v == 0 for v in diffs.values()):
-            continue
         kills = diffs.get("kills", 0)
         deaths = max(diffs.get("deaths", 1), 1)
         kd = kills / deaths
         rows.append((name, diffs, kd, curr.get("division", "?").replace("§c","").replace("§","")))
     rows.sort(key=lambda x: -x[1].get("kills", 0))
+    # ★ v2.3.21: 竞技场版同样避免"全零被滤光"——不再在循环里 continue 滤零，
+    #   改为先全部收集，再按"是否全员零"决定滤不滤（凌晨刚采完 00:01 一轮时
+    #   全员零增量，旧逻辑会把榜滤空/只剩 1 人，看起来像数据丢了）。
+    if any(int(r[1].get("kills", 0)) != 0 or int(r[1].get("wins", 0)) != 0 for r in rows):
+        rows = [r for r in rows if not (int(r[1].get("kills", 0)) == 0 and int(r[1].get("wins", 0)) == 0)]
 
     all_times = []
     cross_times = []
