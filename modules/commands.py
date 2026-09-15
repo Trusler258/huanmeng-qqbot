@@ -2686,7 +2686,7 @@ def _build_wdsj_summary(data: dict) -> str:
 
 async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     """
-    洛花星雨战绩查询 /~wdsj <模板> <玩家名> [img]
+    洛花星雨战绩查询 /~wdsj <模板> <玩家名> — v2.3.20 起默认发官方图片，text 结尾要文字版
     别名: bw=起床战争 kbw=击退战场 sw=空岛战争 kp=职业战争 ...
     """
     from services import wdsj_api as api
@@ -2714,11 +2714,12 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             logger.warning("wdsj help 卡片渲染失败: %s", e)
             return "\n".join([
                 "洛花星雨战绩查询 /~wdsj",
-                "  <模式> <玩家> [img]     战绩",
-                "  lb <榜> [周期] [img]   排行榜",
-                "  me / <玩家名> me       双模式横屏卡(起床+竞技场)",
-                "  boards                  简写速查",
-                "  list                    模式别名",
+                "  <模式> <玩家>            战绩(默认发图片)",
+                "  <模式> <玩家> text       战绩(文字版)",
+                "  lb <榜> [周期] [img]     排行榜",
+                "  me / <玩家名> me         双模式横屏卡(起床+竞技场)",
+                "  boards                   简写速查",
+                "  list                     模式别名",
                 "简写: bw/kbw/sw/kp 周期: all/month/week/day"
             ])
 
@@ -2922,20 +2923,26 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if player:
             args = [args[0], player] + (args[1:] if len(args) > 1 else [])
         if len(args) < 2:
-            return "用法: /~wdsj <模板> <玩家名> [img]\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+            return "用法: /~wdsj <模式> <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
 
-    # 提取 img 标记（在绑定补齐之后）
-    want_img = args[-1].lower() in ("img", "pic", "card", "图片")
-    player_parts = args[1:-1] if want_img else args[1:]
+    # 提取输出模式标记（在绑定补齐之后）
+    # v2.3.20: 默认发官方图片卡片（去文字刷屏）；img/pic/card/图片 兼容旧写法（等同默认）；
+    # text/文字/notext 显式要文字版
+    _last = args[-1].lower()
+    if _last in ("img", "pic", "card", "图片", "text", "文字", "notext", "文本"):
+        want_img = _last not in ("text", "文字", "notext", "文本")
+        player_parts = args[1:-1]
+    else:
+        want_img = True
+        player_parts = args[1:]
     # 如果只有模板+img，没有玩家名，尝试绑定
     if not player_parts or all(p in ("img", "pic", "card", "图片") for p in player_parts):
         player = _get_bound_player(user_id)
         if player:
             player_parts = [player]
-            want_img = args[-1].lower() in ("img", "pic", "card", "图片")
     player = " ".join(player_parts)
     if not player:
-        return "用法: /~wdsj <模板> <玩家名> [img]\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+        return "用法: /~wdsj <模式> <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
 
     template_id = api.resolve_template(action)
     if not template_id:
@@ -2944,11 +2951,13 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     display = api.TEMPLATES.get(template_id, template_id)
     logger.info("查询wdsj战绩: player=%s template=%s img=%s", player, template_id, want_img)
 
-    # 先发提示
     from utils.format_lang import format_lang
-    tip = format_lang("wdsj.player_searching", player=player, template=display)
-    await (send_group_msg(tip, group_id) if is_group 
-           else send_private_msg(tip, user_id))
+
+    # v2.3.20: 图片模式不再发"正在查询"提示（图来得快，提示反而刷屏）；文字模式保留
+    if not want_img:
+        tip = format_lang("wdsj.player_searching", player=player, template=display)
+        await (send_group_msg(tip, group_id) if is_group
+               else send_private_msg(tip, user_id))
 
     data = await api.query_player_stats(player, template_id)
     if not data:
@@ -2958,7 +2967,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     if want_img:
         snapshot = data.get("snapshotKey", "")
         if not snapshot:
-            return "官方图片尚未生成，试试不带 img 看文字数据"
+            return "官方图片尚未生成喵~ 用 /~wdsj {} {} text 看文字数据".format(action, player)
         image_url = f"/api/v1/images/{snapshot}"
 
         # 下载到项目 img_temp 目录（NapCat 可访问）
@@ -2978,7 +2987,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             wdsj_store(snapshot, player, template_id, summary)
             return None
         else:
-            return format_lang("wdsj.img_download_fail")
+            return format_lang("wdsj.img_download_fail") + " 用 text 看文字数据喵~"
 
     # 文字模式：完整数据
     pi = data.get("player", {})
