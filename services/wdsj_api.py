@@ -214,6 +214,25 @@ async def download_player_head(name: str, save_path: str, timeout: float = 15.0)
         return False
 
 
+async def fetch_player_head_data_uri(name: str, timeout: float = 5.0) -> str:
+    """下载玩家皮肤头像并转成 data URI；失败返回空串（前端会回退默认头）。
+
+    目的：卡片渲染时不再依赖外部网络（原方案由浏览器加载 wdsj 头像，
+    networkidle 会一直等，网络抖动时渲染从 3s 涨到 9s）。
+    """
+    import base64 as _b64
+    url = _api_url(f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png")
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=HEADERS)
+            if resp.status_code == 200 and resp.content:
+                return "data:image/png;base64," + _b64.b64encode(resp.content).decode()
+            logger.info("头像下载异常状态: %s %s", resp.status_code, url)
+    except Exception as e:
+        logger.warning("头像下载失败: %s: %r", type(e).__name__, e)
+    return ""
+
+
 async def query_leaderboards() -> Optional[list]:
     url = f"{BASE_URL}/api/v1/leaderboards"
     try:
@@ -288,7 +307,8 @@ def _strip_mc_color(s) -> str:
     return _MC_COLOR_RE.sub("", str(s))
 
 
-def build_dual_card_html(bw_data: Optional[dict], ar_data: Optional[dict]) -> str:
+def build_dual_card_html(bw_data: Optional[dict], ar_data: Optional[dict],
+                         head_data_uri: str = "") -> str:
     """双模式横屏战绩卡（起床战争 + 竞技场，一图双段）
 
     从 API 返回的 labels/values 全量提取字段，注入 data/templates/wdsj_dual_card.html。
@@ -331,6 +351,7 @@ def build_dual_card_html(bw_data: Optional[dict], ar_data: Optional[dict]) -> st
             "uid": pi.get("uid", ""),
             "name": pi.get("name", ""),
             "uuid": pi.get("uuid", ""),
+            "head": head_data_uri or "",     # 已内联的皮肤头像（空则由前端回退）
         },
         "registerTime": reg,
         "bw": {
