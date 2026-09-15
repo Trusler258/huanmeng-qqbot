@@ -286,17 +286,29 @@ async def build_group_rank(group_id, mode_key="bw_kills"):
 
 
 # ------每日排名数据------
-def build_daily_rankings(label_date=None, cross_day=False):
+# v2.3.22: 统计区间信息返回给调用方，让卡片副标题显示真实日期范围
+_DAILY_RET = ("rows", "label_date", "range_start", "range_end", "new_players", "fallback")
+
+def build_daily_rankings(label_date=None, cross_day=False, auto_fallback=True):
     """
+    返回 (rows, label_date, time_start, time_end, new_players, fallback)
+      fallback=False: 正常模式（cross_day 时 label_date 为统计起始日）
+      fallback=True:  今日(00:01一轮)全员零增量 → 自动回退为 昨日0:01→今日0:01 完整跨天榜
+                     （label_date 已替换为昨日日期，time_start/time_end 显示真实区间）
     cross_day=False: 当日最早 → 当日最新（手动查询）
     cross_day=True:  当日最早 → 次日最早（凌晨自动发送）
     """
     history = _load_history()
+    today_str = date.today().isoformat()
     if label_date is None:
-        label_date = date.today().isoformat()
+        label_date = today_str
     from modules.commands import _load_wdsj_bindings
     bindings = _load_wdsj_bindings()
 
+    fallback = False
+    # ★ v2.3.22: 手动查询"今日"且尚未跨天时采用跨天口径（今日0:01→今日0:01 不合理）
+    #   —— 但用户手动查今天仍保留当日0:01→当前最新（否则0-4点查今天会被误判）
+    #   判断"今日全员零增量"在下方 rows 构建后统一进行
     # 计算次日日期（用于 cross_day 模式）
     tomorrow = (datetime.strptime(label_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d") if cross_day else None
 
@@ -339,6 +351,17 @@ def build_daily_rankings(label_date=None, cross_day=False):
         kd = today_kills / today_deaths
         rows.append((name, diffs, kd, is_zero))
     rows.sort(key=lambda x: -x[1].get("kills", 0))
+
+    # ★ v2.3.22: 今日全员零增量回退
+    #   场景: 0点~4点之间手动查 /wdsj daily（或今日刚采集完一轮00:01），
+    #         此时"今日"只有一轮数据、增量必然全 0；直接展示"今日 00:01→今天"毫无意义。
+    #   处理: 自动把统计区间改为 昨日 0:01 → 今日 0:01 的完整跨天数据。
+    if auto_fallback and label_date == today_str and not cross_day and rows and all(r[-1] for r in rows):
+        logger.info("今日全员零增量(可能仅采集一轮)，自动回退为昨日跨天榜")
+        yesterday = (datetime.strptime(today_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        _ret = build_daily_rankings(label_date=yesterday, cross_day=True, auto_fallback=False)
+        return _ret[:5] + (True,)  # 保持 6 元组: (rows, label, start, end, new_players, fallback)
+
     # 如果并非全员零增量，则过滤零增量玩家
     # ★ v2.3.21: 全员零增量时【不要】把 rows 滤空——凌晨刚采完第一轮(00:01)时
     #   所有玩家增量都是 0，旧逻辑会滤到只剩 1 人，看起来像"数据丢了"。
@@ -365,22 +388,27 @@ def build_daily_rankings(label_date=None, cross_day=False):
         time_end = f"{end_ts[5:10]} {end_ts[11:16]}"
     else:
         time_end = max(all_times)[11:16] if all_times else "??:??"
-    return rows, label_date, new_players, time_start, time_end
+    return rows, label_date, time_start, time_end, new_players, fallback
 
 
 # ── 竞技场日报 ──
 
-def build_arena_daily_rankings(label_date=None, cross_day=False):
+def build_arena_daily_rankings(label_date=None, cross_day=False, auto_fallback=True):
     """竞技场日榜: 击杀 / 胜场 / 败场 / 死亡 / KD
+    返回 (rows, label_date, time_start, time_end, fallback)
+      fallback=False: 正常模式（cross_day 时 label_date 为统计起始日）
+      fallback=True:  今日(00:01一轮)全员零增量 → 自动回退为 昨日0:01→今日0:01 完整跨天榜
     cross_day=False: 当日最早 -> 当日最新（手动查询）
     cross_day=True:  当日最早 -> 次日最早（凌晨自动发送，与起床对齐）
     """
     history = _load_history()
+    today_str = date.today().isoformat()
     if label_date is None:
-        label_date = date.today().isoformat()
+        label_date = today_str
     from modules.commands import _load_wdsj_bindings
     bindings = _load_wdsj_bindings()
 
+    fallback = False
     tomorrow = (datetime.strptime(label_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d") if cross_day else None
 
     rows = []
@@ -412,6 +440,14 @@ def build_arena_daily_rankings(label_date=None, cross_day=False):
         kd = kills / deaths
         rows.append((name, diffs, kd, curr.get("division", "?").replace("§c","").replace("§","")))
     rows.sort(key=lambda x: -x[1].get("kills", 0))
+
+    # ★ v2.3.22: 今日全员零增量回退（同起床版，见 build_daily_rankings 注释）
+    if auto_fallback and label_date == today_str and not cross_day and rows and all(int(r[1].get("kills", 0)) == 0 and int(r[1].get("wins", 0)) == 0 for r in rows):
+        logger.info("竞技场今日全员零增量(可能仅采集一轮)，自动回退为昨日跨天榜")
+        yesterday = (datetime.strptime(today_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        _ret = build_arena_daily_rankings(label_date=yesterday, cross_day=True, auto_fallback=False)
+        return _ret[:4] + (True,)  # 保持 5 元组: (rows, label, start, end, fallback)
+
     # ★ v2.3.21: 竞技场版同样避免"全零被滤光"——不再在循环里 continue 滤零，
     #   改为先全部收集，再按"是否全员零"决定滤不滤（凌晨刚采完 00:01 一轮时
     #   全员零增量，旧逻辑会把榜滤空/只剩 1 人，看起来像数据丢了）。
@@ -433,4 +469,4 @@ def build_arena_daily_rankings(label_date=None, cross_day=False):
         time_end = f"{end_ts[5:10]} {end_ts[11:16]}"
     else:
         time_end = max(all_times)[11:16] if all_times else "??:??"
-    return rows, label_date, time_start, time_end
+    return rows, label_date, time_start, time_end, fallback

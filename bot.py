@@ -359,10 +359,10 @@ class HuanmengBot:
                     if now_dt.hour == 0:
                         from datetime import timedelta
                         yesterday = now_dt - timedelta(days=1)
-                        rows, today, new_players, t_start, t_end = build_daily_rankings(
+                        rows, today, t_start, t_end, new_players, _fb = build_daily_rankings(
                             label_date=yesterday.strftime("%Y-%m-%d"), cross_day=True)
                     else:
-                        rows, today, new_players, t_start, t_end = build_daily_rankings()
+                        rows, today, t_start, t_end, new_players, _fb = build_daily_rankings()
 
                     if rows:
                         html = _build_daily_rank_html(rows, today, new_players, t_start, t_end)
