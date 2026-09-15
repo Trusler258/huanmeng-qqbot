@@ -366,18 +366,13 @@ class HuanmengBot:
 
                     if rows:
                         html = _build_daily_rank_html(rows, today, new_players, t_start, t_end)
-                        import time as _time
-                        ts = _time.strftime("%Y%m%d_%H%M%S")
-                        from pathlib import Path as _Path
-                        _tmp = _Path("data") / "img_temp"
-                        _tmp.mkdir(parents=True, exist_ok=True)
-                        out_path = str(_tmp / f"wdsj_daily_{ts}.png")
-                        browser = await _ensure_browser()
-                        page = await browser.new_page(viewport={"width": 540, "height": 600})
-                        await page.set_content(html, timeout=10000)
-                        await page.wait_for_timeout(500)
-                        await page.screenshot(path=out_path, full_page=True)
-                        await page.close()
+                        # 统一走 commands._render_html_to_png：
+                        # body 元素截图（贴合卡片宽，无留白）+ JPEG + 740 视口
+                        # 旧实现硬编码 540 视口，新模板宽 620 会被裁掉右侧
+                        from modules.commands import _render_html_to_png
+                        out_path = await _render_html_to_png(html, "wdsj_daily")
+                        if not out_path:
+                            raise RuntimeError("日榜卡片渲染失败")
                         cq = f"[CQ:image,file=file:///{out_path}]"
                         cfg = get_config()
                         # ★ 发到所有群（优先用配置 wdsj.target_groups，否则全群）
