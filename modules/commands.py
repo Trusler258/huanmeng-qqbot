@@ -2129,6 +2129,7 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
     from modules import go_game as G
     from services.sender import send_group_msg, send_private_msg
 
+    cfg = get_config()
     chat_id = group_id if is_group else user_id
 
     async def _send(msg: str):
@@ -2258,6 +2259,8 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
         resolve_difficulty, DEFAULT_DIFFICULTY, DIFFICULTIES,
     )
     from services.sender import send_group_msg, send_private_msg
+
+    cfg = get_config()
 
     # 私聊也能玩：对局按 chat_id 隔离（私聊时用 user_id）
     chat_id = group_id if is_group else user_id

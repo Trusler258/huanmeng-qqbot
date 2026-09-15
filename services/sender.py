@@ -458,10 +458,21 @@ async def _send_and_record(content: str, chat_id: int, is_group: bool,
                 record_message(chat_id, cfg.bot_qq, content, cfg.bot_name)
             except Exception:
                 pass
+        # v2.3.17: fallback 路径私聊也补 msglog（此前只有群聊有记录）
+        _log_bot_sent(chat_id, content)
         return 0
 
     # ★ 录制到 msglog（撤回支持）和 stats（统计）
-    if msg_id and is_group and chat_id in cfg.group_list:
+    # v2.3.17: 私聊也录 msglog——此前私聊 LLM 管线（send_sentences → 本函数）
+    # 完全不写 msglog，而命令层 send_private_msg 有 _log_bot_sent，两条路径
+    # 录制不一致，导致"查 bot 发过什么表情"在私聊场景查不到（实测 16:22 轮
+    # 发了 6 句+1 图 msglog 零记录）。撤回模块本身只处理群聊，私聊录了也不会误匹配。
+    if msg_id:
+        _log_bot_sent(chat_id, content, msg_id=msg_id)
+    else:
+        _log_bot_sent(chat_id, content)
+
+    if is_group and chat_id in cfg.group_list:
         try:
             from modules.recall import record_incoming_message
             record_incoming_message(chat_id, cfg.bot_qq, msg_id, "bot", content)
