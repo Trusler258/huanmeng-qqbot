@@ -26,6 +26,17 @@ def _bot_name() -> str:
         return "幻梦"
 
 
+def _player_name(qq: int, group_id: int) -> str:
+    """玩家显示名（qq=0 表示 AI → 用 bot 名）"""
+    if not qq:
+        return _bot_name()
+    try:
+        from core.config import get_config
+        return get_config().get_display_name(str(qq), group_id=group_id)
+    except Exception:
+        return str(qq)
+
+
 _ROOT = Path(__file__).resolve().parent.parent
 _GAME_FILE = _ROOT / "data" / "xq_games.json"
 AI_DEPTH = 2   # 兼容旧引用（= normal 档）
@@ -101,8 +112,10 @@ def _minimax(board, depth: int, alpha: int, beta: int, maximizing: bool,
         best = -999999
         for move in moves:
             board.push(move)
-            best = max(best, _minimax(board, depth - 1, alpha, beta, False, deadline))
-            board.pop()
+            try:
+                best = max(best, _minimax(board, depth - 1, alpha, beta, False, deadline))
+            finally:
+                board.pop()     # ★ 超时中断也必须回滚，否则局面被污染
             alpha = max(alpha, best)
             if beta <= alpha:
                 break
@@ -111,8 +124,10 @@ def _minimax(board, depth: int, alpha: int, beta: int, maximizing: bool,
         best = 999999
         for move in moves:
             board.push(move)
-            best = min(best, _minimax(board, depth - 1, alpha, beta, True, deadline))
-            board.pop()
+            try:
+                best = min(best, _minimax(board, depth - 1, alpha, beta, True, deadline))
+            finally:
+                board.pop()     # ★ 超时中断也必须回滚，否则局面被污染
             beta = min(beta, best)
             if beta <= alpha:
                 break
@@ -142,8 +157,11 @@ def ai_best_move(board, difficulty: str = DEFAULT_DIFFICULTY) -> "cchess.Move":
             cur_best, cur_score = None, None
             for move in moves:
                 board.push(move)
-                score = _minimax(board, depth - 1, -999999, 999999, not board.turn, deadline)
-                board.pop()
+                try:
+                    score = _minimax(board, depth - 1, -999999, 999999,
+                                     not board.turn, deadline)
+                finally:
+                    board.pop()     # ★ 超时中断也必须回滚，否则局面被污染
                 if cur_best is None or (score > cur_score if maximizing_root else score < cur_score):
                     cur_best, cur_score = move, score
             if cur_best is not None:
@@ -188,6 +206,9 @@ def _record_xq_context(group_id: int, game: dict, result: str) -> None:
     """把象棋结果写进会话上下文（同五子棋——否则 LLM 不知道刚下过棋）"""
     try:
         from core.context_manager import get_context_mgr
+        pname = _player_name(game.get("player_id"), group_id)
+        oname = _player_name(game.get("opponent_id"), group_id)
+        mode = "对战" if is_pvp(game) else "人机"
         pid = game.get("player_id")
         try:
             from core.config import get_config
@@ -197,7 +218,7 @@ def _record_xq_context(group_id: int, game: dict, result: str) -> None:
         moves = len(game.get("move_history", []))
         get_context_mgr().append_to_context(
             group_id,
-            f"[棋局] 中国象棋对局结束：{pname}(红) vs {_bot_name()}(黑)，{result}，共 {moves} 回合",
+            f"[棋局] 中国象棋{mode}结束：{pname}(红) vs {oname}(黑)，{result}，共 {moves} 回合",
         )
         logger.info("象棋结果已写入上下文: group=%d %s", group_id, result)
     except Exception as e:
@@ -250,7 +271,9 @@ async def _svg_to_png(svg_str: str, out_path: str) -> bool:
         return False
 
 
-def start_game(user_id: int, group_id: int, difficulty: str = DEFAULT_DIFFICULTY) -> str:
+def start_game(user_id: int, group_id: int, difficulty: str = DEFAULT_DIFFICULTY,
+               opponent_id: int = 0) -> str:
+    """开局。opponent_id=0 → 人机；否则群内双人对战（发起人执红先行）"""
     import cchess
     games = _load_games()
     key = str(group_id)
@@ -261,6 +284,7 @@ def start_game(user_id: int, group_id: int, difficulty: str = DEFAULT_DIFFICULTY
     board = cchess.Board()
     games[key] = {
         "player_id": user_id,
+        "opponent_id": int(opponent_id or 0),   # 0 = AI；非 0 = 群内对手的 QQ
         "fen_history": [board.fen()],
         "move_history": [],
         "difficulty": diff,
@@ -268,6 +292,18 @@ def start_game(user_id: int, group_id: int, difficulty: str = DEFAULT_DIFFICULTY
     }
     _save_games(games)
     return f"ok:{DIFFICULTIES[diff]['label']}"
+
+
+def web_reload() -> None:
+    """从磁盘覆盖读入棋局（不动文件）。供棋局 Web 跨进程看到最新落子。
+
+    _load_games() 每次直接读文件（无内存缓存），本函数只做一次触碰读，
+    确保后续 get_game() 从磁盘拿到最新状态。
+    """
+    try:
+        _load_games()
+    except Exception as e:
+        logger.warning("象棋覆盖读失败: %s", e)
 
 
 def get_game(group_id: int) -> dict | None:
@@ -355,10 +391,14 @@ def web_state(group_id: int, user_id: int) -> dict | None:
         in_check = board.is_check()
     except Exception:
         in_check = False
+    try:
+        side_to_move = "red" if board.turn else "black"
+    except Exception:
+        side_to_move = turn_of(game)
 
     return {
         "grid": grid,
-        "turn": "red" if board.turn else "black",
+        "turn": side_to_move,
         "in_check": in_check,
         "finished": finished,
         "result": game.get("result") or "",
@@ -366,9 +406,14 @@ def web_state(group_id: int, user_id: int) -> dict | None:
         "last_move": moves[-1] if moves else "",
         "difficulty": DIFFICULTIES.get(game.get("difficulty", DEFAULT_DIFFICULTY), {}).get("label", "普通"),
         "elapsed": max(0, int(time.time() - int(game.get("start_time") or time.time()))),
-        "red": {"name": "你", "alive": alive_red, "captures": PIECES_PER_SIDE - alive_black,
+        "pvp": is_pvp(game),
+        "red": {"id": game.get("player_id"),
+                "name": _player_name(game.get("player_id"), group_id) if is_pvp(game) else "你",
+                "alive": alive_red, "captures": PIECES_PER_SIDE - alive_black,
                 "moves": red_moves},
-        "black": {"name": _bot_name(), "alive": alive_black, "captures": PIECES_PER_SIDE - alive_red,
+        "black": {"id": game.get("opponent_id") or 0,
+                  "name": _player_name(game.get("opponent_id"), group_id),
+                  "alive": alive_black, "captures": PIECES_PER_SIDE - alive_red,
                   "moves": black_moves},
         "moves": _move_labels(moves)[-60:],
     }
@@ -384,11 +429,30 @@ def web_resign(user_id: int, group_id: int) -> tuple:
     game = get_game(group_id)
     if not game:
         return False, "当前没有对局喵~"
-    if user_id != game.get("player_id"):
-        return False, "这不是你的对局喵~"
     if game.get("finished"):
         return False, "这局已经结束了喵~"
     return True, resign_game(user_id, group_id)
+
+
+def _side_of(game: dict, user_id: int) -> str:
+    """用户在棋局里执哪一方：'red' / 'black' / ''（不是参与者）"""
+    if not user_id:
+        return ""
+    if user_id == game.get("player_id"):
+        return "red"
+    if user_id == game.get("opponent_id"):
+        return "black"
+    return ""
+
+
+def is_pvp(game: dict) -> bool:
+    """是否群内双人对战（对手不是 AI）"""
+    return bool(game.get("opponent_id"))
+
+
+def turn_of(game: dict) -> str:
+    """轮到哪一方（红先黑后，按已走步数奇偶判定）"""
+    return "red" if len(game.get("move_history") or []) % 2 == 0 else "black"
 
 
 def _build_board_from_moves(moves: list) -> "cchess.Board":
@@ -431,19 +495,26 @@ def _finish_game(group_id: int, game: dict, result: str) -> None:
 
 
 def make_move(user_id: int, group_id: int, notation: str, render: bool = True) -> tuple:
-    """玩家走一步 + AI 应一手。
+    """走一步棋。
 
-    render=False 时跳过棋盘截图（棋局 Web 用，页面自己画棋盘，不需要 PNG）
+    - 人机模式（opponent_id == 0）：玩家走完立刻让 AI 应一手
+    - 人人模式：只走玩家这一手，等对方走
+    render=False 时跳过棋盘截图（棋局 Web 用 —— 页面自己画棋盘，不做无谓截图）
     """
     game = get_game(group_id)
     if not game:
         return False, "当前群没有象棋对局喵~ 用 /~xq start 开始", None
-    if user_id != game["player_id"]:
+    if game.get("finished"):
+        return False, "这局已经结束了喵~", None
+
+    side = _side_of(game, user_id)
+    if not side:
         return False, "这不是你的对局喵~", None
+    if side != turn_of(game):
+        return False, "还没轮到你走棋喵~", None
 
     import cchess
     board = _build_board_from_moves(game["move_history"])
-
     if board.is_game_over():
         if not game.get("finished"):
             _finish_game(group_id, game, "对局已结束")
@@ -458,21 +529,35 @@ def make_move(user_id: int, group_id: int, notation: str, render: bool = True) -
     game["move_history"].append(uci)
     game["fen_history"].append(board.fen())
 
-    lastmove = board.peek()
+    pvp = is_pvp(game)
+    me = _player_name(user_id, group_id) if pvp else "你"
     out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png") if render else None
 
     # 将死/困毙
     if board.is_checkmate():
-        _finish_game(group_id, game, "玩家将死对方，玩家获胜")
+        _finish_game(group_id, game, f"{me} 将死对方，{me} 获胜")
         if render:
-            svg = _board_to_svg(board, lastmove=lastmove, checkers=board.checkers())
+            svg = _board_to_svg(board, lastmove=board.peek(), checkers=board.checkers())
             _start_render(svg, out)
-        return True, "将死！你赢了喵~", out
+        return True, f"将死！{me}赢了喵~", out
     if board.is_stalemate():
         _finish_game(group_id, game, "困毙，和棋")
         return True, "困毙！和棋喵~", None
 
-    # AI
+    # 人人对战：只走这一手，等对方
+    if pvp:
+        _save_game_after_move(group_id, game)
+        msg = f"{me} 走 {uci}" + (" 将军！" if board.is_check() else "")
+        if not render:
+            return True, msg, None
+        try:
+            svg = _board_to_svg(board, lastmove=board.peek(), checkers=board.checkers())
+            _start_render(svg, out)
+            return True, msg, out
+        except Exception:
+            return True, msg, None
+
+    # 人机：AI 应一手
     ai_move = ai_best_move(board, game.get("difficulty", DEFAULT_DIFFICULTY))
     board.push(ai_move)
     game["move_history"].append(ai_move.uci())
@@ -504,13 +589,19 @@ def resign_game(user_id: int, group_id: int) -> str:
     game = get_game(group_id)
     if not game:
         return "当前群没有象棋对局喵~"
-    if user_id != game["player_id"]:
+    side = _side_of(game, user_id)
+    if not side:
         return "这不是你的对局喵~"
     if game.get("finished"):
         return "这局已经结束了喵~"
-    _finish_game(group_id, game, f"玩家认输，{_bot_name()} 获胜")
-    _record_xq_context(group_id, game, f"玩家认输，{_bot_name()} 获胜")
-    return f"你认输了喵~ {_bot_name()} 获胜！"
+    if is_pvp(game):
+        other = game["opponent_id"] if side == "red" else game["player_id"]
+        result = f"{_player_name(user_id, group_id)} 认输，{_player_name(other, group_id)} 获胜"
+    else:
+        result = f"玩家认输，{_bot_name()} 获胜"
+    _finish_game(group_id, game, result)
+    _record_xq_context(group_id, game, result)
+    return f"你认输了喵~ {result.rsplit('，', 1)[-1]}！"
 
 
 def show_board(group_id: int) -> tuple:

@@ -7,6 +7,13 @@
 <title>中国象棋对局 · 幻梦</title>
 <link rel="stylesheet" href="${CSS_URL}">
 <style>
+.chip.role{background:#fdf6e6;border-color:#f3e2bb;color:#96650f}
+.mine{font-family:var(--mono);font-size:9px;font-weight:700;color:#fff;background:var(--ink-2);
+  border-radius:999px;padding:2px 6px;margin-left:5px;vertical-align:1px}
+.rec.warm .mine{background:var(--warm)}
+.rec.cool .mine{background:var(--cool)}
+</style>
+<style>
 /* 象棋棋盘：9 列 × 10 行，棋子落在交叉点上 */
 .hits .hit{border-radius:7px}
 .hits .hit.sel{background:rgba(37,99,235,.16);box-shadow:inset 0 0 0 2px var(--cool)}
@@ -34,6 +41,7 @@
     <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">XIANGQI</span></div>
     <div class="tb-sep"></div>
     <span class="chip" id="chip-room">房间 <b>--</b></span>
+    <span class="chip role" id="chip-role" style="display:none"></span>
     <div class="chips">
       <span class="chip" id="chip-side">执子 <b>红方</b></span>
       <span class="chip" id="chip-diff">难度 <b>--</b></span>
@@ -62,7 +70,7 @@
           </div>
         </div>
         <div class="statusline" id="status"><span class="dot"></span><span id="status-text">载入中…</span></div>
-        <div class="btns">
+        <div class="btns" id="btns">
           <button class="btn cool" id="btn-clear">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>
             取消选择
@@ -152,6 +160,7 @@ const CN_RED = {k: "帥", a: "仕", b: "相", n: "馬", r: "車", c: "炮", p: "
 const CN_BLACK = {k: "將", a: "士", b: "象", n: "馬", r: "車", c: "砲", p: "卒"};
 let busy = false, finished = false, built = false;
 let gridCache = null, lastCache = "", sel = null, tipTimer = null, myTurn = false;
+let me = "", spectator = false;
 
 const $ = id => document.getElementById(id);
 
@@ -257,15 +266,21 @@ function paint() {
     const r = +el.dataset.r, c = +el.dataset.c, ch = gridCache[r][c];
     const inner = ch ? pieceHtml(ch, cell) : "";
     if (el.dataset.pce !== ch) { el.innerHTML = inner; el.dataset.pce = ch; }
-    el.classList.toggle("sel", !!sel && sel.r === r && sel.c === c && ch === ch.toUpperCase());
+    el.classList.toggle("sel", !!sel && sel.r === r && sel.c === c && isMine(ch));
     el.classList.toggle("last", !!last && last.r === r && last.c === c);
   });
 }
 
+function isMine(ch) {
+  if (!ch) return false;
+  const red = ch === ch.toUpperCase();
+  return (me === "red") === red;
+}
+
 function click(el) {
-  if (busy || finished) return;
+  if (busy || finished || spectator) return;
   const r = +el.dataset.r, c = +el.dataset.c, ch = gridCache[r][c];
-  if (ch && ch === ch.toUpperCase()) {          // 选自己的子（红方）
+  if (ch && isMine(ch)) {                       // 选自己的子
     sel = { r, c };
     tip(`已选择 ${pieceName(ch)} @ ${sq(r, c)}，再点目标位置`);
     paint();
@@ -286,7 +301,7 @@ async function sendMove(uci) {
   busy = true;
   tip("走棋中…");
   try {
-    const res = await fetch(`/api/xq/${ROOM}/move?t=${TOKEN}`, {
+    const res = await fetch(`/api/r/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({uci})
     }).then(x => x.json());
@@ -300,7 +315,7 @@ async function resign() {
   if (busy) return;
   busy = true;
   try {
-    const res = await fetch(`/api/xq/${ROOM}/resign?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
+    const res = await fetch(`/api/r/${ROOM}/resign?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
     tip(res.msg || "");
     await refresh();
   } catch (e) { tip("网络错误，稍后重试"); }
@@ -327,7 +342,13 @@ function setStatus(cls, text) {
 
 function render(st) {
   if (!st.ok) { tip("链接无效或已过期"); return; }
+  spectator = st.role === "spectator";
+  me = st.role || "";
   $("chip-room").innerHTML = `房间 <b>${ROOM}</b>`;
+  const rc = $("chip-role");
+  rc.style.display = "inline-block";
+  rc.textContent = spectator ? "观战模式" : (me ? `你执${me === "red" ? "红" : "黑"}` : "旁观");
+  $("chip-side").innerHTML = `执子 <b>${spectator ? "—" : (me === "black" ? "黑方" : "红方")}</b>`;
 
   if (st.gone || !st.grid) {
     finished = true;
@@ -335,6 +356,7 @@ function render(st) {
     $("result").style.display = "flex";
     $("result-text").textContent = "去群里用 /~xq start 再开一局";
     $("btn-resign").disabled = true;
+    $("btns").style.display = "none";
     return;
   }
 
@@ -343,8 +365,9 @@ function render(st) {
   lastCache = st.last_move || "";
   if (!built) buildBoard();
 
-  myTurn = !finished && st.turn === "red";
-  $("nm-black").textContent = st.black.name;
+  myTurn = !finished && !spectator && me === st.turn;
+  $("nm-red").innerHTML = st.red.name + (me === "red" ? '<span class="mine">你</span>' : "");
+  $("nm-black").innerHTML = st.black.name + (me === "black" ? '<span class="mine">你</span>' : "");
   $("chip-diff").innerHTML = `难度 <b>${st.difficulty}</b>`;
   $("chip-moves").innerHTML = `回合 <b>${st.move_count}</b>`;
   $("chip-time").innerHTML = `用时 <b>${fmtTime(st.elapsed)}</b>`;
@@ -361,8 +384,8 @@ function render(st) {
   $("k-r").textContent = `兵力 ${pr}%`;
   $("k-b").textContent = `兵力 ${100 - pr}%`;
 
-  $("badge-red").textContent = finished ? "已结束" : (st.turn === "red" ? "行棋中" : "等待");
-  $("badge-black").textContent = finished ? "已结束" : (st.turn === "black" ? "思考中" : "等待");
+  $("badge-red").textContent = finished ? "已结束" : (st.turn === "red" ? (spectator || me === "red" ? "行棋中" : "等待") : "等待");
+  $("badge-black").textContent = finished ? "已结束" : (st.turn === "black" ? (spectator || me === "black" ? "行棋中" : "等待") : "等待");
   $("badge-red").classList.toggle("on", st.turn === "red" && !finished);
   $("badge-black").classList.toggle("on", st.turn === "black" && !finished);
 
@@ -372,15 +395,20 @@ function render(st) {
   $("i-time").textContent = fmtTime(st.elapsed);
   $("rec-note").textContent = `共 ${st.move_count} 回合`;
 
+  $("btns").style.display = spectator ? "none" : "flex";
   if (finished) {
     setStatus("done", st.result || "对局结束");
     $("result").style.display = "flex";
     $("result-text").textContent = st.result || "对局结束";
     $("btn-resign").disabled = true;
+  } else if (spectator) {
+    setStatus("bot", `观战中 · ${st.red.name}(红) vs ${st.black.name}(黑)`);
+    $("result").style.display = "none";
   } else {
+    const other = st.turn === "red" ? st.red.name : st.black.name;
     setStatus(myTurn ? "you" : "bot",
               myTurn ? (st.in_check ? "被将军了！轮到你走棋" : "轮到你了 · 点自己的棋子再点目标位置")
-                     : `${st.black.name} 正在思考…`);
+                     : `等待 ${other} 走棋…`);
     $("result").style.display = "none";
     $("btn-resign").disabled = false;
   }
@@ -396,7 +424,7 @@ function render(st) {
 
 async function refresh() {
   try {
-    const st = await fetch(`/api/xq/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    const st = await fetch(`/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }

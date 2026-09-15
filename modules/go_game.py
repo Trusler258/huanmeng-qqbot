@@ -28,6 +28,17 @@ def _bot_name() -> str:
         return "幻梦"
 
 
+def _player_name(qq: int, chat_id: int) -> str:
+    """玩家显示名（qq=0 表示 AI → 用 bot 名）"""
+    if not qq:
+        return _bot_name()
+    try:
+        from core.config import get_config
+        return get_config().get_display_name(str(qq), group_id=chat_id)
+    except Exception:
+        return str(qq)
+
+
 BOARD_SIZE = 19          # 默认棋盘（19 标准 / 13 快棋 / 9 迷你），可用 /~go start [难度] [尺寸] 指定
 BOARD_SIZES = (9, 13, 19)
 # 每格像素尺寸：盘越大格子越小，保证出图宽度基本一致
@@ -114,6 +125,26 @@ def _load():
             _games.setdefault(int(k), v)
     except Exception as e:
         logger.warning("围棋读档失败: %s", e)
+
+
+def web_reload() -> None:
+    """从磁盘覆盖读入棋局（不动文件）。供棋局 Web 跨进程看到最新落子。
+
+    _load() 是 setdefault 合并语义（只补没有的），双进程下 web 进程
+    一旦内存里有旧局就永远看不到 bot 进程的新落子 —— 这里用覆盖语义。
+    """
+    if not _GAME_FILE.exists():
+        return
+    try:
+        raw = json.loads(_GAME_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("围棋覆盖读失败: %s", e)
+        return
+    for k, v in raw.items():
+        caps = v.get("captures")
+        if isinstance(caps, dict):
+            v["captures"] = {int(kk): vv for kk, vv in caps.items()}
+        _games[int(k)] = v
 
 
 def get_game(chat_id: int) -> dict | None:
@@ -343,7 +374,8 @@ def resolve_board_size(raw) -> int | None:
 
 
 def start_game(user_id: int, chat_id: int, difficulty: str = DEFAULT_DIFFICULTY,
-               size: int = BOARD_SIZE) -> str:
+               size: int = BOARD_SIZE, opponent_id: int = 0) -> str:
+    """开局。opponent_id=0 → 人机；否则是群内双人对战（发起人执黑）"""
     old = _games.get(chat_id)
     if old and old.get("status") == "playing":
         return "这里已经有一局围棋在进行中喵~ 用 /~go resign 认输结束"
@@ -352,6 +384,7 @@ def start_game(user_id: int, chat_id: int, difficulty: str = DEFAULT_DIFFICULTY,
         size = BOARD_SIZE
     _games[chat_id] = {
         "player_id": user_id,
+        "opponent_id": int(opponent_id or 0),   # 0 = AI；非 0 = 群内对手的 QQ
         "size": size,
         "board": _empty_board(size),
         "turn": BLACK,                 # 玩家执黑先行
@@ -368,6 +401,22 @@ def start_game(user_id: int, chat_id: int, difficulty: str = DEFAULT_DIFFICULTY,
     }
     _save()
     return f"ok:{DIFFICULTIES[diff]['label']}"
+
+
+def _color_of(game: dict, user_id: int) -> int:
+    """该用户在这局里执什么颜色；不是参与者返回 0"""
+    if not user_id:
+        return 0
+    if user_id == game.get("player_id"):
+        return BLACK
+    if user_id == game.get("opponent_id"):
+        return WHITE
+    return 0
+
+
+def is_pvp(game: dict) -> bool:
+    """是否群内双人对战（对手不是 AI）"""
+    return bool(game.get("opponent_id"))
 
 
 def _coord_label(r: int, c: int, size: int = BOARD_SIZE) -> str:
@@ -460,9 +509,10 @@ def make_move(user_id: int, chat_id: int, raw: str) -> tuple:
         return False, "这里没有围棋对局喵~ 用 /~go start [难度] 开局", False
     if game["status"] != "playing":
         return False, "这局已经结束了喵~", False
-    if user_id != game["player_id"]:
+    color = _color_of(game, user_id)
+    if not color:
         return False, "这不是你的对局喵~", False
-    if game["turn"] != game["player_color"]:
+    if game["turn"] != color:
         return False, "还没轮到你喵~", False
 
     size = len(game["board"])
@@ -470,23 +520,25 @@ def make_move(user_id: int, chat_id: int, raw: str) -> tuple:
     if pos is None:
         return False, f"坐标「{raw}」看不懂喵~ 试试 D4 或 4,4（字母跳过 I）", False
     r, c = pos
-    ok, nb, caps, nko, err = try_place(game["board"], r, c,
-                                       game["player_color"], game.get("ko_point"))
+    ok, nb, caps, nko, err = try_place(game["board"], r, c, color, game.get("ko_point"))
     if not ok:
         return False, f"不能下这里喵：{err}", False
 
     game["board"] = nb
-    game["captures"][game["player_color"]] += len(caps)
+    game["captures"][color] += len(caps)
     game["ko_point"] = nko
     game["last_move"] = [r, c]
     game["move_count"] += 1
     game["passes"] = 0
-    game["turn"] = WHITE if game["player_color"] == BLACK else BLACK
-    _push_move(game, r, c, game["player_color"])
+    game["turn"] = WHITE if color == BLACK else BLACK
+    _push_move(game, r, c, color)
 
     msg = f"你落子 {_coord_label(r, c, size)}"
     if caps:
         msg += f"，提了 {len(caps)} 子"
+    if is_pvp(game):
+        _save()                                   # 人人对战：等对方走
+        return True, msg, True
     msg += "；" + _ai_turn(game)
     _save()
     return True, msg, True
@@ -498,11 +550,21 @@ def do_pass(user_id: int, chat_id: int) -> tuple:
         return False, "这里没有进行中的围棋对局喵~", False
     if game["status"] != "playing":
         return False, "这局已经结束了喵~", False
-    if user_id != game["player_id"]:
+    color = _color_of(game, user_id)
+    if not color:
         return False, "这不是你的对局喵~", False
+    if game["turn"] != color:
+        return False, "还没轮到你喵~", False
     game["passes"] += 1
-    game["turn"] = WHITE if game["player_color"] == BLACK else BLACK
-    _push_pass(game, game["player_color"])
+    game["turn"] = WHITE if color == BLACK else BLACK
+    _push_pass(game, color)
+    if is_pvp(game):
+        msg = "你选择停一手"
+        if game["passes"] >= 2:
+            _finish(game)
+            msg += "，对方也停一手，终局！"
+        _save()
+        return True, msg, game["status"] == "playing"
     msg = "你选择停一手；" + _ai_turn(game)
     return True, msg, game["status"] == "playing"
 
@@ -519,15 +581,23 @@ def resign_game(user_id: int, chat_id: int) -> str:
     game = _games.get(chat_id)
     if not game:
         return "这里没有围棋对局喵~"
-    if user_id != game["player_id"]:
+    color = _color_of(game, user_id)
+    if not color:
         return "这不是你的对局喵~"
     if game.get("status") != "playing":
         return "这局已经结束了喵~"
     _finish(game)
-    game["result_text"] = f"你认输，{_bot_name()} 获胜"
+    if is_pvp(game):
+        win_color = WHITE if color == BLACK else BLACK
+        win_id = game["player_id"] if win_color == BLACK else game["opponent_id"]
+        game["winner_color"] = "black" if win_color == BLACK else "white"
+        game["result_text"] = f"{_player_name(user_id, chat_id)} 认输，{_player_name(win_id, chat_id)} 获胜"
+    else:
+        game["winner_color"] = "white"
+        game["result_text"] = f"你认输，{_bot_name()} 获胜"
     _record_go_context(chat_id, game, game["result_text"])
     _save()
-    return f"你认输了喵~ {_bot_name()} 获胜！"
+    return f"你认输了喵~ {game['result_text'].rsplit('，', 1)[-1]}！"
 
 
 def end_game(chat_id: int) -> str:
@@ -538,12 +608,19 @@ def end_game(chat_id: int) -> str:
     _finish(game)
     b, w = game["final_score"]["black"], game["final_score"]["white"]
     diff = game.get("difficulty", DEFAULT_DIFFICULTY)
-    verdict = "你赢了" if b > w else ((_bot_name() + " 赢") if w > b else "平局")
+    bn = _player_name(game.get("player_id"), chat_id)
+    wn = _player_name(game.get("opponent_id"), chat_id)
+    if b > w:
+        verdict, game["winner_color"] = f"{bn} 获胜", "black"
+    elif w > b:
+        verdict, game["winner_color"] = f"{wn} 获胜", "white"
+    else:
+        verdict, game["winner_color"] = "平局", ""
     game["result_text"] = f"终局数子 黑{b} : 白{w}，{verdict}"
     _save()
     _record_go_context(chat_id, game, f"终局结算 黑{b} : 白{w}")
     return (f"终局！数子结果（中国规则简化，未判死活）：\n"
-            f"  你(黑) {b} 子  ·  {_bot_name()}(白) {w} 子\n"
+            f"  {bn}(黑) {b} 子  ·  {wn}(白) {w} 子\n"
             f"  {verdict}喵~（难度：{DIFFICULTIES.get(diff, {}).get('label', diff)}）")
 
 
@@ -554,22 +631,55 @@ def _record_go_context(group_id: int, game: dict, result: str) -> None:
     game["_ctx_done"] = True
     try:
         from core.context_manager import get_context_mgr
-        pid = game.get("player_id")
-        try:
-            from core.config import get_config
-            pname = get_config().get_display_name(str(pid), group_id=group_id) if pid else "玩家"
-        except Exception:
-            pname = str(pid)
+        pname = _player_name(game.get("player_id"), group_id)
+        oname = _player_name(game.get("opponent_id"), group_id)
+        mode = "对战" if is_pvp(game) else "人机"
         moves = game.get("move_count", 0)
         get_context_mgr().append_to_context(
             group_id,
-            f"[棋局] 围棋对局结束：{pname}(黑) vs {_bot_name()}(白)，{result}，共 {moves} 手",
+            f"[棋局] 围棋{mode}结束：{pname}(黑) vs {oname}(白)，{result}，共 {moves} 手",
         )
         logger.info("围棋结果已写入上下文: chat=%d %s", group_id, result)
     except Exception as e:
         logger.warning("围棋结果写入上下文失败: %s", e)
 
 
+
+
+def web_state(chat_id: int, user_id: int) -> dict | None:
+    """棋局快照（供棋局网页渲染）。没有对局返回 None"""
+    game = get_game(chat_id)
+    if not game:
+        return None
+    board = game.get("board") or []
+    size = len(board) or BOARD_SIZE
+    caps = game.get("captures", {})
+    st_b = sum(row.count(BLACK) for row in board) if board else 0
+    st_w = sum(row.count(WHITE) for row in board) if board else 0
+    return {
+        "board": game["board"],
+        "size": size,
+        "letters": letters_of(size),
+        "stars": sorted(f"{r},{c}" for r, c in star_points(size)),
+        "turn": game.get("turn"),
+        "player_color": game.get("player_color"),
+        "move_count": game.get("move_count", 0),
+        "last_move": game.get("last_move"),
+        "captures": {"black": caps.get(BLACK, 0), "white": caps.get(WHITE, 0)},
+        "stones": {"black": st_b, "white": st_w},
+        "moves": list(game.get("moves") or [])[-60:],
+        "passes": game.get("passes", 0),
+        "elapsed": max(0, int(time.time()) - int(game.get("start_time") or 0)),
+        "final_score": game.get("final_score"),
+        "result_text": game.get("result_text"),
+        "winner_color": game.get("winner_color") or "",
+        "difficulty": DIFFICULTIES.get(game.get("difficulty", "normal"), {}).get("label", "普通"),
+        "pvp": is_pvp(game),
+        "finished": game.get("status") != "playing",
+        "bot": _bot_name(),
+        "black": {"id": game.get("player_id"), "name": _player_name(game.get("player_id"), chat_id)},
+        "white": {"id": game.get("opponent_id") or 0, "name": _player_name(game.get("opponent_id"), chat_id)},
+    }
 
 
 # ════════════════════════════════════════════════════════════
