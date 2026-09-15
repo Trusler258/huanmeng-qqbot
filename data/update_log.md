@@ -43,6 +43,20 @@
 - `_render_html_to_png` 整体套 `asyncio.wait_for(20s)`：渲染卡死（浏览器无响应/页面池耗尽）时
   命令通道不再无限阻塞（per-group worker 200s 总超时太长，用户等不起），20s 后放弃返回提示
 
+### 七、面板指令清单：分类归位 + 描述清理
+- 分类修正（`help_card._CATEGORY`）：系统 13→6、工具 13→17、游戏 11→15
+  · 系统只留 bot 自身运行相关：ping/restart/info/reload/update/updateinfo
+  · weather/eq/nasa/box 从「系统/数据」归入「工具」
+  · TUF 谱面 / Phigros 谱面查询归入「游戏」（与 wdsj 一致）
+- 描述清理：`cache` 去掉 `[天数]` 残留（docstring 同步）、`reward` 去掉 markdown 反引号、
+  `wdsj` 补充子命令说明（me/lb/daily/trend/bd）
+- 验证：78 条指令描述经正则扫描无 markdown 残留；面板 /api/commands 分类即时生效
+
+### 八、面板缩略图懒加载
+- 图片管理 `a-image` 加 `:lazy="{ rootMargin: '240px' }"`：视口外图片不抢同域并发连接，首屏更快
+- 诊断澄清：缩略图"只加载几张"不是 bug——40 张图受 HTTP/1.1 同域 6 并发限制排队，
+  滚动后加载数 7→28，抽样未加载图 fetch 全部 200；后端 thumb 带 token 200 / 无 token 401 正常
+
 ## v2.3.22 — 日榜"今日全零"自动回退昨日跨天 (2026.9.16)
 一句话总结：0点到4点之间（今天只有 00:01 一轮采集）查 /wdsj daily，不再显示全 0 的今日榜，自动改发"昨天 0:01 → 今天 0:01"的完整跨天榜。
 
