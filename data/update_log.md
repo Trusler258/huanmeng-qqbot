@@ -15,6 +15,20 @@
 
 
 
+## v2.3.18 — 日报剔除 bot 发言 + 私聊收信录 msglog (2026.9.15)
+一句话总结：群日报发言榜不再混入幻梦自己（实测曾以 179 条登顶），私聊收到的消息也开始录进 msglog。
+
+### 一、修复：群日报统计混入 bot 发言
+- 根因：`_send_and_record` 群聊发送成功后调 `record_message(chat_id, cfg.bot_qq, ...)`，bot 发言被当普通成员计入 stats——实测某群昨日归档里"幻梦"179 条登顶发言榜，金话筒/水群王全是 bot 自己
+- 修复：`stats.record_message` 开头统一过滤 `user_id == cfg.bot_qq`（收口在统计层，dispatcher 与 sender 两条来源全覆盖）
+- 数据修复：一次性清理服务器现有 stats 文件（今日 5 个 + 归档 180+ 个）里的 bot 条目并重算 `_meta.total`；bot 发言占比高的群（如某群曾单日 1041 条 bot 消息）日报数据从此恢复正常
+- 0 点后新日报即为干净数据；统计开关/时段分布逻辑不变
+
+### 二、私聊收到的消息也录 msglog
+- 此前私聊只录 bot **发出**的（v2.3.17 修的 `_send_and_record` + 命令层 `send_private_msg`），用户发来的消息完全不落盘——排查私聊问题时只有半边记录
+- `dispatcher._handle_message` 补私聊分支：`record_incoming_message(user_id, user_id, message_id, ...)`，与 bot 发送侧写同一个 `msglog_{user_id}.jsonl`，时间线完整
+- 私聊不进 stats（日报本来就只算群聊）；私聊撤回不处理，message_id 复用无副作用
+
 ## v2.3.17 — 表情包提示词升级 + 棋类 NameError 修复 + 私聊 msglog 补录 (2026.9.15)
 一句话总结：LLM 选表情不再盲猜（每个情绪词附真实画面描述），修复 /~go /~xq start 的 NameError，私聊消息补录进 msglog。
 

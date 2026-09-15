@@ -291,6 +291,15 @@ class EventDispatcher:
             image_url = msg_content if msg_type == "图片" else ""
             record_incoming_message(chat_id, user_id, message_id, msg_type, msg_content, image_url)
 
+        # ★ v2.3.18: 私聊也录 msglog——此前私聊只录 bot 发出的（_send_and_record/
+        #   send_private_msg），用户发来的消息完全不落盘，排查私聊问题时只有半边记录。
+        #   私聊 chat_id=user_id，与 bot 发送侧 _log_bot_sent 写同一文件，时间线完整。
+        #   撤回事件私聊侧不处理，message_id 撞车无影响；不计入 stats（stats 仅群聊）。
+        if not is_group and message_id:
+            from modules.recall import record_incoming_message
+            image_url = msg_content if msg_type == "图片" else ""
+            record_incoming_message(user_id, user_id, message_id, msg_type, msg_content, image_url)
+
         logger.info(
             "📩 消息 #%d | type=%s | from=%s(%d) | chat=%d | group=%s | content='%s...'",
             self._msg_count, msg_type, sender_name, user_id, chat_id, is_group,
