@@ -51,7 +51,18 @@ def record_message(group_id: int, user_id: int, msg_content: str, sender_name: s
     """
     记录一条群消息到今日统计。
     在 dispatcher._handle_message 中调用。
+
+    v2.3.18: bot 自己的发言不计入统计——此前 _send_and_record 群聊发送会把
+    bot 发言记进 stats，日报发言榜里幻梦经常登顶（实测某群昨日 179 条）。
+    在这里统一收口过滤，sender/dispatcher 两条来源全覆盖。
     """
+    try:
+        from core.config import get_config
+        if user_id == get_config().bot_qq:
+            return
+    except Exception:
+        pass
+
     if not is_stats_enabled(group_id):
         return
 
