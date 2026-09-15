@@ -2953,11 +2953,9 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     from utils.format_lang import format_lang
 
-    # v2.3.20: 图片模式不再发"正在查询"提示（图来得快，提示反而刷屏）；文字模式保留
-    if not want_img:
-        tip = format_lang("wdsj.player_searching", player=player, template=display)
-        await (send_group_msg(tip, group_id) if is_group
-               else send_private_msg(tip, user_id))
+    tip = format_lang("wdsj.player_searching", player=player, template=display)
+    await (send_group_msg(tip, group_id) if is_group
+           else send_private_msg(tip, user_id))
 
     data = await api.query_player_stats(player, template_id)
     if not data:
