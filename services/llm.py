@@ -181,7 +181,11 @@ def _parse_md_sections(text: str) -> dict[str, str]:
 
 
 def _merge_skills_dir(sections: dict[str, str]) -> None:
-    """扫描 data/skills/*.md，把每个文件解析为章节并并入 sections（同名覆盖）。"""
+    """扫描 data/skills/*.md，把每个文件解析为章节并并入 sections（同名覆盖）。
+
+    ★ v2.3.23: 15_slang.md（网络黑话词典）不按 ## 分节拆散，整文件作为
+    单章注入，key 固定为 slang_dict —— 保证词表整体可用、热匹配可控。
+    """
     if not _SKILLS_DIR.exists():
         return
     try:
@@ -194,6 +198,10 @@ def _merge_skills_dir(sections: dict[str, str]) -> None:
             text = f.read_text(encoding="utf-8")
         except Exception as e:
             logger.warning("读取 skill 文件失败 %s: %s", f.name, e)
+            continue
+        if f.stem == "15_slang":
+            sections["slang_dict"] = text.strip()
+            logger.info("已叠加 skill 文件: %s (整体作为 slang_dict)", f.name)
             continue
         parsed = _parse_md_sections(text)
         if parsed:
@@ -374,6 +382,28 @@ def _detect_skill_needs(msg: str, is_group: bool) -> set:
     return needs
 
 
+# 网络黑话词典命中词表（v2.3.23）：消息里出现任一 → 注入整本词典。
+# 词表与 data/skills/15_slang.md 词条保持一致；命中即全量注入（词典体积小，避免漏词）。
+_SLANG_HIT_WORDS = (
+    "yyds", "nsdd", "破防", "硬控", "触烂", "触", "卡皮巴拉", "晕碳", "很解", "很躁",
+    "很玄", "蒸笼", "活人感", "脑腐", "brainrot", "蛋雕", "贴脸开大", "破大防",
+    "老六", "开黑", "带飞", "躺赢", "上分", "掉分", "手残", "欧皇", "非酋",
+    "空枪", "空大", "退役选手", "双排", "车队", "afk", "氪金", "炸服", "卡服",
+    "蚌埠住了", "绷不住", "双厨狂喜", "电子包浆", "世一", "大癲", "离谱",
+    "已读不回", "要确欸", "包得", "包的", "各各", "估咩", "m3", "siu4", "mnyy",
+    "sldpk", "pua", "choke", "送人头", "白给", "稳如老狗", "6翻了", "无敌",
+    "泉", "共情", "下头", "扫兴",
+)
+
+
+def _slang_hit(dict_text: str, low_msg: str) -> bool:
+    """判断消息是否命中黑话词表。dict_text 未用（词表在代码常量里，便于快速短路）"""
+    for w in _SLANG_HIT_WORDS:
+        if w in low_msg:
+            return True
+    return False
+
+
 def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
     """组装按需参考资料（注入 user 消息，不污染 system 缓存）
 
@@ -409,6 +439,14 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
     low = (msg or "").lower()
     for k, v in sec.items():
         if k in _SYSTEM_SECTIONS or k in _OPTIONAL_SECTIONS or not v:
+            continue
+        # ★ v2.3.23: 网络黑话词典（15_slang.md）——按词表命中才注入。
+        #   整个文件作为一章 key='slang_dict'，消息里出现任一黑话词时把词典喂给 LLM，
+        #   避免模型不懂流行语答非所问。词表在文件尾部维护，命中即全量注入（词典约 60 词，
+        #   体积可接受；命中一次后 LLM 整轮参考，不重复注入）。
+        if k == "slang_dict":
+            if _slang_hit(v, low):
+                parts.append(v)
             continue
         if k.lower() in low:
             parts.append(v)
