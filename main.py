@@ -36,6 +36,12 @@ def main():
 
     async def _amain():
         await bot.initialize()
+        # 棋类在线对战 Web 服务（挂在同一事件循环，共享棋局状态）
+        try:
+            from services.game_web import start_server as _start_game_web
+            await _start_game_web()
+        except Exception as e:
+            error("棋局 Web 服务启动异常（不影响 bot）: %s", e)
         await bot.run()
 
     main_task = loop.create_task(_amain())

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>围棋 · 幻梦</title>
+<style>
+:root{
+  --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--cyan:#22d3ee;
+  --text:#fff;--text-2:rgba(255,255,255,0.72);--text-3:rgba(255,255,255,0.40);
+  --success:#34d399;--warning:#fbbf24;
+  --board-bg:#2a1f15;--board-line:#4a3520;--board-edge:#1a1208;
+  --mono:'Consolas','JetBrains Mono','Courier New',monospace;
+  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;
+  --border:rgba(255,255,255,0.10);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{min-height:100vh;background:radial-gradient(ellipse 80% 55% at 15% -10%,rgba(236,72,153,0.42) 0%,transparent 50%),radial-gradient(ellipse 70% 50% at 88% 110%,rgba(139,92,246,0.38) 0%,transparent 50%),linear-gradient(165deg,#07060f 0%,#0d0b1a 45%,#080a16 100%);font-family:var(--sans);color:var(--text);display:flex;justify-content:center;padding:20px 14px 32px}
+.card{width:100%;max-width:560px;background:rgba(20,18,32,0.55);border-radius:15px;padding:18px 18px 22px;backdrop-filter:blur(24px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,0.65),inset 0 1px 0 rgba(255,255,255,0.12);border:1px solid var(--border)}
+.title{font-family:var(--mono);font-size:15px;font-weight:700;display:flex;align-items:baseline;gap:8px}
+.title .nm{background:linear-gradient(135deg,#f472b6,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.title .tp{color:var(--text-2);font-size:11px;letter-spacing:1.5px}
+.sub{font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:4px}
+.players{display:flex;justify-content:space-around;align-items:center;padding:14px 0 12px}
+.player{text-align:center}
+.player .name{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text-2);margin-bottom:6px}
+.player.active .name{color:var(--primary-light);text-shadow:0 0 12px rgba(244,114,182,0.6)}
+.player .stone{width:26px;height:26px;border-radius:50%;margin:0 auto}
+.player .stone.black{background:radial-gradient(circle at 35% 35%,#666,#0a0a0a);box-shadow:0 2px 8px rgba(0,0,0,0.7)}
+.player .stone.white{background:radial-gradient(circle at 35% 35%,#fff,#b0b0b0);border:1px solid #888}
+.vs{font-family:var(--mono);font-size:14px;font-weight:800;color:var(--text-3)}
+.boardsection{display:flex;justify-content:center;padding:6px 0 14px}
+.board{display:grid;grid-template-columns:20px repeat(9,38px);grid-template-rows:20px repeat(9,38px);background:var(--board-bg);border:1px solid var(--board-edge);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.5)}
+.corner{background:var(--board-bg)}
+.col-label,.row-label{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;font-weight:600;color:var(--text-3)}
+.cell{width:38px;height:38px;display:flex;align-items:center;justify-content:center;position:relative;cursor:pointer}
+.cell::before{content:'';position:absolute;width:100%;height:1px;background:var(--board-line);top:50%;left:0}
+.cell::after{content:'';position:absolute;width:1px;height:100%;background:var(--board-line);left:50%;top:0}
+.cell:hover .hoverdot{opacity:1}
+.hoverdot{width:10px;height:10px;border-radius:50%;background:rgba(244,114,182,0.5);opacity:0;z-index:3;transition:opacity .12s}
+.stone-piece{width:31px;height:31px;border-radius:50%;z-index:2;position:relative}
+.stone-piece.black{background:radial-gradient(circle at 35% 35%,#666,#0a0a0a);box-shadow:0 2px 6px rgba(0,0,0,0.8)}
+.stone-piece.white{background:radial-gradient(circle at 35% 35%,#fff,#b0b0b0);border:1px solid #888}
+.stone-piece.last-move{box-shadow:0 0 0 2px var(--primary),0 0 14px rgba(236,72,153,0.7)}
+.star-point{width:6px;height:6px;background:var(--board-line);border-radius:50%;z-index:1}
+.status{margin:6px 0 12px;padding:11px 14px;text-align:center;font-size:13.5px;font-weight:600;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:9px;color:var(--text-2)}
+.status.playing{color:var(--primary-light);border-color:rgba(236,72,153,0.40);background:rgba(236,72,153,0.10)}
+.status.win{color:var(--warning);border-color:rgba(251,191,36,0.40);background:rgba(251,191,36,0.10)}
+.btns{display:flex;gap:10px}
+.btn{flex:1;padding:10px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text-2);font-family:var(--mono);font-size:12.5px;font-weight:600;cursor:pointer}
+.btn:hover{background:rgba(255,255,255,0.10);color:var(--text)}
+.btn.primary{border-color:rgba(236,72,153,0.45);color:var(--primary-light)}
+.tip{margin-top:10px;font-size:11px;color:var(--text-3);text-align:center;min-height:16px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="title"><span class="nm">幻梦</span><span>/</span><span class="tp">GO</span></div>
+  <div class="sub" id="sub">围棋 9×9</div>
+
+  <div class="players">
+    <div class="player" id="p-black"><div class="name">你</div><div class="stone black"></div></div>
+    <div class="vs">VS</div>
+    <div class="player" id="p-white"><div class="name">幻梦</div><div class="stone white"></div></div>
+  </div>
+
+  <div class="boardsection">
+    <div class="board" id="board"></div>
+  </div>
+
+  <div class="status playing" id="status">载入中…</div>
+  <div class="btns">
+    <button class="btn" id="btn-pass">停一手</button>
+    <button class="btn primary" id="btn-resign">认输</button>
+  </div>
+  <div class="tip" id="tip">点击棋盘交叉点落子（你执黑先行）</div>
+</div>
+
+<script>
+const ROOM = "${ROOM}", TOKEN = "${TOKEN}";
+const LETTERS = "ABCDEFGHJ";
+const STAR = new Set(["2,2","2,6","6,2","6,6","4,4"]);
+let busy = false, finished = false;
+
+function buildBoard() {
+  const b = document.getElementById("board");
+  b.innerHTML = '<div class="corner"></div>';
+  for (let i = 0; i < 9; i++) b.innerHTML += `<div class="col-label">${LETTERS[i]}</div>`;
+  for (let r = 0; r < 9; r++) {
+    b.innerHTML += `<div class="row-label">${9 - r}</div>`;
+    for (let c = 0; c < 9; c++) {
+      b.innerHTML += `<div class="cell" data-r="${r}" data-c="${c}"><div class="hoverdot"></div></div>`;
+    }
+  }
+  b.querySelectorAll(".cell").forEach(cell => cell.onclick = () => play(cell));
+}
+
+async function play(cell) {
+  if (busy || finished) return;
+  busy = true;
+  const r = +cell.dataset.r, c = +cell.dataset.c;
+  try {
+    const res = await fetch(`/api/go/${ROOM}/move?t=${TOKEN}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({coord: `${r + 1},${c + 1}`})
+    }).then(x => x.json());
+    if (!res.ok) { tip(res.msg || "这手不行"); await refresh(); return; }
+    tip(res.msg || "");
+    await refresh();
+  } catch (e) { tip("网络错误"); } finally { busy = false; }
+}
+
+async function doAction(path) {
+  if (busy) return;
+  busy = true;
+  try {
+    const res = await fetch(`/api/go/${ROOM}/${path}?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
+    tip(res.msg || "");
+    await refresh();
+  } catch (e) { tip("网络错误"); } finally { busy = false; }
+}
+
+function tip(s) { document.getElementById("tip").textContent = s; }
+
+function render(st) {
+  if (!st.ok) { tip("链接无效"); return; }
+  finished = !!st.finished;
+  const board = st.board;
+  document.getElementById("sub").textContent =
+    `围棋 9×9 · 难度${st.difficulty} · 手数 ${st.move_count} · 提子 ${st.captures.black}:${st.captures.white}`;
+  if (!board) {
+    document.getElementById("status").textContent = "对局已结束";
+    document.getElementById("status").className = "status win";
+    return;
+  }
+  const last = st.last_move || [];
+  document.querySelectorAll(".cell").forEach(cell => {
+    const r = +cell.dataset.r, c = +cell.dataset.c;
+    const key = `${r},${c}`;
+    let inner = "";
+    const v = board[r][c];
+    if (v) {
+      const color = v === 1 ? "black" : "white";
+      const lm = (last[0] === r && last[1] === c) ? " last-move" : "";
+      inner = `<div class="stone-piece ${color}${lm}"></div>`;
+    } else if (STAR.has(key)) {
+      inner = '<div class="star-point"></div>';
+    }
+    const hover = (!finished && !v) ? '<div class="hoverdot"></div>' : "";
+    cell.innerHTML = inner + hover;
+  });
+  const myTurn = st.turn === st.player_color;
+  document.getElementById("p-black").className = "player" + (myTurn ? " active" : "");
+  document.getElementById("p-white").className = "player" + (myTurn ? "" : " active");
+  const stEl = document.getElementById("status");
+  if (finished) {
+    stEl.textContent = "对局已结束";
+    stEl.className = "status win";
+  } else {
+    stEl.textContent = myTurn ? "该你落子" : `${st.bot} 思考中…`;
+    stEl.className = "status playing";
+  }
+}
+
+async function refresh() {
+  try {
+    const st = await fetch(`/api/go/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    render(st);
+  } catch (e) { /* 静默，下次轮询再试 */ }
+}
+
+buildBoard();
+document.getElementById("btn-pass").onclick = () => doAction("pass");
+document.getElementById("btn-resign").onclick = () => doAction("resign");
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>
