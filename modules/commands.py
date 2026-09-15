@@ -2610,7 +2610,13 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
             browser = await _ensure_browser()
             page = await browser.new_page(viewport={"width": 440, "height": 600})
             await page.set_content(html)
-            await page.wait_for_load_state("networkidle")
+            # ★ v2.3.23: 排行榜卡 head 用外链头像，networkidle 必要时限 1.5s 兜底，
+            #   避免网络抖动时无限空等（DOM 就绪即开始倒计时截图）
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=3000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(400)
             await page.screenshot(path=out, full_page=True)
             await page.close()
             cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
@@ -4186,7 +4192,10 @@ async def _render_html_to_png(html, prefix, width=740, height=900):
         browser = await _ensure_browser()
         page = await browser.new_page(viewport={"width": width, "height": height})
         await page.set_content(html)
-        await page.wait_for_load_state("networkidle")
+        # ★ v2.3.23 提速: networkidle → domcontentloaded。卡片 HTML 是内联样式+内联图标，
+        #   无外部网络依赖，networkidle 会空等网络空闲（图片加载/长连接场景可等数秒）。
+        #   domcontentloaded 在 DOM 就绪即截图，配合下面 300ms 兜底足够渲染内联样式。
+        await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(300)
         # 截 body 元素：自动贴合卡片宽度与内容高度，避免出现大片背景留白
         el = await page.query_selector("body")

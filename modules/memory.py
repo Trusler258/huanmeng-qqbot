@@ -91,14 +91,28 @@ SUMMARIZE_TEMPLATE = """将以下聊天记录压缩为一行记忆。严格按�
 #  文件 I/O
 # ════════════════════════════════════════════════════════════
 
+# ── v2.3.23 提速：记忆文件读取缓存 ──
+# 大群 memory_<chat_id>.md 可达 2MB+ / 上万行，每次回复前全量读取+过滤会拖慢应答。
+# 这里按 (chat_id, mtime_ns, size) 做指纹缓存：文件未变直接复用解析后的行列表。
+_memory_cache: dict[int, tuple[int, int, list[str]]] = {}  # chat_id -> (mtime_ns, size, lines)
+
+
 def load_memories(chat_id: int) -> list[str]:
     file_path = _get_memory_file(chat_id)
     if not file_path.exists():
         return []
     try:
+        st = file_path.stat()
+        cached = _memory_cache.get(chat_id)
+        if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+            return cached[2]
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
         memories = [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+        # 缓存上限：文件超大时仍缓存（内存换速度；bot 常驻，收益远大于开销）
+        _memory_cache[chat_id] = (st.st_mtime_ns, st.st_size, memories)
+        if len(_memory_cache) > 200:
+            _memory_cache.clear()
         return memories
     except Exception as e:
         logger.warning("读取记忆文件失败 [%s]: %e", chat_id, e)

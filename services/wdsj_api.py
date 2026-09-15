@@ -16,6 +16,49 @@ logger = get_logger("wdsj")
 # 最近一次查询失败的详细原因（供 cmd 层区分 风控/玩家不存在/网络错误）
 last_error = ""
 
+# ── v2.3.23: 模块级复用 AsyncClient 连接池 ──
+# 每次查询新建 AsyncClient(timeout=15) 会重复 TCP+TLS 握手（实测单次建连 ~0.2-1s），
+# 高频率查询时差距被放大。这里全局持有一个共用 client，连接复用后查询耗时显著下降。
+# 生命周期：模块导入时惰性创建，进程退出时由 atexit 关闭（连接是 keep-alive 的，无需主动关）。
+_shared_client: httpx.AsyncClient | None = None
+_shared_lock = asyncio.Lock()
+
+
+async def _get_client(timeout: float = 15.0) -> httpx.AsyncClient:
+    """获取全局共享 AsyncClient（惰性创建 + 线程安全锁）"""
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        async with _shared_lock:
+            if _shared_client is None or _shared_client.is_closed:
+                # limits: 默认 100 连接池；keepalive 30s——高频查询保持连接不重建
+                _shared_client = httpx.AsyncClient(
+                    timeout=timeout,
+                    headers=HEADERS,
+                    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+                )
+    return _shared_client
+
+
+def _close_shared_client():
+    """进程退出时兜底关闭共享连接池"""
+    global _shared_client
+    if _shared_client is not None:
+        try:
+            import asyncio as _a
+            try:
+                _a.get_running_loop()
+            except RuntimeError:
+                _a.run(_shared_client.aclose())
+            else:
+                asyncio.create_task(_shared_client.aclose())
+        except Exception:
+            pass
+        _shared_client = None
+
+
+import atexit as _atexit
+_atexit.register(_close_shared_client)
+
 BASE_URL = "https://www.wdsj.net/nexus"
 HEADERS = {"Referer": "https://www.wdsj.net/nexus/stats"}
 
@@ -162,24 +205,24 @@ async def query_player_stats(player: str, template_id: str,
     encoded = build_identity(player, id_type)
     url = _api_url(f"/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}")
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, headers=HEADERS)
-            if resp.status_code != 200:
-                last_error = f"HTTP {resp.status_code}"
-                if resp.status_code == 403:
-                    logger.warning("wdsj API 被风控/拒绝 (HTTP 403): %s", url)
-                elif resp.status_code == 404:
-                    logger.info("wdsj 玩家不存在 (HTTP 404): %s", url)
-                else:
-                    logger.warning("wdsj API HTTP %s: %s", resp.status_code, url)
-                return None
-            data = resp.json()
-            if data.get("code") != 0:
-                last_error = f"API error {data.get('code')}: {data.get('message')}"
-                logger.warning("wdsj API 业务错误: %s", last_error)
-                return None
-            last_error = ""
-            return data["data"]
+        client = await _get_client(timeout=timeout)
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            last_error = f"HTTP {resp.status_code}"
+            if resp.status_code == 403:
+                logger.warning("wdsj API 被风控/拒绝 (HTTP 403): %s", url)
+            elif resp.status_code == 404:
+                logger.info("wdsj 玩家不存在 (HTTP 404): %s", url)
+            else:
+                logger.warning("wdsj API HTTP %s: %s", resp.status_code, url)
+            return None
+        data = resp.json()
+        if data.get("code") != 0:
+            last_error = f"API error {data.get('code')}: {data.get('message')}"
+            logger.warning("wdsj API 业务错误: %s", last_error)
+            return None
+        last_error = ""
+        return data["data"]
     except Exception as e:
         last_error = f"{type(e).__name__}: {e}"
         logger.error("wdsj 查询异常: player=%r template=%s err=%s:%r url=%s",
@@ -190,11 +233,12 @@ async def query_player_stats(player: str, template_id: str,
 async def download_stats_image(image_url: str, save_path: str, timeout: float = 15.0) -> bool:
     full_url = _api_url(image_url) if image_url.startswith("/") else image_url
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(full_url, headers=HEADERS)
-            resp.raise_for_status()
-            with open(save_path, "wb") as f: f.write(resp.content)
-            return True
+        client = await _get_client(timeout=timeout)
+        resp = await client.get(full_url)
+        resp.raise_for_status()
+        with open(save_path, "wb") as f:
+            f.write(resp.content)
+        return True
     except Exception as e:
         logger.error("下载战绩图片失败: %s", e)
         return False
@@ -204,11 +248,12 @@ async def download_player_head(name: str, save_path: str, timeout: float = 15.0)
     """v2 新增: 玩家头像 /api/v1/player-heads/{name}/head.png"""
     url = _api_url(f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png")
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, headers=HEADERS)
-            resp.raise_for_status()
-            with open(save_path, "wb") as f: f.write(resp.content)
-            return True
+        client = await _get_client(timeout=timeout)
+        resp = await client.get(url)
+        resp.raise_for_status()
+        with open(save_path, "wb") as f:
+            f.write(resp.content)
+        return True
     except Exception as e:
         logger.error("下载玩家头像失败: %s", e)
         return False
@@ -223,11 +268,11 @@ async def fetch_player_head_data_uri(name: str, timeout: float = 5.0) -> str:
     import base64 as _b64
     url = _api_url(f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png")
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, headers=HEADERS)
-            if resp.status_code == 200 and resp.content:
-                return "data:image/png;base64," + _b64.b64encode(resp.content).decode()
-            logger.info("头像下载异常状态: %s %s", resp.status_code, url)
+        client = await _get_client(timeout=timeout)
+        resp = await client.get(url)
+        if resp.status_code == 200 and resp.content:
+            return "data:image/png;base64," + _b64.b64encode(resp.content).decode()
+        logger.info("头像下载异常状态: %s %s", resp.status_code, url)
     except Exception as e:
         logger.warning("头像下载失败: %s: %r", type(e).__name__, e)
     return ""
@@ -236,17 +281,17 @@ async def fetch_player_head_data_uri(name: str, timeout: float = 5.0) -> str:
 async def query_leaderboards() -> Optional[list]:
     url = f"{BASE_URL}/api/v1/leaderboards"
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers={**HEADERS, "Referer": "https://www.wdsj.net/nexus/leaderboards"})
-            if resp.status_code != 200:
-                last_error = f"HTTP {resp.status_code}"
-                return None
-            data = resp.json()
-            if data.get("code") != 0:
-                last_error = f"API error {data.get('code')}: {data.get('message')}"
-                logger.warning("wdsj 榜单业务错误: %s", last_error)
-                return None
-            return data["data"]["boards"]
+        client = await _get_client(timeout=15)
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            last_error = f"HTTP {resp.status_code}"
+            return None
+        data = resp.json()
+        if data.get("code") != 0:
+            last_error = f"API error {data.get('code')}: {data.get('message')}"
+            logger.warning("wdsj 榜单业务错误: %s", last_error)
+            return None
+        return data["data"]["boards"]
     except Exception as e:
         logger.error("获取排行榜列表失败: %s", e)
         return None
@@ -256,12 +301,14 @@ async def query_leaderboard(board_id: str, period: str = "ALLTIME") -> Optional[
     encoded = urllib.parse.quote(board_id)
     url = f"{BASE_URL}/api/v1/leaderboards/{encoded}?type={period}"
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers={**HEADERS, "Referer": "https://www.wdsj.net/nexus/leaderboards"})
-            if resp.status_code != 200: return None
-            data = resp.json()
-            if data.get("code") != 0: return None
-            return data["data"]
+        client = await _get_client(timeout=15)
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if data.get("code") != 0:
+            return None
+        return data["data"]
     except Exception as e:
         logger.error("查询排行榜失败: %s %s", type(e).__name__, e)
         return None
