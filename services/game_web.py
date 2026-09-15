@@ -45,6 +45,135 @@ KIND_LABEL = {"go": "围棋", "wzq": "五子棋", "xq": "中国象棋"}
 
 app = FastAPI(title="幻梦棋局", docs_url=None, redoc_url=None)
 
+
+# ── 终局群播报（v2.3.19）─────────────────────────────────────
+# web 与 bot 同进程共享事件循环：终局后直接向房间所在 chat 补发
+# 「结果文本 + 终局盘面图」，并把房间归档（下次进页面显示"对局已归档"）。
+
+def _finish_sig(kind: str, game) -> tuple:
+    """操作前的终局签名（只取不可变标量，避免快照被走子原地改掉）"""
+    if kind == "go":
+        return (game.get("status"),)
+    if kind == "wzq":
+        return (getattr(game, "status", ""),)
+    return (bool(game.get("finished")),)
+
+
+def _finished_now(kind: str, chat_id: int, sig: tuple) -> tuple[object, str]:
+    """操作后再读一次棋局，对照操作前的签名，判断是否刚刚终局。返回 (game, result_text)"""
+    game = _load_game(kind, chat_id)
+    if game is None:
+        return None, ""
+    if kind == "go":
+        if sig == ("playing",) and game.get("status") == "finished":
+            txt = str(game.get("result_text") or "")
+            if not txt:
+                fs = game.get("final_score") or {}
+                txt = (f"终局数子 黑{fs.get('black', 0)} : 白{fs.get('white', 0)}"
+                       if fs else "对局结束")
+            return game, txt
+    elif kind == "wzq":
+        if sig == ("playing",) and getattr(game, "status", "") == "finished":
+            from modules import wzq as W
+            w = getattr(game, "winner", None)
+            if w == 1:
+                txt = f"{W._player_name(game.black, chat_id)}(黑) 获胜"
+            elif w == 2:
+                txt = f"{W._player_name(game.white, chat_id)}(白) 获胜"
+            else:
+                txt = "平局"
+            return game, f"{txt}，共 {game.move_count} 手"
+    else:
+        if sig == (False,) and game.get("finished"):
+            return game, str(game.get("result") or "对局结束")
+    return game, ""
+
+
+async def _render_final_board(kind: str, chat_id: int) -> Optional[str]:
+    """渲染终局盘面图，返回本地图片路径（失败返回 None）"""
+    try:
+        if kind == "go":
+            from modules import go_game as G
+            return await G.render_board(chat_id)
+        if kind == "wzq":
+            from modules import wzq as W
+            from core.config import get_config
+            return await W.render_board(chat_id, get_config())
+        from modules import chinese_chess as X
+        msg, img = X.show_board(chat_id)
+        if not img:
+            return None
+        from modules import chinese_chess as X2
+        await X2.wait_render()      # 渲染是异步的，不等会发出旧盘面
+        return img
+    except Exception as e:
+        logger.warning("终局盘面渲染失败 kind=%s chat=%s: %s", kind, chat_id, e)
+        return None
+
+
+async def _announce_result(kind: str, room: dict, result: str) -> None:
+    """向房间对应 chat 发送终局播报 + 盘面图（私有协程，异常全部吞掉）"""
+    chat = _chat_of(room)
+    if not chat:
+        return
+    try:
+        from services.sender import send_group_msg, send_private_msg, build_local_image_cq
+    except Exception as e:
+        logger.warning("终局播报依赖导入失败: %s", e)
+        return
+    is_group = bool(room.get("is_group", _chat_is_group(chat)))
+    label = KIND_LABEL.get(kind, "棋局")
+    text = f"棋局终局 · {label}\n{result}"
+    try:
+        if is_group:
+            await send_group_msg(text, chat)
+        else:
+            await send_private_msg(text, chat)
+    except Exception as e:
+        logger.warning("终局文本发送失败 kind=%s chat=%s: %s", kind, chat, e)
+    img = await _render_final_board(kind, chat)
+    if img:
+        try:
+            cq = build_local_image_cq(img)
+            if is_group:
+                await send_group_msg(cq, chat)
+            else:
+                await send_private_msg(cq, chat)
+        except Exception as e:
+            logger.warning("终局盘面图发送失败 kind=%s chat=%s: %s", kind, chat, e)
+
+
+def _archive_room(code: str, room: dict) -> None:
+    """终局后把房间从房间表移除（= 归档，页面显示"对局已归档"）"""
+    code = str(code).upper()
+    try:
+        _load_rooms()
+        if _rooms.pop(code, None) is not None:
+            _save_rooms()
+            logger.info("棋局房间已归档 %s（%s chat=%s）", code,
+                        room.get("kind"), _chat_of(room))
+    except Exception as e:
+        logger.warning("房间归档失败 %s: %s", code, e)
+
+
+def _schedule_finish_flow(code: str, room: dict, kind: str, chat_id: int,
+                          sig: tuple) -> None:
+    """统一终局检测入口：刚终局 → 后台任务播报结果+盘面图，并归档房间"""
+    try:
+        _, result = _finished_now(kind, chat_id, sig)
+        if not result:
+            return
+        room_snap = dict(room)
+
+        async def _flow():
+            await _announce_result(kind, room_snap, result)
+            _archive_room(code, room_snap)
+
+        asyncio.get_running_loop().create_task(_flow())
+        logger.info("终局播报已排程 kind=%s chat=%s %s", kind, chat_id, result)
+    except Exception as e:
+        logger.warning("终局检测失败 kind=%s chat=%s: %s", kind, chat_id, e)
+
 # ── 子路径挂载（https://bot.xxx/game/... 也指向本服务） ──────
 # cloudflared 按路径分流时不重写 URL，/game/... 会原样打到本服务；
 # 中间件把 PATH 剥掉前缀后交给原路由处理，原 game 子域不受影响。
@@ -102,21 +231,37 @@ def _new_code() -> str:
     raise RuntimeError("房间号用尽")
 
 
-def ensure_room(kind: str, chat_id: int) -> str:
+def ensure_room(kind: str, chat_id: int, is_group: bool = True) -> str:
     """取（或新建）该群这个棋种的房间号。
 
     同一群的同一种棋**始终复用同一个房间号** —— 这样链接稳定、老链接也不会失效。
+    is_group 记录对局发生在群聊还是私聊（v2.3.19 终局播报用）。
     """
     _load_rooms()               # ★ 每次读盘：跨进程复用已有房间，避免重复建
     chat_id = int(chat_id)
     for code, r in _rooms.items():
         if r.get("kind") == kind and int(r.get("chat") or 0) == chat_id:
+            # 兼容旧房间：补写 is_group 字段
+            if "is_group" not in r:
+                r["is_group"] = _chat_is_group(chat_id)
+                _save_rooms()
             return code
     code = _new_code()
-    _rooms[code] = {"kind": kind, "chat": chat_id, "created": int(time.time())}
+    _rooms[code] = {"kind": kind, "chat": chat_id,
+                    "is_group": bool(is_group and _chat_is_group(chat_id)),
+                    "created": int(time.time())}
     _save_rooms()
     logger.info("新建棋局房间 %s（%s chat=%s）", code, kind, chat_id)
     return code
+
+
+def _chat_is_group(chat_id: int) -> bool:
+    """chat_id 是否为群号：看群白名单成员资格（群号均为正整数，私聊存对方QQ）"""
+    try:
+        from core.config import get_config
+        return int(chat_id) in get_config().group_list
+    except Exception:
+        return True
 
 
 def room_of(code: str) -> Optional[dict]:
@@ -383,7 +528,10 @@ async def room_move(code: str, request: Request, t: str = ""):
 
     if kind == "go":
         from modules import go_game as G
+        sig = _finish_sig(kind, game)
         ok, msg, _ = G.make_move(uid, chat, str(body.get("coord", "")))
+        if ok:
+            _schedule_finish_flow(code, room, kind, chat, sig)
         return JSONResponse({"ok": bool(ok), "msg": msg})
 
     if kind == "wzq":
@@ -395,20 +543,21 @@ async def room_move(code: str, request: Request, t: str = ""):
         ok, msg = W.web_move(chat, uid, r, c)
         if not ok:
             return JSONResponse({"ok": False, "msg": msg})
-        # 人机模式：AI 立刻应一手（线程池执行，不阻塞事件循环）
+        # 人机模式：AI 后台应手（线程池执行）——expert 算 8s 期间页面轮询
+        # 能立刻看到"AI 正在思考…"，不再整体干等响应
         g2 = W.get_game(chat)
         if g2 and g2.status == "playing" and g2.white == 0 and g2.turn == 2:
-            try:
-                ai_ok, ai_msg = await W.ai_move_async(chat)
-                if ai_ok:
-                    g3 = W.get_game(chat)
-                    lm = g3.last_move if g3 else None
-                    if lm:
-                        msg += f"；{W._bot_name()} 落子 {W.coord_label(lm[0], lm[1])}"
-                    if ai_msg == "win":
-                        msg += f"，五连！{W._bot_name()} 获胜"
-            except Exception as e:
-                logger.warning("五子棋 AI 应手失败: %s", e)
+
+            async def _ai_reply():
+                try:
+                    ai_ok, ai_msg = await W.ai_move_async(chat)
+                    if not ai_ok:
+                        logger.warning("五子棋 AI 应手失败: %s", ai_msg)
+                except Exception as e:
+                    logger.warning("五子棋 AI 应手异常: %s", e)
+
+            asyncio.get_running_loop().create_task(_ai_reply())
+        _schedule_finish_flow(code, room, kind, chat, _finish_sig(kind, game))
         return JSONResponse({"ok": True, "msg": msg})
 
     # 象棋
@@ -416,9 +565,12 @@ async def room_move(code: str, request: Request, t: str = ""):
     notation = str(body.get("uci") or body.get("notation") or "").strip()
     if not notation:
         return JSONResponse({"ok": False, "msg": "没收到走法喵~"})
+    sig = _finish_sig(kind, game)
     # 象棋 AI 是同步阻塞实现（时间预算最长 3s），放线程池，别卡住 bot 事件循环
     loop = asyncio.get_running_loop()
     ok, msg = await loop.run_in_executor(None, X.web_move, uid, chat, notation)
+    if ok:
+        _schedule_finish_flow(code, room, kind, chat, sig)
     return JSONResponse({"ok": bool(ok), "msg": msg})
 
 
@@ -436,12 +588,14 @@ async def room_pass(code: str, t: str = ""):
         return JSONResponse({"ok": False, "msg": "这种棋不能停一手喵~"})
     from modules import go_game as G
     chat = _chat_of(room)
+    sig = _finish_sig("go", game)
     ok, msg, _ = G.do_pass(uid, chat)
     if not ok:
         return JSONResponse({"ok": False, "msg": msg})
     g = G.get_game(chat)
     if g and g.get("status") == "finished":
         msg += "\n" + G.end_game(chat)
+    _schedule_finish_flow(code, room, "go", chat, sig)
     return JSONResponse({"ok": True, "msg": msg})
 
 
@@ -463,20 +617,30 @@ async def room_resign(code: str, t: str = ""):
         g = G.get_game(chat)
         if not g or g.get("status") != "playing":
             return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
-        return JSONResponse({"ok": True, "msg": G.resign_game(uid, chat)})
+        sig = _finish_sig(kind, game)
+        txt = G.resign_game(uid, chat)
+        _schedule_finish_flow(code, room, kind, chat, sig)
+        return JSONResponse({"ok": True, "msg": txt})
 
     if kind == "wzq":
         from modules import wzq as W
         g = W.get_game(chat)
         if not g or g.status != "playing":
             return JSONResponse({"ok": False, "msg": "当前没有进行中的对局喵~"})
-        return JSONResponse({"ok": True, "msg": W.web_resign(chat, uid)[1]})
+        sig = _finish_sig(kind, game)
+        ok, txt = W.web_resign(chat, uid)
+        if ok:
+            _schedule_finish_flow(code, room, kind, chat, sig)
+        return JSONResponse({"ok": bool(ok), "msg": txt})
 
     from modules import chinese_chess as X
     g = X.get_game(chat)
     if not g or g.get("finished"):
         return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
+    sig = _finish_sig(kind, game)
     ok, msg = X.web_resign(uid, chat)
+    if ok:
+        _schedule_finish_flow(code, room, kind, chat, sig)
     return JSONResponse({"ok": bool(ok), "msg": msg})
 
 

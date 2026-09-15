@@ -1668,7 +1668,7 @@ def _room_links(kind: str, chat_id: int, players) -> tuple:
     """
     try:
         from services.game_web import ensure_room, play_link, spectate_link
-        code = ensure_room(kind, chat_id)
+        code = ensure_room(kind, chat_id, is_group=chat_id in get_config().group_list)
         return (code, spectate_link(code),
                 {int(u): play_link(code, int(u)) for u in players})
     except Exception as e:
@@ -1721,7 +1721,7 @@ def _link_text(kind: str, chat_id: int, uid: int, has_game: bool) -> str:
         from services.game_web import ensure_room, play_link, spectate_link
     except Exception as e:
         return f"棋局网页服务未启用喵~（{e}）"
-    code = ensure_room(kind, chat_id)
+    code = ensure_room(kind, chat_id, is_group=chat_id in get_config().group_list)
     return (f"房间号 {code}\n"
             f"你的对局链接（别转发）：\n{play_link(code, uid)}\n"
             f"观战链接（可发群里）：\n{spectate_link(code)}")
