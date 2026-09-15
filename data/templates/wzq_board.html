@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=680, initial-scale=1.0">
-<title>Gomoku · 幻梦</title>
+<title>${TITLE_EN} · 幻梦</title>
 <style>
 :root {
   --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--accent-light:#a78bfa;--deepseek:#5686FE;--cyan:#22d3ee;
@@ -44,13 +44,13 @@ body{width:680px;margin:0 auto;position:relative;z-index:1;background:radial-gra
 .player .role{font-family:var(--mono);font-size:10px;color:var(--text-3);letter-spacing:1px;text-transform:uppercase}
 .vs{font-family:var(--mono);font-size:16px;font-weight:800;color:var(--text-3);letter-spacing:1px}
 .board-section{padding:20px 24px;display:flex;justify-content:center}
-.board-grid{display:grid;grid-template-columns:24px repeat(15,32px);grid-template-rows:24px repeat(15,32px);background:var(--board-bg);border:1px solid var(--board-edge);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.5),inset 0 0 30px rgba(0,0,0,0.3)}
+.board-grid{display:grid;grid-template-columns:24px repeat(${BOARD_N},${CELL}px);grid-template-rows:24px repeat(${BOARD_N},${CELL}px);background:var(--board-bg);border:1px solid var(--board-edge);border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.5),inset 0 0 30px rgba(0,0,0,0.3)}
 .corner-cell{background:var(--board-bg);border-radius:6px 0 0 0}
 .col-label,.row-label{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--text-3);letter-spacing:0.3px}
-.cell{width:32px;height:32px;display:flex;align-items:center;justify-content:center;position:relative}
+.cell{width:${CELL}px;height:${CELL}px;display:flex;align-items:center;justify-content:center;position:relative}
 .cell::before{content:'';position:absolute;width:100%;height:1px;background:var(--board-line);top:50%;left:0}
 .cell::after{content:'';position:absolute;width:1px;height:100%;background:var(--board-line);left:50%;top:0}
-.stone-piece{width:26px;height:26px;border-radius:50%;z-index:2;position:relative}
+.stone-piece{width:${STONE}px;height:${STONE}px;border-radius:50%;z-index:2;position:relative}
 .stone-piece.black{background:radial-gradient(circle at 35% 35%,#666,#0a0a0a);box-shadow:0 2px 6px rgba(0,0,0,0.8)}
 .stone-piece.white{background:radial-gradient(circle at 35% 35%,#fff,#b0b0b0);border:1px solid #888;box-shadow:0 2px 6px rgba(0,0,0,0.4)}
 .stone-piece.last-move{box-shadow:0 0 0 2px var(--primary),0 0 14px rgba(236,72,153,0.7),0 2px 6px rgba(0,0,0,0.5)}
@@ -73,7 +73,7 @@ body{width:680px;margin:0 auto;position:relative;z-index:1;background:radial-gra
 <div class="head">
 <div class="logo">HM</div>
 <div class="head-text">
-<div class="head-title"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GOMOKU</span></div>
+<div class="head-title"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">${TITLE_EN}</span></div>
 <div class="head-sub">${SUB_TEXT} · ${DATE}</div>
 </div>
 </div>

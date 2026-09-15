@@ -19,6 +19,15 @@ from core.logger import get_logger
 
 logger = get_logger("go")
 
+def _bot_name() -> str:
+    """bot 自己的显示名（AI 对手在棋盘/文案里用它，而不是"AI"/"玩家0"）"""
+    try:
+        from core.config import get_config
+        return get_config().bot_name or "幻梦"
+    except Exception:
+        return "幻梦"
+
+
 BOARD_SIZE = 9
 EMPTY, BLACK, WHITE = 0, 1, 2
 COLOR_NAME = {BLACK: "黑", WHITE: "白"}
@@ -325,14 +334,14 @@ def _ai_turn(game: dict) -> str:
         game["turn"] = game["player_color"]
         if game["passes"] >= 2:
             _finish(game)
-            return "AI 选择停一手，双方连续 pass，终局！"
-        return "AI 选择停一手（pass）"
+            return f"{_bot_name()} 选择停一手，双方连续 pass，终局！"
+        return f"{_bot_name()} 选择停一手（pass）"
     r, c = pick
     ok, nb, caps, nko, err = try_place(game["board"], r, c, color, game.get("ko_point"))
     if not ok:                                  # 理论上不会发生
         logger.warning("围棋AI落子失败: %s", err)
         game["turn"] = game["player_color"]
-        return "AI 停一手"
+        return f"{_bot_name()} 停一手"
     game["board"] = nb
     game["captures"][color] += len(caps)
     game["ko_point"] = nko
@@ -343,7 +352,7 @@ def _ai_turn(game: dict) -> str:
     _save()
     extra = f"（提了 {len(caps)} 子）" if caps else ""
     extra += "（打劫）" if nko else ""
-    return f"AI 落子 {_coord_label(r, c)}{extra}"
+    return f"{_bot_name()} 落子 {_coord_label(r, c)}{extra}"
 
 
 def make_move(user_id: int, chat_id: int, raw: str) -> tuple:
@@ -409,10 +418,10 @@ def resign_game(user_id: int, chat_id: int) -> str:
     if user_id != game["player_id"]:
         return "这不是你的对局喵~"
     _finish(game)
-    _record_go_context(chat_id, game, "玩家认输，AI 获胜")
+    _record_go_context(chat_id, game, f"玩家认输，{_bot_name()} 获胜")
     del _games[chat_id]
     _save()
-    return "你认输了喵~ AI 获胜！"
+    return f"你认输了喵~ {_bot_name()} 获胜！"
 
 
 def end_game(chat_id: int) -> str:
@@ -427,8 +436,8 @@ def end_game(chat_id: int) -> str:
     _save()
     _record_go_context(chat_id, game, f"终局结算 黑{b} : 白{w}")
     return (f"终局！数子结果（中国规则简化，未判死活）：\n"
-            f"  你(黑) {b} 子  ·  AI(白) {w} 子\n"
-            f"  {'你赢了' if b > w else ('AI 赢' if w > b else '平局')}喵~（难度：{DIFFICULTIES.get(diff, {}).get('label', diff)}）")
+            f"  你(黑) {b} 子  ·  {_bot_name()}(白) {w} 子\n"
+            f"  {'你赢了' if b > w else ((_bot_name() + ' 赢') if w > b else '平局')}喵~（难度：{DIFFICULTIES.get(diff, {}).get('label', diff)}）")
 
 
 def _record_go_context(group_id: int, game: dict, result: str) -> None:
@@ -444,7 +453,7 @@ def _record_go_context(group_id: int, game: dict, result: str) -> None:
         moves = game.get("move_count", 0)
         get_context_mgr().append_to_context(
             group_id,
-            f"[棋局] 围棋对局结束：{pname}(黑) vs AI(白)，{result}，共 {moves} 手",
+            f"[棋局] 围棋对局结束：{pname}(黑) vs {_bot_name()}(白)，{result}，共 {moves} 手",
         )
         logger.info("围棋结果已写入上下文: chat=%d %s", group_id, result)
     except Exception as e:
@@ -458,89 +467,63 @@ def _record_go_context(group_id: int, game: dict, result: str) -> None:
 # ════════════════════════════════════════════════════════════
 
 def build_board_html(game: dict) -> str:
-    """生成棋盘 HTML（容器 #gowrap 用于截图，尺寸固定无留白）"""
-    cell, pad = 58, 44
-    inner = pad * 2 + cell * (BOARD_SIZE - 1)
-    board = game["board"]
-    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {inner} {inner}" '
-           f'width="{inner}" height="{inner}">']
-    svg.append(f'<rect width="{inner}" height="{inner}" rx="10" fill="#e3b169"/>')
-    for i in range(BOARD_SIZE):
-        pos = pad + i * cell
-        svg.append(f'<line x1="{pad}" y1="{pos}" x2="{inner-pad}" y2="{pos}" '
-                   f'stroke="#6b4a1f" stroke-width="1.4"/>')
-        svg.append(f'<line x1="{pos}" y1="{pad}" x2="{pos}" y2="{inner-pad}" '
-                   f'stroke="#6b4a1f" stroke-width="1.4"/>')
-    for (r, c) in [(2, 2), (2, 6), (6, 2), (6, 6), (4, 4)]:
-        svg.append(f'<circle cx="{pad + c * cell}" cy="{pad + r * cell}" r="4" fill="#6b4a1f"/>')
-    for r in range(BOARD_SIZE):
-        for c in range(BOARD_SIZE):
-            v = board[r][c]
-            if v == EMPTY:
-                continue
-            cx, cy = pad + c * cell, pad + r * cell
-            rad = cell * 0.45
-            if v == BLACK:
-                svg.append(f'<circle cx="{cx}" cy="{cy}" r="{rad:.1f}" fill="#1c1c1c"/>')
-                svg.append(f'<circle cx="{cx - rad * 0.3:.1f}" cy="{cy - rad * 0.3:.1f}" '
-                           f'r="{rad * 0.25:.1f}" fill="#4a4a4a" opacity="0.85"/>')
-            else:
-                svg.append(f'<circle cx="{cx}" cy="{cy}" r="{rad:.1f}" fill="#fbfbfb" '
-                           f'stroke="#b9b9b9" stroke-width="1.2"/>')
-    lm = game.get("last_move")
-    if lm:
-        cx, cy = pad + lm[1] * cell, pad + lm[0] * cell
-        svg.append(f'<circle cx="{cx}" cy="{cy}" r="5" fill="#e23b3b"/>')
-    svg.append("</svg>")
+    """复用五子棋的棋盘模板（data/templates/wzq_board.html），只换网格数与标题。
 
-    letters = "ABCDEFGHJ"
-    cols = "".join(f'<span>{letters[i]}</span>' for i in range(BOARD_SIZE))
-    prof = DIFFICULTIES.get(game.get("difficulty", DEFAULT_DIFFICULTY), {})
+    模板占位符：BOARD_N / CELL / STONE / TITLE_EN / CELLS / COL_LABELS 等
+    """
+    tmpl = (_ROOT / "data" / "templates" / "wzq_board.html").read_text(encoding="utf-8")
+    letters = "ABCDEFGHJ"          # 围棋惯例：跳过 I
+    col_labels = "".join(f'<div class="col-label">{c}</div>' for c in letters)
+    star = {(2, 2), (2, 6), (6, 2), (6, 6), (4, 4)}
+    last = list(game.get("last_move") or [])
+    cells = ""
+    for r in reversed(range(BOARD_SIZE)):
+        cells += f'<div class="row-label">{BOARD_SIZE - r}</div>'
+        for c in range(BOARD_SIZE):
+            v = game["board"][r][c]
+            content = ""
+            if v != EMPTY:
+                color = "black" if v == BLACK else "white"
+                lm = " last-move" if last == [r, c] else ""
+                content = f'<div class="stone-piece {color}{lm}"></div>'
+            elif (r, c) in star:
+                content = '<div class="star-point"></div>'
+            cells += f'<div class="cell">{content}</div>'
+
+    my_turn = game.get("turn") == game.get("player_color")
     caps = game.get("captures", {})
-    info = (f'难度 {prof.get("label", "普通")} · 手数 {game.get("move_count", 0)}'
-            f' · 你提子 {caps.get(BLACK, 0)} · AI 提子 {caps.get(WHITE, 0)}')
-    who = "该你落子（你执黑）" if game.get("turn") == game.get("player_color") else "AI 思考中…"
-    css = (
-        "*{margin:0;padding:0;box-sizing:border-box}"
-        'body{font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif;background:#6b4a1f}'
-        f"#gowrap{{width:{inner}px;padding:0 0 12px;background:#e3b169;border-radius:12px;overflow:hidden}}"
-        ".bar{display:flex;justify-content:space-between;padding:10px 16px 6px;font-size:12.5px;"
-        "color:#4a3316;font-weight:600}"
-        ".cols{display:flex;justify-content:space-around;padding:0 40px;font-size:11px;color:#7a5a2a}"
-        ".turn{padding:10px 16px 0;font-size:13px;color:#5a3f18;text-align:center;font-weight:600}"
-    )
-    return (
-        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
-        f"<style>{css}</style></head><body>"
-        '<div id="gowrap">'
-        f'<div class="bar"><span>围棋 9×9</span><span>{info}</span></div>'
-        f'{"".join(svg)}'
-        f'<div class="cols">{cols}</div>'
-        f'<div class="turn">{who}</div>'
-        "</div></body></html>"
-    )
+    prof = DIFFICULTIES.get(game.get("difficulty", DEFAULT_DIFFICULTY), {})
+    sub = (f'围棋 9×9 · 难度{prof.get("label", "普通")} · 手数 {game.get("move_count", 0)}'
+           f' · 提子 {caps.get(BLACK, 0)}:{caps.get(WHITE, 0)}')
+    status_text = "该你落子（你执黑）" if my_turn else f"{_bot_name()} 思考中…"
+    status_class = "playing" if game.get("status") == "playing" else "win"
+    return (tmpl
+            .replace("${BOARD_N}", str(BOARD_SIZE))
+            .replace("${CELL}", "44")
+            .replace("${STONE}", "36")
+            .replace("${TITLE_EN}", "GO")
+            .replace("${SUB_TEXT}", sub)
+            .replace("${DATE}", time.strftime("%Y-%m-%d %H:%M"))
+            .replace("${BLACK_NAME}", "你")
+            .replace("${WHITE_NAME}", _bot_name())
+            .replace("${BLACK_ACTIVE}", "active-turn" if my_turn else "")
+            .replace("${WHITE_ACTIVE}", "" if my_turn else "active-turn")
+            .replace("${COL_LABELS}", col_labels)
+            .replace("${CELLS}", cells)
+            .replace("${STATUS_CLASS}", status_class)
+            .replace("${STATUS_TEXT}", status_text)
+            .replace("${MOVE_COUNT}", str(game.get("move_count", 0))))
 
 
 async def render_board(chat_id: int, test_game: dict | None = None) -> str | None:
-    """渲染棋盘为本地图片，返回路径（供命令层发送）"""
+    """渲染棋盘（复用 changelog.render_card_to_image，与五子棋同一条渲染管线）"""
     game = test_game or _games.get(chat_id)
     if not game:
         return None
     html = build_board_html(game)
     try:
-        from modules.changelog import _ensure_browser
-        browser = await _ensure_browser()
-        page = await browser.new_page(viewport={"width": 620, "height": 720})
-        await page.set_content(html)
-        await page.wait_for_timeout(350)
-        el = await page.query_selector("#gowrap")
-        out = str(_ROOT / "data" / "img_temp" / f"go_{chat_id}.jpg")
-        if el:
-            await el.screenshot(path=out, type="jpeg", quality=95)
-        else:
-            await page.screenshot(path=out, full_page=True, type="jpeg", quality=95)
-        await page.close()
-        return out
+        from modules.changelog import render_card_to_image
+        return await render_card_to_image(html, f"go_{chat_id}.png", width=680)
     except Exception as e:
         logger.warning("围棋棋盘渲染失败: %s", e)
         return None

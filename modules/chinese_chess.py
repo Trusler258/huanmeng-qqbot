@@ -17,6 +17,15 @@ from core.logger import get_logger
 
 logger = get_logger("xq")
 
+def _bot_name() -> str:
+    """bot 自己的显示名（AI 对手在棋盘/文案里用它，而不是"AI"/"玩家0"）"""
+    try:
+        from core.config import get_config
+        return get_config().bot_name or "幻梦"
+    except Exception:
+        return "幻梦"
+
+
 _ROOT = Path(__file__).resolve().parent.parent
 _GAME_FILE = _ROOT / "data" / "xq_games.json"
 AI_DEPTH = 2   # 兼容旧引用（= normal 档）
@@ -188,7 +197,7 @@ def _record_xq_context(group_id: int, game: dict, result: str) -> None:
         moves = len(game.get("move_history", []))
         get_context_mgr().append_to_context(
             group_id,
-            f"[棋局] 中国象棋对局结束：{pname}(红) vs AI(黑)，{result}，共 {moves} 回合",
+            f"[棋局] 中国象棋对局结束：{pname}(红) vs {_bot_name()}(黑)，{result}，共 {moves} 回合",
         )
         logger.info("象棋结果已写入上下文: group=%d %s", group_id, result)
     except Exception as e:
@@ -361,8 +370,8 @@ def resign_game(user_id: int, group_id: int) -> str:
     if user_id != game["player_id"]:
         return "这不是你的对局喵~"
     _delete_game(group_id)
-    _record_xq_context(group_id, game, "玩家认输，AI 获胜")
-    return "你认输了喵~ AI 获胜！"
+    _record_xq_context(group_id, game, f"玩家认输，{_bot_name()} 获胜")
+    return f"你认输了喵~ {_bot_name()} 获胜！"
 
 
 def show_board(group_id: int) -> tuple:
