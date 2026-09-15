@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import websockets
 
 from core.logger import get_logger
@@ -424,7 +425,16 @@ async def send_sentences(
         if faces and i < len(faces) and faces[i]:
             await asyncio.sleep(face_interval)
             try:
-                await _send_and_record(faces[i], chat_id, is_group, user_id, cfg)
+                # ★ v2.3.21: 发表情时在日志打印表情文件名（用户要求，便于核对"发了哪个表情"）
+                _face_cq = faces[i]
+                _m = re.search(r'file=([^,\]]+)', _face_cq or "")
+                _fname = (_m.group(1).split("/")[-1] if _m else "") or _face_cq[:40]
+                _kw = re.search(r'\[FACE:([^\]]*)\]', _face_cq) if _face_cq else None
+                logger.info("发表情: %s%s (sent idx=%d/%d)",
+                            _fname,
+                            f" 关键词={_kw.group(1)}" if _kw else "",
+                            i + 1, len(sentences))
+                await _send_and_record(_face_cq, chat_id, is_group, user_id, cfg)
                 logger.debug("已发送第 %d/%d 条的配图", i + 1, len(sentences))
             except Exception:
                 logger.warning("配图发送失败 (#%d)", i + 1, exc_info=True)
