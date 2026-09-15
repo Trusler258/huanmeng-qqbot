@@ -254,7 +254,8 @@ def start_game(user_id: int, group_id: int, difficulty: str = DEFAULT_DIFFICULTY
     import cchess
     games = _load_games()
     key = str(group_id)
-    if key in games:
+    old = games.get(key)
+    if old and not old.get("finished"):
         return "当前这里已经有一局象棋在进行中喵~ 用 /~xq resign 认输结束"
     diff = resolve_difficulty(difficulty) or DEFAULT_DIFFICULTY
     board = cchess.Board()
@@ -271,6 +272,123 @@ def start_game(user_id: int, group_id: int, difficulty: str = DEFAULT_DIFFICULTY
 
 def get_game(group_id: int) -> dict | None:
     return _load_games().get(str(group_id))
+
+
+# ════════════════════════════════════════════════════════════
+#  棋局 Web 支持（services/game_web.py 用）
+# ════════════════════════════════════════════════════════════
+
+PIECE_CN = {
+    "k": "帥", "a": "仕", "b": "相", "n": "馬", "r": "車", "c": "炮", "p": "兵",
+}
+PIECE_CN_BLACK = {
+    "k": "將", "a": "士", "b": "象", "n": "馬", "r": "車", "c": "砲", "p": "卒",
+}
+PIECES_PER_SIDE = 16
+
+
+def board_grid(board) -> list:
+    """9 列 × 10 行棋子矩阵（"" = 空）。行序与 cchess 一致：0 = 黑方底线（棋盘上方）"""
+    rows = board.board_fen().split("/")
+    grid = []
+    for row in rows:
+        cells = []
+        for ch in row:
+            if ch.isdigit():
+                cells.extend([""] * int(ch))
+            else:
+                cells.append(ch)
+        cells = (cells + [""] * 9)[:9]
+        grid.append(cells)
+    grid = (grid + [[""] * 9] * 10)[:10]
+    return grid
+
+
+def _move_labels(moves: list) -> list:
+    """给每步走法配一个人读标签：棋子字 + 起止（拿不到棋子就退回 uci）"""
+    labels = []
+    try:
+        import cchess
+        rb = cchess.Board()
+        for i, uci in enumerate(moves):
+            ch = ""
+            try:
+                mv = cchess.Move.from_uci(uci)
+                piece = rb.piece_at(mv.from_square)
+                if piece is not None:
+                    sym = piece.symbol()
+                    table = PIECE_CN if sym.isupper() else PIECE_CN_BLACK
+                    ch = table.get(sym.lower(), "")
+                rb.push(mv)
+            except Exception:
+                pass
+            prefix = ch if ch else uci[:2]
+            labels.append({
+                "n": i + 1, "uci": uci,
+                "color": "red" if i % 2 == 0 else "black",
+                "label": f"{prefix} {uci[2:4]}" if ch else uci,
+            })
+    except Exception as e:
+        logger.warning("走法标签生成失败，退回 uci: %s", e)
+        labels = [{"n": i + 1, "uci": u, "color": "red" if i % 2 == 0 else "black",
+                   "label": u} for i, u in enumerate(moves)]
+    return labels
+
+
+def web_state(group_id: int, user_id: int) -> dict | None:
+    """棋局快照（供网页渲染）。没有对局返回 None"""
+    game = get_game(group_id)
+    if not game:
+        return None
+    import cchess
+    moves = list(game.get("move_history") or [])
+    board = _build_board_from_moves(moves)
+    grid = board_grid(board)
+
+    alive_red = sum(1 for row in grid for ch in row if ch.isupper())
+    alive_black = sum(1 for row in grid for ch in row if ch.islower())
+    red_moves = sum(1 for i in range(len(moves)) if i % 2 == 0)
+    black_moves = len(moves) - red_moves
+
+    finished = bool(game.get("finished")) or board.is_game_over()
+    try:
+        in_check = board.is_check()
+    except Exception:
+        in_check = False
+
+    return {
+        "grid": grid,
+        "turn": "red" if board.turn else "black",
+        "in_check": in_check,
+        "finished": finished,
+        "result": game.get("result") or "",
+        "move_count": len(moves),
+        "last_move": moves[-1] if moves else "",
+        "difficulty": DIFFICULTIES.get(game.get("difficulty", DEFAULT_DIFFICULTY), {}).get("label", "普通"),
+        "elapsed": max(0, int(time.time() - int(game.get("start_time") or time.time()))),
+        "red": {"name": "你", "alive": alive_red, "captures": PIECES_PER_SIDE - alive_black,
+                "moves": red_moves},
+        "black": {"name": _bot_name(), "alive": alive_black, "captures": PIECES_PER_SIDE - alive_red,
+                  "moves": black_moves},
+        "moves": _move_labels(moves)[-60:],
+    }
+
+
+def web_move(user_id: int, group_id: int, notation: str) -> tuple:
+    """走棋（Web 入口）。render=False —— 页面自己画棋盘，不做无谓截图"""
+    ok, msg, _ = make_move(user_id, group_id, notation, render=False)
+    return ok, msg
+
+
+def web_resign(user_id: int, group_id: int) -> tuple:
+    game = get_game(group_id)
+    if not game:
+        return False, "当前没有对局喵~"
+    if user_id != game.get("player_id"):
+        return False, "这不是你的对局喵~"
+    if game.get("finished"):
+        return False, "这局已经结束了喵~"
+    return True, resign_game(user_id, group_id)
 
 
 def _build_board_from_moves(moves: list) -> "cchess.Board":
@@ -300,7 +418,23 @@ def _parse_move(notation: str, board):
         return None
 
 
-def make_move(user_id: int, group_id: int, notation: str) -> tuple:
+def _finish_game(group_id: int, game: dict, result: str) -> None:
+    """标记终局并落盘。
+
+    ★ 不再删除棋局：这样棋局 Web（以及 /~xq board）在终局后还能看到最终盘面。
+    start_game 的守卫已改为"只在未结束的对局上拒绝"。
+    """
+    game["finished"] = True
+    game["result"] = result
+    game["end_time"] = int(time.time())
+    _save_game_after_move(group_id, game)
+
+
+def make_move(user_id: int, group_id: int, notation: str, render: bool = True) -> tuple:
+    """玩家走一步 + AI 应一手。
+
+    render=False 时跳过棋盘截图（棋局 Web 用，页面自己画棋盘，不需要 PNG）
+    """
     game = get_game(group_id)
     if not game:
         return False, "当前群没有象棋对局喵~ 用 /~xq start 开始", None
@@ -311,7 +445,8 @@ def make_move(user_id: int, group_id: int, notation: str) -> tuple:
     board = _build_board_from_moves(game["move_history"])
 
     if board.is_game_over():
-        _delete_game(group_id)
+        if not game.get("finished"):
+            _finish_game(group_id, game, "对局已结束")
         return False, "这局已经结束了喵~", None
 
     move = _parse_move(notation, board)
@@ -324,16 +459,17 @@ def make_move(user_id: int, group_id: int, notation: str) -> tuple:
     game["fen_history"].append(board.fen())
 
     lastmove = board.peek()
+    out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png") if render else None
 
     # 将死/困毙
     if board.is_checkmate():
-        _delete_game(group_id)
-        out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png")
-        svg = _board_to_svg(board, lastmove=lastmove, checkers=board.checkers())
-        _start_render(svg, out)
+        _finish_game(group_id, game, "玩家将死对方，玩家获胜")
+        if render:
+            svg = _board_to_svg(board, lastmove=lastmove, checkers=board.checkers())
+            _start_render(svg, out)
         return True, "将死！你赢了喵~", out
     if board.is_stalemate():
-        _delete_game(group_id)
+        _finish_game(group_id, game, "困毙，和棋")
         return True, "困毙！和棋喵~", None
 
     # AI
@@ -346,16 +482,17 @@ def make_move(user_id: int, group_id: int, notation: str) -> tuple:
 
     end_msg = ""
     if board.is_checkmate():
-        end_msg = " 将死！AI赢了喵~"
-        _delete_game(group_id)
+        end_msg = f" 将死！{_bot_name()}赢了喵~"
+        _finish_game(group_id, game, f"{_bot_name()} 将死玩家，{_bot_name()} 获胜")
     elif board.is_stalemate():
         end_msg = " 困毙！和棋喵~"
-        _delete_game(group_id)
+        _finish_game(group_id, game, "困毙，和棋")
     else:
         _save_game_after_move(group_id, game)
 
+    if not render:
+        return True, f"你: {uci}  |  {_bot_name()}: {ai_move.uci()}{ai_comment}{end_msg}", None
     try:
-        out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png")
         svg = _board_to_svg(board, lastmove=ai_move, checkers=board.checkers())
         _start_render(svg, out)
         return True, f"你: {uci}  |  AI: {ai_move.uci()}{ai_comment}{end_msg}", out
@@ -369,7 +506,9 @@ def resign_game(user_id: int, group_id: int) -> str:
         return "当前群没有象棋对局喵~"
     if user_id != game["player_id"]:
         return "这不是你的对局喵~"
-    _delete_game(group_id)
+    if game.get("finished"):
+        return "这局已经结束了喵~"
+    _finish_game(group_id, game, f"玩家认输，{_bot_name()} 获胜")
     _record_xq_context(group_id, game, f"玩家认输，{_bot_name()} 获胜")
     return f"你认输了喵~ {_bot_name()} 获胜！"
 

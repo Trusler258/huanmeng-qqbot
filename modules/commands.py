@@ -1658,6 +1658,16 @@ async def _wzq_render_and_send(chat_id: int, is_group: bool, group_id: int, user
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
 
 
+def _game_web_link(chat_id: int, user_id: int, kind: str) -> str:
+    """棋局网页链接。服务未启用时返回空串（不影响指令本身）"""
+    try:
+        from services.game_web import game_link
+        return game_link(chat_id, user_id, kind)
+    except Exception as e:
+        logger.warning("生成棋局网页链接失败: %s", e)
+        return ""
+
+
 async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
     """
     五子棋 /~wzq <操作>
@@ -1690,6 +1700,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                 "  board       查看棋盘\n"
                 "  surrender   认输\n"
                 "  undo        悔棋\n"
+                "  link        取网页下棋链接\n"
                 "  status      对局信息\n"
                 "  admin clear 强制结束本群棋局(仅主人)"
             )
@@ -1716,7 +1727,9 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                     cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
                     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             asyncio.create_task(_bg_ai_start())
-            return format_lang("wzq.start", diff=diff_name)
+            base = format_lang("wzq.start", diff=diff_name)
+            link = _game_web_link(chat_id, user_id, "wzq")
+            return f"{base}\n网页下棋（推荐）：{link}" if link else base
         return result
 
     # ── 发起挑战 ──
@@ -1759,18 +1772,23 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                     cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
                     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             asyncio.create_task(_bg_duel())
-            return f"挑战已发起！等待 [CQ:at,qq={white_id}] 接受 (/~wzq accept) 或拒绝 (/~wzq decline)"
+            link = _game_web_link(chat_id, user_id, "wzq")
+            tail = f"\n开打后点这里下棋：{link}" if link else ""
+            return (f"挑战已发起！等待 [CQ:at,qq={white_id}] 接受 (/~wzq accept) "
+                    f"或拒绝 (/~wzq decline){tail}")
         return result
 
     # ── 接受 ──
     if action == "accept":
         result = g.accept_duel(chat_id, user_id)
         if result == "started":
+            link = _game_web_link(chat_id, user_id, "wzq")
             async def _bg():
                 img = await g.render_board(chat_id, cfg)
-                if img:
-                    cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
-                    await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
+                cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
+                tip_line = f"\n网页下棋（推荐）：{link}" if link else ""
+                txt = f"对局开始！黑先白后，五子连珠者胜。{tip_line}\n{cq}"
+                await (send_group_msg(txt, group_id) if is_group else send_private_msg(txt, user_id))
             asyncio.create_task(_bg())
             return None
         return result
@@ -1795,6 +1813,21 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             g.force_end(chat_id)
             return f"已强制结束本群棋局 (状态={game.status})"
         return "用法: /~wzq admin clear  强制清除本群所有对局"
+
+    # ── 网页下棋链接 ──
+    if action in ("link", "链接", "网页"):
+        game = g.get_game(chat_id)
+        if not game:
+            return "这里还没有五子棋对局喵~ 用 /~wzq ai 普通 开局"
+        link = _game_web_link(chat_id, user_id, "wzq")
+        if not link:
+            return "棋局网页服务未启用喵~"
+        side = ""
+        if user_id == game.black:
+            side = "（你是黑方）"
+        elif user_id == game.white:
+            side = "（你是白方）"
+        return f"网页下棋链接{side}（点开即身份）：\n{link}"
 
     # ── 落子 ──
     coord = g.parse_coord(action if len(args) == 1 else " ".join(args))
@@ -2052,11 +2085,7 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not r.startswith("ok"):
             return r
         label = r.split(":", 1)[1] if ":" in r else "普通"
-        try:
-            from services.game_web import game_link
-            link = game_link(chat_id, user_id, "go")
-        except Exception:
-            link = ""
+        link = _game_web_link(chat_id, user_id, "go")
         try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
@@ -2068,11 +2097,9 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
             return f"棋盘渲染失败喵: {e}"
 
     if action in ("link", "链接", "网页"):
-        try:
-            from services.game_web import game_link
-            return f"网页下棋链接（点开即身份）：\n{game_link(chat_id, user_id, 'go')}"
-        except Exception as e:
-            return f"生成链接失败: {e}"
+        link = _game_web_link(chat_id, user_id, "go")
+        return (f"网页下棋链接（点开即身份）：\n{link}" if link
+                else "棋局网页服务未启用喵~")
 
     if action in ("board", "棋盘", "查看"):
         game = G.get_game(chat_id)
@@ -2128,6 +2155,7 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
             "  start [难度]  开始新对局（新手/普通/困难/专家，默认普通）\n"
             "  <走法>        炮二平五 / h2e2\n"
             "  board         查看棋盘\n"
+            "  link          取网页下棋链接\n"
             "  resign        认输\n"
             "  history       走棋记录"
         )
@@ -2143,12 +2171,14 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not result.startswith("ok"):
             return result
         label = result.split(":", 1)[1] if ":" in result else "普通"
+        link = _game_web_link(chat_id, user_id, "xq")
+        tip_line = f"\n网页下棋（推荐）：{link}" if link else ""
         try:
             svg = build_initial_svg()
             out = str(_ROOT / "data" / "img_temp" / f"xq_{chat_id}.png")
             await _svg_to_png(svg, out)
             cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
-            await _send(f"对局开始！你执红方，AI 难度「{label}」，请落子喵~\n{cq}")
+            await _send(f"对局开始！你执红方，AI 难度「{label}」，请落子喵~{tip_line}\n{cq}")
             return None
         except Exception as e:
             return f"棋盘渲染失败喵: {e}"
@@ -2160,6 +2190,11 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
             await _send(cq)
         return msg
+
+    if action in ("link", "链接", "网页"):
+        link = _game_web_link(chat_id, user_id, "xq")
+        return (f"网页下棋链接（点开即身份）：\n{link}" if link
+                else "棋局网页服务未启用喵~")
 
     if action == "resign":
         return resign_game(user_id, chat_id)

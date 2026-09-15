@@ -152,10 +152,14 @@ def _dict_to_game(d: dict) -> WzqGame:
 
 
 def save_games():
-    """持久化所有进行中的对局"""
+    """持久化对局。
+
+    ★ 包含 finished：棋局结束后不再从内存/磁盘消失，这样棋局 Web 在 bot
+    重启之后仍能看到终局盘面（每个 chat 只保留最后一条，不会无限增长）。
+    """
     data = {}
     for chat_id, game in _games.items():
-        if game.status in ("playing", "waiting"):
+        if game.status in ("playing", "waiting", "finished"):
             data[str(chat_id)] = _game_to_dict(game)
     if data:
         _SAVE_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -189,6 +193,112 @@ def load_games():
 
 def get_game(chat_id: int) -> WzqGame | None:
     return _games.get(chat_id)
+
+
+# ════════════════════════════════════════════════════════════
+#  棋局 Web 支持（services/game_web.py 用）
+# ════════════════════════════════════════════════════════════
+
+def web_load() -> None:
+    """从磁盘补读对局（**不删文件**）—— 供棋局 Web 在跨进程 / bot 重启后读到棋局。
+
+    与 load_games() 的区别：load_games 是启动时一次性恢复并 unlink 文件，
+    这里用 setdefault 合并语义、不动文件，可以反复调用。
+    """
+    if not _SAVE_FILE.exists():
+        return
+    try:
+        data = json.loads(_SAVE_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("棋局补读失败: %s", e)
+        return
+    for chat_id_str, d in data.items():
+        try:
+            _games.setdefault(int(chat_id_str), _dict_to_game(d))
+        except Exception as e:
+            logger.warning("棋局补读跳过 %s: %s", chat_id_str, e)
+
+
+def _side_name(qq: int, chat_id: int) -> str:
+    return _bot_name() if not qq else _player_name(qq, chat_id)
+
+
+_DIFF_LABEL = {"easy": "新手", "normal": "普通", "hard": "困难", "expert": "专家"}
+
+
+def web_state(chat_id: int, user_id: int) -> dict | None:
+    """棋局快照（供网页渲染）。没有对局返回 None"""
+    game = get_game(chat_id)
+    if not game:
+        return None
+
+    moves = []
+    for i, (r, c, t) in enumerate(game.move_history):
+        moves.append({"n": i + 1, "r": r, "c": c,
+                      "color": "black" if t == 1 else "white",
+                      "label": coord_label(r, c)})
+
+    stones = {1: 0, 2: 0}
+    for row in game.board:
+        for v in row:
+            if v:
+                stones[v] = stones.get(v, 0) + 1
+
+    my_color = 0
+    if user_id == game.black:
+        my_color = 1
+    elif user_id == game.white:
+        my_color = 2
+
+    return {
+        "size": BOARD_SIZE,
+        "letters": COL_LABELS,
+        "board": game.board,
+        "turn": game.turn,
+        "status": game.status,
+        "winner": game.winner,
+        "move_count": game.move_count,
+        "last_move": list(game.last_move) if game.last_move else None,
+        "my_color": my_color,
+        "ai_difficulty": game.ai_difficulty or "",
+        "difficulty_label": _DIFF_LABEL.get(game.ai_difficulty, game.ai_difficulty or "普通"),
+        "forbidden_enabled": bool(game.forbidden_enabled),
+        "elapsed": max(0, int(time.time() - (game.start_time or time.time()))),
+        "undo_request": game.undo_request or 0,
+        "black": {"id": game.black, "name": _side_name(game.black, chat_id),
+                  "stones": stones.get(1, 0)},
+        "white": {"id": game.white, "name": _side_name(game.white, chat_id),
+                  "stones": stones.get(2, 0)},
+        "moves": moves[-60:],
+    }
+
+
+def web_resign(chat_id: int, user_id: int) -> tuple[bool, str]:
+    """认输（Web 入口，返回 (ok, 文案)）"""
+    ok, _ = surrender(chat_id, user_id)
+    if not ok:
+        return False, "现在不能认输喵~"
+    game = get_game(chat_id)
+    loser = _side_name(user_id, chat_id)
+    return True, f"{loser} 认输，对局结束"
+
+
+def web_move(chat_id: int, user_id: int, row: int, col: int) -> tuple[bool, str]:
+    """落子（Web 入口）。人机模式下轮到 AI 时由调用方再调 ai_turn_web()"""
+    ok, msg = make_move(chat_id, user_id, row, col)
+    if not ok:
+        return False, msg
+    game = get_game(chat_id)
+    label = coord_label(row, col)
+    if msg == "win":
+        winner_id = game.black if game.winner == 1 else game.white
+        name = "你" if winner_id == user_id else _side_name(winner_id, chat_id)
+        return True, f"{label} 五连！{name} 获胜"
+    if msg == "draw":
+        return True, "棋盘下满，平局"
+    if msg.startswith("forbidden:"):
+        return True, f"禁手犯规：{msg.split(':', 1)[1]}"
+    return True, f"落子 {label}"
 
 
 def create_duel(chat_id: int, black: int, white: int, forbidden: bool = True) -> str:

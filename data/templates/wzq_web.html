@@ -3,19 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%231c2333'/%3E%3Ccircle cx='13' cy='12' r='4' fill='%235a626e'/%3E%3C/svg%3E">
-<title>围棋对局 · 幻梦</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%231c2333'/%3E%3Ccircle cx='16' cy='16' r='14' fill='%23f2f5f9'/%3E%3Ccircle cx='12' cy='11' r='3.5' fill='%23ccd3de'/%3E%3C/svg%3E">
+<title>五子棋对局 · 幻梦</title>
 <link rel="stylesheet" href="${CSS_URL}">
+<style>
+.stone-dot.w{background:radial-gradient(circle at 33% 28%,#fff,#c9d1dd)}
+.mine{font-family:var(--mono);font-size:9px;font-weight:700;color:#fff;background:var(--ink-2);
+  border-radius:999px;padding:2px 6px;margin-left:5px;vertical-align:1px}
+.rec.warm .mine{background:var(--warm)}
+.rec.cool .mine{background:var(--cool)}
+</style>
 </head>
 <body>
 <div class="wrap">
 
   <div class="topbar">
-    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GO</span></div>
+    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GOMOKU</span></div>
     <div class="tb-sep"></div>
     <span class="chip" id="chip-room">房间 <b>--</b></span>
     <div class="chips">
-      <span class="chip" id="chip-size">棋盘 <b>--</b></span>
+      <span class="chip" id="chip-mode">模式 <b>--</b></span>
       <span class="chip" id="chip-diff">难度 <b>--</b></span>
       <span class="chip cool" id="chip-moves">手数 <b>0</b></span>
       <span class="chip warm" id="chip-time">用时 <b>00:00</b></span>
@@ -43,10 +50,6 @@
         </div>
         <div class="statusline" id="status"><span class="dot"></span><span id="status-text">载入中…</span></div>
         <div class="btns">
-          <button class="btn cool" id="btn-pass">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5 7.4 8 4 11.5"/><path d="M8.6 4.5 12 8l-3.4 3.5"/></svg>
-            停一手
-          </button>
           <button class="btn warm" id="btn-resign">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M4.2 13.6V2.6"/><path d="M4.2 3.3h7.4l-1.7 2.4 1.7 2.4H4.2z"/></svg>
             认输
@@ -56,7 +59,7 @@
             刷新
           </button>
         </div>
-        <div class="tip" id="tip">点击交叉点落子，你执黑先行。</div>
+        <div class="tip" id="tip">点击交叉点落子，黑先白后，五子连珠者胜。</div>
       </section>
     </div>
 
@@ -68,12 +71,12 @@
             <span class="rec-accent"></span>
             <div class="rec-top">
               <span class="stone-dot b"></span>
-              <span class="rec-name"><b>你</b><i>BLACK · 先行</i></span>
+              <span class="rec-name"><b id="nm-black">黑方</b><i>BLACK · 先行</i></span>
               <span class="turnbadge" id="badge-black">等待</span>
             </div>
             <div class="rec-stats">
               <div class="stat"><span class="k">盘上子</span><span class="v" id="sb">0</span></div>
-              <div class="stat"><span class="k">提子</span><span class="v" id="cb">0</span></div>
+              <div class="stat"><span class="k">最长连</span><span class="v" id="rb">0</span></div>
               <div class="stat"><span class="k">落子</span><span class="v" id="mb">0</span></div>
             </div>
             <div class="rec-bar"><i id="bar-b" style="width:50%"></i></div>
@@ -86,12 +89,12 @@
             <span class="rec-accent"></span>
             <div class="rec-top">
               <span class="stone-dot w"></span>
-              <span class="rec-name"><b id="nm-bot">幻梦</b><i>WHITE · 后手</i></span>
+              <span class="rec-name"><b id="nm-white">白方</b><i>WHITE · 后手</i></span>
               <span class="turnbadge" id="badge-white">等待</span>
             </div>
             <div class="rec-stats">
               <div class="stat"><span class="k">盘上子</span><span class="v" id="sw">0</span></div>
-              <div class="stat"><span class="k">提子</span><span class="v" id="cw">0</span></div>
+              <div class="stat"><span class="k">最长连</span><span class="v" id="rw">0</span></div>
               <div class="stat"><span class="k">落子</span><span class="v" id="mw">0</span></div>
             </div>
             <div class="rec-bar"><i id="bar-w" style="width:50%"></i></div>
@@ -104,9 +107,9 @@
         <div class="card-head"><span class="bar warm"></span><h2>对 局 信 息</h2></div>
         <div class="card-body">
           <div class="kv">
-            <div class="item"><span class="k">AI 难度</span><span class="v" id="i-diff">--</span></div>
+            <div class="item"><span class="k">对局模式</span><span class="v" id="i-mode">--</span></div>
             <div class="item"><span class="k">手数</span><span class="v" id="i-moves">0</span></div>
-            <div class="item"><span class="k">停一手</span><span class="v" id="i-pass">0</span></div>
+            <div class="item"><span class="k">禁手</span><span class="v" id="i-fb">--</span></div>
             <div class="item"><span class="k">用时</span><span class="v" id="i-time">00:00</span></div>
           </div>
           <div class="result-banner" id="result" style="display:none">
@@ -126,24 +129,22 @@
 
 <script>
 const ROOM = "${ROOM}", TOKEN = "${TOKEN}";
-const CELL_BASE = {9: 46, 13: 34, 19: 27};
-let busy = false, finished = false, curN = 0;
-let LETTERS = "", STAR = [], boardCache = null, lastCache = null, tipTimer = null;
+const N = 15, CELL_BASE = 34, LETTERS = "ABCDEFGHIJKLMNO";
+let busy = false, finished = false, built = false;
+let boardCache = null, lastCache = null, myColor = 0, tipTimer = null;
 
 const $ = id => document.getElementById(id);
 
 function calcCell(n) {
-  const holder = $("barea").closest(".board-body");
-  const avail = holder.clientWidth - 32 - 26;
-  const base = CELL_BASE[n] || 27;
+  const avail = $("barea").closest(".board-body").clientWidth - 32 - 26;
   const fit = Math.floor(avail / n);
-  return Math.max(12, Math.min(base, fit > 0 ? fit : base));
+  return Math.max(14, Math.min(CELL_BASE, fit > 0 ? fit : CELL_BASE));
 }
 
-function buildBoard(n, letters, stars) {
-  curN = n; LETTERS = letters; STAR = stars || [];
-  const cell = calcCell(n);
-  const side = n * cell, stone = Math.round(cell * 0.9);
+function buildBoard() {
+  const n = N, cell = calcCell(n);
+  const side = n * cell, stone = Math.round(cell * 0.88);
+  built = true;
 
   const bw = $("bwrap");
   bw.style.gridTemplateColumns = `26px ${side}px`;
@@ -151,7 +152,7 @@ function buildBoard(n, letters, stars) {
 
   const cl = $("clabels"), rl = $("rlabels");
   cl.style.gridTemplateColumns = `repeat(${n},${cell}px)`;
-  cl.innerHTML = letters.split("").map(c => `<div>${c}</div>`).join("");
+  cl.innerHTML = LETTERS.split("").map(c => `<div>${c}</div>`).join("");
   rl.style.gridTemplateRows = `repeat(${n},${cell}px)`;
   let rh = "";
   for (let r = 0; r < n; r++) rh += `<div>${n - r}</div>`;
@@ -168,11 +169,10 @@ function buildBoard(n, letters, stars) {
     svg += `<line x1="${lo}" y1="${p}" x2="${hi}" y2="${p}"/>`;
     svg += `<line x1="${p}" y1="${lo}" x2="${p}" y2="${hi}"/>`;
   }
-  const rDot = Math.max(1.5, +(cell * 0.055).toFixed(2));
-  STAR.forEach(k => {
-    const rc = k.split(",");
-    const r = +rc[0], c = +rc[1];
-    svg += `<circle cx="${cell / 2 + c * cell}" cy="${cell / 2 + r * cell}" r="${rDot}"/>`;
+  // 五子棋标准星位（天元 + 四隅 4 点）
+  const rc = Math.max(1.5, +(cell * 0.055).toFixed(2));
+  [[3, 3], [3, 11], [7, 7], [11, 3], [11, 11]].forEach(p => {
+    svg += `<circle cx="${cell / 2 + p[1] * cell}" cy="${cell / 2 + p[0] * cell}" r="${rc}"/>`;
   });
   $("grid").innerHTML = svg;
 
@@ -191,7 +191,7 @@ function buildBoard(n, letters, stars) {
 }
 
 function paint() {
-  if (!curN || !boardCache) return;
+  if (!built || !boardCache) return;
   const stone = +$("hits").dataset.stone, cell = +$("hits").dataset.cell;
   const pad = Math.round((cell - stone) / 2);
   const last = lastCache || [];
@@ -211,6 +211,25 @@ function paint() {
   });
 }
 
+// 最长连子（四方向取最大）
+function maxRun(board, side) {
+  const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+  let best = 0;
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] !== side) continue;
+      for (const [dr, dc] of dirs) {
+        const pr = r - dr, pc = c - dc;
+        if (pr >= 0 && pr < N && pc >= 0 && pc < N && board[pr][pc] === side) continue; // 只从线段起点数
+        let len = 0, rr = r, cc = c;
+        while (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr][cc] === side) { len++; rr += dr; cc += dc; }
+        if (len > best) best = len;
+      }
+    }
+  }
+  return best;
+}
+
 async function play(el) {
   if (busy || finished) return;
   const r = +el.dataset.r, c = +el.dataset.c;
@@ -218,9 +237,9 @@ async function play(el) {
   busy = true;
   tip("落子中…");
   try {
-    const res = await fetch(`/api/go/${ROOM}/move?t=${TOKEN}`, {
+    const res = await fetch(`/api/wzq/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({coord: `${r + 1},${c + 1}`})
+      body: JSON.stringify({r, c})
     }).then(x => x.json());
     if (!res.ok) { tip(res.msg || "这手不行"); await refresh(); return; }
     tip(res.msg || "落子成功");
@@ -229,11 +248,11 @@ async function play(el) {
   finally { busy = false; }
 }
 
-async function act(path) {
+async function resign() {
   if (busy) return;
   busy = true;
   try {
-    const res = await fetch(`/api/go/${ROOM}/${path}?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
+    const res = await fetch(`/api/wzq/${ROOM}/resign?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
     tip(res.msg || "");
     await refresh();
   } catch (e) { tip("网络错误，稍后重试"); }
@@ -260,42 +279,40 @@ function setStatus(cls, text) {
 
 function render(st) {
   if (!st.ok) { tip("链接无效或已过期"); return; }
-  finished = !!st.finished;
-  if (st.bot) $("nm-bot").textContent = st.bot;
   $("chip-room").innerHTML = `房间 <b>${ROOM}</b>`;
 
-  if (!st.size) {
-    setStatus("done", "对局已结束（记录已归档）");
+  if (st.gone || !st.board) {
+    finished = true;
+    setStatus("done", "对局已归档");
     $("result").style.display = "flex";
-    $("result-text").textContent = "对局已归档，去群里用 /~go start 再开一局";
-    $("btn-pass").disabled = true;
+    $("result-text").textContent = "对局记录已清理，去群里用 /~wzq ai <难度> 再开一局";
     $("btn-resign").disabled = true;
     return;
   }
 
-  // 先落数据再建盘，避免重建瞬间用到旧盘面
-  boardCache = st.board; lastCache = st.last_move || [];
-  if (st.size !== curN || STAR.length !== st.stars.length) buildBoard(st.size, st.letters, st.stars);
+  finished = st.status === "finished";
+  const waiting = st.status === "waiting";
+  myColor = st.my_color || 0;
 
-  $("chip-size").innerHTML = `棋盘 <b>${st.size} 路</b>`;
-  $("chip-diff").innerHTML = `难度 <b>${st.difficulty}</b>`;
+  boardCache = st.board; lastCache = st.last_move || [];
+  if (!built) buildBoard();
+
+  const isAI = !st.white.id;
+  $("chip-mode").innerHTML = `模式 <b>${isAI ? "人机" : "对战"}</b>`;
+  $("chip-diff").innerHTML = `难度 <b>${isAI ? (st.difficulty_label || "普通") : "--"}</b>`;
   $("chip-moves").innerHTML = `手数 <b>${st.move_count}</b>`;
   $("chip-time").innerHTML = `用时 <b>${fmtTime(st.elapsed)}</b>`;
-  $("board-note").textContent = `${st.size} × ${st.size}`;
+  $("board-note").textContent = `${N} × ${N}`;
 
-  const sB = st.stones.black, sW = st.stones.white, tot = Math.max(1, sB + sW);
+  $("nm-black").innerHTML = st.black.name + (myColor === 1 ? '<span class="mine">你</span>' : "");
+  $("nm-white").innerHTML = st.white.name + (myColor === 2 ? '<span class="mine">你</span>' : "");
+
+  const sB = st.black.stones, sW = st.white.stones, tot = Math.max(1, sB + sW);
   $("sb").textContent = sB; $("sw").textContent = sW;
-  $("cb").textContent = st.captures.black; $("cw").textContent = st.captures.white;
-
-  const mv = st.moves || [];
-  let mB = mv.filter(m => m.color === "black" && !m.pass).length;
-  let mW = mv.filter(m => m.color === "white" && !m.pass).length;
-  if (st.move_count > mv.length && mB + mW === 0) {
-    const half = Math.round(st.move_count / 2);
-    if (st.player_color === 1) { mB = half; mW = st.move_count - half; }
-    else { mW = half; mB = st.move_count - half; }
-  }
-  $("mb").textContent = mB; $("mw").textContent = mW;
+  $("rb").textContent = maxRun(st.board, 1);
+  $("rw").textContent = maxRun(st.board, 2);
+  $("mb").textContent = st.black.moves || 0;
+  $("mw").textContent = st.white.moves || 0;
 
   const pB = Math.round(sB / tot * 100);
   $("bar-b").style.width = pB + "%";
@@ -303,38 +320,42 @@ function render(st) {
   $("k-b").textContent = `盘面 ${pB}%`;
   $("k-w").textContent = `盘面 ${100 - pB}%`;
 
-  const myTurn = !finished && st.turn === st.player_color;
-  $("badge-black").textContent = myTurn ? "行棋中" : (finished ? "已结束" : "等待");
-  $("badge-white").textContent = finished ? "已结束" : (myTurn ? "等待" : "思考中");
-  $("badge-black").classList.toggle("on", myTurn);
-  $("badge-white").classList.toggle("on", !myTurn && !finished);
+  const myTurn = !finished && !waiting && st.turn === myColor;
+  const oppTurn = !finished && !waiting && st.turn !== myColor;
+  $("badge-black").textContent = finished ? "已结束" : (st.turn === 1 ? (myTurn ? "行棋中" : "思考中") : "等待");
+  $("badge-white").textContent = finished ? "已结束" : (st.turn === 2 ? (myTurn ? "行棋中" : "思考中") : "等待");
+  $("badge-black").classList.toggle("on", st.turn === 1 && !finished && !waiting);
+  $("badge-white").classList.toggle("on", st.turn === 2 && !finished && !waiting);
 
-  $("i-diff").textContent = st.difficulty;
+  $("i-mode").textContent = isAI ? "人机" : "人人对战";
   $("i-moves").textContent = st.move_count;
-  $("i-pass").textContent = st.passes;
+  $("i-fb").textContent = st.forbidden_enabled ? "启用" : "关闭";
   $("i-time").textContent = fmtTime(st.elapsed);
   $("rec-note").textContent = `共 ${st.move_count} 手`;
 
   if (finished) {
-    setStatus("done", st.result_text || "对局已结束");
+    const w = st.winner;
+    const txt = w === 1 ? `${st.black.name}(黑) 获胜` : (w === 2 ? `${st.white.name}(白) 获胜` : "平局");
+    setStatus("done", `对局结束 · ${txt}`);
     $("result").style.display = "flex";
-    const fs = st.final_score;
-    $("result-text").textContent = fs ? `数子结果 黑 ${fs.black} : 白 ${fs.white}` : (st.result_text || "对局已结束");
-    $("btn-pass").disabled = true;
+    $("result-text").textContent = txt;
+    $("btn-resign").disabled = true;
+  } else if (waiting) {
+    setStatus("bot", "等待对方接受挑战…");
+    $("result").style.display = "none";
     $("btn-resign").disabled = true;
   } else {
-    setStatus(myTurn ? "you" : "bot", myTurn ? "轮到你了 · 点击交叉点落子" : `${st.bot} 正在思考…`);
+    setStatus(myTurn ? "you" : "bot",
+              myTurn ? "轮到你了 · 点击交叉点落子"
+                     : (isAI ? `${st.white.name} 正在思考…` : `等待 ${st.turn === 1 ? st.black.name : st.white.name} 落子…`));
     $("result").style.display = "none";
-    $("btn-pass").disabled = false;
     $("btn-resign").disabled = false;
   }
 
-  const list = mv.slice().reverse();
-  $("log-note").textContent = mv.length ? `最近 ${mv.length} 手` : "";
+  const list = (st.moves || []).slice().reverse();
+  $("log-note").textContent = list.length ? `最近 ${list.length} 手` : "";
   $("moves").innerHTML = list.length
-    ? list.map(m => m.pass
-        ? `<span class="mv pass"><i class="${m.color === "black" ? "b" : "w"}">${m.n}</i>停一手</span>`
-        : `<span class="mv ${m.color === "black" ? "b" : "w"}"><i>${m.n}</i>${m.label}</span>`).join("")
+    ? list.map(m => `<span class="mv ${m.color === "black" ? "b" : "w"}"><i>${m.n}</i>${m.label}</span>`).join("")
     : `<div class="empty">还没有落子</div>`;
 
   paint();
@@ -342,19 +363,17 @@ function render(st) {
 
 async function refresh() {
   try {
-    const st = await fetch(`/api/go/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    const st = await fetch(`/api/wzq/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }
 
-buildBoard(19, "ABCDEFGHJKLMNOPQRST", []);
-$("btn-pass").onclick = () => act("pass");
-$("btn-resign").onclick = () => { if (confirm("确定认输吗？")) act("resign"); };
+$("btn-resign").onclick = () => { if (confirm("确定认输吗？")) resign(); };
 $("btn-refresh").onclick = () => { tip("已刷新"); refresh(); };
 let rt = null;
 window.addEventListener("resize", () => {
   clearTimeout(rt);
-  rt = setTimeout(() => { if (curN) buildBoard(curN, LETTERS, STAR); }, 140);
+  rt = setTimeout(() => { if (built) buildBoard(); }, 140);
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
