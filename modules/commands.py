@@ -4189,21 +4189,29 @@ async def _render_html_to_png(html, prefix, width=740, height=900):
     out = str(Path(__file__).resolve().parent.parent / "data" / "img_temp" / f"{prefix}_{ts}.jpg")
     from modules.changelog import _ensure_browser
     try:
-        browser = await _ensure_browser()
-        page = await browser.new_page(viewport={"width": width, "height": height})
-        await page.set_content(html)
-        # ★ v2.3.23 提速: networkidle → domcontentloaded。卡片 HTML 是内联样式+内联图标，
-        #   无外部网络依赖，networkidle 会空等网络空闲（图片加载/长连接场景可等数秒）。
-        #   domcontentloaded 在 DOM 就绪即截图，配合下面 300ms 兜底足够渲染内联样式。
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(300)
-        # 截 body 元素：自动贴合卡片宽度与内容高度，避免出现大片背景留白
-        el = await page.query_selector("body")
-        if el:
-            await el.screenshot(path=out, type="jpeg", quality=95)
-        else:
-            await page.screenshot(path=out, full_page=True, type="jpeg", quality=95)
-        await page.close()
-        return out
+        # ★ v2.3.23: 整体加 20s 超时兜底——渲染卡死（浏览器无响应/页面池耗尽）时
+        #   不让命令通道无限阻塞（per-group worker 单条消息总超时 200s 太长，用户等不起）
+        async def _do():
+            browser = await _ensure_browser()
+            page = await browser.new_page(viewport={"width": width, "height": height})
+            await page.set_content(html)
+            # ★ v2.3.23 提速: networkidle → domcontentloaded。卡片 HTML 是内联样式+内联图标，
+            #   无外部网络依赖，networkidle 会空等网络空闲（图片加载/长连接场景可等数秒）。
+            #   domcontentloaded 在 DOM 就绪即截图，配合下面 300ms 兜底足够渲染内联样式。
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(300)
+            # 截 body 元素：自动贴合卡片宽度与内容高度，避免出现大片背景留白
+            el = await page.query_selector("body")
+            if el:
+                await el.screenshot(path=out, type="jpeg", quality=95)
+            else:
+                await page.screenshot(path=out, full_page=True, type="jpeg", quality=95)
+            await page.close()
+            return out
+        return await asyncio.wait_for(_do(), timeout=20.0)
+    except asyncio.TimeoutError:
+        logger = __import__("logging").getLogger("wdsj")
+        logger.error("卡片渲染超时(>20s)放弃: prefix=%s", prefix)
+        return None
     except Exception:
         return None
