@@ -95,6 +95,54 @@ def ai_best_move(board) -> "cchess.Move":
     return best_move
 
 
+_last_render_task = None   # 最近一次棋盘渲染任务
+
+
+def _start_render(svg: str, out: str) -> None:
+    """启动棋盘渲染（异步）。
+
+    注意：必须配合 wait_render() 使用 —— 渲染是异步的，而上层拿到路径后
+    会立刻发图，若不等待就会发出**上一手**的旧盘面（文件名固定会被覆盖）。
+    """
+    global _last_render_task
+    try:
+        _last_render_task = asyncio.ensure_future(_svg_to_png(svg, out))
+    except RuntimeError as e:          # 没有运行中的事件循环（同步上下文调用）
+        logger.warning("棋盘渲染无法启动（无事件循环）: %s", e)
+
+
+async def wait_render() -> None:
+    """等待最近一次棋盘渲染完成（发图前调用）"""
+    global _last_render_task
+    task = _last_render_task
+    _last_render_task = None
+    if task is not None:
+        try:
+            await task
+        except Exception as e:
+            logger.warning("等待棋盘渲染失败: %s", e)
+
+
+def _record_xq_context(group_id: int, game: dict, result: str) -> None:
+    """把象棋结果写进会话上下文（同五子棋——否则 LLM 不知道刚下过棋）"""
+    try:
+        from core.context_manager import get_context_mgr
+        pid = game.get("player_id")
+        try:
+            from core.config import get_config
+            pname = get_config().get_display_name(str(pid), group_id=group_id) if pid else "玩家"
+        except Exception:
+            pname = str(pid)
+        moves = len(game.get("move_history", []))
+        get_context_mgr().append_to_context(
+            group_id,
+            f"[棋局] 中国象棋对局结束：{pname}(红) vs AI(黑)，{result}，共 {moves} 回合",
+        )
+        logger.info("象棋结果已写入上下文: group=%d %s", group_id, result)
+    except Exception as e:
+        logger.warning("象棋结果写入上下文失败: %s", e)
+
+
 def _board_to_svg(board, lastmove=None, checkers=None):
     import cchess.svg
     kwargs = {"board": board, "size": 600, "coordinates": True}
@@ -104,18 +152,30 @@ def _board_to_svg(board, lastmove=None, checkers=None):
         kwargs["checkers"] = checkers
     if board.turn:
         kwargs["orientation"] = cchess.RED
-    return cchess.svg.board(**kwargs)
+    svg = cchess.svg.board(**kwargs)
+    # ★ cchess 默认把棋盘居中塞进 1200x1200 的正方画布（棋盘本体其实只有 800x900），
+    #   四周留白过多 → 视觉上棋盘被压成"方块"。这里裁到棋盘实际范围（留 20px 边距）。
+    import re as _re
+    svg = _re.sub(r'viewBox="-600 -600 1200 1200"', 'viewBox="-420 -470 840 940"', svg, count=1)
+    svg = _re.sub(r'width="\d+" height="\d+"', 'width="840" height="940"', svg, count=1)
+    return svg
 
 
 async def _svg_to_png(svg_str: str, out_path: str) -> bool:
     try:
         from modules.changelog import _ensure_browser
         browser = await _ensure_browser()
-        page = await browser.new_page(viewport={"width": 620, "height": 710})
-        html = f'<html><body style="margin:0;background:#f5deb3">{svg_str}</body></html>'
+        page = await browser.new_page(viewport={"width": 880, "height": 980})
+        html = (f'<html><body style="margin:0;background:#eb5">'
+                f'<div id="xqwrap" style="width:840px;height:940px">{svg_str}</div></body></html>')
         await page.set_content(html)
-        await page.wait_for_timeout(300)
-        await page.screenshot(path=out_path, full_page=True)
+        await page.wait_for_timeout(400)
+        # 截包裹层：尺寸与棋盘严格一致（840x940），无任何留白
+        el = await page.query_selector("#xqwrap")
+        if el:
+            await el.screenshot(path=out_path)
+        else:
+            await page.screenshot(path=out_path, full_page=True)
         await page.close()
         return True
     except Exception as e:
@@ -201,7 +261,7 @@ def make_move(user_id: int, group_id: int, notation: str) -> tuple:
         _delete_game(group_id)
         out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png")
         svg = _board_to_svg(board, lastmove=lastmove, checkers=board.checkers())
-        asyncio.ensure_future(_svg_to_png(svg, out))
+        _start_render(svg, out)
         return True, "将死！你赢了喵~", out
     if board.is_stalemate():
         _delete_game(group_id)
@@ -228,7 +288,7 @@ def make_move(user_id: int, group_id: int, notation: str) -> tuple:
     try:
         out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png")
         svg = _board_to_svg(board, lastmove=ai_move, checkers=board.checkers())
-        asyncio.ensure_future(_svg_to_png(svg, out))
+        _start_render(svg, out)
         return True, f"你: {uci}  |  AI: {ai_move.uci()}{ai_comment}{end_msg}", out
     except Exception as e:
         return True, f"你: {uci}  |  AI: {ai_move.uci()}{ai_comment}{end_msg}", None
@@ -241,6 +301,7 @@ def resign_game(user_id: int, group_id: int) -> str:
     if user_id != game["player_id"]:
         return "这不是你的对局喵~"
     _delete_game(group_id)
+    _record_xq_context(group_id, game, "玩家认输，AI 获胜")
     return "你认输了喵~ AI 获胜！"
 
 
@@ -253,7 +314,7 @@ def show_board(group_id: int) -> tuple:
         out = str(_ROOT / "data" / "img_temp" / f"xq_{group_id}.png")
         last = board.peek() if board.move_stack else None
         svg = _board_to_svg(board, lastmove=last, checkers=board.checkers())
-        asyncio.ensure_future(_svg_to_png(svg, out))
+        _start_render(svg, out)
         return f"当前棋盘（共{len(game['move_history'])}步）", out
     except Exception as e:
         return f"渲染失败: {e}", None

@@ -2011,7 +2011,7 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     from modules.chinese_chess import (
         start_game, make_move, resign_game, show_board, show_history,
-        _build_svg, _svg_to_png, _ROOT, INIT_BOARD,
+        _build_svg, _svg_to_png, _ROOT, INIT_BOARD, wait_render,
     )
     from services.sender import send_group_msg
 
@@ -2045,6 +2045,7 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
     if action == "board":
         msg, img = show_board(group_id)
         if img:
+            await wait_render()   # 渲染是异步的，不等就会发出上一手的旧盘面
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
             await send_group_msg(cq, group_id)
         return msg
@@ -2060,6 +2061,7 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
     ok, msg, img = make_move(user_id, group_id, notation)
     if img:
         try:
+            await wait_render()   # 渲染是异步的，不等就会发出上一手的旧盘面
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
             await send_group_msg(cq, group_id)
         except Exception:

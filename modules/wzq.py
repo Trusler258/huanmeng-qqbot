@@ -54,6 +54,45 @@ class WzqGame:
     forbidden_enabled: bool = True  # 禁手规则 (仅黑方)
 
 
+def _player_name(qq: int, chat_id: int) -> str:
+    """玩家显示名（qq=0 表示 AI）"""
+    if not qq:
+        return "AI"
+    try:
+        from core.config import get_config
+        return get_config().get_display_name(str(qq), group_id=chat_id)
+    except Exception:
+        return str(qq)
+
+
+def _record_result(chat_id: int, game, reason: str = "") -> None:
+    """对局结束后把结果写进会话上下文。
+
+    不写的话 LLM 侧完全不知道刚下过棋 —— 实测用户五连赢了之后说"你输了"，
+    bot 回的是"我什么时候跟你下过棋""你连棋盘都没摆，五连？截图呢"。
+    """
+    try:
+        from core.context_manager import get_context_mgr
+        bn = _player_name(game.black, chat_id)
+        wn = _player_name(game.white, chat_id)
+        if game.winner == 1:
+            res = f"{bn}(黑) 获胜"
+        elif game.winner == 2:
+            res = f"{wn}(白) 获胜"
+        elif game.status == "finished" and game.winner is None:
+            res = "平局"
+        else:
+            res = reason or "结束"
+        mode = "对战" if game.white else "人机"
+        get_context_mgr().append_to_context(
+            chat_id,
+            f"[棋局] 五子棋{mode}结束：{bn}(黑) vs {wn}(白)，{res}，共 {game.move_count} 手",
+        )
+        logger.info("棋局结果已写入上下文: chat=%d %s", chat_id, res)
+    except Exception as e:
+        logger.warning("棋局结果写入上下文失败: %s", e)
+
+
 # 按 chat_id 存储对局
 _games: dict[int, WzqGame] = {}
 _SAVE_FILE = Path(__file__).resolve().parent.parent / "data" / "wzq_games.json"
@@ -227,6 +266,7 @@ def make_move(chat_id: int, user_id: int, row: int, col: int) -> tuple[bool, str
             from datetime import datetime
             _save_result(game, chat_id, datetime.now().strftime("%Y-%m-%d %H:%M"))
             save_games()  # 清理持久化（已结束）
+            _record_result(chat_id, game, "禁手判负")
             return True, f"forbidden:{reason}"
 
     # 判赢
@@ -237,6 +277,7 @@ def make_move(chat_id: int, user_id: int, row: int, col: int) -> tuple[bool, str
         _save_result(game, chat_id, datetime.now().strftime("%Y-%m-%d %H:%M"))
         save_games()
         logger.info("五子棋结束: chat=%d winner=%d moves=%d", chat_id, game.turn, game.move_count)
+        _record_result(chat_id, game)
         return True, "win"
 
     # 平局
@@ -245,6 +286,7 @@ def make_move(chat_id: int, user_id: int, row: int, col: int) -> tuple[bool, str
         from datetime import datetime
         _save_result(game, chat_id, datetime.now().strftime("%Y-%m-%d %H:%M"))
         save_games()
+        _record_result(chat_id, game)
         return True, "draw"
 
     # 换手
@@ -266,6 +308,7 @@ def surrender(chat_id: int, user_id: int) -> tuple[bool, str]:
     from datetime import datetime
     _save_result(game, chat_id, datetime.now().strftime("%Y-%m-%d %H:%M"))
     save_games()
+    _record_result(chat_id, game, f"{_player_name(user_id, chat_id)} 认输")
     return True, "surrender"
 
 
@@ -324,6 +367,9 @@ def force_end(chat_id: int) -> str:
     if not game:
         return "当前没有对局"
     status = game.status
+    if game.status == "playing":
+        game.status = "finished"
+        _record_result(chat_id, game, "对局被强制结束")
     del _games[chat_id]
     save_games()
     return f"对局已结束 (状态={status})"
