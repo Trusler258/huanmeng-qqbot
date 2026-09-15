@@ -219,6 +219,26 @@ def web_load() -> None:
             logger.warning("棋局补读跳过 %s: %s", chat_id_str, e)
 
 
+def web_reload() -> None:
+    """从磁盘覆盖读入棋局（不动文件）。供棋局 Web 跨进程看到最新落子。
+
+    web_load() 是 setdefault 合并语义（只补没有的），双进程下 web 进程
+    一旦内存里有旧局就永远看不到 bot 进程的新落子 —— 这里用覆盖语义。
+    """
+    if not _SAVE_FILE.exists():
+        return
+    try:
+        data = json.loads(_SAVE_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("棋局覆盖读失败: %s", e)
+        return
+    for chat_id_str, d in data.items():
+        try:
+            _games[int(chat_id_str)] = _dict_to_game(d)
+        except Exception as e:
+            logger.warning("棋局覆盖读跳过 %s: %s", chat_id_str, e)
+
+
 def _side_name(qq: int, chat_id: int) -> str:
     return _bot_name() if not qq else _player_name(qq, chat_id)
 
@@ -262,6 +282,7 @@ def web_state(chat_id: int, user_id: int) -> dict | None:
         "my_color": my_color,
         "ai_difficulty": game.ai_difficulty or "",
         "difficulty_label": _DIFF_LABEL.get(game.ai_difficulty, game.ai_difficulty or "普通"),
+        "pvp": bool(game.white),            # white=0 → 人机；否则人人对战
         "forbidden_enabled": bool(game.forbidden_enabled),
         "elapsed": max(0, int(time.time() - (game.start_time or time.time()))),
         "undo_request": game.undo_request or 0,

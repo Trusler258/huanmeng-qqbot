@@ -6,6 +6,13 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%231c2333'/%3E%3Ccircle cx='13' cy='12' r='4' fill='%235a626e'/%3E%3C/svg%3E">
 <title>围棋对局 · 幻梦</title>
 <link rel="stylesheet" href="${CSS_URL}">
+<style>
+.mine{font-family:var(--mono);font-size:9px;font-weight:700;color:#fff;background:var(--ink-2);
+  border-radius:999px;padding:2px 6px;margin-left:5px;vertical-align:1px}
+.rec.cool .mine{background:var(--cool)}
+.rec.warm .mine{background:var(--warm)}
+.chip.role{background:#fdf6e6;border-color:#f3e2bb;color:#96650f}
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -14,6 +21,7 @@
     <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GO</span></div>
     <div class="tb-sep"></div>
     <span class="chip" id="chip-room">房间 <b>--</b></span>
+    <span class="chip role" id="chip-role" style="display:none"></span>
     <div class="chips">
       <span class="chip" id="chip-size">棋盘 <b>--</b></span>
       <span class="chip" id="chip-diff">难度 <b>--</b></span>
@@ -42,7 +50,7 @@
           </div>
         </div>
         <div class="statusline" id="status"><span class="dot"></span><span id="status-text">载入中…</span></div>
-        <div class="btns">
+        <div class="btns" id="btns">
           <button class="btn cool" id="btn-pass">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5 7.4 8 4 11.5"/><path d="M8.6 4.5 12 8l-3.4 3.5"/></svg>
             停一手
@@ -68,7 +76,7 @@
             <span class="rec-accent"></span>
             <div class="rec-top">
               <span class="stone-dot b"></span>
-              <span class="rec-name"><b>你</b><i>BLACK · 先行</i></span>
+              <span class="rec-name"><b id="nm-black">你</b><i>BLACK · 先行</i></span>
               <span class="turnbadge" id="badge-black">等待</span>
             </div>
             <div class="rec-stats">
@@ -86,7 +94,7 @@
             <span class="rec-accent"></span>
             <div class="rec-top">
               <span class="stone-dot w"></span>
-              <span class="rec-name"><b id="nm-bot">幻梦</b><i>WHITE · 后手</i></span>
+              <span class="rec-name"><b id="nm-white">幻梦</b><i>WHITE · 后手</i></span>
               <span class="turnbadge" id="badge-white">等待</span>
             </div>
             <div class="rec-stats">
@@ -129,6 +137,7 @@ const ROOM = "${ROOM}", TOKEN = "${TOKEN}";
 const CELL_BASE = {9: 46, 13: 34, 19: 27};
 let busy = false, finished = false, curN = 0;
 let LETTERS = "", STAR = [], boardCache = null, lastCache = null, tipTimer = null;
+let me = "", myColor = 0, spectator = false;
 
 const $ = id => document.getElementById(id);
 
@@ -202,7 +211,7 @@ function paint() {
       const cls = v === 1 ? "b" : "w";
       const lm = (last[0] === r && last[1] === c) ? " last" : "";
       inner = `<div class="stone ${cls}${lm}" style="width:${stone}px;height:${stone}px"></div>`;
-    } else if (!finished) {
+    } else if (!finished && !spectator) {
       inner = `<div class="ghost gb" style="width:${stone}px;height:${stone}px"></div>`;
     }
     if (el.innerHTML !== inner) el.innerHTML = inner;
@@ -212,13 +221,13 @@ function paint() {
 }
 
 async function play(el) {
-  if (busy || finished) return;
+  if (busy || finished || spectator) return;
   const r = +el.dataset.r, c = +el.dataset.c;
   if (boardCache && boardCache[r][c]) return;
   busy = true;
   tip("落子中…");
   try {
-    const res = await fetch(`/api/go/${ROOM}/move?t=${TOKEN}`, {
+    const res = await fetch(`/api/r/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({coord: `${r + 1},${c + 1}`})
     }).then(x => x.json());
@@ -233,7 +242,7 @@ async function act(path) {
   if (busy) return;
   busy = true;
   try {
-    const res = await fetch(`/api/go/${ROOM}/${path}?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
+    const res = await fetch(`/api/r/${ROOM}/${path}?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
     tip(res.msg || "");
     await refresh();
   } catch (e) { tip("网络错误，稍后重试"); }
@@ -261,8 +270,13 @@ function setStatus(cls, text) {
 function render(st) {
   if (!st.ok) { tip("链接无效或已过期"); return; }
   finished = !!st.finished;
-  if (st.bot) $("nm-bot").textContent = st.bot;
+  spectator = st.role === "spectator";
+  me = st.role || "";
+  myColor = me === "black" ? 1 : (me === "white" ? 2 : 0);
   $("chip-room").innerHTML = `房间 <b>${ROOM}</b>`;
+  const rc = $("chip-role");
+  rc.style.display = "inline-block";
+  rc.textContent = spectator ? "观战模式" : (myColor ? `你执${myColor === 1 ? "黑" : "白"}` : "旁观");
 
   if (!st.size) {
     setStatus("done", "对局已结束（记录已归档）");
@@ -270,6 +284,7 @@ function render(st) {
     $("result-text").textContent = "对局已归档，去群里用 /~go start 再开一局";
     $("btn-pass").disabled = true;
     $("btn-resign").disabled = true;
+    $("btns").style.display = "none";
     return;
   }
 
@@ -277,8 +292,11 @@ function render(st) {
   boardCache = st.board; lastCache = st.last_move || [];
   if (st.size !== curN || STAR.length !== st.stars.length) buildBoard(st.size, st.letters, st.stars);
 
+  if (st.black) $("nm-black").innerHTML = st.black.name + (myColor === 1 ? '<span class="mine">你</span>' : "");
+  if (st.white) $("nm-white").innerHTML = st.white.name + (myColor === 2 ? '<span class="mine">你</span>' : "");
+
   $("chip-size").innerHTML = `棋盘 <b>${st.size} 路</b>`;
-  $("chip-diff").innerHTML = `难度 <b>${st.difficulty}</b>`;
+  $("chip-diff").innerHTML = st.pvp ? "模式 <b>人人对战</b>" : `难度 <b>${st.difficulty}</b>`;
   $("chip-moves").innerHTML = `手数 <b>${st.move_count}</b>`;
   $("chip-time").innerHTML = `用时 <b>${fmtTime(st.elapsed)}</b>`;
   $("board-note").textContent = `${st.size} × ${st.size}`;
@@ -303,11 +321,14 @@ function render(st) {
   $("k-b").textContent = `盘面 ${pB}%`;
   $("k-w").textContent = `盘面 ${100 - pB}%`;
 
-  const myTurn = !finished && st.turn === st.player_color;
-  $("badge-black").textContent = myTurn ? "行棋中" : (finished ? "已结束" : "等待");
-  $("badge-white").textContent = finished ? "已结束" : (myTurn ? "等待" : "思考中");
-  $("badge-black").classList.toggle("on", myTurn);
-  $("badge-white").classList.toggle("on", !myTurn && !finished);
+  const turnIsBlack = st.turn === 1;
+  const myTurn = !finished && !spectator && st.turn === myColor;
+  const bActive = !finished && turnIsBlack;
+  const wActive = !finished && !turnIsBlack;
+  $("badge-black").textContent = finished ? "已结束" : (bActive ? (spectator || myColor === 1 ? "行棋中" : "等待") : "等待");
+  $("badge-white").textContent = finished ? "已结束" : (wActive ? (spectator || myColor === 2 ? "行棋中" : "等待") : "等待");
+  $("badge-black").classList.toggle("on", bActive);
+  $("badge-white").classList.toggle("on", wActive);
 
   $("i-diff").textContent = st.difficulty;
   $("i-moves").textContent = st.move_count;
@@ -315,6 +336,7 @@ function render(st) {
   $("i-time").textContent = fmtTime(st.elapsed);
   $("rec-note").textContent = `共 ${st.move_count} 手`;
 
+  $("btns").style.display = spectator ? "none" : "flex";
   if (finished) {
     setStatus("done", st.result_text || "对局已结束");
     $("result").style.display = "flex";
@@ -322,8 +344,13 @@ function render(st) {
     $("result-text").textContent = fs ? `数子结果 黑 ${fs.black} : 白 ${fs.white}` : (st.result_text || "对局已结束");
     $("btn-pass").disabled = true;
     $("btn-resign").disabled = true;
+  } else if (spectator) {
+    setStatus("bot", `观战中 · ${st.black ? st.black.name : "黑"} vs ${st.white ? st.white.name : "白"}`);
+    $("result").style.display = "none";
   } else {
-    setStatus(myTurn ? "you" : "bot", myTurn ? "轮到你了 · 点击交叉点落子" : `${st.bot} 正在思考…`);
+    const other = st.turn === 1 ? (st.black ? st.black.name : "对手") : (st.white ? st.white.name : "对手");
+    setStatus(myTurn ? "you" : "bot",
+              myTurn ? "轮到你了 · 点击交叉点落子" : `等待 ${other} 落子…`);
     $("result").style.display = "none";
     $("btn-pass").disabled = false;
     $("btn-resign").disabled = false;
@@ -342,7 +369,7 @@ function render(st) {
 
 async function refresh() {
   try {
-    const st = await fetch(`/api/go/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    const st = await fetch(`/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }

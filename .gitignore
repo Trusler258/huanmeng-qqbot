@@ -26,6 +26,12 @@ data/notes/
 data/templates/old/
 data/Message_frequency_cache.txt
 data/features.json
+# 棋局运行时数据（对局/房间号表，不入库）
+data/go_games.json
+data/wzq_games.json
+data/xq_games.json
+data/wzq_results.json
+data/game_rooms.json
 
 # === 日志 ===
 /logs/

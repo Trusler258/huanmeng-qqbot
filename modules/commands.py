@@ -1658,14 +1658,114 @@ async def _wzq_render_and_send(chat_id: int, is_group: bool, group_id: int, user
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
 
 
-def _game_web_link(chat_id: int, user_id: int, kind: str) -> str:
-    """棋局网页链接。服务未启用时返回空串（不影响指令本身）"""
+_GAME_CN = {"go": "围棋", "wzq": "五子棋", "xq": "中国象棋"}
+
+
+def _room_links(kind: str, chat_id: int, players) -> tuple:
+    """取（或新建）房间号，并生成观战链接与各人对局链接。
+
+    返回 (房间号, 观战链接, {uid: 对局链接})；服务不可用时返回空串/空字典。
+    """
     try:
-        from services.game_web import game_link
-        return game_link(chat_id, user_id, kind)
+        from services.game_web import ensure_room, play_link, spectate_link
+        code = ensure_room(kind, chat_id)
+        return (code, spectate_link(code),
+                {int(u): play_link(code, int(u)) for u in players})
     except Exception as e:
-        logger.warning("生成棋局网页链接失败: %s", e)
+        logger.warning("生成棋局链接失败: %s", e)
+        return "", "", {}
+
+
+async def _announce_room(kind: str, chat_id: int, players: list, is_group: bool,
+                         group_id: int = 0, me_uid: int = 0, mode_text: str = "") -> str:
+    """开赛分发。
+
+    - 群里：返回的文本带**观战链接**（由调用方发到群里）
+    - 双方：各自的对局链接**私聊**发过去
+    players: [(uid, 昵称, 执子说明)]
+    """
+    from services.sender import send_private_msg
+    code, spec, links = _room_links(kind, chat_id, [p[0] for p in players])
+    if not code:
         return ""
+    title = f"{_GAME_CN.get(kind, '棋局')}房间 {code}"
+    roster = " vs ".join(str(p[1]) for p in players)
+    if roster:
+        title += f"｜{roster}"
+    if mode_text:
+        title += f"｜{mode_text}"
+
+    for uid, _name, role in players:
+        link = links.get(int(uid))
+        if not link:
+            continue
+        if not is_group and int(uid) == int(me_uid):
+            continue                     # 私聊开局：发起人的链接直接放回复里
+        try:
+            await send_private_msg(
+                f"{title}\n你执{role}。专属对局链接（别转发）：\n{link}", int(uid))
+        except Exception as e:
+            logger.warning("对局链接私聊失败 uid=%s: %s", uid, e)
+
+    if is_group:
+        return f"{title}\n观战链接（点开即围观，可转发）：{spec}"
+    own = links.get(int(me_uid), "")
+    return f"{title}\n你的对局链接（别转发）：\n{own}" if own else title
+
+
+def _link_text(kind: str, chat_id: int, uid: int, has_game: bool) -> str:
+    """`link` 子命令回复：房间号 + 自己的对局链接 + 观战链接"""
+    if not has_game:
+        return "这里还没有对局喵~ 先开一局"
+    try:
+        from services.game_web import ensure_room, play_link, spectate_link
+    except Exception as e:
+        return f"棋局网页服务未启用喵~（{e}）"
+    code = ensure_room(kind, chat_id)
+    return (f"房间号 {code}\n"
+            f"你的对局链接（别转发）：\n{play_link(code, uid)}\n"
+            f"观战链接（可发群里）：\n{spectate_link(code)}")
+
+
+def _parse_opponent(text: str, group_id: int, cfg) -> int | None:
+    """从 @某人 / 昵称 / QQ 号 里解析对手的 QQ"""
+    s = str(text or "").strip()
+    if not s:
+        return None
+    m = re.search(r"(\d{4,12})", s)
+    if m:
+        return int(m.group(1))
+    name = s.lstrip("@").strip()
+    raw = name
+    # 去掉可能附带的其它词（如"/~xq duel 某某 困难"）
+    name = name.split()[0] if name else ""
+    if not name:
+        return None
+    per = (cfg.group_nicknames or {}).get(str(group_id), {}) if group_id else {}
+    for qq, nick in (per or {}).items():
+        if nick == name or nick == raw:
+            return int(qq)
+    for qq, nick in (cfg.qq_name_map or {}).items():
+        if nick == name or nick == raw:
+            return int(qq)
+    return None
+
+
+async def cmd_watch(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~观战 <房间号> —— 取某个棋局房间的观战链接"""
+    if not args:
+        return ("用法：/~观战 <房间号>\n"
+                "房间号是开局时 bot 给出的 4 位编号（不含 0/O/1/I/L）")
+    code = str(args[0]).strip().upper()
+    try:
+        from services.game_web import KIND_LABEL, room_of, spectate_link
+    except Exception as e:
+        return f"棋局网页服务未启用喵~（{e}）"
+    room = room_of(code)
+    if not room:
+        return f"找不到房间 {code} 喵~ 房间号是 4 位（不含 0/O/1/I/L）"
+    kind_cn = KIND_LABEL.get(room.get("kind"), "棋局")
+    return f"{kind_cn}房间 {code} 观战链接（点开即围观）：\n{spectate_link(code)}"
 
 
 async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -1700,7 +1800,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                 "  board       查看棋盘\n"
                 "  surrender   认输\n"
                 "  undo        悔棋\n"
-                "  link        取网页下棋链接\n"
+                "  link        取房间号与网页链接\n"
                 "  status      对局信息\n"
                 "  admin clear 强制结束本群棋局(仅主人)"
             )
@@ -1728,8 +1828,10 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             asyncio.create_task(_bg_ai_start())
             base = format_lang("wzq.start", diff=diff_name)
-            link = _game_web_link(chat_id, user_id, "wzq")
-            return f"{base}\n网页下棋（推荐）：{link}" if link else base
+            uname = cfg.get_display_name(str(user_id), group_id=group_id if is_group else 0)
+            ann = await _announce_room("wzq", chat_id, [(user_id, uname, "黑")], is_group,
+                                       group_id, me_uid=user_id, mode_text=f"人机·{diff_name}")
+            return f"{base}\n{ann}" if ann else base
         return result
 
     # ── 发起挑战 ──
@@ -1739,27 +1841,9 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
 
         # 从参数中提取 QQ 号（支持 @昵称 反向查映射）
         opponent = " ".join(args[1:])
-        m = re.search(r'(\d{5,12})', opponent)
-        if m:
-            white_id = int(m.group(1))
-        else:
-            # 无数字 → 可能是 @昵称，反向查映射（分群优先，再全局）
-            name = opponent.lstrip("@")
-            found = None
-            per = cfg.group_nicknames.get(str(group_id), {}) if is_group else {}
-            for qq, nick in per.items():
-                if nick == name:
-                    found = int(qq)
-                    break
-            if found is None:
-                for qq, nick in cfg.qq_name_map.items():
-                    if nick == name:
-                        found = int(qq)
-                        break
-            if found:
-                white_id = found
-            else:
-                return format_lang("wzq.user_not_found", name=name)
+        white_id = _parse_opponent(opponent, group_id if is_group else 0, cfg)
+        if not white_id:
+            return format_lang("wzq.user_not_found", name=opponent.lstrip("@"))
 
         result = g.create_duel(chat_id, user_id, white_id,
                                 forbidden=args[-1].lower() not in ("nofb", "无禁手", "noforbidden"))
@@ -1772,25 +1856,30 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                     cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
                     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             asyncio.create_task(_bg_duel())
-            link = _game_web_link(chat_id, user_id, "wzq")
-            tail = f"\n开打后点这里下棋：{link}" if link else ""
             return (f"挑战已发起！等待 [CQ:at,qq={white_id}] 接受 (/~wzq accept) "
-                    f"或拒绝 (/~wzq decline){tail}")
+                    f"或拒绝 (/~wzq decline)")
         return result
 
     # ── 接受 ──
     if action == "accept":
         result = g.accept_duel(chat_id, user_id)
         if result == "started":
-            link = _game_web_link(chat_id, user_id, "wzq")
+            game = g.get_game(chat_id)
+            gid = group_id if is_group else 0
+            name_b = cfg.get_display_name(str(game.black), group_id=gid)
+            name_w = cfg.get_display_name(str(game.white), group_id=gid)
+            ann = await _announce_room("wzq", chat_id,
+                                       [(game.black, name_b, "黑"), (game.white, name_w, "白")],
+                                       is_group, group_id, me_uid=user_id, mode_text="人人对战")
+
             async def _bg():
                 img = await g.render_board(chat_id, cfg)
-                cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-                tip_line = f"\n网页下棋（推荐）：{link}" if link else ""
-                txt = f"对局开始！黑先白后，五子连珠者胜。{tip_line}\n{cq}"
-                await (send_group_msg(txt, group_id) if is_group else send_private_msg(txt, user_id))
+                if img:
+                    cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
+                    await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             asyncio.create_task(_bg())
-            return None
+            head = "对局开始！黑先白后，五子连珠者胜。"
+            return f"{head}\n{ann}" if ann else head
         return result
 
     # ── 拒绝 ──
@@ -1814,20 +1903,18 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             return f"已强制结束本群棋局 (状态={game.status})"
         return "用法: /~wzq admin clear  强制清除本群所有对局"
 
-    # ── 网页下棋链接 ──
-    if action in ("link", "链接", "网页"):
+    # ── 房间链接 ──
+    if action in ("link", "链接", "网页", "房间"):
         game = g.get_game(chat_id)
         if not game:
             return "这里还没有五子棋对局喵~ 用 /~wzq ai 普通 开局"
-        link = _game_web_link(chat_id, user_id, "wzq")
-        if not link:
-            return "棋局网页服务未启用喵~"
         side = ""
         if user_id == game.black:
             side = "（你是黑方）"
         elif user_id == game.white:
             side = "（你是白方）"
-        return f"网页下棋链接{side}（点开即身份）：\n{link}"
+        return _link_text("wzq", chat_id, user_id, True) + f"\n{side}" if side else \
+            _link_text("wzq", chat_id, user_id, True)
 
     # ── 落子 ──
     coord = g.parse_coord(action if len(args) == 1 else " ".join(args))
@@ -2062,7 +2149,8 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
             "  <坐标>        落子（D4 / 4,4，字母跳过 I）\n"
             "  pass          停一手（双方连续 pass 即终局数子）\n"
             "  board         查看棋盘\n"
-            "  link          取网页下棋链接\n"
+            "  duel @某人 [难度] [尺寸]  邀请群友对弈（双人）\n"
+            "  link          取房间号与网页链接\n"
             "  resign        认输"
         )
 
@@ -2085,21 +2173,55 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not r.startswith("ok"):
             return r
         label = r.split(":", 1)[1] if ":" in r else "普通"
-        link = _game_web_link(chat_id, user_id, "go")
+        gid = group_id if is_group else 0
+        uname = cfg.get_display_name(str(user_id), group_id=gid)
+        ann = await _announce_room("go", chat_id, [(user_id, uname, "黑")], is_group,
+                                   group_id, me_uid=user_id, mode_text=f"人机·{label}")
         try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-            tip_line = f"\n网页下棋（推荐）：{link}" if link else ""
-            await _send(f"围棋开局！{size}×{size} 盘，你执黑先行，AI 难度「{label}」{tip_line}\n"
-                        f"落子用 /~go D4（字母跳过 I）\n{cq}")
+            await _send(f"围棋开局！{size}×{size} 盘，你执黑先行，AI 难度「{label}」\n"
+                        f"{ann}\n落子用 /~go D4（字母跳过 I）\n{cq}")
             return None
         except Exception as e:
             return f"棋盘渲染失败喵: {e}"
 
-    if action in ("link", "链接", "网页"):
-        link = _game_web_link(chat_id, user_id, "go")
-        return (f"网页下棋链接（点开即身份）：\n{link}" if link
-                else "棋局网页服务未启用喵~")
+    # ── 邀请群友对弈（双人） ──
+    if action in ("duel", "对战", "挑战"):
+        if len(args) < 2:
+            return "用法：/~go duel @某人 [难度] [尺寸]"
+        opp = _parse_opponent(args[1], group_id if is_group else 0, cfg)
+        if not opp:
+            return f"没认出对手「{args[1]}」喵~ 用 @某人 或直接写 QQ 号"
+        if opp == user_id:
+            return "不能自己跟自己下喵~"
+        diff_raw, size_raw = "", ""
+        for tok in args[2:]:
+            if not diff_raw and G.resolve_difficulty(tok):
+                diff_raw = tok
+            elif not size_raw and G.resolve_board_size(tok) is not None:
+                size_raw = tok
+        size = G.resolve_board_size(size_raw) or G.BOARD_SIZE
+        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY, size,
+                         opponent_id=opp)
+        if not r.startswith("ok"):
+            return r
+        gid = group_id if is_group else 0
+        n1 = cfg.get_display_name(str(user_id), group_id=gid)
+        n2 = cfg.get_display_name(str(opp), group_id=gid)
+        ann = await _announce_room("go", chat_id,
+                                   [(user_id, n1, "黑"), (opp, n2, "白")], is_group,
+                                   group_id, me_uid=user_id, mode_text="人人对战")
+        try:
+            img = await G.render_board(chat_id)
+            cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
+            await _send(f"围棋对战开始！{size}×{size} 盘，{n1} 执黑先行。\n{ann}\n{cq}")
+            return None
+        except Exception as e:
+            return f"棋盘渲染失败喵: {e}"
+
+    if action in ("link", "链接", "网页", "房间"):
+        return _link_text("go", chat_id, user_id, G.get_game(chat_id) is not None)
 
     if action in ("board", "棋盘", "查看"):
         game = G.get_game(chat_id)
@@ -2137,7 +2259,7 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
     # 注：原代码 import 的 _build_svg / INIT_BOARD 两个名字在模块里并不存在
     # （实际是 _board_to_svg / build_initial_svg）—— 这是 /~xq 一直 ImportError 的根因
     from modules.chinese_chess import (
-        start_game, make_move, resign_game, show_board, show_history,
+        start_game, make_move, resign_game, show_board, show_history, get_game,
         build_initial_svg, _svg_to_png, _ROOT, wait_render,
         resolve_difficulty, DEFAULT_DIFFICULTY, DIFFICULTIES,
     )
@@ -2155,7 +2277,8 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
             "  start [难度]  开始新对局（新手/普通/困难/专家，默认普通）\n"
             "  <走法>        炮二平五 / h2e2\n"
             "  board         查看棋盘\n"
-            "  link          取网页下棋链接\n"
+            "  duel @某人 [难度]  邀请群友对弈（双人）\n"
+            "  link          取房间号与网页链接\n"
             "  resign        认输\n"
             "  history       走棋记录"
         )
@@ -2171,14 +2294,50 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not result.startswith("ok"):
             return result
         label = result.split(":", 1)[1] if ":" in result else "普通"
-        link = _game_web_link(chat_id, user_id, "xq")
-        tip_line = f"\n网页下棋（推荐）：{link}" if link else ""
+        gid = group_id if is_group else 0
+        uname = cfg.get_display_name(str(user_id), group_id=gid)
+        ann = await _announce_room("xq", chat_id, [(user_id, uname, "红")], is_group,
+                                   group_id, me_uid=user_id, mode_text=f"人机·{label}")
         try:
             svg = build_initial_svg()
             out = str(_ROOT / "data" / "img_temp" / f"xq_{chat_id}.png")
             await _svg_to_png(svg, out)
             cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
-            await _send(f"对局开始！你执红方，AI 难度「{label}」，请落子喵~{tip_line}\n{cq}")
+            await _send(f"对局开始！你执红方，AI 难度「{label}」，请落子喵~\n{ann}\n{cq}")
+            return None
+        except Exception as e:
+            return f"棋盘渲染失败喵: {e}"
+
+    # ── 邀请群友对弈（双人） ──
+    if action in ("duel", "对战", "挑战"):
+        if len(args) < 2:
+            return "用法：/~xq duel @某人 [难度]"
+        opp = _parse_opponent(args[1], group_id if is_group else 0, cfg)
+        if not opp:
+            return f"没认出对手「{args[1]}」喵~ 用 @某人 或直接写 QQ 号"
+        if opp == user_id:
+            return "不能自己跟自己下喵~"
+        diff_raw = ""
+        for tok in args[2:]:
+            if resolve_difficulty(tok):
+                diff_raw = tok
+                break
+        result = start_game(user_id, chat_id, diff_raw or DEFAULT_DIFFICULTY, opponent_id=opp)
+        if not result.startswith("ok"):
+            return result
+        label = result.split(":", 1)[1] if ":" in result else "普通"
+        gid = group_id if is_group else 0
+        n1 = cfg.get_display_name(str(user_id), group_id=gid)
+        n2 = cfg.get_display_name(str(opp), group_id=gid)
+        ann = await _announce_room("xq", chat_id,
+                                   [(user_id, n1, "红"), (opp, n2, "黑")], is_group,
+                                   group_id, me_uid=user_id, mode_text="人人对战")
+        try:
+            svg = build_initial_svg()
+            out = str(_ROOT / "data" / "img_temp" / f"xq_{chat_id}.png")
+            await _svg_to_png(svg, out)
+            cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
+            await _send(f"象棋对战开始！{n1} 执红先行（{label}）。\n{ann}\n{cq}")
             return None
         except Exception as e:
             return f"棋盘渲染失败喵: {e}"
@@ -2191,10 +2350,8 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
             await _send(cq)
         return msg
 
-    if action in ("link", "链接", "网页"):
-        link = _game_web_link(chat_id, user_id, "xq")
-        return (f"网页下棋链接（点开即身份）：\n{link}" if link
-                else "棋局网页服务未启用喵~")
+    if action in ("link", "链接", "网页", "房间"):
+        return _link_text("xq", chat_id, user_id, game is not None)
 
     if action == "resign":
         return resign_game(user_id, chat_id)
@@ -3764,6 +3921,8 @@ COMMAND_MAP: dict[str, callable] = {
     "好友列表":   cmd_friend_list,
     "nasa":       cmd_nasa,
     "pgr":        cmd_pgr,
+    "watch":      cmd_watch,
+    "观战":       cmd_watch,
     "wzq":        cmd_wzq,
     "五子棋":     cmd_wzq,
     "xq":         cmd_xq,

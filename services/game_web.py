@@ -4,12 +4,14 @@
 设计：
 - **挂在 bot 进程的 asyncio loop 上**（uvicorn.Server 作为 task）—— 直接共享
   modules.*_game 里的棋局状态，不需要 IPC / 数据库。
-- 访问：`http://127.0.0.1:59400/{kind}/{room}?t=<token>`（room = chat_id）
-  kind ∈ go（围棋）/ wzq（五子棋）/ xq（中国象棋）
-- 身份：HMAC 签名 token（`chat_id_userid_sig`），点开链接即身份，无感登录；
-  另外还要求 token 持有者确实是这局的参与者，否则 403。
-- 隧道：由 Cloudflare Tunnel 把 `game.truslerweb.dpdns.org/*` 指到 59400。
-- 静态资源：`/static/{name}`，白名单 + 缓存头（像素字体别内联进页面）。
+- **房间号**：每个 (棋种, 群) 对应一个 4 位易读房间号（`data/game_rooms.json`）。
+  对外只用房间号，不再把群号暴露在 URL 里。
+- 访问：`http://127.0.0.1:59400/r/{房间号}?t=<token>`
+- 身份：HMAC 签名 token（`房间号_uid_签名`），点开链接即身份，无感登录：
+  - `uid == 0` → **观战**（只读：能看 state、不能走子/认输/停一手）
+  - 其他 → 需要是该局参与者（先手/后手），否则 403
+- 静态资源：`/static/{name}` 白名单 + 缓存头（像素字体别内联进页面）。
+- 隧道：Cloudflare Tunnel 把 `game.truslerweb.dpdns.org/*` 指到 59400。
 """
 from __future__ import annotations
 
@@ -33,8 +35,13 @@ logger = get_logger("gameweb")
 PORT = int(os.environ.get("GAME_WEB_PORT", "59400"))
 _ROOT = Path(__file__).resolve().parent.parent
 _SECRET_FILE = _ROOT / "data" / "game_web_secret"
+_ROOMS_FILE = _ROOT / "data" / "game_rooms.json"
 _TEMPLATES = _ROOT / "data" / "templates"
 _ASSETS = _ROOT / "data" / "web_assets"
+
+SPECTATOR = 0                      # uid == 0 表示观战
+KINDS = ("go", "wzq", "xq")
+KIND_LABEL = {"go": "围棋", "wzq": "五子棋", "xq": "中国象棋"}
 
 app = FastAPI(title="幻梦棋局", docs_url=None, redoc_url=None)
 
@@ -43,6 +50,66 @@ _STATIC = {
     "monocraft.ttf": ("font/ttf", "public, max-age=604800"),
     "game.css": ("text/css; charset=utf-8", "public, max-age=3600"),
 }
+
+# ── 房间号 ───────────────────────────────────────────────────
+# 去掉易混字符 0/O/1/I/L，只留 4 位 → 读起来不会认错
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+_CODE_LEN = 4
+_rooms: dict[str, dict] = {}
+
+
+def _load_rooms() -> None:
+    global _rooms
+    if not _ROOMS_FILE.exists():
+        return
+    try:
+        raw = json.loads(_ROOMS_FILE.read_text(encoding="utf-8"))
+        _rooms = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    except Exception as e:
+        logger.warning("房间表读取失败: %s", e)
+
+
+def _save_rooms() -> None:
+    try:
+        _ROOMS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _ROOMS_FILE.write_text(json.dumps(_rooms, ensure_ascii=False, indent=1),
+                               encoding="utf-8")
+    except Exception as e:
+        logger.warning("房间表保存失败: %s", e)
+
+
+def _new_code() -> str:
+    for _ in range(200):
+        code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LEN))
+        if code not in _rooms:
+            return code
+    raise RuntimeError("房间号用尽")
+
+
+def ensure_room(kind: str, chat_id: int) -> str:
+    """取（或新建）该群这个棋种的房间号。
+
+    同一群的同一种棋**始终复用同一个房间号** —— 这样链接稳定、老链接也不会失效。
+    """
+    _load_rooms()               # ★ 每次读盘：跨进程复用已有房间，避免重复建
+    chat_id = int(chat_id)
+    for code, r in _rooms.items():
+        if r.get("kind") == kind and int(r.get("chat") or 0) == chat_id:
+            return code
+    code = _new_code()
+    _rooms[code] = {"kind": kind, "chat": chat_id, "created": int(time.time())}
+    _save_rooms()
+    logger.info("新建棋局房间 %s（%s chat=%s）", code, kind, chat_id)
+    return code
+
+
+def room_of(code: str) -> Optional[dict]:
+    _load_rooms()               # ★ 每次读盘：双进程下也能看到新房间
+    return _rooms.get(str(code or "").upper())
+
+
+def _chat_of(room: dict) -> int:
+    return int(room.get("chat") or 0)
 
 
 # ── token ────────────────────────────────────────────────────
@@ -59,114 +126,148 @@ def _secret() -> bytes:
     return s
 
 
-def make_token(chat_id: int, user_id: int) -> str:
-    """生成身份 token（链接里带上，点开即身份）"""
-    msg = f"{chat_id}:{user_id}".encode()
-    sig = hmac.new(_secret(), msg, hashlib.sha256).hexdigest()[:16]
-    return f"{chat_id}_{user_id}_{sig}"
+def make_token(code: str, uid: int) -> str:
+    """生成身份 token（链接里带上，点开即身份）。uid=0 是观战"""
+    code = str(code).upper()
+    sig = hmac.new(_secret(), f"{code}:{int(uid)}".encode(),
+                   hashlib.sha256).hexdigest()[:16]
+    return f"{code}_{int(uid)}_{sig}"
 
 
-def parse_token(token: str) -> Optional[tuple[int, int]]:
-    """校验 token，返回 (chat_id, user_id)；非法返回 None"""
+def parse_token(token: str) -> Optional[tuple[str, int]]:
+    """校验 token，返回 (房间号, uid)；非法返回 None"""
     try:
-        chat_s, user_s, sig = token.split("_", 2)
-        chat_id, user_id = int(chat_s), int(user_s)
+        code, uid_s, sig = str(token).split("_", 2)
+        uid = int(uid_s)
     except Exception:
         return None
-    expect = hmac.new(_secret(), f"{chat_id}:{user_id}".encode(),
+    code = code.upper()
+    expect = hmac.new(_secret(), f"{code}:{uid}".encode(),
                       hashlib.sha256).hexdigest()[:16]
     if not hmac.compare_digest(sig, expect):
         return None
-    return chat_id, user_id
+    return code, uid
 
 
 def web_base() -> str:
-    """对外访问基址（隧道配好后在 .env 里设 GAME_WEB_BASE）"""
+    """对外访问基址（隧道配好后在 .env / systemd 里设 GAME_WEB_BASE）"""
     return os.environ.get("GAME_WEB_BASE", f"http://127.0.0.1:{PORT}").rstrip("/")
 
 
-def game_link(chat_id: int, user_id: int, kind: str = "go") -> str:
-    """生成对局链接（发给 QQ 用户）"""
-    return f"{web_base()}/{kind}/{chat_id}?t={make_token(chat_id, user_id)}"
+def play_link(code: str, uid: int) -> str:
+    """对局链接（发给对局双方，各自一条）"""
+    return f"{web_base()}/r/{str(code).upper()}?t={make_token(code, uid)}"
 
 
-# ── 鉴权（每种棋局归属不同） ──────────────────────────────────
+def spectate_link(code: str) -> str:
+    """观战链接（发到群里，任何拿到的人都能只读围观）"""
+    return play_link(code, SPECTATOR)
 
-def _auth_player(room: int, t: str):
-    """围棋：只有房主本人能访问。返回 (user_id, game, err)"""
-    from modules import go_game as G
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return None, None, "链接无效或已过期"
-    game = G.get_game(room)
-    if game is None:
+
+def room_link(kind: str, chat_id: int, uid: int) -> str:
+    """便捷入口：按 (棋种, 群) 取房间号并生成链接"""
+    return play_link(ensure_room(kind, chat_id), uid)
+
+
+# ── 棋局读取 ─────────────────────────────────────────────────
+
+def _load_game(kind: str, chat_id: int):
+    if kind == "go":
+        from modules import go_game as G
         try:
-            G._load()
+            G.web_reload()          # 覆盖读：跨进程也能看到最新落子
         except Exception as e:
-            logger.warning("补读围棋棋局失败: %s", e)
-        game = G.get_game(room)
-    if game is not None and game.get("player_id") != who[1]:
-        return None, None, "这条链接不属于你"
-    return who[1], game, None
-
-
-def _auth_wzq(room: int, t: str):
-    """五子棋：黑方和白方都能访问（各有自己的 token）"""
-    from modules import wzq as W
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return None, None, "链接无效或已过期"
-    game = W.get_game(room)
-    if game is None:
+            logger.warning("覆盖读围棋棋局失败: %s", e)
+        return G.get_game(chat_id)
+    if kind == "wzq":
+        from modules import wzq as W
         try:
-            W.web_load()
+            W.web_reload()          # 覆盖读：跨进程也能看到最新落子
         except Exception as e:
-            logger.warning("补读五子棋对局失败: %s", e)
-        game = W.get_game(room)
-    if game is not None and who[1] not in (game.black, game.white):
-        return None, None, "这条链接不属于你"
-    return who[1], game, None
+            logger.warning("覆盖读五子棋对局失败: %s", e)
+        return W.get_game(chat_id)
+    if kind == "xq":
+        from modules import chinese_chess as X
+        try:
+            X.web_reload()          # 覆盖读：跨进程也能看到最新落子
+        except Exception as e:
+            logger.warning("覆盖读象棋棋局失败: %s", e)
+        return X.get_game(chat_id)
+    return None
 
 
-def _auth_xq(room: int, t: str):
-    """象棋：只有房主本人（对手是 AI）"""
-    from modules import chinese_chess as X
-    who = parse_token(t)
-    if not who or who[0] != room:
-        return None, None, "链接无效或已过期"
-    game = X.get_game(room)
-    if game is not None and game.get("player_id") != who[1]:
-        return None, None, "这条链接不属于你"
-    return who[1], game, None
+def _role_of(kind: str, game, uid: int) -> str:
+    """该 uid 在这局里的角色名；不是参与者返回空串。
 
-
-# ── 页面渲染 ─────────────────────────────────────────────────
-
-def _page(tmpl_name: str, room: int, t: str, request: Request) -> HTMLResponse:
-    """读模板并替换占位符。
-
-    静态资源用「相对本页的前缀」，兼容隧道挂在子路径的情况。
+    围棋/五子棋：black / white；象棋：red / black
     """
-    prefix = request.url.path.rsplit("/", 2)[0]
-    tmpl = (_TEMPLATES / tmpl_name).read_text(encoding="utf-8")
-    return HTMLResponse(tmpl
-                        .replace("${ROOM}", str(room))
-                        .replace("${CSS_URL}", f"{prefix}/static/game.css")
-                        .replace("${TOKEN}", t))
+    if uid == SPECTATOR:
+        return "spectator"
+    if game is None or not uid:
+        return ""
+    if kind == "go":
+        if uid == game.get("player_id"):
+            return "black"
+        if uid == game.get("opponent_id"):
+            return "white"
+    elif kind == "wzq":
+        if uid == getattr(game, "black", None):
+            return "black"
+        if uid == getattr(game, "white", None):
+            return "white"
+    elif kind == "xq":
+        if uid == game.get("player_id"):
+            return "red"
+        if uid == game.get("opponent_id"):
+            return "black"
+    return ""
 
+
+def _auth(code: str, t: str):
+    """返回 (room, uid, game, role, err)。
+
+    err 非空 = 拒绝；uid == SPECTATOR 时 role 固定为 spectator（只读）。
+    """
+    parsed = parse_token(t)
+    if not parsed or parsed[0] != str(code or "").upper():
+        return None, None, None, "", "链接无效或已过期"
+    room = room_of(code)
+    if not room:
+        return None, None, None, "", "房间不存在"
+    kind = room.get("kind")
+    if kind not in KINDS:
+        return None, None, None, "", "房间类型异常"
+    uid = parsed[1]
+    game = _load_game(kind, _chat_of(room))
+    if uid == SPECTATOR:
+        return room, uid, game, "spectator", ""
+    role = _role_of(kind, game, uid)
+    if not role:
+        return None, None, None, "", "你不在这个房间里"
+    return room, uid, game, role, ""
+
+
+# ── 响应小工具 ───────────────────────────────────────────────
 
 def _deny(err: str, as_html: bool = False):
     if as_html:
-        return HTMLResponse(f"<h2 style='font-family:sans-serif;padding:40px'>{err}喵~</h2>",
-                            status_code=403)
+        return HTMLResponse(
+            f"<h2 style='font-family:sans-serif;padding:40px'>{err}喵~</h2>", status_code=403)
     return JSONResponse({"ok": False, "error": err}, status_code=403)
 
 
 def _no_game(as_html: bool = False):
     if as_html:
-        return HTMLResponse("<h2 style='font-family:sans-serif;padding:40px'>这局已经结束了喵~</h2>",
-                            status_code=404)
-    return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
+        return HTMLResponse(
+            "<h2 style='font-family:sans-serif;padding:40px'>这个房间还没有对局喵~</h2>",
+            status_code=404)
+    return JSONResponse({"ok": False, "msg": "这个房间还没有对局喵~"})
+
+
+def _read_only(role: str):
+    if role == "spectator":
+        return JSONResponse({"ok": False, "msg": "观战模式只能看喵~"})
+    return None
 
 
 # ── 静态资源 ─────────────────────────────────────────────────
@@ -182,225 +283,181 @@ async def static_asset(name: str):
     return FileResponse(str(f), media_type=meta[0], headers={"Cache-Control": meta[1]})
 
 
-# ── 围棋 ─────────────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    """入口页：告诉用户去哪儿找链接（房间号本身不构成访问凭证）"""
+    return HTMLResponse(
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<div style=\"font-family:'PingFang SC','Microsoft YaHei',sans-serif;"
+        "max-width:520px;margin:12vh auto;padding:0 22px;color:#1c2333;line-height:1.9\">"
+        "<h2 style='margin:0 0 12px'>幻梦棋局</h2>"
+        "<p style='color:#4a5568;margin:0 0 8px'>对局与观战都需要链接里的身份令牌：</p>"
+        "<p style='color:#4a5568;margin:0 0 8px'>· 对局双方会收到<b>私聊</b>里的专属链接</p>"
+        "<p style='color:#4a5568;margin:0 0 8px'>· 群里会发<b>观战</b>链接，点开即围观</p>"
+        "<p style='color:#8794ab;margin:18px 0 0;font-size:13px'>"
+        "在群里发送 <code>/~观战 房间号</code> 也可以重新取到观战链接。</p></div>")
 
-@app.get("/go/{room}", response_class=HTMLResponse)
-async def go_page(room: int, request: Request, t: str = ""):
-    uid, game, err = _auth_player(room, t)
+
+# ── 对局页面 ─────────────────────────────────────────────────
+
+@app.get("/r/{code}", response_class=HTMLResponse)
+async def room_page(code: str, request: Request, t: str = ""):
+    room, uid, game, role, err = _auth(code, t)
     if err:
         return _deny(err, as_html=True)
     if not game:
         return _no_game(as_html=True)
-    return _page("go_web.html", room, t, request)
+    # 静态资源用「相对本页的前缀」，兼容隧道挂在子路径的情况
+    prefix = request.url.path.rsplit("/", 2)[0]
+    kind = room.get("kind")
+    tmpl = (_TEMPLATES / f"{kind}_web.html").read_text(encoding="utf-8")
+    return HTMLResponse(tmpl
+                        .replace("${ROOM}", str(code).upper())
+                        .replace("${KIND_CN}", KIND_LABEL.get(kind, ""))
+                        .replace("${CSS_URL}", f"{prefix}/static/game.css")
+                        .replace("${TOKEN}", t))
 
 
-@app.get("/api/go/{room}/state")
-async def go_state(room: int, t: str = ""):
-    from modules import go_game as G
-    uid, game, err = _auth_player(room, t)
+@app.get("/api/r/{code}/state")
+async def room_state(code: str, t: str = ""):
+    room, uid, game, role, err = _auth(code, t)
     if err:
         return _deny(err)
     if not game:
-        return JSONResponse({"ok": True, "finished": True, "board": None})
-    caps = game.get("captures", {})
-    board = game.get("board") or []
-    size = len(board) or G.BOARD_SIZE
-    st_b = sum(row.count(G.BLACK) for row in board) if board else 0
-    st_w = sum(row.count(G.WHITE) for row in board) if board else 0
-    moves = list(game.get("moves") or [])
-    return JSONResponse({
-        "ok": True,
-        "finished": game.get("status") != "playing",
-        "board": game["board"],
-        "size": size,
-        "letters": G.letters_of(size),
-        "stars": sorted(f"{r},{c}" for r, c in G.star_points(size)),
-        "turn": game.get("turn"),
-        "player_color": game.get("player_color"),
-        "move_count": game.get("move_count", 0),
-        "last_move": game.get("last_move"),
-        "captures": {"black": caps.get(G.BLACK, 0), "white": caps.get(G.WHITE, 0)},
-        "stones": {"black": st_b, "white": st_w},
-        "moves": moves[-60:],
-        "passes": game.get("passes", 0),
-        "elapsed": max(0, int(time.time()) - int(game.get("start_time") or 0)),
-        "final_score": game.get("final_score"),
-        "result_text": game.get("result_text"),
-        "difficulty": G.DIFFICULTIES.get(game.get("difficulty", "normal"), {}).get("label", "普通"),
-        "bot": G._bot_name(),
-    })
-
-
-@app.post("/api/go/{room}/move")
-async def go_move(room: int, request: Request, t: str = ""):
-    from modules import go_game as G
-    uid, game, err = _auth_player(room, t)
-    if err:
-        return _deny(err)
-    if not game:
-        return _no_game()
-    body = await request.json()
-    ok, msg, _ = G.make_move(uid, room, str(body.get("coord", "")))
-    return JSONResponse({"ok": ok, "msg": msg})
-
-
-@app.post("/api/go/{room}/pass")
-async def go_pass(room: int, t: str = ""):
-    from modules import go_game as G
-    uid, game, err = _auth_player(room, t)
-    if err:
-        return _deny(err)
-    if not game:
-        return _no_game()
-    ok, msg, _ = G.do_pass(uid, room)
-    if not ok:
-        return JSONResponse({"ok": False, "msg": msg})
-    game = G.get_game(room)
-    if game and game.get("status") == "finished":
-        msg += "\n" + G.end_game(room)
-    return JSONResponse({"ok": True, "msg": msg})
-
-
-@app.post("/api/go/{room}/resign")
-async def go_resign(room: int, t: str = ""):
-    from modules import go_game as G
-    uid, game, err = _auth_player(room, t)
-    if err:
-        return _deny(err)
-    if not game or game.get("status") != "playing":
-        return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
-    return JSONResponse({"ok": True, "msg": G.resign_game(uid, room)})
-
-
-# ── 五子棋 ───────────────────────────────────────────────────
-
-@app.get("/wzq/{room}", response_class=HTMLResponse)
-async def wzq_page(room: int, request: Request, t: str = ""):
-    uid, game, err = _auth_wzq(room, t)
-    if err:
-        return _deny(err, as_html=True)
-    if not game:
-        return _no_game(as_html=True)
-    return _page("wzq_web.html", room, t, request)
-
-
-@app.get("/api/wzq/{room}/state")
-async def wzq_state(room: int, t: str = ""):
-    from modules import wzq as W
-    uid, game, err = _auth_wzq(room, t)
-    if err:
-        return _deny(err)
-    st = W.web_state(room, uid)
+        return JSONResponse({"ok": True, "gone": True, "role": role,
+                             "room": str(code).upper(), "kind": room.get("kind")})
+    kind = room.get("kind")
+    chat = _chat_of(room)
+    if kind == "go":
+        from modules import go_game as G
+        st = G.web_state(chat, uid)
+    elif kind == "wzq":
+        from modules import wzq as W
+        st = W.web_state(chat, uid)
+    else:
+        from modules import chinese_chess as X
+        st = X.web_state(chat, uid)
     if st is None:
-        return JSONResponse({"ok": True, "gone": True})
-    st["ok"] = True
-    st["finished"] = game.status == "finished"
+        return JSONResponse({"ok": True, "gone": True, "role": role,
+                             "room": str(code).upper(), "kind": kind})
+    st.update({"ok": True, "room": str(code).upper(), "kind": kind,
+               "role": role, "spectator": role == "spectator"})
     return JSONResponse(st)
 
 
-@app.post("/api/wzq/{room}/move")
-async def wzq_move(room: int, request: Request, t: str = ""):
-    from modules import wzq as W
-    uid, game, err = _auth_wzq(room, t)
+@app.post("/api/r/{code}/move")
+async def room_move(code: str, request: Request, t: str = ""):
+    room, uid, game, role, err = _auth(code, t)
     if err:
         return _deny(err)
     if not game:
         return _no_game()
-    if game.status != "playing":
-        return JSONResponse({"ok": False, "msg": "对局还没开始或已经结束了喵~"})
-    body = await request.json()
+    ro = _read_only(role)
+    if ro:
+        return ro
+    kind = room.get("kind")
+    chat = _chat_of(room)
     try:
-        r, c = int(body.get("r")), int(body.get("c"))
+        body = await request.json()
     except Exception:
-        return JSONResponse({"ok": False, "msg": "坐标不对喵~"})
+        body = {}
 
-    ok, msg = W.web_move(room, uid, r, c)
-    if not ok:
-        return JSONResponse({"ok": False, "msg": msg})
+    if kind == "go":
+        from modules import go_game as G
+        ok, msg, _ = G.make_move(uid, chat, str(body.get("coord", "")))
+        return JSONResponse({"ok": bool(ok), "msg": msg})
 
-    # 人机模式：AI 立刻应一手（放线程池，不阻塞事件循环）
-    g2 = W.get_game(room)
-    if g2 and g2.status == "playing" and g2.white == 0 and g2.turn == 2:
+    if kind == "wzq":
+        from modules import wzq as W
         try:
-            ai_ok, ai_msg = await W.ai_move_async(room)
-            if ai_ok:
-                g3 = W.get_game(room)
-                lm = g3.last_move if g3 else None
-                if lm:
-                    msg += f"；{W._bot_name()} 落子 {W.coord_label(lm[0], lm[1])}"
-                if ai_msg == "win":
-                    msg += f"，五连！{W._bot_name()} 获胜"
-        except Exception as e:
-            logger.warning("五子棋 AI 应手失败: %s", e)
+            r, c = int(body.get("r")), int(body.get("c"))
+        except Exception:
+            return JSONResponse({"ok": False, "msg": "坐标不对喵~"})
+        ok, msg = W.web_move(chat, uid, r, c)
+        if not ok:
+            return JSONResponse({"ok": False, "msg": msg})
+        # 人机模式：AI 立刻应一手（线程池执行，不阻塞事件循环）
+        g2 = W.get_game(chat)
+        if g2 and g2.status == "playing" and g2.white == 0 and g2.turn == 2:
+            try:
+                ai_ok, ai_msg = await W.ai_move_async(chat)
+                if ai_ok:
+                    g3 = W.get_game(chat)
+                    lm = g3.last_move if g3 else None
+                    if lm:
+                        msg += f"；{W._bot_name()} 落子 {W.coord_label(lm[0], lm[1])}"
+                    if ai_msg == "win":
+                        msg += f"，五连！{W._bot_name()} 获胜"
+            except Exception as e:
+                logger.warning("五子棋 AI 应手失败: %s", e)
+        return JSONResponse({"ok": True, "msg": msg})
 
-    return JSONResponse({"ok": True, "msg": msg})
-
-
-@app.post("/api/wzq/{room}/resign")
-async def wzq_resign(room: int, t: str = ""):
-    from modules import wzq as W
-    uid, game, err = _auth_wzq(room, t)
-    if err:
-        return _deny(err)
-    if not game or game.status != "playing":
-        return JSONResponse({"ok": False, "msg": "当前没有进行中的对局喵~"})
-    return JSONResponse({"ok": True, "msg": W.web_resign(room, uid)[1]})
-
-
-# ── 中国象棋 ─────────────────────────────────────────────────
-
-@app.get("/xq/{room}", response_class=HTMLResponse)
-async def xq_page(room: int, request: Request, t: str = ""):
-    uid, game, err = _auth_xq(room, t)
-    if err:
-        return _deny(err, as_html=True)
-    if not game:
-        return _no_game(as_html=True)
-    return _page("xq_web.html", room, t, request)
-
-
-@app.get("/api/xq/{room}/state")
-async def xq_state(room: int, t: str = ""):
+    # 象棋
     from modules import chinese_chess as X
-    uid, game, err = _auth_xq(room, t)
-    if err:
-        return _deny(err)
-    st = X.web_state(room, uid)
-    if st is None:
-        return JSONResponse({"ok": True, "gone": True})
-    st["ok"] = True
-    return JSONResponse(st)
-
-
-@app.post("/api/xq/{room}/move")
-async def xq_move(room: int, request: Request, t: str = ""):
-    from modules import chinese_chess as X
-    uid, game, err = _auth_xq(room, t)
-    if err:
-        return _deny(err)
-    if not game:
-        return _no_game()
-    if game.get("finished"):
-        return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
-    body = await request.json()
     notation = str(body.get("uci") or body.get("notation") or "").strip()
     if not notation:
         return JSONResponse({"ok": False, "msg": "没收到走法喵~"})
-    # 象棋 AI 是同步阻塞实现（时间预算最长 3s），放线程池执行，别卡住 bot 事件循环
+    # 象棋 AI 是同步阻塞实现（时间预算最长 3s），放线程池，别卡住 bot 事件循环
     loop = asyncio.get_running_loop()
-    ok, msg = await loop.run_in_executor(None, X.web_move, uid, room, notation)
+    ok, msg = await loop.run_in_executor(None, X.web_move, uid, chat, notation)
     return JSONResponse({"ok": bool(ok), "msg": msg})
 
 
-@app.post("/api/xq/{room}/resign")
-async def xq_resign(room: int, t: str = ""):
-    from modules import chinese_chess as X
-    uid, game, err = _auth_xq(room, t)
+@app.post("/api/r/{code}/pass")
+async def room_pass(code: str, t: str = ""):
+    room, uid, game, role, err = _auth(code, t)
     if err:
         return _deny(err)
     if not game:
         return _no_game()
-    ok, msg = X.web_resign(uid, room)
+    ro = _read_only(role)
+    if ro:
+        return ro
+    if room.get("kind") != "go":
+        return JSONResponse({"ok": False, "msg": "这种棋不能停一手喵~"})
+    from modules import go_game as G
+    chat = _chat_of(room)
+    ok, msg, _ = G.do_pass(uid, chat)
+    if not ok:
+        return JSONResponse({"ok": False, "msg": msg})
+    g = G.get_game(chat)
+    if g and g.get("status") == "finished":
+        msg += "\n" + G.end_game(chat)
+    return JSONResponse({"ok": True, "msg": msg})
+
+
+@app.post("/api/r/{code}/resign")
+async def room_resign(code: str, t: str = ""):
+    room, uid, game, role, err = _auth(code, t)
+    if err:
+        return _deny(err)
+    if not game:
+        return _no_game()
+    ro = _read_only(role)
+    if ro:
+        return ro
+    kind = room.get("kind")
+    chat = _chat_of(room)
+
+    if kind == "go":
+        from modules import go_game as G
+        g = G.get_game(chat)
+        if not g or g.get("status") != "playing":
+            return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
+        return JSONResponse({"ok": True, "msg": G.resign_game(uid, chat)})
+
+    if kind == "wzq":
+        from modules import wzq as W
+        g = W.get_game(chat)
+        if not g or g.status != "playing":
+            return JSONResponse({"ok": False, "msg": "当前没有进行中的对局喵~"})
+        return JSONResponse({"ok": True, "msg": W.web_resign(chat, uid)[1]})
+
+    from modules import chinese_chess as X
+    g = X.get_game(chat)
+    if not g or g.get("finished"):
+        return JSONResponse({"ok": False, "msg": "这局已经结束了喵~"})
+    ok, msg = X.web_resign(uid, chat)
     return JSONResponse({"ok": bool(ok), "msg": msg})
 
 
@@ -410,11 +467,13 @@ async def start_server() -> Optional[asyncio.Task]:
     """在 bot 的事件循环里起 web 服务（失败不影响 bot 主流程）"""
     try:
         import uvicorn
+        _load_rooms()
         config = uvicorn.Config(app, host="127.0.0.1", port=PORT,
                                 log_level="warning", access_log=False)
         server = uvicorn.Server(config)
         task = asyncio.create_task(server.serve())
-        logger.info("棋局 Web 服务已启动: http://127.0.0.1:%d（对外走隧道）", PORT)
+        logger.info("棋局 Web 服务已启动: http://127.0.0.1:%d（%d 个房间，对外走隧道）",
+                    PORT, len(_rooms))
         return task
     except Exception as e:
         logger.warning("棋局 Web 服务启动失败（不影响 bot）: %s", e)

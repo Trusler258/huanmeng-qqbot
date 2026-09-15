@@ -7,6 +7,9 @@
 <title>五子棋对局 · 幻梦</title>
 <link rel="stylesheet" href="${CSS_URL}">
 <style>
+.chip.role{background:#fdf6e6;border-color:#f3e2bb;color:#96650f}
+</style>
+<style>
 .stone-dot.w{background:radial-gradient(circle at 33% 28%,#fff,#c9d1dd)}
 .mine{font-family:var(--mono);font-size:9px;font-weight:700;color:#fff;background:var(--ink-2);
   border-radius:999px;padding:2px 6px;margin-left:5px;vertical-align:1px}
@@ -21,6 +24,7 @@
     <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GOMOKU</span></div>
     <div class="tb-sep"></div>
     <span class="chip" id="chip-room">房间 <b>--</b></span>
+    <span class="chip role" id="chip-role" style="display:none"></span>
     <div class="chips">
       <span class="chip" id="chip-mode">模式 <b>--</b></span>
       <span class="chip" id="chip-diff">难度 <b>--</b></span>
@@ -49,7 +53,7 @@
           </div>
         </div>
         <div class="statusline" id="status"><span class="dot"></span><span id="status-text">载入中…</span></div>
-        <div class="btns">
+        <div class="btns" id="btns">
           <button class="btn warm" id="btn-resign">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M4.2 13.6V2.6"/><path d="M4.2 3.3h7.4l-1.7 2.4 1.7 2.4H4.2z"/></svg>
             认输
@@ -132,6 +136,7 @@ const ROOM = "${ROOM}", TOKEN = "${TOKEN}";
 const N = 15, CELL_BASE = 34, LETTERS = "ABCDEFGHIJKLMNO";
 let busy = false, finished = false, built = false;
 let boardCache = null, lastCache = null, myColor = 0, tipTimer = null;
+let spectator = false;
 
 const $ = id => document.getElementById(id);
 
@@ -202,7 +207,7 @@ function paint() {
       const cls = v === 1 ? "b" : "w";
       const lm = (last[0] === r && last[1] === c) ? " last" : "";
       inner = `<div class="stone ${cls}${lm}" style="width:${stone}px;height:${stone}px"></div>`;
-    } else if (!finished) {
+    } else if (!finished && !spectator) {
       inner = `<div class="ghost gb" style="width:${stone}px;height:${stone}px"></div>`;
     }
     if (el.innerHTML !== inner) el.innerHTML = inner;
@@ -231,13 +236,13 @@ function maxRun(board, side) {
 }
 
 async function play(el) {
-  if (busy || finished) return;
+  if (busy || finished || spectator) return;
   const r = +el.dataset.r, c = +el.dataset.c;
   if (boardCache && boardCache[r][c]) return;
   busy = true;
   tip("落子中…");
   try {
-    const res = await fetch(`/api/wzq/${ROOM}/move?t=${TOKEN}`, {
+    const res = await fetch(`/api/r/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({r, c})
     }).then(x => x.json());
@@ -252,7 +257,7 @@ async function resign() {
   if (busy) return;
   busy = true;
   try {
-    const res = await fetch(`/api/wzq/${ROOM}/resign?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
+    const res = await fetch(`/api/r/${ROOM}/resign?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
     tip(res.msg || "");
     await refresh();
   } catch (e) { tip("网络错误，稍后重试"); }
@@ -279,7 +284,11 @@ function setStatus(cls, text) {
 
 function render(st) {
   if (!st.ok) { tip("链接无效或已过期"); return; }
+  spectator = st.role === "spectator";
   $("chip-room").innerHTML = `房间 <b>${ROOM}</b>`;
+  const rc = $("chip-role");
+  rc.style.display = "inline-block";
+  rc.textContent = spectator ? "观战模式" : "";
 
   if (st.gone || !st.board) {
     finished = true;
@@ -292,7 +301,11 @@ function render(st) {
 
   finished = st.status === "finished";
   const waiting = st.status === "waiting";
-  myColor = st.my_color || 0;
+  myColor = st.role === "black" ? 1 : (st.role === "white" ? 2 : 0);
+  if (!spectator) {
+    $("chip-role").textContent = myColor ? `你执${myColor === 1 ? "黑" : "白"}` : "";
+    if (!myColor) $("chip-role").style.display = "none";
+  }
 
   boardCache = st.board; lastCache = st.last_move || [];
   if (!built) buildBoard();
@@ -320,10 +333,9 @@ function render(st) {
   $("k-b").textContent = `盘面 ${pB}%`;
   $("k-w").textContent = `盘面 ${100 - pB}%`;
 
-  const myTurn = !finished && !waiting && st.turn === myColor;
-  const oppTurn = !finished && !waiting && st.turn !== myColor;
-  $("badge-black").textContent = finished ? "已结束" : (st.turn === 1 ? (myTurn ? "行棋中" : "思考中") : "等待");
-  $("badge-white").textContent = finished ? "已结束" : (st.turn === 2 ? (myTurn ? "行棋中" : "思考中") : "等待");
+  const myTurn = !finished && !waiting && !spectator && st.turn === myColor;
+  $("badge-black").textContent = finished ? "已结束" : (st.turn === 1 ? (spectator || myColor === 1 ? "行棋中" : "等待") : "等待");
+  $("badge-white").textContent = finished ? "已结束" : (st.turn === 2 ? (spectator || myColor === 2 ? "行棋中" : "等待") : "等待");
   $("badge-black").classList.toggle("on", st.turn === 1 && !finished && !waiting);
   $("badge-white").classList.toggle("on", st.turn === 2 && !finished && !waiting);
 
@@ -333,6 +345,7 @@ function render(st) {
   $("i-time").textContent = fmtTime(st.elapsed);
   $("rec-note").textContent = `共 ${st.move_count} 手`;
 
+  $("btns").style.display = spectator ? "none" : "flex";
   if (finished) {
     const w = st.winner;
     const txt = w === 1 ? `${st.black.name}(黑) 获胜` : (w === 2 ? `${st.white.name}(白) 获胜` : "平局");
@@ -344,6 +357,9 @@ function render(st) {
     setStatus("bot", "等待对方接受挑战…");
     $("result").style.display = "none";
     $("btn-resign").disabled = true;
+  } else if (spectator) {
+    setStatus("bot", `观战中 · ${st.black.name} vs ${st.white.name}`);
+    $("result").style.display = "none";
   } else {
     setStatus(myTurn ? "you" : "bot",
               myTurn ? "轮到你了 · 点击交叉点落子"
@@ -363,7 +379,7 @@ function render(st) {
 
 async function refresh() {
   try {
-    const st = await fetch(`/api/wzq/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    const st = await fetch(`/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }

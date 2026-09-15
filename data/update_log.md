@@ -15,7 +15,39 @@
 
 
 
-## v2.3.15 — wdsj API 第三轮反扒适配（新模板+赛季榜+中文名直查） (2026.9.14~15)
+## v2.3.16 — 棋类房间号体系：三棋群内双人 + 观战 + 双方私聊分发 (2026.9.15)
+一句话总结：围棋/五子棋/象棋全部支持 /~go duel /~xq duel 群内双人对战，带 4 位房间号，bot 把观战链接发群里、双方对局链接私聊各自发放，/~观战 <房间号> 随时取链接。
+
+### 一、房间号体系（services/game_web.py 重构）
+- 新增 `data/game_rooms.json` 房间注册表：4 位易读码（去 0/O/1/I/L），按 `(chat, kind)` 复用，`/~观战 <房间号>` 可查
+- 统一路由：`/r/{code}` 页面 + `/api/r/{code}/*` 接口（go/wzq/xq 三棋共用），原 `/go/{room}` `/wzq/{room}` `/xq/{room}` 下线
+- 角色鉴权：`_auth_room` 返回 black/red/white/spectator，观战 token 用 uid=0 签发、只读（按钮隐藏、棋盘不可点、状态行显示"观战中"）
+- `room_of`/`ensure_room` 改为**每次读盘**（房间表很小，双进程下也能实时一致）
+
+### 二、三棋群内双人（围棋/象棋新增，五子棋已有）
+- `/~go duel @某人 [难度] [尺寸]`、`/~xq duel @某人 [难度]`：立即开局，发起人执黑/红先行，`opponent_id` 落盘
+- `make_move`/`do_pass`/`resign` 全部按 `_color_of`/`_side_of` 判定执子方与轮次，只对人机模式才让 AI 应手
+- 认输文案区分玩家双方；`web_state` 返回双方 id/昵称/角色，模板顶栏显示"你执黑/你执红"徽标
+
+### 三、链接分发（modules/commands.py）
+- `_announce_room()`：群里返回带**观战链接**的文案（调用方发群）；双方对局链接**私聊**各自发送（发起人私聊时链接放回复里）
+- `/~观战 <房间号>` 独立指令（watch/cmd_watch 注册）；`/~wzq link` `/~go link` `/~xq link` 现在返回「房间号 + 自己链接 + 观战链接」
+- 帮助卡同步：围棋/象棋/五子棋描述加 duel 提示，新增 watch/观战 条目
+
+### 四、修复（本轮实测踩到）
+- **象棋 AI 超时致棋盘脏**：`_SearchTimeout` 抛出时 `board.push` 后没 pop，整个局面被破坏、下一手报伪合法 —— 全部改用 try/finally 保证 push 后必 pop（`_minimax` 与 `ai_best_move` 根节点）
+- **象棋 `web_resign` 漏改人人对战**：仍只认 `player_id`（红方），黑方认输被拒 —— 改为透传 `resign_game`（内部已按 `_side_of` 双人判定）
+- 五子棋 `web_state` 补 `pvp` 字段（`white != 0` 即人人对战）
+- 测试断言修正：cchess UCI rank 0 = **红方**底线（黑馬在 b9 不是 b0）；黑方应子/抢走改 `b9c7`；回合断言改为应子后重新查 state
+- `.gitignore` 补棋局运行时数据（go/wzq/xq_games.json、wzq_results.json、game_rooms.json），`go_games.json` 解除跟踪
+
+### 五、验证
+- 本机房间号自测 81/81（房间号/三棋人人/观战只读/越权 403/命令层）
+- 服务器综合验证 56/56（象棋双人走子/认输/终局 + 三页 Playwright 量测 + 观战态 `role=观战模式 btnsHidden=true` + 房间号 chips）
+- 公网：无 token 访问 `/r/AAAA` → 403；`game.css`/`monocraft.ttf` → 200
+- 服务器已清理测试棋局与房间，保留真实用户棋局
+
+
 一句话总结：反扒发现洛花星雨 API 模板 16→18、榜单 28→86（26 领域）、条目字段改名 owner、新增赛季榜 SEASON/中文标签/快照图，已补齐新模板并适配。
 
 - **反扒结论（docs/wdsj_api.md 全量记录）**：
