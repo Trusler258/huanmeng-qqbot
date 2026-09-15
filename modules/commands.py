@@ -2149,7 +2149,7 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
             "  <坐标>        落子（D4 / 4,4，字母跳过 I）\n"
             "  pass          停一手（双方连续 pass 即终局数子）\n"
             "  board         查看棋盘\n"
-            "  duel @某人 [难度] [尺寸]  邀请群友对弈（双人）\n"
+            "  duel @某人 [难度]  邀请群友对弈（双人）\n"
             "  link          取房间号与网页链接\n"
             "  resign        认输"
         )
@@ -2157,19 +2157,14 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
     action = args[0].lower()
 
     if action in ("start", "开始", "开局"):
-        diff_raw, size_raw = "", ""
+        diff_raw = ""
         for tok in args[1:]:
             if not diff_raw and G.resolve_difficulty(tok):
                 diff_raw = tok
-            elif size_raw == "" and G.resolve_board_size(tok) is not None:
-                size_raw = tok
-            elif not diff_raw:
+            else:
                 opts = " / ".join(v["label"] for v in G.DIFFICULTIES.values())
-                return f"参数「{tok}」不认识喵~ 难度可选：{opts}；尺寸可选：9 / 13 / 19"
-        size = G.resolve_board_size(size_raw)
-        if size is None:
-            return "尺寸只能是 9 / 13 / 19（或 小 / 中 / 大）喵~"
-        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY, size)
+                return f"参数「{tok}」不认识喵~ 难度可选：{opts}"
+        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY)
         if not r.startswith("ok"):
             return r
         label = r.split(":", 1)[1] if ":" in r else "普通"
@@ -2180,7 +2175,7 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
         try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-            await _send(f"围棋开局！{size}×{size} 盘，你执黑先行，AI 难度「{label}」\n"
+            await _send(f"围棋开局！{G.BOARD_SIZE}×{G.BOARD_SIZE} 标准盘，你执黑先行，AI 难度「{label}」\n"
                         f"{ann}\n落子用 /~go D4（字母跳过 I）\n{cq}")
             return None
         except Exception as e:
@@ -2189,20 +2184,19 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ── 邀请群友对弈（双人） ──
     if action in ("duel", "对战", "挑战"):
         if len(args) < 2:
-            return "用法：/~go duel @某人 [难度] [尺寸]"
+            return "用法：/~go duel @某人 [难度]"
         opp = _parse_opponent(args[1], group_id if is_group else 0, cfg)
         if not opp:
             return f"没认出对手「{args[1]}」喵~ 用 @某人 或直接写 QQ 号"
         if opp == user_id:
             return "不能自己跟自己下喵~"
-        diff_raw, size_raw = "", ""
+        diff_raw = ""
         for tok in args[2:]:
             if not diff_raw and G.resolve_difficulty(tok):
                 diff_raw = tok
-            elif not size_raw and G.resolve_board_size(tok) is not None:
-                size_raw = tok
-        size = G.resolve_board_size(size_raw) or G.BOARD_SIZE
-        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY, size,
+            else:
+                return f"参数「{tok}」不认识喵~"
+        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY,
                          opponent_id=opp)
         if not r.startswith("ok"):
             return r
@@ -2215,7 +2209,7 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
         try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-            await _send(f"围棋对战开始！{size}×{size} 盘，{n1} 执黑先行。\n{ann}\n{cq}")
+            await _send(f"围棋对战开始！{G.BOARD_SIZE}×{G.BOARD_SIZE} 标准盘，{n1} 执黑先行。\n{ann}\n{cq}")
             return None
         except Exception as e:
             return f"棋盘渲染失败喵: {e}"
@@ -3922,6 +3916,7 @@ COMMAND_MAP: dict[str, callable] = {
     "nasa":       cmd_nasa,
     "pgr":        cmd_pgr,
     "watch":      cmd_watch,
+    "spec":       cmd_watch,
     "观战":       cmd_watch,
     "wzq":        cmd_wzq,
     "五子棋":     cmd_wzq,

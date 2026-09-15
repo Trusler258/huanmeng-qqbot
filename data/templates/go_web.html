@@ -227,7 +227,7 @@ async function play(el) {
   busy = true;
   tip("落子中…");
   try {
-    const res = await fetch(`/api/r/${ROOM}/move?t=${TOKEN}`, {
+    const res = await fetch(`${API_BASE}/api/r/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({coord: `${r + 1},${c + 1}`})
     }).then(x => x.json());
@@ -242,7 +242,7 @@ async function act(path) {
   if (busy) return;
   busy = true;
   try {
-    const res = await fetch(`/api/r/${ROOM}/${path}?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
+    const res = await fetch(`${API_BASE}/api/r/${ROOM}/${path}?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
     tip(res.msg || "");
     await refresh();
   } catch (e) { tip("网络错误，稍后重试"); }
@@ -369,7 +369,7 @@ function render(st) {
 
 async function refresh() {
   try {
-    const st = await fetch(`/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    const st = await fetch(`${API_BASE}/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }

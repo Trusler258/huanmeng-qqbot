@@ -45,6 +45,22 @@ KIND_LABEL = {"go": "围棋", "wzq": "五子棋", "xq": "中国象棋"}
 
 app = FastAPI(title="幻梦棋局", docs_url=None, redoc_url=None)
 
+# ── 子路径挂载（https://bot.xxx/game/... 也指向本服务） ──────
+# cloudflared 按路径分流时不重写 URL，/game/... 会原样打到本服务；
+# 中间件把 PATH 剥掉前缀后交给原路由处理，原 game 子域不受影响。
+_MOUNT_PREFIX = os.environ.get("GAME_WEB_MOUNT", "").rstrip("/")   # 如 "/game"
+
+
+@app.middleware("http")
+async def _strip_mount_prefix(request: Request, call_next):
+    if _MOUNT_PREFIX and request.url.path.startswith(_MOUNT_PREFIX + "/"):
+        request.state.mount_prefix = _MOUNT_PREFIX   # 页面生成子资源 URL 时要拼回去
+        request.scope["path"] = request.url.path[len(_MOUNT_PREFIX):]
+    elif _MOUNT_PREFIX and request.url.path == _MOUNT_PREFIX:
+        request.state.mount_prefix = _MOUNT_PREFIX
+        request.scope["path"] = "/"          # /game → 入口页
+    return await call_next(request)
+
 # 静态资源白名单：name -> (media_type, cache-control)
 _STATIC = {
     "monocraft.ttf": ("font/ttf", "public, max-age=604800"),
@@ -307,14 +323,17 @@ async def room_page(code: str, request: Request, t: str = ""):
         return _deny(err, as_html=True)
     if not game:
         return _no_game(as_html=True)
-    # 静态资源用「相对本页的前缀」，兼容隧道挂在子路径的情况
-    prefix = request.url.path.rsplit("/", 2)[0]
+    # 静态资源/API 用「对外实际前缀」：挂载前缀（/game）优先，否则按本页路径推导
+    # （裸子域 /r/ABCD → 前缀空串；bot 子域 /game/r/ABCD → 前缀 /game）
+    prefix = getattr(request.state, "mount_prefix", "") \
+        or request.url.path.rsplit("/", 2)[0]
     kind = room.get("kind")
     tmpl = (_TEMPLATES / f"{kind}_web.html").read_text(encoding="utf-8")
     return HTMLResponse(tmpl
                         .replace("${ROOM}", str(code).upper())
                         .replace("${KIND_CN}", KIND_LABEL.get(kind, ""))
                         .replace("${CSS_URL}", f"{prefix}/static/game.css")
+                        .replace("${API_BASE}", prefix)
                         .replace("${TOKEN}", t))
 
 

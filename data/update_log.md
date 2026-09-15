@@ -18,6 +18,12 @@
 ## v2.3.16 — 棋类房间号体系：三棋群内双人 + 观战 + 双方私聊分发 (2026.9.15)
 一句话总结：围棋/五子棋/象棋全部支持 /~go duel /~xq duel 群内双人对战，带 4 位房间号，bot 把观战链接发群里、双方对局链接私聊各自发放，/~观战 <房间号> 随时取链接。
 
+### 〇、/game 子路径挂载 + 观战指令 + 标准棋盘（同日追加）
+- **挂载**：棋局网页同时可从 `https://bot.truslerweb.dpdns.org/game` 访问（原 `game.` 子域保留，双入口并存）——`GAME_WEB_MOUNT=/game` 环境变量 + ASGI 中间件剥前缀，页面用 `request.state.mount_prefix` 拼子资源 URL；链接基址由 `GAME_WEB_BASE` 环境变量注入 systemd drop-in
+- **观战指令**：注册 `/~spec`（与 `/~watch` `/~观战` 等价），帮助卡描述改为 `/~spec A7K2`
+- **标准棋盘**：围棋命令入口固定 19 路标准盘，移除 9/13/19 尺寸参数与选项（模块层保留 size 参数供测试小盘）；五子棋 15 路、象棋 9×10 标准盘不变；对手 QQ 号解析放宽为 4~12 位
+- 帮助卡新增「游戏」分类条目：spec/watch/观战、go（19 路标准盘）
+
 ### 一、房间号体系（services/game_web.py 重构）
 - 新增 `data/game_rooms.json` 房间注册表：4 位易读码（去 0/O/1/I/L），按 `(chat, kind)` 复用，`/~观战 <房间号>` 可查
 - 统一路由：`/r/{code}` 页面 + `/api/r/{code}/*` 接口（go/wzq/xq 三棋共用），原 `/go/{room}` `/wzq/{room}` `/xq/{room}` 下线
