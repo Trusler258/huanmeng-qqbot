@@ -15,6 +15,24 @@
 
 
 
+## v2.3.17 — 表情包提示词升级 + 棋类 NameError 修复 + 私聊 msglog 补录 (2026.9.15)
+一句话总结：LLM 选表情不再盲猜（每个情绪词附真实画面描述），修复 /~go /~xq start 的 NameError，私聊消息补录进 msglog。
+
+### 一、表情包提示词：让 LLM 知道每个词对应什么画面
+- `face_keywords_hint()` 从纯词表升级为「词(画面简述)」富提示，如 `得意(抬下巴嘚瑟)/疑惑(歪头冒问号)`——描述来自 data/faces_tag_corrected.md 的逐张校对结论，48 个主词全覆盖（`modules/face_lib.py` 新增 `_FACE_DESC` 表）
+- 背景：只给词表时 LLM 全靠猜，实测 mood=得意 却配了「はー？」疑问图；且私聊历史只用过 3 种表情
+- 提示词加两条硬规则（私聊/群聊/face_lib 三处同步）：①图配**那句话**的情绪而非整轮 mood；②同一轮同一表情最多用一次
+- 涉及 `data/skills/11_format_private.md` `10_format_group.md` `60_face_lib.md`
+
+### 二、修复：/~go /~xq start 报 NameError
+- v2.3.16 加房间号分发时 `cmd_go`/`cmd_xq` 用到了 `cfg`（`cfg.get_display_name`/`_parse_opponent`），但漏写 `cfg = get_config()`——开局即崩
+- 两个函数开头补上；AST 扫描顶层指令函数 0 遗漏
+
+### 三、修复：私聊消息不录 msglog
+- `_send_and_record` 此前只在群聊时调 `record_incoming_message`（撤回库），私聊 LLM 管线（send_sentences）**完全不写 msglog**，而命令层 `send_private_msg` 有 `_log_bot_sent`——两条私聊发送路径录制不一致
+- 现在 `_send_and_record` 群聊/私聊统一先写 `_log_bot_sent`（撤回匹配仍只挂群聊条件，私聊录入不会误触发）
+- 收益：私聊里 bot 发过哪些表情、说了什么话可从 msglog 可靠回溯
+
 ## v2.3.16 — 棋类房间号体系：三棋群内双人 + 观战 + 双方私聊分发 (2026.9.15)
 一句话总结：围棋/五子棋/象棋全部支持 /~go duel /~xq duel 群内双人对战，带 4 位房间号，bot 把观战链接发群里、双方对局链接私聊各自发放，/~观战 <房间号> 随时取链接。
 
