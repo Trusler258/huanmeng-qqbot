@@ -181,6 +181,40 @@
 - 验收：接口级自测 79 项全过；服务器 Playwright 量测 `hits=361 / lines=38 / circles=9 /
   hitsMatchBoard=true / JS_ERRORS 空`，桌面 1440 与手机 430 均无横向溢出（`scrollW == clientW`）
 
+### 五子棋 + 象棋也接上线上对战（三棋共用一套界面骨架）
+- **共用样式抽成 `data/web_assets/game.css`**（由 `/static/game.css` 提供，1 小时缓存），
+  三个页面都只留 `<link rel="stylesheet" href="${CSS_URL}">`；字体用 `url("monocraft.ttf")`
+  相对本文件解析 → 隧道挂子路径也不会失效
+- **静态资源改白名单**：`/static/{name}` 只放行 `monocraft.ttf` / `game.css`（FastAPI 的
+  路径参数天然不吃斜杠，穿越路径直接 404）
+- **五子棋 `/~wzq`**（`data/templates/wzq_web.html`）：
+  - 15 路棋盘 + 标准五子星位；双战绩面板显示 **盘上子 / 最长连 / 落子** + 盘面占比
+  - 人人局**黑方白方各自一条链接**（token 按 user_id 签发），人机局白方名称取 bot 名
+  - 人机模式落子后**服务端立刻让 AI 应手**（`ai_move_async`），响应里带上 AI 的落子坐标
+  - 对局信息：模式（人机/对战）/ 手数 / 禁手开关 / 用时；终局显示胜负横幅
+- **象棋 `/~xq`**（`data/templates/xq_web.html`）：
+  - 棋盘独立渲染：10 横线 + 9 竖线（中间 7 条在楚河汉界断开）+ 九宫斜线 + 双层外框 +
+    炮兵位十字标记 + **楚河/漢界**；红黑棋子用楷体字，点击「自己的子 → 目标点」走棋
+  - 坐标标签用 **UCI 的 a–i / 9–0**，方便直接读出走法（点两下生成的 uci 与手输一致）
+  - 双战绩面板显示 **存活子 / 吃子 / 回合** + 兵力占比（红方暖色、黑方冷色）
+  - 棋谱逐步显示「棋子字 + 目标格」（如 `炮 e2` = 炮二平五）
+- **接口层（`services/game_web.py`）**：
+  - `_auth_wzq()` 允许黑/白任一方的 token，`_auth_xq()` 只认房主；`_page()` 统一注入
+    `${ROOM}/${TOKEN}/${CSS_URL}`
+  - 象棋 AI 是同步阻塞实现（时间预算最长 3s），Web 走 `run_in_executor` 执行，
+    不让页面请求卡住 bot 事件循环；同时给 `make_move` 加 `render=False`，
+    避免网页每走一步都白跑一次 Playwright 截图
+- **棋局结束后不再删档**（象棋原来 `_delete_game`、五子棋 `save_games` 只存 playing/waiting）：
+  改为保留终局盘面 + 结果文案，`start_game` 的守卫改成"只在未结束时拒绝"，
+  这样网页刷新、bot 重启都还能看到终局
+- `_game_web_link()` 统一了三个指令的取链接逻辑；`/~wzq link`、`/~xq link` 新增；
+  `/~wzq ai|duel|accept`、`/~xq start` 开局文案里直接附网页链接
+- 帮助文档：五子棋/象棋描述更新为"支持网页下棋"（`help_card` 自动收集，只改描述）
+- **验收**：本机接口级自测 66 项全过（围棋回归 + 五子棋人机/人人 + 权限 + 静态资源白名单）；
+  服务器 34 项全过（含象棋走棋/吃子/认输/终局/重开）；Playwright 三页量测
+  `go hits=361 lines=38 circles=9`、`wzq hits=225 lines=30 circles=5 pieces=0`、
+  `xq hits=90 pieces=30 rects=1 lines=126`，三页 `scrollW == clientW`、`JS_ERRORS=[]`
+
 ## v2.3.14 — 群聊表情修好（三处打架）+ 戳一戳读上下文并能发图 (2026.9.14)
 一句话总结：查出群聊一直不发图的根因是提示词里三处互相打架（词表缺失、action 字段说"比图片更自然"、示例不带 FACE），全部修掉；戳一戳恢复读会话上下文并支持发表情。
 

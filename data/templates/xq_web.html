@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23f7e3c1'/%3E%3Ccircle cx='16' cy='16' r='11' fill='%23fff'/%3E%3Ctext x='16' y='22' font-size='16' text-anchor='middle' fill='%23c0392b'%3E%E7%82%AE%3C/text%3E%3C/svg%3E">
+<title>中国象棋对局 · 幻梦</title>
+<link rel="stylesheet" href="${CSS_URL}">
+<style>
+/* 象棋棋盘：9 列 × 10 行，棋子落在交叉点上 */
+.hits .hit{border-radius:7px}
+.hits .hit.sel{background:rgba(37,99,235,.16);box-shadow:inset 0 0 0 2px var(--cool)}
+.hits .hit.last{background:rgba(225,29,72,.10)}
+.pce{
+  border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-family:'Kaiti SC','STKaiti','KaiTi','Songti SC',var(--sans);
+  font-weight:700;position:relative;z-index:3;user-select:none;
+  transition:transform .12s ease,box-shadow .12s ease;
+}
+.pce.red{color:#b3231f;background:radial-gradient(circle at 34% 28%,#fffefb,#f6ecdd 70%,#e3d3ba);box-shadow:0 1px 4px rgba(90,60,30,.35),inset 0 0 0 1px rgba(150,110,70,.5),inset 0 0 0 3px rgba(255,255,255,.6)}
+.pce.black{color:#1a1f2b;background:radial-gradient(circle at 34% 28%,#fffefb,#efe6d8 70%,#d8c9b2);box-shadow:0 1px 4px rgba(90,60,30,.35),inset 0 0 0 1px rgba(150,110,70,.5),inset 0 0 0 3px rgba(255,255,255,.6)}
+.hit.sel .pce{transform:scale(1.06);box-shadow:0 0 0 3px rgba(37,99,235,.55),0 2px 8px rgba(28,35,51,.35)}
+.rec.cool .rec-bar i{background:linear-gradient(90deg,#94a3b8,#334155)}
+.mv.r i{background:radial-gradient(circle at 33% 28%,#f87171,#b91c1c)}
+.mv.k i{background:radial-gradient(circle at 33% 28%,#5a626e,#0b0e13)}
+.barea svg text{fill:#c39257;font-family:'Kaiti SC','STKaiti','KaiTi',serif;font-weight:700;letter-spacing:.28em;user-select:none}
+.rec.warm .rec-bar i{background:linear-gradient(90deg,#f87171,#dc2626)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">XIANGQI</span></div>
+    <div class="tb-sep"></div>
+    <span class="chip" id="chip-room">房间 <b>--</b></span>
+    <div class="chips">
+      <span class="chip" id="chip-side">执子 <b>红方</b></span>
+      <span class="chip" id="chip-diff">难度 <b>--</b></span>
+      <span class="chip cool" id="chip-moves">回合 <b>0</b></span>
+      <span class="chip warm" id="chip-time">用时 <b>00:00</b></span>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="col">
+      <section class="card">
+        <div class="card-head">
+          <span class="bar warm"></span><h2>棋 盘</h2>
+          <span class="note" id="board-note">载入中…</span>
+        </div>
+        <div class="board-body">
+          <div class="bwrap" id="bwrap">
+            <div class="corner"></div>
+            <div class="clabels" id="clabels"></div>
+            <div class="rlabels" id="rlabels"></div>
+            <div class="barea" id="barea">
+              <div class="board-bg"></div>
+              <svg id="grid" xmlns="http://www.w3.org/2000/svg"></svg>
+              <div class="hits" id="hits"></div>
+            </div>
+          </div>
+        </div>
+        <div class="statusline" id="status"><span class="dot"></span><span id="status-text">载入中…</span></div>
+        <div class="btns">
+          <button class="btn cool" id="btn-clear">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>
+            取消选择
+          </button>
+          <button class="btn warm" id="btn-resign">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M4.2 13.6V2.6"/><path d="M4.2 3.3h7.4l-1.7 2.4 1.7 2.4H4.2z"/></svg>
+            认输
+          </button>
+          <button class="btn" id="btn-refresh">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 8a5 5 0 1 1-1.6-3.7"/><path d="M13 2.6V5h-2.4"/></svg>
+            刷新
+          </button>
+        </div>
+        <div class="tip" id="tip">点自己的棋子再点目标位置落子；也可以用 UCI 记法（如 h2e2 = 炮二平五）。</div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card">
+        <div class="card-head"><span class="bar"></span><h2>双 方 战 绩</h2><span class="note" id="rec-note"></span></div>
+        <div class="vs-grid">
+          <div class="rec warm" id="rec-red">
+            <span class="rec-accent"></span>
+            <div class="rec-top">
+              <span class="stone-dot" style="background:radial-gradient(circle at 33% 28%,#fff,#f0d9d6);box-shadow:inset 0 0 0 1px rgba(190,90,80,.6)"></span>
+              <span class="rec-name"><b id="nm-red">你</b><i>RED · 先行</i></span>
+              <span class="turnbadge" id="badge-red">等待</span>
+            </div>
+            <div class="rec-stats">
+              <div class="stat"><span class="k">存活子</span><span class="v" id="ar">16</span></div>
+              <div class="stat"><span class="k">吃子</span><span class="v" id="cr">0</span></div>
+              <div class="stat"><span class="k">回合</span><span class="v" id="mr">0</span></div>
+            </div>
+            <div class="rec-bar"><i id="bar-r" style="width:50%"></i></div>
+            <div class="rec-bar-k"><span id="k-r">兵力 50%</span><span>红</span></div>
+          </div>
+
+          <div class="vspill">VS</div>
+
+          <div class="rec cool" id="rec-black">
+            <span class="rec-accent"></span>
+            <div class="rec-top">
+              <span class="stone-dot" style="background:radial-gradient(circle at 33% 28%,#5a626e,#0b0e13)"></span>
+              <span class="rec-name"><b id="nm-black">幻梦</b><i>BLACK · 后手</i></span>
+              <span class="turnbadge" id="badge-black">等待</span>
+            </div>
+            <div class="rec-stats">
+              <div class="stat"><span class="k">存活子</span><span class="v" id="ab">16</span></div>
+              <div class="stat"><span class="k">吃子</span><span class="v" id="cb">0</span></div>
+              <div class="stat"><span class="k">回合</span><span class="v" id="mb">0</span></div>
+            </div>
+            <div class="rec-bar"><i id="bar-b" style="width:50%"></i></div>
+            <div class="rec-bar-k"><span id="k-b">兵力 50%</span><span>黑</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><span class="bar cool"></span><h2>对 局 信 息</h2></div>
+        <div class="card-body">
+          <div class="kv">
+            <div class="item"><span class="k">AI 难度</span><span class="v" id="i-diff">--</span></div>
+            <div class="item"><span class="k">回合</span><span class="v" id="i-moves">0</span></div>
+            <div class="item"><span class="k">局面</span><span class="v" id="i-state">--</span></div>
+            <div class="item"><span class="k">用时</span><span class="v" id="i-time">00:00</span></div>
+          </div>
+          <div class="result-banner" id="result" style="display:none">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8.4 6.2 11.6 13 4.8"/></svg>
+            <span id="result-text"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><span class="bar"></span><h2>棋 谱</h2><span class="note" id="log-note"></span></div>
+        <div class="card-body"><div class="moves" id="moves"><div class="skeleton" style="width:60%"></div></div></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+const ROOM = "${ROOM}", TOKEN = "${TOKEN}";
+const COLS = 9, ROWS = 10;
+const FILE_LABELS = "abcdefghi";
+const CN_RED = {k: "帥", a: "仕", b: "相", n: "馬", r: "車", c: "炮", p: "兵"};
+const CN_BLACK = {k: "將", a: "士", b: "象", n: "馬", r: "車", c: "砲", p: "卒"};
+let busy = false, finished = false, built = false;
+let gridCache = null, lastCache = "", sel = null, tipTimer = null, myTurn = false;
+
+const $ = id => document.getElementById(id);
+
+function sq(r, c) { return FILE_LABELS[c] + (ROWS - 1 - r); }
+function parseSq(s) { return { r: ROWS - 1 - (+s[1]), c: FILE_LABELS.indexOf(s[0]) }; }
+
+function calcCell() {
+  const avail = $("barea").closest(".board-body").clientWidth - 32 - 26;
+  return Math.max(22, Math.min(48, Math.floor(avail / COLS)));
+}
+
+function buildBoard() {
+  const cell = calcCell(), w = COLS * cell, h = ROWS * cell;
+  built = true;
+  const mid = cell / 2;
+
+  const bw = $("bwrap");
+  bw.style.gridTemplateColumns = `26px ${w}px`;
+  bw.style.gridTemplateRows = `26px ${h}px`;
+
+  const cl = $("clabels"), rl = $("rlabels");
+  cl.style.gridTemplateColumns = `repeat(${COLS},${cell}px)`;
+  cl.innerHTML = FILE_LABELS.split("").map(c => `<div>${c}</div>`).join("");
+  rl.style.gridTemplateRows = `repeat(${ROWS},${cell}px)`;
+  let rh = "";
+  for (let r = 0; r < ROWS; r++) rh += `<div>${ROWS - 1 - r}</div>`;
+  rl.innerHTML = rh;
+
+  const ba = $("barea");
+  ba.style.width = w + "px";
+  ba.style.height = h + "px";
+
+  const X = c => mid + c * cell, Y = r => mid + r * cell;
+  const x0 = X(0), x8 = X(8), y0 = Y(0), y9 = Y(9);
+  let svg = "";
+
+  // 横线 10 条（贯通）
+  for (let r = 0; r < ROWS; r++) svg += `<line x1="${x0}" y1="${Y(r)}" x2="${x8}" y2="${Y(r)}"/>`;
+  // 竖线 9 条：两侧贯通，中间 7 条在楚河汉界处断开
+  for (let c = 0; c < COLS; c++) {
+    if (c === 0 || c === 8) {
+      svg += `<line x1="${X(c)}" y1="${y0}" x2="${X(c)}" y2="${y9}"/>`;
+    } else {
+      svg += `<line x1="${X(c)}" y1="${y0}" x2="${X(c)}" y2="${Y(4)}"/>`;
+      svg += `<line x1="${X(c)}" y1="${Y(5)}" x2="${X(c)}" y2="${y9}"/>`;
+    }
+  }
+  // 九宫斜线
+  svg += `<line x1="${X(3)}" y1="${Y(0)}" x2="${X(5)}" y2="${Y(2)}"/>`;
+  svg += `<line x1="${X(5)}" y1="${Y(0)}" x2="${X(3)}" y2="${Y(2)}"/>`;
+  svg += `<line x1="${X(3)}" y1="${Y(7)}" x2="${X(5)}" y2="${Y(9)}"/>`;
+  svg += `<line x1="${X(5)}" y1="${Y(7)}" x2="${X(3)}" y2="${Y(9)}"/>`;
+  // 楚河汉界（写在河界带里）
+  const riverY = (Y(4) + Y(5)) / 2;
+  svg += `<text x="${X(1) + cell * 0.1}" y="${riverY}" text-anchor="middle" dominant-baseline="central" font-size="${Math.round(cell * 0.44)}">楚河</text>`;
+  svg += `<text x="${X(7) - cell * 0.1}" y="${riverY}" text-anchor="middle" dominant-baseline="central" font-size="${Math.round(cell * 0.44)}">漢界</text>`;
+  // 外框（双层边）
+  const o = 7;
+  svg += `<rect x="${x0 - o}" y="${y0 - o}" width="${x8 - x0 + o * 2}" height="${y9 - y0 + o * 2}" fill="none"/>`;
+  // 炮兵位十字标记
+  const t = Math.max(3, cell * 0.12), gap = Math.max(3, cell * 0.14);
+  const marks = [[2, 1], [2, 7], [7, 1], [7, 7],
+                 [3, 0], [3, 2], [3, 4], [3, 6], [3, 8],
+                 [6, 0], [6, 2], [6, 4], [6, 6], [6, 8]];
+  marks.forEach(([r, c]) => {
+    const cx = X(c), cy = Y(r);
+    const dirs = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+    dirs.forEach(([sx, sy]) => {
+      if (c === 0 && sx < 0) return;
+      if (c === 8 && sx > 0) return;
+      svg += `<line x1="${cx + sx * gap}" y1="${cy + sy * gap}" x2="${cx + sx * (gap + t)}" y2="${cy + sy * gap}"/>`;
+      svg += `<line x1="${cx + sx * gap}" y1="${cy + sy * gap}" x2="${cx + sx * gap}" y2="${cy + sy * (gap + t)}"/>`;
+    });
+  });
+  $("grid").innerHTML = svg;
+
+  let hits = "";
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      hits += `<div class="hit" data-r="${r}" data-c="${c}" style="left:${c * cell}px;top:${r * cell}px;width:${cell}px;height:${cell}px"></div>`;
+    }
+  }
+  const hp = $("hits");
+  hp.innerHTML = hits;
+  hp.dataset.cell = cell;
+  hp.querySelectorAll(".hit").forEach(el => { el.onclick = () => click(el); });
+  paint();
+}
+
+function pieceHtml(ch, cell) {
+  const red = ch === ch.toUpperCase();
+  const table = red ? CN_RED : CN_BLACK;
+  const cn = table[ch.toLowerCase()] || ch;
+  const size = Math.round(cell * 0.82);
+  return `<div class="pce ${red ? "red" : "black"}" style="width:${size}px;height:${size}px;font-size:${Math.round(cell * 0.46)}px">${cn}</div>`;
+}
+
+function paint() {
+  if (!built || !gridCache) return;
+  const cell = +$("hits").dataset.cell;
+  const last = lastCache ? parseSq(lastCache.slice(2, 4)) : null;
+  $("hits").querySelectorAll(".hit").forEach(el => {
+    const r = +el.dataset.r, c = +el.dataset.c, ch = gridCache[r][c];
+    const inner = ch ? pieceHtml(ch, cell) : "";
+    if (el.dataset.pce !== ch) { el.innerHTML = inner; el.dataset.pce = ch; }
+    el.classList.toggle("sel", !!sel && sel.r === r && sel.c === c && ch === ch.toUpperCase());
+    el.classList.toggle("last", !!last && last.r === r && last.c === c);
+  });
+}
+
+function click(el) {
+  if (busy || finished) return;
+  const r = +el.dataset.r, c = +el.dataset.c, ch = gridCache[r][c];
+  if (ch && ch === ch.toUpperCase()) {          // 选自己的子（红方）
+    sel = { r, c };
+    tip(`已选择 ${pieceName(ch)} @ ${sq(r, c)}，再点目标位置`);
+    paint();
+    return;
+  }
+  if (!sel) { tip("先点一个自己的棋子喵~"); return; }
+  if (!myTurn) { tip("还没轮到你走棋"); return; }
+  const from = sq(sel.r, sel.c), to = sq(r, c);
+  sel = null;
+  sendMove(from + to);
+}
+
+function pieceName(ch) {
+  return (ch === ch.toUpperCase() ? CN_RED : CN_BLACK)[ch.toLowerCase()] || ch;
+}
+
+async function sendMove(uci) {
+  busy = true;
+  tip("走棋中…");
+  try {
+    const res = await fetch(`/api/xq/${ROOM}/move?t=${TOKEN}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({uci})
+    }).then(x => x.json());
+    tip(res.msg || (res.ok ? "走棋成功" : "这步不行"));
+    await refresh();
+  } catch (e) { tip("网络错误，稍后重试"); }
+  finally { busy = false; }
+}
+
+async function resign() {
+  if (busy) return;
+  busy = true;
+  try {
+    const res = await fetch(`/api/xq/${ROOM}/resign?t=${TOKEN}`, {method: "POST"}).then(x => x.json());
+    tip(res.msg || "");
+    await refresh();
+  } catch (e) { tip("网络错误，稍后重试"); }
+  finally { busy = false; }
+}
+
+function tip(s) {
+  $("tip").textContent = s;
+  clearTimeout(tipTimer);
+  if (s) tipTimer = setTimeout(() => { $("tip").textContent = ""; }, 6000);
+}
+
+function fmtTime(sec) {
+  sec = Math.max(0, sec | 0);
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  const p = n => String(n).padStart(2, "0");
+  return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+}
+
+function setStatus(cls, text) {
+  $("status").className = "statusline " + cls;
+  $("status-text").textContent = text;
+}
+
+function render(st) {
+  if (!st.ok) { tip("链接无效或已过期"); return; }
+  $("chip-room").innerHTML = `房间 <b>${ROOM}</b>`;
+
+  if (st.gone || !st.grid) {
+    finished = true;
+    setStatus("done", "对局已归档");
+    $("result").style.display = "flex";
+    $("result-text").textContent = "去群里用 /~xq start 再开一局";
+    $("btn-resign").disabled = true;
+    return;
+  }
+
+  finished = !!st.finished;
+  gridCache = st.grid;
+  lastCache = st.last_move || "";
+  if (!built) buildBoard();
+
+  myTurn = !finished && st.turn === "red";
+  $("nm-black").textContent = st.black.name;
+  $("chip-diff").innerHTML = `难度 <b>${st.difficulty}</b>`;
+  $("chip-moves").innerHTML = `回合 <b>${st.move_count}</b>`;
+  $("chip-time").innerHTML = `用时 <b>${fmtTime(st.elapsed)}</b>`;
+  $("board-note").textContent = `${COLS} × ${ROWS}`;
+
+  const ar = st.red.alive, ab = st.black.alive, tot = Math.max(1, ar + ab);
+  $("ar").textContent = ar; $("ab").textContent = ab;
+  $("cr").textContent = st.red.captures; $("cb").textContent = st.black.captures;
+  $("mr").textContent = st.red.moves; $("mb").textContent = st.black.moves;
+
+  const pr = Math.round(ar / tot * 100);
+  $("bar-r").style.width = pr + "%";
+  $("bar-b").style.width = (100 - pr) + "%";
+  $("k-r").textContent = `兵力 ${pr}%`;
+  $("k-b").textContent = `兵力 ${100 - pr}%`;
+
+  $("badge-red").textContent = finished ? "已结束" : (st.turn === "red" ? "行棋中" : "等待");
+  $("badge-black").textContent = finished ? "已结束" : (st.turn === "black" ? "思考中" : "等待");
+  $("badge-red").classList.toggle("on", st.turn === "red" && !finished);
+  $("badge-black").classList.toggle("on", st.turn === "black" && !finished);
+
+  $("i-diff").textContent = st.difficulty;
+  $("i-moves").textContent = st.move_count;
+  $("i-state").textContent = finished ? "终局" : (st.in_check ? "将军" : "进行中");
+  $("i-time").textContent = fmtTime(st.elapsed);
+  $("rec-note").textContent = `共 ${st.move_count} 回合`;
+
+  if (finished) {
+    setStatus("done", st.result || "对局结束");
+    $("result").style.display = "flex";
+    $("result-text").textContent = st.result || "对局结束";
+    $("btn-resign").disabled = true;
+  } else {
+    setStatus(myTurn ? "you" : "bot",
+              myTurn ? (st.in_check ? "被将军了！轮到你走棋" : "轮到你了 · 点自己的棋子再点目标位置")
+                     : `${st.black.name} 正在思考…`);
+    $("result").style.display = "none";
+    $("btn-resign").disabled = false;
+  }
+
+  const list = (st.moves || []).slice().reverse();
+  $("log-note").textContent = list.length ? `最近 ${list.length} 步` : "";
+  $("moves").innerHTML = list.length
+    ? list.map(m => `<span class="mv ${m.color === "red" ? "r" : "k"}"><i>${m.n}</i>${m.label}</span>`).join("")
+    : `<div class="empty">还没有走棋</div>`;
+
+  paint();
+}
+
+async function refresh() {
+  try {
+    const st = await fetch(`/api/xq/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    render(st);
+  } catch (e) { /* 静默，下轮再试 */ }
+}
+
+$("btn-clear").onclick = () => { sel = null; paint(); tip("已取消选择"); };
+$("btn-resign").onclick = () => { if (confirm("确定认输吗？")) resign(); };
+$("btn-refresh").onclick = () => { tip("已刷新"); refresh(); };
+let rt = null;
+window.addEventListener("resize", () => {
+  clearTimeout(rt);
+  rt = setTimeout(() => { if (built) buildBoard(); }, 140);
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 1500);
+</script>
+</body>
+</html>
