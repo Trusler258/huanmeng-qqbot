@@ -2005,7 +2005,7 @@ async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_qq):
 # ─── 围棋 ────────────────────────────────────────────────────
 
 async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """围棋 9×9 /~go [start [难度]|坐标|pass|board|resign]（群聊/私聊均可用）"""
+    """围棋 9/13/19 路 /~go [start [难度] [尺寸]|坐标|pass|board|resign|link]（群聊/私聊均可用）"""
     from modules import go_game as G
     from services.sender import send_group_msg, send_private_msg
 
@@ -2022,22 +2022,33 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if not args:
         return (
-            "围棋 9×9 /~go <操作>\n"
-            "  start [难度]  开始新对局（新手/普通/困难/专家，默认普通）\n"
+            "围棋 /~go <操作>\n"
+            "  start [难度] [尺寸]  开始新对局\n"
+            "     难度：新手/普通/困难/专家（默认普通）\n"
+            "     尺寸：9/13/19 或 小/中/大（默认 19 标准盘）\n"
             "  <坐标>        落子（D4 / 4,4，字母跳过 I）\n"
             "  pass          停一手（双方连续 pass 即终局数子）\n"
             "  board         查看棋盘\n"
+            "  link          取网页下棋链接\n"
             "  resign        认输"
         )
 
     action = args[0].lower()
 
     if action in ("start", "开始", "开局"):
-        diff_raw = args[1] if len(args) > 1 else ""
-        if diff_raw and not G.resolve_difficulty(diff_raw):
-            opts = " / ".join(v["label"] for v in G.DIFFICULTIES.values())
-            return f"难度「{diff_raw}」不认识喵~ 可选：{opts}"
-        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY)
+        diff_raw, size_raw = "", ""
+        for tok in args[1:]:
+            if not diff_raw and G.resolve_difficulty(tok):
+                diff_raw = tok
+            elif size_raw == "" and G.resolve_board_size(tok) is not None:
+                size_raw = tok
+            elif not diff_raw:
+                opts = " / ".join(v["label"] for v in G.DIFFICULTIES.values())
+                return f"参数「{tok}」不认识喵~ 难度可选：{opts}；尺寸可选：9 / 13 / 19"
+        size = G.resolve_board_size(size_raw)
+        if size is None:
+            return "尺寸只能是 9 / 13 / 19（或 小 / 中 / 大）喵~"
+        r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY, size)
         if not r.startswith("ok"):
             return r
         label = r.split(":", 1)[1] if ":" in r else "普通"
@@ -2049,8 +2060,9 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
         try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-            tip_line = f"\n🌐 网页下棋（推荐）：{link}" if link else ""
-            await _send(f"围棋开局！你执黑先行，AI 难度「{label}」{tip_line}\n落子用 /~go D4（字母跳过 I）\n{cq}")
+            tip_line = f"\n网页下棋（推荐）：{link}" if link else ""
+            await _send(f"围棋开局！{size}×{size} 盘，你执黑先行，AI 难度「{label}」{tip_line}\n"
+                        f"落子用 /~go D4（字母跳过 I）\n{cq}")
             return None
         except Exception as e:
             return f"棋盘渲染失败喵: {e}"

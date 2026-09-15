@@ -15,7 +15,7 @@
 
 
 
-## v2.3.15 — wdsj API 第三轮反扒适配（新模板+赛季榜+中文名直查） (2026.9.14)
+## v2.3.15 — wdsj API 第三轮反扒适配（新模板+赛季榜+中文名直查） (2026.9.14~15)
 一句话总结：反扒发现洛花星雨 API 模板 16→18、榜单 28→86（26 领域）、条目字段改名 owner、新增赛季榜 SEASON/中文标签/快照图，已补齐新模板并适配。
 
 - **反扒结论（docs/wdsj_api.md 全量记录）**：
@@ -127,6 +127,59 @@
   - 渲染：SVG 棋盘（木色底 + 星位 + 最后一手红点 + 坐标 A–J 跳过 I）+ 信息栏（难度/手数/提子）
   - 命令：`start [难度]` / `<坐标>`（D4 或 4,4）/ `pass` / `board` / `resign`
 - 帮助文档同步：`help_card` 增加围棋条目并更新象棋描述（自动收集，无需手工维护清单）
+
+### 棋盘模板参数化 + AI 对手正名（原 `/~xq` 显示"玩家0"）
+- `wzq_board.html` 抽出 4 个占位符：`${BOARD_N}` `${CELL}` `${STONE}` `${TITLE_EN}`，
+  五子棋/围棋共用一套模板（原先围棋贴了一套仿制样式，走形）
+- AI 对手名统一取 `core.config.get_config().bot_name`（→"幻梦"），不再写死"AI"/"玩家0"
+
+### 棋类在线对战网页上线（game 子域 + HMAC 身份）
+- **服务**：`services/game_web.py`（FastAPI）挂在 bot 进程的 asyncio loop 上（`main.py` 里
+  `await start_server()`），**直接共享 `modules/*_game` 的内存棋局，无需 IPC/DB**；只监听
+  `127.0.0.1:59400`，对外走 Cloudflare Tunnel 子域 `game.truslerweb.dpdns.org`
+- **身份**：链接里带 `chat_id_userid` + HMAC-SHA256(前16位) 签名，**点开即身份、无感登录**；
+  签名密钥落盘 `data/game_web_secret`，重启不变（否则老链接全失效）
+- **跨进程/重启可见性**：`_get_game()` 内存 miss 时补读 `data/go_games.json`；
+  `_load()` 改 **setdefault 合并语义**（只补不覆盖），否则 bot 里刚下的棋网页看不到
+- **踩坑：JSON 整数键**。`captures={1:0, 2:0}` 序列化成 `{"1":0,"2":0}`，读回后
+  `captures[BLACK]` 直接 `KeyError: 1` → HTTP 500 → 读档处统一 `{int(k): v}` 转回
+- **踩坑：同步 httpx 打自己起的异步服务会死锁**（同步 client 堵死事件循环）→ 自测脚本必须
+  `httpx.AsyncClient`，或者把服务放到**独立进程**里跑（本项目采用后者）
+- **踩坑：`uvicorn` 的异常不打进 bot 日志**，要看 `journalctl -u bot.service`
+
+### 围棋支持 9 / 13 / 19 三档（默认 19 标准盘）+ 棋局生命周期调整
+- 尺寸全面参数化：`BOARD_SIZES=(9,13,19)`、`letters_of()`（跳过 I）、`star_points()`、
+  `_empty_board(size)`、`_neighbors(r,c,size)`、`parse_coord(raw,size)`；`/~go start [难度] [尺寸]`
+  支持 `9/13/19` 与 `小/中/大`
+- **AI 性能**：候选点从"全盘扫描"改为**邻近启发**（只评估已有棋子周围 2 格），
+  19×19 自对弈 80 手实测 max 25ms / avg 10ms，不会阻塞事件循环
+- **棋局结束后不再删除**（原 `resign_game`/`end_game` 直接 `del _games[chat_id]`）：
+  保留终局盘面与 `final_score`/`result_text`，网页刷新仍能看到结果；
+  `start_game` 改为只在 `status == "playing"` 时拒绝开新局
+- `_record_go_context()` 加 `_ctx_done` 幂等标记，避免 end_game 与 resign 路径重复写上下文
+- **踩坑：服务器 python3 = 3.10，f-string 里不能复用同引号**。本地 3.12/3.13 能编过、
+  3.10 报 `SyntaxError: f-string: unmatched '['` → `len(game["board"])` 改走中间变量；
+  **改完必须在服务器上 `python3 -m py_compile` 验一遍**
+
+### 专属线上对局界面（双战绩风格，不再复用五子棋棋盘模板）
+- 用户要求"至少设计一个专属的线上界面"，采用 wdsj **双模式战绩卡**的设计语言：
+  亮色毛玻璃 + 圆角卡片 + 双色调面板（黑方冷蓝 / 白方暖红）+ 像素字体
+- **左栏棋盘**：木纹底 + SVG 精确格线（线只画到最外交叉点，不再顶到边缘）+ 星位 + 悬停虚子 +
+  最后一手红环；坐标列随尺寸自适应（`calcCell()` 按容器宽度取 `min(基准格, 可用宽度/n)`）
+- **右栏双战绩**：`你(BLACK)` / `幻梦(WHITE)` 两块面板 —— 盘上子 / 提子 / 落子 + 盘面占比条 +
+  行棋徽标（行棋中 / 思考中 / 等待 / 已结束）
+- **对局信息**：难度 / 手数 / 停一手次数 / 用时（服务端算 `elapsed`）+ 终局结果横幅
+- **棋谱**：逐手 chips（序号 + 坐标，黑白分色，pass 单独样式），后端新增 `moves` 落子记录
+  （`_push_move`/`_push_pass`），API 返回最近 60 手
+- **像素字体不内联**：Monocraft 从双模式卡里抽出来单独放 `data/web_assets/monocraft.ttf`，
+  由 `/static/monocraft.ttf` 提供（带 7 天缓存），避免每次加载 270KB base64
+- **鉴权收紧**：新增 `_auth_player()` —— 除校验签名外，还要求 **token 持有者就是这局的主人**，
+  否则 403（原来只要 room 对得上就放行，别人的链接能画出你的房间）
+- **渲染前必查的两件事**（都是本轮实际踩到的）：`.bwrap` 的 `grid-template-rows` 顺序写反
+  导致棋盘区落进 22px 行里、整块错位；`.board-bg` 用 `z-index:-1` 跑到卡片白底后面（木纹消失）
+  → 改 `isolation:isolate` + `z-index:0/1/2` 分层
+- 验收：接口级自测 79 项全过；服务器 Playwright 量测 `hits=361 / lines=38 / circles=9 /
+  hitsMatchBoard=true / JS_ERRORS 空`，桌面 1440 与手机 430 均无横向溢出（`scrollW == clientW`）
 
 ## v2.3.14 — 群聊表情修好（三处打架）+ 戳一戳读上下文并能发图 (2026.9.14)
 一句话总结：查出群聊一直不发图的根因是提示词里三处互相打架（词表缺失、action 字段说"比图片更自然"、示例不带 FACE），全部修掉；戳一戳恢复读会话上下文并支持发表情。
