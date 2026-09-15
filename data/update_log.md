@@ -11,6 +11,27 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.23 — 提速整改第 1 弹：wdsj 查询连接池 + 渲染/记忆缓存 + FC 收窄 (2026.9.16)
+一句话总结：洛花星雨连查第2次起从 ~6s 降到 ~0.6s、多玩家可并行；卡片渲染不再等 networkidle；大群长期记忆文件免重复读；FC 工具判定轮 token 预算收窄。
+
+### 一、wdsj 查询连接池复用（提速最显著）
+- `services/wdsj_api.py`：模块级共享 `httpx.AsyncClient`（max_keepalive_connections=10），所有查询/下载/头像函数复用同一连接池
+- 之前每次 `query_player_stats` 都新建 AsyncClient → 重复 TCP+TLS 握手（首连 6s 主要是建连+服务器慢）
+- 实测：第 1 次 6.08s → 第 2 次 0.61s（同连接复用，10 倍提速）；5 玩家并行查询 6.30s 全部成功
+- 进程退出时 atexit 兜底关闭连接池
+
+### 二、卡片渲染提速
+- `modules/commands.py::_render_html_to_png`：`networkidle` → `domcontentloaded`（卡片 HTML 是内联样式，networkidle 会空等网络空闲数秒）
+- changelog 的 `_screenshot_html` 本来就用 domcontentloaded + 页面池，不受影响
+
+### 三、大群长期记忆读取缓存
+- `modules/memory.py::load_memories`：按 (chat_id, mtime_ns, size) 指纹缓存，文件未变直接复用解析结果
+- 大群 memory_<chat_id>.md 达 2MB+ / 上万行，每次回复前全量读+过滤 → 现在仅首次读
+- 写文件（append/save）后 mtime 变化自动失效，无需手动清缓存
+
+### 四、FC 工具判定轮 token 预算收窄
+- `services/llm.py::generate_multi_reply_with_tools`：轮 0 工具判定 max_tokens 3000→800（判定只需短输出，长预算拉高首 token 延迟）；最终回复轮工具结果返回后仍用大上限，不影响长文
+
 ## v2.3.22 — 日榜"今日全零"自动回退昨日跨天 (2026.9.16)
 一句话总结：0点到4点之间（今天只有 00:01 一轮采集）查 /wdsj daily，不再显示全 0 的今日榜，自动改发"昨天 0:01 → 今天 0:01"的完整跨天榜。
 
