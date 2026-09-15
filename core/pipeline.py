@@ -44,14 +44,20 @@ from services.sender import send_sentences, send_by_chat_type, send_raw_group, s
 logger = get_logger("pipeline")
 
 # ------工具函数------
-def _make_interim_sender(chat_id: int, is_group: bool, user_id: int, thought_ctx: dict | None = None):
+def _make_interim_sender(chat_id: int, is_group: bool, user_id: int,
+                         thought_ctx: dict | None = None,
+                         sent_lead: list[str] | None = None):
     """构造 FC 先导语发送回调（v2.0.4y）：LLM 调工具前写的自然语先导语，
     经此先发给用户，避免搜索/查询期间 10s+ 干等。与正常回复同走 send_sentences，
     保持 stats/msglog 录制一致；先导语为单条，间隔压到 0.2s。
 
     v2.1.12: thought_ctx 共享思考状态 {"secs": int|None, "applied": bool}——
     先导语是用户看到的第一条文本，若已思考则把 [已思考N秒] 挂在这里并置 applied，
-    主回复段检测 applied 后不再重复挂。"""
+    主回复段检测 applied 后不再重复挂。
+
+    ★ v2.3.23: sent_lead 记录已发出的先导语原文。事故背景：FC 最终轮的 LLM
+    常把轮 1 写过的先导语再写一遍（实测 "诶？真要全打呀…" 被隔 18s 发了两遍），
+    用户看到重复句子。这里留痕，主回复发送前做去重（见 _dedup_against_lead）。"""
     async def _send(text: str):
         try:
             # v2.1.12: 先导语 + 思考标记（回调已记录 secs、未应用过 → 挂前缀）
@@ -63,9 +69,48 @@ def _make_interim_sender(chat_id: int, is_group: bool, user_id: int, thought_ctx
                 user_id=user_id if not is_group else None,
                 min_interval=0.2, max_interval=0.2,
             )
+            if sent_lead is not None:
+                sent_lead.append(text)
         except Exception:
             logger.warning("先导语发送失败: %s", str(text)[:30], exc_info=True)
     return _send
+
+
+def _norm_for_dup(s: str) -> str:
+    """去重比对用归一化：剥掉空白、常见句尾标点与语气符号。"""
+    return re.sub(r'[\s~～。！？!?…、，,\.；;：:—\-「」『』"\'”’“”]', '', s or "")
+
+
+def _dedup_against_lead(sentences: list[str], sent_lead: list[str]) -> list[str]:
+    """过滤掉与已发先导语重复的句子（v2.3.23）。
+
+    判定：归一化后完全相等，或一方是另一方前缀且短句占长句 ≥70%（容忍尾部加字/
+    加语气词，如先导语"……屏幕得刷成瀑布了" vs 正文"……屏幕得刷成瀑布了～"）。
+    只在真有先导语发出时生效；全部被滤掉时返回原列表（宁可略显重复，也不能让回复为空）。
+    """
+    if not sent_lead:
+        return sentences
+    leads = [_norm_for_dup(x) for x in sent_lead if x]
+    leads = [x for x in leads if len(x) >= 4]
+    if not leads:
+        return sentences
+    out = []
+    for s in sentences:
+        ns = _norm_for_dup(s)
+        dup = False
+        for ld in leads:
+            if ns == ld:
+                dup = True
+                break
+            short, long = (ns, ld) if len(ns) <= len(ld) else (ld, ns)
+            if short and short in long and len(short) >= 0.7 * len(long):
+                dup = True
+                break
+        if dup:
+            logger.info("先导语去重: 丢弃重复句 '%s'", s[:40])
+        else:
+            out.append(s)
+    return out or sentences
 
 def _make_thought_cb(thought_ctx: dict):
     """v2.1.12: 构造思考标记回调——LLM 思考完（reasoning 产出）→ 仅记录时长。
@@ -712,13 +757,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # v2.1.12: [已思考N秒] 共享状态——LLM 思考完成后由回调记录时长，
     # 先导语（FC轮1）或主回复首句消费并置 applied，只展示一次
     thought_ctx: dict = {"secs": None, "applied": False}
+    # ★ v2.3.23: 记录已发出的先导语，用于主回复去重（防隔十几秒重复同一句）
+    sent_lead: list[str] = []
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=msg_history_for_llm, speaker_name=display_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
         is_group=is_group, extra_info=extra_info_for_llm,
         max_tokens=None,
         user_id=user_id, group_id=chat_id if is_group else 0, bot_qq=bot_qq,
-        interim_cb=_make_interim_sender(chat_id, is_group, user_id, thought_ctx),
+        interim_cb=_make_interim_sender(chat_id, is_group, user_id, thought_ctx, sent_lead),
         thinking=thinking,
         thought_shown_cb=_make_thought_cb(thought_ctx),
     )
@@ -752,6 +799,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         filtered.append(s)
     if not filtered:
         filtered.append(format_lang("bot.fallback_reply", name=cfg.bot_name))
+    # ★ v2.3.23: 先导语去重——FC 轮1 已把开场白先发给用户，最终回复若又写一遍
+    #   （实测同一句隔 18s 发两次）在这里丢掉，避免用户看到复读
+    filtered = _dedup_against_lead(filtered, sent_lead)
     sentences = filtered
     sentences = [_clean_reply(s) for s in sentences]
 
