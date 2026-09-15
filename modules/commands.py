@@ -3882,7 +3882,13 @@ async def _render_html_to_png(html, prefix, width=740, height=900):
         page = await browser.new_page(viewport={"width": width, "height": height})
         await page.set_content(html)
         await page.wait_for_load_state("networkidle")
-        await page.screenshot(path=out, full_page=True)
+        await page.wait_for_timeout(300)
+        # 截 body 元素：自动贴合卡片宽度与内容高度，避免出现大片背景留白
+        el = await page.query_selector("body")
+        if el:
+            await el.screenshot(path=out)
+        else:
+            await page.screenshot(path=out, full_page=True)
         await page.close()
         return out
     except Exception:
