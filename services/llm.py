@@ -1314,11 +1314,12 @@ async def generate_multi_reply_with_tools(
     _prev_call_set: frozenset[str] | None = None  # 防死循环：连续两轮相同调用集则停
 
     for round_idx in range(MAX_ROUNDS):
-        # ★ v2.3.23 提速：FC 判定轮用窄 max_tokens（工具判定只需短输出，
-        #   长 max_tokens 会拉高首个 token 延迟与费用）。最终回复轮在
-        #   工具结果返回后再放大（下方 json_mode 分支已用 8000 上限）。
-        round_tokens = max_tokens if (round_idx > 0 or has_long_context) else min(max_tokens, 800)
-        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=round_tokens, temperature=0.4, scene="reply_tools", thinking=thinking)
+        # ★ v2.3.23 实测结论（勿再"优化"）：max_tokens 是上限，模型遇 EOS 即停，
+        #   收窄它对短回复耗时无影响（实测 800 vs 3000：中位 0.72s vs 0.64s，纯噪声），
+        #   反而会在"轮0 直接回复"时截断 JSON —— 而 call_llm_with_tools 不检查
+        #   finish_reason，截断后要走 salvage/json_mode 补救 = 多一次调用，更慢。
+        #   这里恢复用完整 max_tokens。
+        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools", thinking=thinking)
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d | reasoning=%d字",
                     round_idx + 1, raw_preview, len(result.tool_calls), len(result.reasoning))
