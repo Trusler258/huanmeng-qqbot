@@ -235,11 +235,14 @@ def _board_to_svg(board, lastmove=None, checkers=None):
     if board.turn:
         kwargs["orientation"] = cchess.RED
     svg = cchess.svg.board(**kwargs)
-    # ★ cchess 默认把棋盘居中塞进 1200x1200 的正方画布（棋盘本体其实只有 800x900），
-    #   四周留白过多 → 视觉上棋盘被压成"方块"。这里裁到棋盘实际范围（留 20px 边距）。
+    # ★ cchess 默认把棋盘塞进 1200x1200 的正方画布，四周留白过多 → 视觉上棋盘被压成"方块"。
+    #   实测坐标（v2.3.20 修正）：棋盘线区 x∈[-400,400] y∈[-450,450]，棋子中心 x=col*100-400 ∈
+    #   [-400,400]、y=row*100-450 ∈ [-450,450]，棋子半径 45~50 → 全部内容（含坐标文字）
+    #   实际范围约 x∈[-500,460] y∈[-520,500]。旧值 "-420 -470 840 940" 与该范围错位 30~80px，
+    #   导致左右棋子被裁半、黑方底线整排出画面（"棋盘不对"的根因）。
     import re as _re
-    svg = _re.sub(r'viewBox="-600 -600 1200 1200"', 'viewBox="-420 -470 840 940"', svg, count=1)
-    svg = _re.sub(r'width="\d+" height="\d+"', 'width="840" height="940"', svg, count=1)
+    svg = _re.sub(r'viewBox="-600 -600 1200 1200"', 'viewBox="-500 -520 1000 1040"', svg, count=1)
+    svg = _re.sub(r'width="\d+" height="\d+"', 'width="1000" height="1040"', svg, count=1)
     return svg
 
 
@@ -253,12 +256,12 @@ async def _svg_to_png(svg_str: str, out_path: str) -> bool:
     try:
         from modules.changelog import _ensure_browser
         browser = await _ensure_browser()
-        page = await browser.new_page(viewport={"width": 880, "height": 980})
+        page = await browser.new_page(viewport={"width": 1040, "height": 1080})
         html = (f'<html><body style="margin:0;background:#eb5">'
-                f'<div id="xqwrap" style="width:840px;height:940px">{svg_str}</div></body></html>')
+                f'<div id="xqwrap" style="width:1000px;height:1040px">{svg_str}</div></body></html>')
         await page.set_content(html)
         await page.wait_for_timeout(400)
-        # 截包裹层：尺寸与棋盘严格一致（840x940），无任何留白
+        # 截包裹层：尺寸与棋盘严格一致（1000x1040），无任何留白
         el = await page.query_selector("#xqwrap")
         if el:
             await el.screenshot(path=out_path)
