@@ -2871,14 +2871,40 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                     hint = ""
                 return f"{label}还没有数据喵~ 榜单将在每天 0:01 / 4:01 / 8:01 / 12:01 / 16:01 / 20:01 产出{hint}"
 
-        if mode == "are":
-            html = _build_arena_daily_html(rows, today, time_start, time_end)
-            prefix = "wdsj_arena"
-        else:
-            html = _build_daily_rank_html(rows, today, new_players, time_start, time_end)
-            prefix = "wdsj_daily"
+        out_path = None
+        # ★ v2.3.26: 起床战争日榜优先走 Pillow 绘制（服务器实测 79ms vs Chromium
+        #   872ms，快 11 倍；一比一复刻，平均像素差 2.5%）。由测试项 pillow_card
+        #   控制，可在 /~key 一键回退；任何异常都自动回退 Chromium，不影响可用性。
+        #   注意：Pillow 是纯 CPU 同步调用，必须丢线程池，否则阻塞事件循环。
+        try:
+            from modules.features import is_enabled as _feat_on
+            _use_pillow = (mode != "are") and _feat_on("pillow_card")
+        except Exception:
+            _use_pillow = False
+        if _use_pillow:
+            try:
+                from services.wdsj_card_pillow import save_daily_rank_card
+                _payload = _daily_rank_payload(rows, today, new_players, time_start, time_end)
+                _ts = time.strftime("%Y%m%d_%H%M%S")
+                _out = str(Path(__file__).resolve().parent.parent
+                           / "data" / "img_temp" / f"wdsj_daily_{_ts}.jpg")
+                _loop = asyncio.get_running_loop()
+                await _loop.run_in_executor(
+                    None, lambda: save_daily_rank_card(_payload, _out))
+                out_path = _out
+                logger.info("日榜卡用 Pillow 绘制完成: %s", Path(_out).name)
+            except Exception as _e:
+                logger.warning("Pillow 日榜卡绘制失败 → 回退 Chromium: %s", _e)
+                out_path = None
 
-        out_path = await _render_html_to_png(html, prefix)
+        if not out_path:
+            if mode == "are":
+                html = _build_arena_daily_html(rows, today, time_start, time_end)
+            else:
+                html = _build_daily_rank_html(rows, today, new_players, time_start, time_end)
+            prefix = "wdsj_arena" if mode == "are" else "wdsj_daily"
+            out_path = await _render_html_to_png(html, prefix)
+
         if not out_path:
             return "排名卡片渲染失败喵~"
         cq = f"[CQ:image,file=file:///{out_path.replace(chr(92), chr(47))}]"

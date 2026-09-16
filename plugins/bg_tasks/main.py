@@ -134,11 +134,32 @@ class Plugin:
                     # 收集所有模式的日报图
                     _daily_pngs = []
                     if rows:
-                        html = _build_daily_rank_html(rows, today, new_players, t_start, t_end)
-                        from modules.commands import _render_html_to_png
-                        png_path = await _render_html_to_png(html, "wdsj_daily")
-                        if png_path:
-                            _daily_pngs.append(png_path)
+                        from modules.commands import _render_html_to_png, _daily_rank_payload
+                        # ★ v2.3.26: 与 /~wdsj daily 同款开关——优先 Pillow（快 11 倍），
+                        #   失败或关闭时回退 Chromium。两条路径共用同一份载荷与开关，
+                        #   避免"手动查快、定时推慢"的不一致。
+                        _p = None
+                        try:
+                            from pathlib import Path as _P_
+                            from modules.features import is_enabled as _feat_on
+                            if _feat_on("pillow_card"):
+                                from services.wdsj_card_pillow import save_daily_rank_card
+                                _pl = _daily_rank_payload(rows, today, new_players, t_start, t_end)
+                                _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                _outp = str(_P_(__file__).resolve().parent.parent.parent
+                                            / "data" / "img_temp" / f"wdsj_daily_{_ts}.jpg")
+                                _loop = asyncio.get_running_loop()
+                                await _loop.run_in_executor(
+                                    None, lambda: save_daily_rank_card(_pl, _outp))
+                                _p = _outp
+                        except Exception as _e:
+                            logger.warning("定时日报 Pillow 绘制失败 → 回退 Chromium: %s", _e)
+                            _p = None
+                        if not _p:
+                            html = _build_daily_rank_html(rows, today, new_players, t_start, t_end)
+                            _p = await _render_html_to_png(html, "wdsj_daily")
+                        if _p:
+                            _daily_pngs.append(_p)
                     if arena_rows:
                         from modules.commands import _build_arena_daily_html
                         a_html = _build_arena_daily_html(arena_rows, today, a_start, a_end)
