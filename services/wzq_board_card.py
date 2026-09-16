@@ -1,5 +1,10 @@
 """
-五子棋棋盘卡 —— Pillow 1:1 复刻 data/templates/wzq_board.html
+棋盘卡（五子棋 / 围棋）—— Pillow 1:1 复刻 data/templates/wzq_board.html
+
+围棋与五子棋**共用这一个模板**（modules/go_game.build_board_html 也是读它，
+只换网格数与标题），所以两者共用同一份复刻代码，靠参数区分：
+    · 五子棋：15 路 / cell 32 / 行号上→下递减 / 星位 9 点
+    · 围棋：9·13·19 路 / cell 44·34·26 / 行号上→下递增 / 星位随尺寸 / 列字母跳过 I
 
 目的：渲染引擎由 Chromium 换成 Pillow 提速（服务器 i3-2130：~870ms → ~80ms），
      **原画质不变**：配色/圆角/阴影/字号/位置全部照抄模板 CSS，不重新设计。
@@ -78,14 +83,27 @@ NAME_MB, STONE_MB = 8, 4
 PLAYER_CX = 0.202            # flex space-around 实测
 
 BOARD_PAD_PT = 20
+# 棋盘默认值 = 五子棋（围棋经参数覆盖：9路 cell44 / 13路 cell34 / 19路 cell26）
 BOARD_N, CELL, LABEL, STONE, STAR = 15, 32, 24, 26, 7
 BOARD_R = 6
 STATUS_FS, STATUS_PT, STATUS_MB = 14, 12, 16
 FOOT_FS, FOOT_PT, FOOT_PX, FOOT_PB = 10, 12, 24, 16
 
-# 星位（模板里那 9 个点）
-STAR_POINTS = {(3, 3), (3, 7), (3, 11), (7, 3), (7, 7),
-               (7, 11), (11, 3), (11, 7), (11, 11)}
+def star_points_of(size: int) -> set:
+    """该尺寸的星位（与 modules/go_game.star_points 保持一致）"""
+    if size == 9:
+        return {(2, 2), (2, 6), (6, 2), (6, 6), (4, 4)}
+    if size == 13:
+        return {(3, 3), (3, 9), (9, 3), (9, 9), (6, 6)}
+    if size == 19:
+        return {(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15),
+                (15, 3), (15, 9), (15, 15)}
+    # 15 路（五子棋）
+    return {(3, 3), (3, 7), (3, 11), (7, 3), (7, 7),
+            (7, 11), (11, 3), (11, 7), (11, 11)}
+
+
+STAR_POINTS = star_points_of(BOARD_N)
 
 
 def _body_bg(size) -> Image.Image:
@@ -124,8 +142,20 @@ def _hairline(d, img, x0, x1, y, alpha=None):
 
 def render_wzq_board(game, black_name: str, white_name: str,
                      col_labels: list, date_str: str,
-                     title_en: str = "GOMOKU", brand_en: str = "HUANMENG") -> Image.Image:
-    """渲染五子棋棋盘卡（1:1 复刻模板外观）
+                     title_en: str = "GOMOKU", brand_en: str = "HUANMENG",
+                     board_n: int = BOARD_N, cell: int = CELL, stone: int = STONE,
+                     star_points: set | None = None,
+                     row_label_mode: str = "desc",
+                     sub_text: str | None = None,
+                     status_text: str | None = None,
+                     status_class: str | None = None,
+                     move_count: int | None = None) -> Image.Image:
+    """渲染棋盘卡（1:1 复刻 data/templates/wzq_board.html 外观）
+
+    五子棋与围棋**共用同一模板**，靠参数区分：
+      · 五子棋：默认值（15 路 / cell 32 / 行号上→下递减）
+      · 围棋：19(或13/9) 路 / cell 26(34/44) / 行号上→下递增 / 星位不同
+                （围棋惯例列字母跳过 I；sub/status 文本由调用方传入）
 
     game 需含：board[r][c]（0 空/1 黑/2 白）、status、turn、winner、
               move_count、last_move
@@ -143,16 +173,23 @@ def render_wzq_board(game, black_name: str, white_name: str,
         sclass, stext = "win", "%s (白) 获胜！" % white_name
     else:
         sclass, stext = "draw", "平局！"
-    sub_text = "手数 %s | %s" % (game.move_count,
-                                stext.split("：")[0] if "：" in stext else stext)
+    if sub_text is None:
+        sub_text = "手数 %s | %s" % (game.move_count,
+                                    stext.split("：")[0] if "：" in stext else stext)
+    if status_text is not None:
+        stext = status_text
+    if status_class is not None:
+        sclass = status_class
+    _moves = game.move_count if move_count is None else move_count
+    _stars = STAR_POINTS if star_points is None else star_points
 
     # ── 盒子高度（实测公式）──
     head_inner = max(LOGO_SZ, lh(TITLE_FS) + 4 + lh(SUB_FS))              # 44.8
     head_h = HEAD_PT + head_inner + HEAD_PB + BD                          # 77.8
     players_inner = lh(NAME_FS) + NAME_MB + STONE_SZ + STONE_MB + lh(ROLE_FS)
     players_h = PLAYERS_PT + players_inner + PLAYERS_PB + BD              # 113.4
-    board_box = LABEL + BOARD_N * CELL + BD * 2                           # 506
-    board_h = BOARD_PAD_PT + board_box + BOARD_PAD_PT                     # 546
+    board_box = LABEL + board_n * cell + BD * 2
+    board_h = BOARD_PAD_PT + board_box + BOARD_PAD_PT
     status_h = STATUS_PT + lh(STATUS_FS) + STATUS_PT + BD * 2             # 48.4
     foot_h = BD + FOOT_PT + lh(FOOT_FS) + FOOT_PB                         # 45
 
@@ -233,14 +270,16 @@ def render_wzq_board(game, black_name: str, white_name: str,
         d.text((bx, yp + PLAYERS_PT + name_h / 2), nm, font=f_name,
                fill=C["primary_light"] if active else C["t2"], anchor="mm")
         sy = yp + PLAYERS_PT + name_h + NAME_MB
+        # ⚠️ 局部量取名 stone_img，避免遮蔽 render_wzq_board 的 stone（棋子直径）参数
         if is_black:
-            stone = radial_circle((STONE_SZ, STONE_SZ), (0x66, 0x66, 0x66),
-                                  (10, 10, 10), 35, 35)
+            stone_img = radial_circle((STONE_SZ, STONE_SZ), (0x66, 0x66, 0x66),
+                                      (10, 10, 10), 35, 35)
         else:
-            stone = radial_circle((STONE_SZ, STONE_SZ), (255, 255, 255),
-                                  (176, 176, 176), 35, 35)
+            stone_img = radial_circle((STONE_SZ, STONE_SZ), (255, 255, 255),
+                                      (176, 176, 176), 35, 35)
         sx = int(bx - STONE_SZ / 2)
-        img.paste(stone, (sx, int(sy)), rounded_mask((STONE_SZ, STONE_SZ), STONE_SZ // 2))
+        img.paste(stone_img, (sx, int(sy)),
+                  rounded_mask((STONE_SZ, STONE_SZ), STONE_SZ // 2))
         d = ImageDraw.Draw(img)
         if not is_black:
             d.ellipse([sx, sy, sx + STONE_SZ - 1, sy + STONE_SZ - 1],
@@ -252,7 +291,7 @@ def render_wzq_board(game, black_name: str, white_name: str,
     _hairline(d, img, ox, ox + card_w, oy + y_players + players_h - BD)
 
     # ══════ .board-section / .board-grid ══════
-    bx0 = ox + (card_w - board_box) / 2
+    bx0 = ox + (card_w - board_box) / 2    # 棋盘水平居中
     by0 = oy + y_board_sec + BOARD_PAD_PT
     board = Image.new("RGB", (board_box, board_box), C["board_bg"])
     ImageDraw.Draw(board).rounded_rectangle(
@@ -269,57 +308,60 @@ def render_wzq_board(game, black_name: str, white_name: str,
 
     d = ImageDraw.Draw(img)
     gx0, gy0 = bx0 + BD + LABEL, by0 + BD + LABEL
-    grid_w = BOARD_N * CELL
-    for r in range(BOARD_N):
-        yy = int(gy0 + r * CELL + CELL / 2)
+    grid_w = board_n * cell
+    for r in range(board_n):
+        yy = int(gy0 + r * cell + cell / 2)
         d.line([gx0, yy, gx0 + grid_w, yy], fill=C["board_line"], width=1)
-    for c in range(BOARD_N):
-        xx = int(gx0 + c * CELL + CELL / 2)
+    for c in range(board_n):
+        xx = int(gx0 + c * cell + cell / 2)
         d.line([xx, gy0, xx, gy0 + grid_w], fill=C["board_line"], width=1)
     for c, lab in enumerate(col_labels):
-        d.text((gx0 + c * CELL + CELL / 2, by0 + BD + LABEL / 2), lab,
+        d.text((gx0 + c * cell + cell / 2, by0 + BD + LABEL / 2), lab,
                font=mono(10), fill=C["t3"], anchor="mm")
-    for r in range(BOARD_N):
-        d.text((bx0 + BD + LABEL / 2, gy0 + r * CELL + CELL / 2), str(BOARD_N - r),
+    # 行号：五子棋上→下递减（15…1）；围棋上→下递增（1…19）
+    for k in range(board_n):
+        lab = (board_n - k) if row_label_mode == "desc" else (k + 1)
+        d.text((bx0 + BD + LABEL / 2, gy0 + k * cell + cell / 2), str(lab),
                font=mono(10), fill=C["t3"], anchor="mm")
 
     # 棋子（board 行 1 在底部 → 屏幕行 = BOARD_N-1-r）
-    for r in range(BOARD_N):
-        for c in range(BOARD_N):
+    for r in range(board_n):
+        for c in range(board_n):
             st = game.board[r][c]
-            ccx = gx0 + c * CELL + CELL / 2
-            ccy = gy0 + (BOARD_N - 1 - r) * CELL + CELL / 2
+            ccx = gx0 + c * cell + cell / 2
+            # 屏幕行：DOM 第 k 行对应 board 的 r = board_n-1-k（两种棋一致）
+            ccy = gy0 + (board_n - 1 - r) * cell + cell / 2
             if st == 0:
-                if (r, c) in STAR_POINTS:
+                if (r, c) in _stars:
                     d.ellipse([ccx - STAR / 2, ccy - STAR / 2,
                                ccx + STAR / 2, ccy + STAR / 2], fill=C["board_line"])
                 continue
-            sx, sy = int(ccx - STONE / 2), int(ccy - STONE / 2)
+            sx, sy = int(ccx - stone / 2), int(ccy - stone / 2)
             # .last-move: box-shadow 0 0 0 2px primary, 0 0 14px rgba(236,72,153,.7)
             if game.last_move and tuple(game.last_move) == (r, c):
                 gl = Image.new("L", (W, H), 0)
                 ImageDraw.Draw(gl).ellipse(
-                    [sx - 7, sy - 7, sx + STONE + 6, sy + STONE + 6], fill=255)
+                    [sx - 7, sy - 7, sx + stone + 6, sy + stone + 6], fill=255)
                 gl = gl.filter(ImageFilter.GaussianBlur(7)).point(lambda v: int(v * 0.7))
                 img.paste(Image.new("RGB", (W, H), C["primary"]), (0, 0), gl)
                 d = ImageDraw.Draw(img)
             if st == 1:
-                piece = radial_circle((STONE, STONE), (0x66, 0x66, 0x66),
+                piece = radial_circle((stone, stone), (0x66, 0x66, 0x66),
                                       (10, 10, 10), 35, 35)
                 sh_a = 0.8
             else:
-                piece = radial_circle((STONE, STONE), (255, 255, 255),
+                piece = radial_circle((stone, stone), (255, 255, 255),
                                       (176, 176, 176), 35, 35)
                 sh_a = 0.4
             sh = Image.new("L", (W, H), 0)
-            ImageDraw.Draw(sh).ellipse([sx, sy + 2, sx + STONE, sy + STONE + 2], fill=255)
+            ImageDraw.Draw(sh).ellipse([sx, sy + 2, sx + stone, sy + stone + 2], fill=255)
             _sa = sh_a
             sh = sh.filter(ImageFilter.GaussianBlur(3)).point(lambda v, a=_sa: int(v * a))
             img.paste(Image.new("RGB", (W, H), (0, 0, 0)), (0, 0), sh)
-            img.paste(piece, (sx, sy), rounded_mask((STONE, STONE), STONE // 2))
+            img.paste(piece, (sx, sy), rounded_mask((stone, stone), stone // 2))
             d = ImageDraw.Draw(img)
             if st == 2:
-                d.ellipse([sx, sy, sx + STONE - 1, sy + STONE - 1],
+                d.ellipse([sx, sy, sx + stone - 1, sy + stone - 1],
                           outline=(136, 136, 136), width=1)
 
     # ══════ .status-bar ══════
@@ -356,7 +398,7 @@ def render_wzq_board(game, black_name: str, white_name: str,
     d.ellipse([fx, fyc - 3, fx + 6, fyc + 3], fill=C["success"])
     fx += 6 + 8
     for s_, col in (("幻梦 Bot", C["primary_light"]), (" · ", C["t3"]),
-                    ("手数 %s" % game.move_count, C["t3"]), (" · ", C["t3"]),
+                    ("手数 %s" % _moves, C["t3"]), (" · ", C["t3"]),
                     ("H8 或 8,8", C["t3"])):
         d.text((fx, fyc), s_, font=f_foot, fill=col, anchor="lm")
         fx += d.textlength(s_, font=f_foot)
@@ -368,7 +410,13 @@ def render_wzq_board(game, black_name: str, white_name: str,
 
 def save_wzq_board(game, black_name: str, white_name: str, col_labels: list,
                    date_str: str, out_path, title_en: str = "GOMOKU",
-                   brand_en: str = "HUANMENG"):
-    """渲染并保存为 JPEG（bot 走这条）"""
+                   brand_en: str = "HUANMENG", **kw):
+    """渲染并保存为 JPEG（bot 走这条）。**kw 透传给 render_wzq_board（围棋用它传棋盘参数）"""
     return save_jpeg(render_wzq_board(game, black_name, white_name, col_labels,
-                                      date_str, title_en, brand_en), out_path, 95)
+                                      date_str, title_en, brand_en, **kw),
+                     out_path, 95)
+
+
+# 通用别名：围棋也走这个（wzq 名字保留是为了不动既有引用）
+render_board_card = render_wzq_board
+save_board_card = save_wzq_board

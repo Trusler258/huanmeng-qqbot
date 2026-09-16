@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import time
@@ -734,11 +735,77 @@ def build_board_html(game: dict) -> str:
             .replace("${MOVE_COUNT}", str(game.get("move_count", 0))))
 
 
+class _BoardView:
+    """把围棋的 game dict 适配成渲染器期望的属性访问形式。
+
+    渲染器（services.wzq_board_card）与五子棋共用，读的是 `.board/.status/...`；
+    围棋这边是 dict，用一个轻量视图桥接，比让渲染器兼容两种结构更安全。
+    """
+    __slots__ = ("board", "status", "turn", "winner", "move_count", "last_move")
+
+    def __init__(self, g: dict):
+        self.board = g.get("board") or []
+        self.status = g.get("status", "playing")
+        self.turn = g.get("turn", BLACK)
+        self.winner = g.get("winner")
+        self.move_count = g.get("move_count", 0)
+        self.last_move = g.get("last_move")
+
+
+def _pillow_board(game: dict, out_path: str) -> str:
+    """用 Pillow 画围棋棋盘卡（1:1 复刻同一模板，服务器实测比 Chromium 省 ~0.8s/张）
+
+    ⚠️ Pillow 是纯 CPU 同步调用，调用方必须 run_in_executor，否则阻塞事件循环。
+    """
+    from services.wzq_board_card import save_wzq_board, star_points_of
+
+    size = len(game.get("board") or []) or BOARD_SIZE
+    cell = _CELL_SIZES.get(size, 26)
+    letters = letters_of(size)
+    caps = game.get("captures") or {}
+    prof = DIFFICULTIES.get(game.get("difficulty", DEFAULT_DIFFICULTY), {})
+    my_turn = game.get("turn") == game.get("player_color")
+
+    sub = (f"围棋 {size}×{size} · 难度{prof.get('label', '普通')} · "
+           f"手数 {game.get('move_count', 0)} · "
+           f"提子 {caps.get(BLACK, 0)}:{caps.get(WHITE, 0)}")
+    status_text = "该你落子（你执黑）" if my_turn else f"{_bot_name()} 思考中…"
+    status_class = "playing" if game.get("status") == "playing" else "win"
+
+    return str(save_wzq_board(
+        _BoardView(game), "你", _bot_name(), list(letters),
+        time.strftime("%Y-%m-%d %H:%M"), out_path,
+        title_en="GO", board_n=size, cell=cell, stone=int(cell * 0.82),
+        star_points=star_points_of(size), row_label_mode="asc",
+        sub_text=sub, status_text=status_text, status_class=status_class,
+        move_count=game.get("move_count", 0),
+    ))
+
+
 async def render_board(chat_id: int, test_game: dict | None = None) -> str | None:
-    """渲染棋盘（复用 changelog.render_card_to_image，与五子棋同一条渲染管线）"""
+    """渲染棋盘。
+
+    ★ v2.3.27: 优先走 Pillow 直绘（1:1 复刻同模板，服务器实测 ~80ms vs Chromium ~870ms）。
+      由测试项 pillow_card 控制（/~key 可一键回退）；任何异常自动回退 Chromium。
+    """
     game = test_game or _games.get(chat_id)
     if not game:
         return None
+    out_path = str(_ROOT / "data" / "img_temp" / f"go_{chat_id}.png")
+    _use_pillow = False
+    try:
+        from modules.features import is_enabled
+        _use_pillow = is_enabled("pillow_card")
+    except Exception:
+        _use_pillow = False
+    if _use_pillow:
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, lambda: _pillow_board(game, out_path))
+            return out_path
+        except Exception as e:
+            logger.warning("围棋棋盘 Pillow 绘制失败 → 回退 Chromium: %s", e)
+
     html = build_board_html(game)
     try:
         from modules.changelog import render_card_to_image
