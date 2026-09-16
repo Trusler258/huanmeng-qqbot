@@ -17,7 +17,7 @@ from services.card_dark import (
     LIST_PT, LIST_PX, LIST_PB, ENTRY_MB, RANK_W, VALUE_FS, NAME_FS,
     body_bg, glass_card, draw_head, draw_foot, draw_entry, entry_h, lh,
 )
-from services.card_base import cjk, mono, truncate, save_jpeg
+from services.card_base import cjk, mono, truncate, save_image
 
 
 def build_payload(data: dict, bot_name: str = "幻梦") -> dict:
@@ -93,5 +93,6 @@ def render_leaderboard_card(payload: dict) -> Image.Image:
 
 def save_leaderboard_card(data: dict, out_path, bot_name: str = "幻梦") -> Path:
     """渲染排行榜卡并保存（bot 走这条）"""
-    return save_jpeg(render_leaderboard_card(build_payload(data, bot_name)),
-                     out_path, 95)
+    # 按扩展名输出（原模板文件名是 .png）
+    return save_image(render_leaderboard_card(build_payload(data, bot_name)),
+                      out_path, 95)

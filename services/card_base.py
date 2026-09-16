@@ -337,9 +337,27 @@ def paste_icon(dst: Image.Image, name: str, xy, size: int) -> bool:
 
 
 def save_jpeg(img: Image.Image, path, quality: int = 95) -> Path:
+    """存 JPEG（不看扩展名，强制 JPEG）"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     img.save(p, "JPEG", quality=quality)
+    return p
+
+
+def save_image(img: Image.Image, path, quality: int = 95) -> Path:
+    """按**扩展名**决定格式保存。
+
+    ⚠️ 必须这样：调用方沿用原模板的文件名（.png / .jpg），
+      若统一写 JPEG 内容但用 .png 扩展名，文件与后缀不符，
+      QQ/NapCat 可能按后缀判断而拒收。
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fmt = "PNG" if p.suffix.lower() == ".png" else "JPEG"
+    if fmt == "PNG":
+        img.save(p, "PNG")
+    else:
+        img.save(p, "JPEG", quality=quality)
     return p
 
 
