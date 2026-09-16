@@ -2836,6 +2836,11 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                 label_date = f"{datetime.now().year}-{int(a[:2]):02d}-{int(a[2:]):02d}"
 
         if mode == "are":
+            # ★ v2.3.24: 日榜渲染 ~1-3s，先回执避免用户以为没反应（原来全程静默）
+            _is_push0 = len(args) >= 2 and args[-1].lower() in ("send", "push", "推送", "发送")
+            if not _is_push0:
+                await (send_group_msg("正在生成竞技场日榜喵~", group_id) if is_group
+                       else send_private_msg("正在生成竞技场日榜喵~", user_id))
             rows, today, time_start, time_end, fb = build_arena_daily_rankings(label_date=label_date)
         else:
             from datetime import date as _date, timedelta as _td
@@ -2845,6 +2850,11 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                 label_date = (_date.today() - _td(days=1)).isoformat()
             # ★ 查询过去日期时自动用跨天模式
             use_cross = label_date and label_date != _date.today().isoformat()
+            # ★ v2.3.24: 先回执（push 模式是后台推送，不用回执）
+            if not is_push:
+                _d = label_date or _date.today().isoformat()
+                await (send_group_msg(f"正在生成 {_d} 的起床战争日榜喵~", group_id) if is_group
+                       else send_private_msg(f"正在生成 {_d} 的起床战争日榜喵~", user_id))
             rows, today, time_start, time_end, new_players, fb = build_daily_rankings(
                 label_date=label_date, cross_day=use_cross)
 
@@ -3525,12 +3535,20 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     from services.pc_status import build_sys_card_html, format_pc_status, request_screenshot
     from modules.changelog import render_card_to_image
     from services.sender import send_group_msg, send_private_msg
+    from core.config import get_config
     import uuid, base64, tempfile
 
     sub = (args[0].lower() if args else "")
+    # ★ v2.3.24 通用化: owner 名不再硬编码 "Trusler"，取 roles.toml 的 qq_name_map
+    #   （admin_qq 对应的昵称），换部署改配置即可，不用动代码
+    _cfg = get_config()
+    owner = _cfg.get_display_name(_cfg.admin_qq) or "主人"
 
     # 截屏
     if sub in ("shot", "shotdesk"):
+        # ★ v2.3.24: 截屏最长等 30s，先回执避免用户以为没反应（原来全程静默）
+        await (send_group_msg("正在叫 PC 截屏喵，稍等一下下~", group_id) if is_group
+               else send_private_msg("正在叫 PC 截屏喵，稍等一下下~", user_id))
         b64 = await request_screenshot(timeout=30.0)
         if not b64:
             return "截屏失败（PC 客户端未连接或超时）"
@@ -3552,7 +3570,7 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     # HTML 卡片
     if sub == "card":
-        html = build_sys_card_html(owner="Trusler", bot_name="幻梦")
+        html = build_sys_card_html(owner=owner, bot_name=_cfg.bot_name)
         if html:
             filename = f"sys_{uuid.uuid4().hex[:8]}.jpg"
             img_path = await render_card_to_image(html, filename, width=760)
@@ -3564,10 +3582,10 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
                 else:
                     await send_private_msg(cq, user_id)
                 return None
-        return format_pc_status(owner="Trusler")
+        return format_pc_status(owner=owner)
 
     # 默认：纯文字
-    return format_pc_status(owner="Trusler")
+    return format_pc_status(owner=owner)
 
 
 async def cmd_phone(args, user_id, group_id, sender_name, is_group, bot_qq):

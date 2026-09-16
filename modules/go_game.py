@@ -20,12 +20,9 @@ from core.logger import get_logger
 logger = get_logger("go")
 
 def _bot_name() -> str:
-    """bot 自己的显示名（AI 对手在棋盘/文案里用它，而不是"AI"/"玩家0"）"""
-    try:
-        from core.config import get_config
-        return get_config().bot_name or "幻梦"
-    except Exception:
-        return "幻梦"
+    """bot 显示名（v2.3.24 统一走 core.config.get_bot_name，不再各自兜底）"""
+    from core.config import get_bot_name
+    return get_bot_name()
 
 
 def _player_name(qq: int, chat_id: int) -> str:

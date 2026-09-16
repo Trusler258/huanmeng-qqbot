@@ -284,8 +284,32 @@ def _build_music_html(music: dict | None) -> str:
     {lyric_html}"""
 
 
-def build_sys_card_html(owner: str = "Trusler", bot_name: str = "幻梦") -> str | None:
-    """构建系统状态 HTML 卡片。无数据返回 None。"""
+def _default_owner() -> str:
+    """从配置取 owner 显示名（roles.toml 的 qq_name_map[admin_qq]）。
+
+    ★ v2.3.24 通用化：原默认值硬编码为某个具体人名，换部署就显示错人。
+    这里按配置解析，取不到再回退中性词。
+    """
+    try:
+        from core.config import get_config
+        cfg = get_config()
+        nm = cfg.get_display_name(cfg.admin_qq) if cfg.admin_qq else ""
+        if nm and str(nm) != str(cfg.admin_qq):
+            return str(nm)
+    except Exception:
+        pass
+    return "机主"
+
+
+def build_sys_card_html(owner: str = "", bot_name: str = "") -> str | None:
+    """构建系统状态 HTML 卡片。无数据返回 None。owner/bot_name 留空则按配置解析。"""
+    owner = owner or _default_owner()
+    if not bot_name:
+        try:
+            from core.config import get_config
+            bot_name = get_config().bot_name
+        except Exception:
+            bot_name = ""
     data = get_pc_status()
     if not data:
         return None
@@ -384,8 +408,9 @@ def build_sys_card_html(owner: str = "Trusler", bot_name: str = "幻梦") -> str
     return html
 
 
-def format_pc_status(owner: str = "Trusler") -> str:
-    """纯文本格式（保留兼容）"""
+def format_pc_status(owner: str = "") -> str:
+    """纯文本格式（保留兼容）。owner 留空则按配置解析。"""
+    owner = owner or _default_owner()
     data = get_pc_status()
     if not data:
         return "暂无 PC 状态数据（可能未开机或未运行采集脚本）"

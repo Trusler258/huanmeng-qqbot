@@ -575,7 +575,8 @@ async def _system_status() -> str:
     """查询 PC 状态（从 HTTP 端点缓存读取）"""
     try:
         from services.pc_status import format_pc_status
-        return format_pc_status(owner="Trusler")
+        # ★ v2.3.24 通用化：不再硬编码人名，owner 交给 pc_status 按配置解析
+        return format_pc_status()
     except ImportError:
         return "PC 状态模块未加载"
 
