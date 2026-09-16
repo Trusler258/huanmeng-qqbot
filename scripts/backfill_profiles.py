@@ -1,73 +1,65 @@
-"""回溯历史 msglog 建用户画像（一次性脚本）"""
-import json, sys, os
+"""回填历史 msglog 的用户画像。
+
+按日期**从早到晚**逐天跑 run_daily，让画像逐日增量累积 ——
+这正是增量更新的意义：后面几天的画像建立在前面几天的基础上。
+
+用法：
+    python3 scripts/backfill_profiles.py             # 默认近 7 天
+    python3 scripts/backfill_profiles.py --days 14
+    python3 scripts/backfill_profiles.py --dry-run    # 只看候选量，不调 LLM
+
+注意：会调用 LLM。实测每天约 25 人达标（发言 >=5 条），近 7 天约 160 次调用。
+"""
+import argparse
+import asyncio
+import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
-# 确保能 import core 模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.user_profile import (_quick_extract, update_profile, get_profile,
-                                build_profile_text, _load_all, _save_all)
-from core.logger import get_logger
-logger = get_logger("backfill")
+from core.user_profile import collect_day, run_daily, _load_all  # noqa: E402
 
-MSGLOG_DIR = Path(__file__).resolve().parent.parent / "data" / "msglog"
 
-def main():
-    if not MSGLOG_DIR.exists():
-        print(f"✗ {MSGLOG_DIR} 不存在")
+async def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=7, help="回填最近多少天（默认 7）")
+    ap.add_argument("--dry-run", action="store_true", help="只统计候选，不调用 LLM")
+    ap.add_argument("--min-msgs", type=int, default=None, help="当天最少发言条数")
+    args = ap.parse_args()
+
+    today = datetime.now().date()
+    dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d")
+             for i in range(args.days, 0, -1)]      # 从早到晚
+
+    print("回填区间: %s → %s（%d 天）" % (dates[0], dates[-1], len(dates)))
+
+    total_updated = 0
+    for d in dates:
+        agg = collect_day(d)
+        if not agg:
+            print("  %s  无消息" % d)
+            continue
+        r = await run_daily(d, force=True, min_msgs=args.min_msgs, dry_run=args.dry_run)
+        if args.dry_run:
+            print("  %s  活跃 %d 组合，候选 %d 个" % (d, len(agg), r.get("candidates", 0)))
+        else:
+            print("  %s  活跃 %d 组合，更新 %d/%d" % (d, len(agg), r.get("updated", 0), r.get("total", 0)))
+            total_updated += r.get("updated", 0)
+        sys.stdout.flush()
+
+    if args.dry_run:
+        print("\n（dry-run，未调用 LLM）")
         return
 
-    files = sorted(MSGLOG_DIR.glob("msglog_*.jsonl"))
-    if not files:
-        print("✗ 无 msglog 文件")
-        return
-
-    total_msgs = 0
-    total_users = set()
-    total_hits = 0  # 成功提取次数
-
-    for fpath in files:
-        chat_id = fpath.stem.replace("msglog_", "")
-        with open(fpath, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if d.get("type") != "文字":
-                    continue
-                uid = d.get("user_id", 0)
-                content = d.get("content", "")
-                if not uid or not content or len(content) < 4:
-                    continue
-                # 跳过 bot 自己
-                if uid in (987654321,):
-                    continue
-
-                total_msgs += 1
-                total_users.add(uid)
-
-                extracted = _quick_extract(content)
-                if extracted:
-                    update_profile(uid, extracted)
-                    total_hits += 1
-
-    print(f"\n{'='*50}")
-    print(f"📊 回溯完成:")
-    print(f"  文件: {len(files)} 个群")
-    print(f"  消息: {total_msgs} 条 (已过滤)")
-    print(f"  用户: {len(total_users)} 人")
-    print(f"  提取: {total_hits} 次画像更新")
-    print(f"{'='*50}\n")
-
-    # 打印每个用户的画像
     data = _load_all()
-    for uid, profile in sorted(data.items(), key=lambda x: -len(str(x[1]))):
-        txt = build_profile_text(int(uid))
-        if txt:
-            print(f"\n--- uid={uid} ---")
-            print(txt)
+    print("\n回填完成：本次更新 %d 次，当前画像库 %d 份" % (total_updated, len(data)))
+    scopes = {}
+    for k in data:
+        s = "group" if k.startswith("g") else "private"
+        scopes[s] = scopes.get(s, 0) + 1
+    print("分布: 群 %d 份 / 私聊 %d 份" % (scopes.get("group", 0), scopes.get("private", 0)))
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.get_event_loop().run_until_complete(main())
