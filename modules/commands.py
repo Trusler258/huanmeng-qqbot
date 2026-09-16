@@ -2599,13 +2599,31 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
     # 图片模式
     if want_img:
         cfg = get_config()
-        html = api.build_leaderboard_html(data, cfg.bot_name)
-        from modules.changelog import _ensure_browser
         from pathlib import Path as _Path
 
         ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
         fname = f"wdsj_lb_{board_id.replace(chr(47),'_')}_{ts}.png"
         out = str(_Path(__file__).resolve().parent.parent / "data" / "img_temp" / fname)
+
+        # ★ v2.3.26: 优先 Pillow 直绘（1:1 复刻同模板）。测试项 pillow_card 控制，
+        #   失败/关闭时回退下面的 Chromium 分支。纯 CPU 调用要丢线程池。
+        try:
+            from modules.features import is_enabled as _feat_on
+            if _feat_on("pillow_card"):
+                from services.leaderboard_card import save_leaderboard_card
+                _loop = asyncio.get_running_loop()
+                await _loop.run_in_executor(
+                    None, lambda: save_leaderboard_card(data, out, cfg.bot_name))
+                cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
+                await (send_group_msg(cq, group_id) if is_group
+                       else send_private_msg(cq, user_id))
+                logger.info("排行榜卡用 Pillow 绘制完成: %s", _Path(out).name)
+                return None
+        except Exception as _e:
+            logger.warning("排行榜卡 Pillow 绘制失败 → 回退 Chromium: %s", _e)
+
+        html = api.build_leaderboard_html(data, cfg.bot_name)
+        from modules.changelog import _ensure_browser
         try:
             browser = await _ensure_browser()
             page = await browser.new_page(viewport={"width": 440, "height": 600})
