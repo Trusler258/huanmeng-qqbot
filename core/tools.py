@@ -294,7 +294,31 @@ def get_tool_schemas() -> list[dict]:
                 schemas.append(schema)
     except Exception:
         pass
-    return schemas
+
+    # ★ v2.3.28 两个关键加固（都直接影响 DeepSeek 上下文缓存命中率）：
+    #
+    # ① 按 name 去重（保留首次出现）
+    #    事故：TOOLS 里曾出现两个 learn_slang / 两个 search_web，
+    #    带重名工具请求会被 API 直接拒绝：
+    #     400 "Tool names must be unique." → FC 调用全挂。
+    #    这里做最后一道防线，即使列表写重了也不会把坏请求发出去。
+    #
+    # ② 按 name 排序，保证顺序**绝对稳定**
+    #    实测（scripts/_diag_api_cache.py）：DeepSeek 的缓存 key 与 tools 定义强相关 ——
+    #    同一份 tools 第 2 次调用命中 99.1%，而"换了 tools"的第 1 次只命中 30.1%
+    #    （仅 system 部分）。插件是运行时注册的，若其遍历顺序不稳定，
+    #    tools 顺序就会在调用间漂移 → 每次都像"第 1 次" → 缓存几乎全失效。
+    #    排序后顺序恒为字典序，缓存前缀才稳定。
+    _seen: set[str] = set()
+    _uniq: list[dict] = []
+    for s in schemas:
+        _n = ((s or {}).get("function") or {}).get("name") or ""
+        if not _n or _n in _seen:
+            continue
+        _seen.add(_n)
+        _uniq.append(s)
+    _uniq.sort(key=lambda x: (x.get("function") or {}).get("name") or "")
+    return _uniq
 
 
 # ── 单工具超时（移植 kook 67dd501：工具级超时表，防止慢工具拖死整轮）──
