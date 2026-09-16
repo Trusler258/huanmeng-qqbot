@@ -370,6 +370,10 @@ def render_daily_rank_card(payload: dict, *, width: int = BODY_W,
     sh = sh.filter(ImageFilter.GaussianBlur(17))
     if PU["shadow_a"] > 0:
         sh = sh.point(lambda v: int(v * PU["shadow_a"]))
+    # ⚠️ 外阴影只应画在元素外部：不挖掉卡片区会让阴影糊进卡内
+    _im2 = Image.new("L", (W, H), 0)
+    _im2.paste(_rounded_mask((wrap_w, wrap_h), WRAP_R), (wrap_x, wrap_y))
+    sh = Image.composite(Image.new("L", (W, H), 0), sh, _im2)
     img = Image.composite(Image.new("RGB", (W, H), PU["shadow"]), img, sh)
 
     # ── wrap 底板：rgba(255,250,245,.78) + 1px 白边 ──

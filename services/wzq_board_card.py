@@ -208,6 +208,10 @@ def render_wzq_board(game, black_name: str, white_name: str,
 
     # box-shadow: 0 12px 48px rgba(0,0,0,.65), 0 0 100px rgba(236,72,153,.10),
     #             0 0 40px rgba(139,92,246,.08)
+    # ⚠️ 外阴影只画在元素外部（CSS 会把元素区域内的阴影裁掉）。
+    #   不挖掉卡片区 → 粉/紫光晕糊进卡内，卡内整体偏亮。
+    _inner = Image.new("L", (W, H), 0)
+    _inner.paste(rounded_mask((card_w, card_h), CARD_R), (ox, oy))
     for blur, alpha, col, dy in ((24, 0.65, (0, 0, 0), 12),
                                  (50, 0.10, C["primary"], 0),
                                  (20, 0.08, C["accent"], 0)):
@@ -215,6 +219,7 @@ def render_wzq_board(game, black_name: str, white_name: str,
         sh.paste(rounded_mask((card_w, card_h), CARD_R), (ox, oy + dy))
         _a = alpha
         sh = sh.filter(ImageFilter.GaussianBlur(blur)).point(lambda v, a=_a: int(v * a))
+        sh = Image.composite(Image.new("L", (W, H), 0), sh, _inner)
         img.paste(Image.new("RGB", (W, H), col), (0, 0), sh)
 
     # 卡片底 rgba(20,18,32,.55)
