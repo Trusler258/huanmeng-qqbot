@@ -18,6 +18,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+# 按渲染宽度截断文本（card_base 里已有实现，不重复造）
+from services.card_base import truncate
+
 # ══════════════════════════════════════════════════════════
 #  字体
 # ══════════════════════════════════════════════════════════
@@ -170,21 +173,39 @@ ICON_DIR = _ROOT / "data" / "web_assets" / "wdsj_icons"
 _icon_cache: dict[str, Image.Image] = {}
 
 
-def extract_icons(template: Path | None = None, force: bool = False) -> Path:
-    """从 HTML 模板导出内嵌 base64 图标为 PNG（一次性，结果缓存在磁盘）"""
+# 两个日榜模板的内嵌图标名单（顺序 = 模板里 base64 出现的顺序）
+# 竞技场复用了起床日榜的公共图标（金/铁/铜/蛋/击杀/胜场/死亡/KD），
+# 所以同名直接覆盖，不产生重复文件；竞技场独有的是 head_arena / i_arena_div / i_arena_losses
+_TPL_ICONS = {
+    "daily_rank_card.html": ["head_bed", "gold", "iron", "copper", "egg",
+                              "i_kills", "i_wins", "i_deaths", "i_kd"],
+    "daily_arena_card.html": ["head_arena", "gold", "iron", "copper", "egg",
+                               "i_arena_div", "i_kills", "i_wins", "i_arena_losses",
+                               "i_deaths", "i_kd"],
+}
+
+
+def extract_icons(force: bool = False) -> Path:
+    """把两个日榜模板内嵌的 base64 图标导出为 PNG（一次性，结果缓存在磁盘）
+
+    ★ v2.3.25 改为遍历两个模板：竞技场日榜复用同一批公共图标 +
+      自己独有的 3 个（头像/段位/败场）。
+    """
     ICON_DIR.mkdir(parents=True, exist_ok=True)
-    names = ["head_bed", "gold", "iron", "copper", "egg",
-             "i_kills", "i_wins", "i_deaths", "i_kd"]
-    if not force and all((ICON_DIR / f"{n}.png").exists() for n in names):
+    need = {n for names in _TPL_ICONS.values() for n in names}
+    if not force and all((ICON_DIR / f"{n}.png").exists() for n in need):
         return ICON_DIR
-    import re
-    tpl = template or (_ROOT / "data" / "templates" / "daily_rank_card.html")
-    text = tpl.read_text(encoding="utf-8")
-    found = re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)", text)
-    for i, b64 in enumerate(found):
-        if i >= len(names):
-            break
-        (ICON_DIR / f"{names[i]}.png").write_bytes(base64.b64decode(b64))
+    import re as _re
+    for tpl_name, names in _TPL_ICONS.items():
+        tpl = _ROOT / "data" / "templates" / tpl_name
+        if not tpl.exists():
+            continue
+        found = _re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)",
+                            tpl.read_text(encoding="utf-8"))
+        for i, b64 in enumerate(found):
+            if i >= len(names):
+                break
+            (ICON_DIR / f"{names[i]}.png").write_bytes(base64.b64decode(b64))
     return ICON_DIR
 
 
@@ -293,14 +314,27 @@ def _text_runs(text: str, base_color):
 # ══════════════════════════════════════════════════════════
 #  主渲染
 # ══════════════════════════════════════════════════════════
-def render_daily_rank_card(payload: dict) -> Image.Image:
-    """渲染起床战争日榜卡（与 HTML 模板同数据、同外观）
+def render_daily_rank_card(payload: dict, *, width: int = BODY_W,
+                           content_w: int = CONTENT_W, cols: list | None = None,
+                           title: str = "今日增量 · 起床战争",
+                           palette: dict | None = None) -> Image.Image:
+    """渲染日榜卡（与 HTML 模板同数据、同外观）
+
+    ★ v2.3.25 参数化：起床战争与竞技场共用同一套渲染，差异只在
+      画布宽（620 / 660）、内容宽（530 / 570）、列定义、标题。
+      默认值 = 起床战争，调用方不传则行为与之前完全一致。
 
     payload 与 _build_daily_rank_html 注入的 JSON 同结构：
       {date, range, when, rows:[{rank,name,cells{name,kills,final,wins,deaths,kd}}],
        newPlayers:[], nextTime, brand}
     """
     extract_icons()
+    # ★ v2.3.25: 每张卡有自己的配色（起床=暖橙系，竞技场=冷蓝系），
+    #   这里按卡覆盖 P 的部分键（未覆盖的沿用起床日榜值）
+    PU = {**P, **(palette or {})}
+    W_CANVAS = int(width)
+    CW = int(content_w)
+    _cols = cols if cols is not None else COLS
     rows = payload.get("rows") or []
     newp = [_html.unescape(str(n)) for n in (payload.get("newPlayers") or [])]
     date = str(payload.get("date") or "")
@@ -313,9 +347,9 @@ def render_daily_rank_card(payload: dict) -> Image.Image:
     newp_total = (NEWP_MT + NEWP_H) if newp else 0
     wrap_h = (WRAP_BORDER + WRAP_PAD_T + HEAD_H + HEAD_MB + THEAD_H + n * ROW_H
               + newp_total + FOOT_MT + FOOT_H + WRAP_PAD_B + WRAP_BORDER)
-    W, H = BODY_W, int(round(wrap_h)) + BODY_PAD * 2
+    W, H = W_CANVAS, int(round(wrap_h)) + BODY_PAD * 2
     wrap_x, wrap_y = BODY_PAD, BODY_PAD
-    wrap_w = BODY_W - BODY_PAD * 2
+    wrap_w = W_CANVAS - BODY_PAD * 2
     wrap_h = int(round(wrap_h))
 
     # ── 背景：线性渐变 + 两处暖色径向光晕 ──
@@ -323,43 +357,43 @@ def render_daily_rank_card(payload: dict) -> Image.Image:
     #    中心位置，色块本身锚定在 background-origin（默认 padding-box）。
     #    所以中心 = padding 原点 + size × 百分比，不是整张画布的比例。
     #    第一版按画布比例算，光晕跑到卡片中间，左上角该有的橙色完全没有。
-    bg = _linear_grad((W, H), P["body_stops"], 160.0)
+    bg = _linear_grad((W, H), PU["body_stops"], 160.0)
     g1 = (BODY_PAD + 640 * 0.08, BODY_PAD + 340 * (-0.10))   # glow1: (73.2, -12)
     g2 = (BODY_PAD + 320 * 0.98, BODY_PAD + 220 * (-0.04))   # glow2: (335.6, 13.2)
-    bg = _radial_glow(bg, g1, (320, 170), *P["glow1"])
-    bg = _radial_glow(bg, g2, (160, 110), *P["glow2"])
+    bg = _radial_glow(bg, g1, (320, 170), *PU["glow1"])
+    bg = _radial_glow(bg, g2, (160, 110), *PU["glow2"])
     img = Image.fromarray(np.clip(bg, 0, 255).astype(np.uint8), "RGB")
 
     # ── wrap 投影：0 14px 34px rgba(120,90,70,.10) ──
     sh = Image.new("L", (W, H), 0)
     sh.paste(_rounded_mask((wrap_w, wrap_h), WRAP_R), (wrap_x, wrap_y + 14))
     sh = sh.filter(ImageFilter.GaussianBlur(17))
-    if P["shadow_a"] > 0:
-        sh = sh.point(lambda v: int(v * P["shadow_a"]))
-    img = Image.composite(Image.new("RGB", (W, H), P["shadow"]), img, sh)
+    if PU["shadow_a"] > 0:
+        sh = sh.point(lambda v: int(v * PU["shadow_a"]))
+    img = Image.composite(Image.new("RGB", (W, H), PU["shadow"]), img, sh)
 
     # ── wrap 底板：rgba(255,250,245,.78) + 1px 白边 ──
-    panel = Image.new("RGB", (wrap_w, wrap_h), P["wrap_bg"])
-    mask = _rounded_mask((wrap_w, wrap_h), WRAP_R).point(lambda v: int(v * P["wrap_bg_a"]))
+    panel = Image.new("RGB", (wrap_w, wrap_h), PU["wrap_bg"])
+    mask = _rounded_mask((wrap_w, wrap_h), WRAP_R).point(lambda v: int(v * PU["wrap_bg_a"]))
     img.paste(panel, (wrap_x, wrap_y), mask)
 
     d = ImageDraw.Draw(img)
     d.rounded_rectangle(
         [wrap_x, wrap_y, wrap_x + wrap_w - 1, wrap_y + wrap_h - 1], WRAP_R,
         outline=_blend_at(img, (wrap_x + wrap_w // 2, wrap_y),
-                          P["wrap_border"], P["wrap_border_a"]), width=1,
+                          PU["wrap_border"], PU["wrap_border_a"]), width=1,
     )
 
     # ── 头部：图标块 + 标题/副标题 + 右侧来源 ──
     head_y = wrap_y + WRAP_BORDER + WRAP_PAD_T          # 实测 43
     hic_x, hic_y = CONTENT_X, head_y + (HEAD_H - HIC_SZ) // 2   # 实测 y=46
     # 图标块：linear-gradient(135deg, rgba(255,164,130,.46), rgba(238,90,58,.22))
-    hg = _linear_grad((HIC_SZ, HIC_SZ), [(0.0, P["hic_a"][:3]), (1.0, P["hic_b"][:3])], 135.0)
+    hg = _linear_grad((HIC_SZ, HIC_SZ), [(0.0, PU["hic_a"][:3]), (1.0, PU["hic_b"][:3])], 135.0)
     # 该渐变是半透明叠在 wrap 上的：还原为在 wrap 底色上按 alpha 混合（对角方向）
     tt = np.linspace(0.0, 1.0, HIC_SZ, dtype=np.float32)
     aa2 = (tt[:, None] + tt[None, :]) / 2.0             # 135deg 对角权重
-    aa2 = (P["hic_a"][3] * (1 - aa2) + P["hic_b"][3] * aa2)[..., None]
-    base = np.array(P["wrap_bg"], dtype=np.float32)[None, None, :]
+    aa2 = (PU["hic_a"][3] * (1 - aa2) + PU["hic_b"][3] * aa2)[..., None]
+    base = np.array(PU["wrap_bg"], dtype=np.float32)[None, None, :]
     hg = hg * aa2 + base * (1 - aa2)
     hic = Image.fromarray(np.clip(hg, 0, 255).astype(np.uint8), "RGB")
     img.paste(hic, (hic_x, hic_y), _rounded_mask((HIC_SZ, HIC_SZ), HIC_R))
@@ -368,34 +402,35 @@ def render_daily_rank_card(payload: dict) -> Image.Image:
         img.paste(ic, (hic_x + (HIC_SZ - HIC_IMG) // 2, hic_y + (HIC_SZ - HIC_IMG) // 2), ic)
 
     tx = hic_x + HIC_SZ + 13                            # 实测 title x=104
-    d.text((tx, head_y + 15), "今日增量 · 起床战争", font=_cjk_font(21, bold=True),
-           fill=P["title"], anchor="lm")               # title 盒 43..73，中线 58
+    d.text((tx, head_y + 15), title, font=_cjk_font(21, bold=True),
+           fill=PU["title"], anchor="lm")               # title 盒 43..73，中线 58
     sub = date + ((" · " + rng) if rng else "")
-    d.text((tx, head_y + 33 + 9), sub, font=_cjk_font(13), fill=P["sub"], anchor="lm")
+    d.text((tx, head_y + 33 + 9), sub, font=_cjk_font(13), fill=PU["sub"], anchor="lm")
     if when:
-        d.text((CONTENT_X + CONTENT_W, head_y + HEAD_H // 2), when, font=_cjk_font(12),
-               fill=P["sub"], anchor="rm")
+        d.text((CONTENT_X + CW, head_y + HEAD_H // 2), when, font=_cjk_font(12),
+               fill=PU["sub"], anchor="rm")
 
     # ── 表头 ──
     ty = head_y + HEAD_H + HEAD_MB                      # 实测 111
     th_cy = ty + THEAD_H / 2
-    for key, label, hint, icon, is_num, x0, x1 in COLS:
+    for key, label, hint, icon, is_num, x0, x1 in _cols:
         pieces = []
         if icon:
             ic = _icon(icon, 17)
             if ic:
                 pieces.append(("img", ic, 17))
-        pieces.append(("txt", label, _cjk_font(13, bold=True), P["th"]))
+        pieces.append(("txt", label, _cjk_font(13, bold=True), PU["th"]))
         if hint:
-            pieces.append(("txt", hint, _cjk_font(11), P["th_hint"]))
+            pieces.append(("txt", hint, _cjk_font(11), PU["th_hint"]))
         total = 0.0
         for kind, obj, extra, *_c in pieces:
             total += (obj.size[0] + 3) if kind == "img" else d.textlength(obj, font=extra)
         # th/td 都是 padding 5px；居中列由居中抵消，左对齐列要补 5px
-        cx = ((x0 + x1) / 2 - total / 2) if is_num else (x0 + 5)
+        # is_num: True/"num"=数字列(居中)｜"text"=文本列(左对齐)｜False=name 列(左对齐)
+        cx = ((x0 + x1) / 2 - total / 2) if is_num is True or is_num == "num" else (x0 + 5)
         for piece in pieces:
             kind, obj, extra = piece[0], piece[1], piece[2]
-            color = piece[3] if len(piece) > 3 else P["th"]
+            color = piece[3] if len(piece) > 3 else PU["th"]
             if kind == "img":
                 img.paste(obj, (int(cx), int(th_cy - obj.size[1] / 2)), obj)
                 cx += obj.size[0] + 3
@@ -403,9 +438,9 @@ def render_daily_rank_card(payload: dict) -> Image.Image:
                 d.text((cx, th_cy), obj, font=extra, fill=color, anchor="lm")
                 cx += d.textlength(obj, font=extra)
     _thly = int(ty + THEAD_H) - 1
-    d.line([CONTENT_X, _thly, CONTENT_X + CONTENT_W, _thly],
+    d.line([CONTENT_X, _thly, CONTENT_X + CW, _thly],
            fill=_blend_at(img, (CONTENT_X + 20, _thly),
-                          P["th_border"][:3], P["th_border"][3]), width=2)
+                          PU["th_border"][:3], PU["th_border"][3]), width=2)
 
     # ── 数据行 ──
     ry = ty + THEAD_H
@@ -416,27 +451,40 @@ def render_daily_rank_card(payload: dict) -> Image.Image:
         row_cy = ry + ROW_H / 2
         if i > 0:
             _ryi = int(ry)
-            d.line([CONTENT_X, _ryi, CONTENT_X + CONTENT_W, _ryi],
+            d.line([CONTENT_X, _ryi, CONTENT_X + CW, _ryi],
                    fill=_blend_at(img, (CONTENT_X + 20, _ryi),
-                                  P["tr_border"][:3], P["tr_border"][3]), width=1)
+                                  PU["tr_border"][:3], PU["tr_border"][3]), width=1)
         # 名次：奖牌槽位固定（无名次图标也留空）→ 数字对齐同一竖线（实测 x=53/79）
         med = _icon(medals.get(rank, ""), 21) if rank in medals else None
         if med:
             img.paste(med, (MEDAL_X, int(row_cy - med.size[1] / 2)), med)
         d.text((RANK_NUM_X, row_cy), str(rank), font=_mono_font(13),
-               fill=P["rank_n"], anchor="lm")
+               fill=PU["rank_n"], anchor="lm")
         # 数据列
-        for key, label, hint, icon, is_num, x0, x1 in COLS:
+        for key, label, hint, icon, is_num, x0, x1 in _cols:
             v = cells.get(key)
             v = _html.unescape(str(v)) if v is not None else "—"
             if key == "name":
                 # CSS 是 font-weight:600，但 Noto CJK 只有 400/700 两档；
                 # 实测用 Regular 比 Bold 更贴近 Chromium（平均像素差 6.28 vs 6.81）
                 d.text((x0 + 5, row_cy), v, font=_cjk_font(14, bold=False),
-                       fill=P["td"], anchor="lm")       # td padding-left 5
+                       fill=PU["td"], anchor="lm")       # td padding-left 5
+            elif is_num == "text":
+                # 文本列（如竞技场「段位」）：中文字体 + 左对齐 + 常规字色
+                # 段位含 MC 颜色码（§c大师），复用 _text_runs 着色
+                cx = x0 + 5
+                runs = _text_runs(v, PU["td"])
+                total_w = sum(d.textlength(t, font=_cjk_font(14)) for t, _ in runs)
+                avail = (x1 - x0) - 10
+                scale_font = _cjk_font(14)
+                if total_w > avail:      # 太长就截断（CSS 里是 nowrap + 溢出裁切）
+                    runs = [(truncate(d, v, scale_font, avail), PU["td"])]
+                for t, c in runs:
+                    d.text((cx, row_cy), t, font=scale_font, fill=c, anchor="lm")
+                    cx += d.textlength(t, font=scale_font)
             else:
                 f_num = _mono_font(14)
-                runs = _text_runs(v, P["td_num"])
+                runs = _text_runs(v, PU["td_num"])
                 total = sum(d.textlength(t, font=f_num) for t, _ in runs)
                 sub = ""
                 if key == "kills" and cells.get("final"):
@@ -447,15 +495,15 @@ def render_daily_rank_card(payload: dict) -> Image.Image:
                     d.text((cx, row_cy), t, font=f_num, fill=c, anchor="lm")
                     cx += d.textlength(t, font=f_num)
                 if sub:
-                    d.text((cx, row_cy), sub, font=_cjk_font(12), fill=P["up"], anchor="lm")
+                    d.text((cx, row_cy), sub, font=_cjk_font(12), fill=PU["up"], anchor="lm")
         ry += ROW_H
 
     # ── 新玩家条 ──
     if newp:
         ny = ry + NEWP_MT
-        box = Image.new("RGB", (CONTENT_W, NEWP_H), P["newp_bg"])
+        box = Image.new("RGB", (CW, NEWP_H), PU["newp_bg"])
         img.paste(box, (CONTENT_X, ny),
-                  _rounded_mask((CONTENT_W, NEWP_H), 12).point(lambda v: int(v * P["newp_bg_a"])))
+                  _rounded_mask((CW, NEWP_H), 12).point(lambda v: int(v * PU["newp_bg_a"])))
         nx = CONTENT_X + NEWP_PAD_X
         ic = _icon("egg", 15)
         if ic:
@@ -463,29 +511,29 @@ def render_daily_rank_card(payload: dict) -> Image.Image:
             nx += 15 + 3
         names = "、".join(newp[:8]) + (f" 等 {len(newp)} 人" if len(newp) > 8 else "")
         d.text((nx, ny + NEWP_H / 2), f"新玩家（下次入榜）：{names}",
-               font=_cjk_font(13), fill=P["newp_fg"], anchor="lm")
+               font=_cjk_font(13), fill=PU["newp_fg"], anchor="lm")
         ry = ny + NEWP_H
 
     # ── 页脚（实测 foot y=466 h=21）──
     fy = ry + FOOT_MT + FOOT_H / 2
-    d.text((CONTENT_X, fy), f"由 {brand} 生成", font=_cjk_font(12), fill=P["foot"], anchor="lm")
+    d.text((CONTENT_X, fy), f"由 {brand} 生成", font=_cjk_font(12), fill=PU["foot"], anchor="lm")
     # 右侧两个药丸 + 中间渐变分隔线
     py = fy - 9
     ph = 18
     hash_txt = "#" + _hash8(date + "|" + str(payload.get("_seed") or ""))
     hw = d.textlength(hash_txt, font=_mono_font(12)) + 14
-    hx = CONTENT_X + CONTENT_W - hw
+    hx = CONTENT_X + CW - hw
     d.rounded_rectangle([hx, py, hx + hw, py + ph], 6,
-                        fill=_blend_at(img, (hx + 4, py + 2), P["hash_bg"], P["hash_bg_a"]))
-    d.text((hx + hw / 2, fy), hash_txt, font=_mono_font(12), fill=P["hash_fg"], anchor="mm")
+                        fill=_blend_at(img, (hx + 4, py + 2), PU["hash_bg"], PU["hash_bg_a"]))
+    d.text((hx + hw / 2, fy), hash_txt, font=_mono_font(12), fill=PU["hash_fg"], anchor="mm")
     nx2 = hx
     if next_time:
         nt = f"下一轮 {next_time}"
         nw = d.textlength(nt, font=_cjk_font(12)) + 14
         nx2 = hx - 8 - nw
         d.rounded_rectangle([nx2, py, nx2 + nw, py + ph], 6,
-                            fill=_blend_at(img, (nx2 + 4, py + 2), P["newp_bg"], P["newp_bg_a"]))
-        d.text((nx2 + nw / 2, fy), nt, font=_cjk_font(12), fill=P["newp_fg"], anchor="mm")
+                            fill=_blend_at(img, (nx2 + 4, py + 2), PU["newp_bg"], PU["newp_bg_a"]))
+        d.text((nx2 + nw / 2, fy), nt, font=_cjk_font(12), fill=PU["newp_fg"], anchor="mm")
     # 渐变分隔线（中间实、两端渐隐，rgba(150,130,110,.25)）
     _brand_txt = f"由 {brand} 生成"
     sx0 = int(CONTENT_X + d.textlength(_brand_txt, font=_cjk_font(12)) + 8)
@@ -515,4 +563,66 @@ def save_daily_rank_card(payload: dict, out_path: str | Path) -> Path:
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     img.save(p, "JPEG", quality=95)
+    return p
+
+# ══════════════════════════════════════════════════════════
+#  竞技场日榜（daily_arena_card.html）
+#  与起床日榜同一套 CSS，差异：画布宽 660（内容宽 570）、8 列、标题「今日战绩 · 竞技场」
+#  ⚠️ 以下几何全部由 Playwright 读 DOM 实测（/tmp/_geo_arena.py），勿按 CSS 估算：
+#     body 660 宽 / wrap 616 / 内容 x=45 w=570 / thead 35.5 / 行高 44 / foot y=378
+# ══════════════════════════════════════════════════════════
+ARENA_W, ARENA_CONTENT_W = 660, 570
+ARENA_TITLE = "今日战绩 · 竞技场"
+
+# (key, label, hint, icon, kind, x0, x1)
+#   kind: False=玩家名（左对齐粗体）｜"text"=文本列（左对齐）｜True=数字列（居中）
+ARENA_COLS = [
+    ("name",   "玩家", "", None,             False,  113.0, 246.7),
+    ("div",    "段位", "", "i_arena_div",    "text", 246.7, 324.1),
+    ("kills",  "击杀", "", "i_kills",        True,   324.1, 383.9),
+    ("wins",   "胜场", "", "i_wins",         True,   383.9, 443.7),
+    ("losses", "败场", "", "i_arena_losses", True,   443.7, 503.5),
+    ("deaths", "死亡", "", "i_deaths",       True,   503.5, 563.3),
+    ("kd",     "KD",   "", "i_kd",           True,   563.3, 615.0),
+]
+
+
+# 竞技场配色（逐项取自 daily_arena_card.html —— 是**冷蓝系**，与起床日榜的暖橙完全不同）
+# 半透明值按「在 wrap 底色上预混合」估算，最终以像素对比校正
+ARENA_PALETTE = {
+    "body_stops": [(0.00, (243, 248, 255)), (0.45, (234, 241, 252)), (1.00, (239, 239, 248))],
+    "glow1": ((148, 184, 255), 0.58),      # rgba(148,184,255,.58)
+    "glow2": ((190, 214, 255), 0.48),      # rgba(190,214,255,.48)
+    "wrap_bg": (246, 250, 255),            # rgba(246,250,255,.78)
+    "hic_a": (128, 168, 255, 0.46),        # linear-gradient(135deg, rgba(128,168,255,.46), ...)
+    "hic_b": (79, 110, 224, 0.22),         #                          ... rgba(79,110,224,.22))
+    "title": (40, 51, 79),                 # #28334f
+    "sub": (135, 146, 168),                # #8792a8
+    "th": (125, 136, 160),                 # #7d88a0
+    "th_hint": (159, 168, 187),            # th @ .72 on wrap_bg
+    "th_border": (168, 190, 228, 0.58),    # rgba(168,190,228,.58)
+    "tr_border": (180, 198, 230, 0.32),    # rgba(180,198,230,.32)
+    "td": (58, 68, 89),                    # #3a4459
+    "td_num": (61, 99, 224),               # #3d63e0
+    "rank_n": (96, 104, 122),              # td @ .8 on wrap_bg
+    "up": (177, 186, 201),                 # #8792a8 @ .62 on wrap_bg
+    "newp_bg": (200, 215, 255), "newp_bg_a": 0.55,   # rgba(200,215,255,.55)
+    "newp_fg": (74, 95, 146),              # #4a5f92
+    "foot": (152, 162, 182),               # #98a2b6
+    # .wrap 的 box-shadow 竞技场没有覆盖 → 沿用起床日榜的暖色阴影
+}
+
+
+def render_arena_daily_card(payload: dict) -> Image.Image:
+    """渲染竞技场日榜卡（与 HTML 模板同数据、同外观）"""
+    return render_daily_rank_card(payload, width=ARENA_W, content_w=ARENA_CONTENT_W,
+                                  cols=ARENA_COLS, title=ARENA_TITLE,
+                                  palette=ARENA_PALETTE)
+
+
+def save_arena_daily_card(payload: dict, out_path: str | Path) -> Path:
+    """渲染竞技场日榜并保存为 JPEG（bot 走这条）"""
+    p = Path(out_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    render_arena_daily_card(payload).save(p, "JPEG", quality=95)
     return p
