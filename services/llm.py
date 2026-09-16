@@ -1604,7 +1604,11 @@ async def generate_multi_reply_with_tools(
         #   现象：search_web 查完，LLM 却说"哦这个我知道喵"（装成本来就会），
         #   与上一句"让我查查"自相矛盾。此处插一条 system 提醒，配合 main_skill.md 规则10。
         _final_msgs = list(msgs)
-        _final_msgs.insert(1, {
+        # ⚠️ 必须 append 到**末尾**，不能 insert(1)：DeepSeek 的缓存按消息序列逐段匹配前缀，
+        #   在位置 1 插入任何新消息都会让"位置1 及之后"全部对不上，
+        #   命中率从 98.4% 掉到 31.0%（只命中 system）——实测见 scripts/_diag_order.py。
+        #   放末尾则完全共享前面所有内容的前缀，实测 98.8%。
+        _final_msgs.append({
             "role": "system",
             "content": (
                 "你刚才调用了工具查询/搜索，现在请基于工具返回的结果回答。"
@@ -1980,10 +1984,19 @@ async def generate_multi_reply(
         {"role": "system", "content": system_text},
         {"role": "user", "content": _MULTI_REPLY_ANCHOR},
     ]
-    # 上下文超 60 轮时裁到最近 40，防止 JSON 模式拒答
+    # 上下文超 60 轮时裁剪（防止 JSON 模式拒答）。
+    # ⚠️ 不能用 turns[-40:] 这种"逐条滑动"窗口：每轮窗口向前挪 1 条，
+    #   位置 1 起的内容全部变化 → 前缀缓存整体失效（实测命中量只剩 system，
+    #   见 scripts/_diag_order.py D 组）。
+    #   改为**按 20 条对齐切片**：同一对齐区间内 start 不变 → 前缀稳定可缓存，
+    #   只在跨过 20 条边界时失效一次（低频）。
     if len(turns) > 60:
-        logger.warning("上下文过长(%d轮)，裁剪至最近40轮", len(turns))
-        turns = turns[-40:]
+        _keep = 40
+        _start = max(0, len(turns) - _keep)
+        _start = (_start // 20) * 20          # 对齐到 20 的整数倍
+        logger.warning("上下文过长(%d轮)，裁剪至第 %d 轮起 %d 轮（20 条块对齐，保前缀稳定）",
+                       len(turns), _start, len(turns) - _start)
+        turns = turns[_start:]
     messages.extend(turns)
 
     logger.info("开始多句回复生成 | speaker=%s | history_turns=%d | extra=%d字",
