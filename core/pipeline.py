@@ -647,11 +647,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     extra_info = "\n".join(extra_info_parts)
 
     # ── 用户画像注入 ──
+    #   v2.3.34: 画像按 (会话, 用户) 分域 —— 群里和私聊各一份，
+    #   所以要把 chat_id / is_group 传进去（旧版只传 user_id，等于全局一份）
     try:
         from core.user_profile import build_profile_text
-        profile_text = build_profile_text(user_id)
+        profile_text = build_profile_text(chat_id, user_id, is_group)
         if profile_text:
-            extra_info += f"\n\n【发言者画像】\n{profile_text}"
+            extra_info += f"\n\n{profile_text}"
     except ImportError:
         pass
 
@@ -1307,50 +1309,19 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     logger.info("✅ 管道处理完成: %d句 sent chat=%d (总耗时%.2fs)",
                 len(sentences), chat_id, _tm.monotonic() - _t_pipe_start)
 
-    # ── 后台提取用户画像（不阻塞）──
-    asyncio.ensure_future(_async_extract_profile(user_id, sender_name, msg_content))
+    # ── 记录画像活跃度（v2.3.34：只计数，不再逐条调 LLM）──
+    #   画像内容由每天 00:05 的批量任务回看整天消息生成（core.user_profile.run_daily）。
+    #   这里保留纯计数的原因：msg_count / last_msg_at 是「是否值得建档」的依据，
+    #   面板也要显示活跃度；而它零成本、不阻塞。
+    try:
+        from core.user_profile import bump_activity
+        bump_activity(chat_id, user_id, is_group)
+    except Exception:
+        pass
 
     # ── 会话分块压缩（v2.3.10）：块数未超阈值时是空操作，超了才异步压最早的几块 ──
     #   放后台跑：压缩要调一次便宜模型（秒级），不能拖慢本次回复。
     asyncio.ensure_future(ctx.maybe_compress(chat_id))
-
-
-# ------用户画像后台提取------
-async def _async_extract_profile(user_id: int, sender_name: str, msg: str):
-    """后台异步提取用户画像，不阻塞主流程"""
-    try:
-        from core.user_profile import extract_from_message, update_profile
-        extracted = await extract_from_message(user_id, sender_name, msg)
-        if extracted:
-            # 防幻觉：用户名/facts 不可能是长句子或指令
-            # v2.3.33: 词表补全 —— 原来只挡 查询/帮我/域名/搜索/什么/怎么，
-            #   漏掉「谁/多少/吗/呢/咋/是不是/如何」，导致「我是谁」「我的好感度是多少」
-            #   这类疑问句被当事实存下（实测 334 条 facts 里 20% 是疑问句）。
-            #   权威判定已收到 core.user_profile._clean_facts，这里只做最后一道兜底。
-            for field in ("name", "facts"):
-                val = extracted.get(field, "")
-                if isinstance(val, list):
-                    filtered = [v for v in val if isinstance(v, str) and len(v) < 20 and not any(
-                        kw in v for kw in ("查询", "帮我", "我叫", "战绩", "域名", "搜索", "什么", "怎么",
-                                           "谁", "多少", "吗", "呢", "咋", "是不是", "如何", "/~")
-                    )]
-                    if not filtered:
-                        extracted.pop(field, None)
-                    else:
-                        extracted[field] = filtered
-                elif isinstance(val, str) and val:
-                    if len(val) > 15 or any(kw in val for kw in ("查询", "帮我", "域名", "搜索", "什么", "怎么",
-                                                                 "谁", "多少", "吗", "呢", "咋", "是不是", "如何")):
-                        extracted.pop(field, None)
-        # ★ v2.3.33: 无论提取到什么都记一次发言
-        #   （message_count 原来恒为 0 —— 提取结果里从来没有这个字段，+0 等于没加）
-        update_profile(user_id, extracted or {})
-        if extracted:
-            from core.logger import get_logger
-            get_logger("pipeline").info("画像更新: uid=%d new=%s", user_id,
-                                       {k: extracted[k] for k in sorted(extracted.keys())[:3]})
-    except Exception:
-        pass
 
 
 # ------指令路由------

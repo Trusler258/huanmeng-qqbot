@@ -19,6 +19,7 @@ class Plugin:
         self.ctx.background.add(self._bg_control_watcher())
         self.ctx.background.add(self._bg_wdsj_collector())
         self.ctx.background.add(self._bg_holiday())
+        self.ctx.background.add(self._bg_profile_daily())
 
     async def on_disable(self):
         pass
@@ -60,6 +61,16 @@ class Plugin:
     async def _bg_holiday(self):
         from modules.holiday import start_holiday_service
         await start_holiday_service()
+
+    async def _bg_profile_daily(self):
+        """每天 00:05 回看前一天的聊天记录，按 (会话, 用户) 增量更新画像。
+
+        v2.3.34：画像不再是「每条消息提取一次」，而是每天批量回看整天消息 ——
+        单条消息没有上下文，会把「我是你主人」这种玩梗当成用户身份
+        （实测 334 条里 20% 是疑问句、大量角色扮演），批量回看才能分出真假。
+        """
+        from core.user_profile import profile_daily_loop
+        await profile_daily_loop()
 
 
 
