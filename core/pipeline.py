@@ -290,6 +290,35 @@ def _ctx_safe(text: str, limit: int = 200) -> str:
     return s[:limit]
 
 
+def extract_inline_face(text: str) -> tuple:
+    """抽出文本里的 [FACE:关键词] → (去掉标记的文本, 表情 CQ 或 None)
+
+    ★ v2.3.27: 补充句（follow-up）路径原本只清理 [fav:N]，漏了 [FACE:]，
+      导致 "[FACE:疲惫]" 原样发给用户（实测 2026-09-16 私聊泄漏）。
+      主回复与戳一戳路径一直有这段逻辑，这里抽成公共函数复用。
+    """
+    if not text:
+        return text, None
+    _re_face = re.compile(r'\[FACE:([^\]]*)\]?')
+    kws = [k.strip() for k in _re_face.findall(text) if k.strip()]
+    clean = _re_face.sub("", text).strip()
+    cq = None
+    if kws:
+        try:
+            from modules.face_lib import get_face, make_cq
+            for kw in kws:
+                fp = get_face(kw)
+                if fp:
+                    cq = make_cq(fp)
+                    logger.info("表情匹配(补充句): 关键词=%s", kw)
+                    break
+            else:
+                logger.debug("表情库未匹配(补充句): %s", kws)
+        except Exception:
+            logger.warning("补充句表情解析失败: %s", kws, exc_info=True)
+    return clean, cq
+
+
 async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
                           raw_event=None, raw_message="", quoted_msg="", error_report=None,
                           **extra_kwargs):
@@ -1230,9 +1259,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                                 if isinstance(parsed, dict) and "replies" in parsed:
                                     for sentence in parsed["replies"]:
                                         sentence = sentence[:3000].strip()
+                                        # ★ v2.3.27: 剥掉 [FACE:关键词] 并改发真表情
+                                        #   （此前直接发原文 → "[FACE:疲惫]" 泄漏给用户）
+                                        sentence, _fcq = extract_inline_face(sentence)
                                         if sentence:
                                             ctx.append_to_context(chat_id, _ctx_safe(f"{cfg.bot_name}: {sentence}", 200))
                                             await send_by_chat_type(sentence, chat_id if is_group else chat_id,
+                                                                   is_group=True if is_group else False,
+                                                                   user_id=user_id if not is_group else None)
+                                        if _fcq:
+                                            await send_by_chat_type(_fcq, chat_id if is_group else chat_id,
                                                                    is_group=True if is_group else False,
                                                                    user_id=user_id if not is_group else None)
                                     return  # 已处理，跳过下面
@@ -1243,10 +1279,17 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         # 纯文本回退
                         f_text = f_text[:3000]
                         f_text = re.sub(r'[\[［]fav:\s*[+-]?\d+[\]］]', '', f_text).strip()
-                        ctx.append_to_context(chat_id, _ctx_safe(f"{cfg.bot_name}: {f_text}", 200))
-                        await send_by_chat_type(f_text, chat_id if is_group else chat_id,
-                                               is_group=True if is_group else False,
-                                               user_id=user_id if not is_group else None)
+                        # ★ v2.3.27: 原来只清 [fav:N]，漏了 [FACE:] → 标记泄漏给用户
+                        f_text, _fcq2 = extract_inline_face(f_text)
+                        if f_text:
+                            ctx.append_to_context(chat_id, _ctx_safe(f"{cfg.bot_name}: {f_text}", 200))
+                            await send_by_chat_type(f_text, chat_id if is_group else chat_id,
+                                                   is_group=True if is_group else False,
+                                                   user_id=user_id if not is_group else None)
+                        if _fcq2:
+                            await send_by_chat_type(_fcq2, chat_id if is_group else chat_id,
+                                                   is_group=True if is_group else False,
+                                                   user_id=user_id if not is_group else None)
                 except Exception as e:
                     import traceback
                     logger.error("追加回复失败:\n%s", traceback.format_exc())
