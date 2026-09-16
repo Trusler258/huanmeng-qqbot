@@ -4089,19 +4089,21 @@ async def handle_command(
 
 
 # ------每日排名HTML渲染------
-def _build_daily_rank_html(rows, today, new_players, time_start="", time_end=""):
-    """起床战争日榜（模板 data/templates/daily_rank_card.html + 数据注入）"""
-    import json as _json
+def _daily_rank_payload(rows, today, new_players, time_start="", time_end=""):
+    """组装起床战争日榜卡的数据载荷。
+
+    ★ v2.3.25 抽出为独立函数：HTML 模板注入与 Pillow 渲染器共用同一份数据，
+      避免两个渲染路径各拼一遍导致显示不一致（对比验证时曾因此得出错误结论）。
+      调用方若要 Pillow 渲染，直接把本函数返回值传给 wdsj_card_pillow。
+    """
     import html as _html
-    from pathlib import Path as _P
     from datetime import datetime
 
     def esc(x):
         return _html.escape(str(x), quote=True)
 
     now = datetime.now()
-    next_hour = ((now.hour // 4 + 1) * 4) % 24
-    next_time = f"{next_hour:02d}:01"
+    next_time = f"{((now.hour // 4 + 1) * 4) % 24:02d}:01"
 
     out_rows = []
     for i, item in enumerate(rows, 1):
@@ -4123,7 +4125,7 @@ def _build_daily_rank_html(rows, today, new_players, time_start="", time_end="")
             },
         })
 
-    payload = {
+    return {
         "date": today,
         "range": f"{time_start} → {time_end}" if (time_start or time_end) else "",
         "when": "洛花星雨 Nexus",
@@ -4132,6 +4134,14 @@ def _build_daily_rank_html(rows, today, new_players, time_start="", time_end="")
         "nextTime": next_time,
         "brand": _bot_name(),
     }
+
+
+def _build_daily_rank_html(rows, today, new_players, time_start="", time_end=""):
+    """起床战争日榜（模板 data/templates/daily_rank_card.html + 数据注入）"""
+    import json as _json
+    from pathlib import Path as _P
+
+    payload = _daily_rank_payload(rows, today, new_players, time_start, time_end)
     # v2.3.22: 模板标题固定为"今日增量"，统计区间可能是昨日跨天（自动回退时）
     #           → 用 date 字段覆盖标题显示真实归属日期
     tpl = (_P(__file__).resolve().parent.parent / "data" / "templates" / "daily_rank_card.html").read_text(encoding="utf-8")
