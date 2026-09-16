@@ -2878,19 +2878,26 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         #   注意：Pillow 是纯 CPU 同步调用，必须丢线程池，否则阻塞事件循环。
         try:
             from modules.features import is_enabled as _feat_on
-            _use_pillow = (mode != "are") and _feat_on("pillow_card")
+            _use_pillow = _feat_on("pillow_card")   # 起床/竞技都走 Pillow
         except Exception:
             _use_pillow = False
         if _use_pillow:
             try:
-                from services.wdsj_card_pillow import save_daily_rank_card
-                _payload = _daily_rank_payload(rows, today, new_players, time_start, time_end)
+                # 起床战争与竞技场是两套模板（暖橙 / 冷蓝）→ 两个渲染入口
+                if mode == "are":
+                    from services.wdsj_card_pillow import save_arena_daily_card as _saver
+                    _payload = _arena_daily_payload(rows, today, time_start, time_end)
+                    _prefix = "wdsj_arena"
+                else:
+                    from services.wdsj_card_pillow import save_daily_rank_card as _saver
+                    _payload = _daily_rank_payload(rows, today, new_players,
+                                                   time_start, time_end)
+                    _prefix = "wdsj_daily"
                 _ts = time.strftime("%Y%m%d_%H%M%S")
                 _out = str(Path(__file__).resolve().parent.parent
-                           / "data" / "img_temp" / f"wdsj_daily_{_ts}.jpg")
+                           / "data" / "img_temp" / f"{_prefix}_{_ts}.jpg")
                 _loop = asyncio.get_running_loop()
-                await _loop.run_in_executor(
-                    None, lambda: save_daily_rank_card(_payload, _out))
+                await _loop.run_in_executor(None, lambda: _saver(_payload, _out))
                 out_path = _out
                 logger.info("日榜卡用 Pillow 绘制完成: %s", Path(_out).name)
             except Exception as _e:
@@ -4186,19 +4193,19 @@ def _bot_name() -> str:
         return "幻梦Bot"
 
 
-def _build_arena_daily_html(rows, today, time_start="", time_end=""):
-    """竞技场日榜（模板 data/templates/daily_arena_card.html + 数据注入）"""
-    import json as _json
+def _arena_daily_payload(rows, today, time_start="", time_end=""):
+    """组装竞技场日榜卡的数据载荷。
+
+    ★ v2.3.25 与 _daily_rank_payload 对称抽出：HTML 注入与 Pillow 渲染共用同一份数据。
+    """
     import html as _html
-    from pathlib import Path as _P
     from datetime import datetime
 
     def esc(x):
         return _html.escape(str(x), quote=True)
 
     now = datetime.now()
-    next_hour = ((now.hour // 4 + 1) * 4) % 24
-    next_time = f"{next_hour:02d}:01"
+    next_time = f"{((now.hour // 4 + 1) * 4) % 24:02d}:01"
 
     out_rows = []
     for i, item in enumerate(rows, 1):
@@ -4222,7 +4229,7 @@ def _build_arena_daily_html(rows, today, time_start="", time_end=""):
             },
         })
 
-    payload = {
+    return {
         "date": today,
         "range": f"{time_start} → {time_end}" if (time_start or time_end) else "",
         "when": "洛花星雨 Nexus",
@@ -4231,10 +4238,17 @@ def _build_arena_daily_html(rows, today, time_start="", time_end=""):
         "nextTime": next_time,
         "brand": _bot_name(),
     }
+
+
+def _build_arena_daily_html(rows, today, time_start="", time_end=""):
+    """竞技场日榜（模板 data/templates/daily_arena_card.html + 数据注入）"""
+    import json as _json
+    from pathlib import Path as _P
+
+    payload = _arena_daily_payload(rows, today, time_start, time_end)
     tpl = (_P(__file__).resolve().parent.parent / "data" / "templates" / "daily_arena_card.html").read_text(encoding="utf-8")
     js = _json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     return tpl.replace("/*__DAILY_DATA__*/null", js, 1)
-
 
 async def _render_html_to_png(html, prefix, width=740, height=900):
     import time

@@ -161,11 +161,29 @@ class Plugin:
                         if _p:
                             _daily_pngs.append(_p)
                     if arena_rows:
-                        from modules.commands import _build_arena_daily_html
-                        a_html = _build_arena_daily_html(arena_rows, today, a_start, a_end)
-                        a_png = await _render_html_to_png(a_html, "wdsj_arena")
-                        if a_png:
-                            _daily_pngs.append(a_png)
+                        from modules.commands import _build_arena_daily_html, _arena_daily_payload
+                        _ap = None
+                        try:
+                            from pathlib import Path as _P2_
+                            from modules.features import is_enabled as _feat_on2
+                            if _feat_on2("pillow_card"):
+                                from services.wdsj_card_pillow import save_arena_daily_card
+                                _apl = _arena_daily_payload(arena_rows, today, a_start, a_end)
+                                _ats = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                _aout = str(_P2_(__file__).resolve().parent.parent.parent
+                                            / "data" / "img_temp" / f"wdsj_arena_{_ats}.jpg")
+                                _loop2 = asyncio.get_running_loop()
+                                await _loop2.run_in_executor(
+                                    None, lambda: save_arena_daily_card(_apl, _aout))
+                                _ap = _aout
+                        except Exception as _e2:
+                            logger.warning("定时竞技日榜 Pillow 绘制失败 → 回退 Chromium: %s", _e2)
+                            _ap = None
+                        if not _ap:
+                            a_html = _build_arena_daily_html(arena_rows, today, a_start, a_end)
+                            _ap = await _render_html_to_png(a_html, "wdsj_arena")
+                        if _ap:
+                            _daily_pngs.append(_ap)
                     if _daily_pngs:
                         # 读 target_groups（直接读 toml，不依赖 cfg.config）
                         _cfg_data = toml.load(Path(__file__).resolve().parent.parent.parent / "config" / "bot_config.toml")
