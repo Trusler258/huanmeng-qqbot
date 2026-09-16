@@ -39,6 +39,114 @@ _SENSITIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ══════════════════════════════════════════════════════════
+#  v2.3.33 画像防污染
+#  背景：上线后 52 个用户攒了 334 条 facts，其中 20% 是疑问句
+#  （"我是谁""我的好感度是多少""我是不是女的"），且每次都注入提示词。
+#  写入层原来只有一道很窄的过滤（查询/帮我/域名/搜索/什么/怎么），
+#  漏掉 谁/多少/吗/呢/咋/是不是/如何 —— 本模块统一收口，写入与读取都过一遍。
+# ══════════════════════════════════════════════════════════
+
+# 疑问特征：出现任一即判定为「提问」而非「事实陈述」
+_QUESTION_RE = re.compile(
+    r'[?？]|谁|啥|什么|哪|吗|呢|多少|怎么|咋|为何|为什么|是不是|有没有|如何|几位|几点'
+)
+
+# 半句/被截断的特征：以连词开头，或含句内标点。
+# 实测脏数据里有一类是「因此忽然灵光一现」「我，一个是服务器提供方」——
+# 既不是疑问句也不是完整事实，是从长句里截下来的碎片，同样没有价值。
+_FRAGMENT_RE = re.compile(
+    r'^(因此|所以|但是|然后|而且|因为|如果|虽然|不过|并且|于是|接着|另外|还有|其实)'
+    r'|[，,；;]'
+)
+
+# facts 上限（超出丢最老的）。每条 <20 字，12 条约 240 字，可接受。
+_MAX_FACTS = 12
+# 注入提示词时取最近几条
+_INJECT_FACTS = 4
+# 允许的身份标签白名单（_quick_extract 的 identities + 少量已知长期特征）
+_TAG_WHITELIST = {
+    "大学生", "高中生", "初中生", "中职生", "小学生",
+    "程序员", "上班族", "夜猫子", "学生",
+    # 长期特征（由 _quick_extract 之外的来源补充，保守保留）
+    "公网", "本地服务器", "非云服务器", "furry", "狼", "猫娘",
+    # 赛事/职业（用户群里的稳定身份）
+    "MC玩家", "音游玩家",
+}
+# 允许的兴趣白名单。
+# 为什么也要白名单：LLM 会把「当天聊的话题」当兴趣存下来，实测攒出
+# 「443端口」「80端口」「DC-DC」「ICP备案」「boost升压电路」这种一次性话题。
+# 画像要的是**长期**兴趣，一次性的东西由 context 负责，不该进画像。
+_INTEREST_WHITELIST = {
+    "游戏", "编程", "音乐", "动漫", "科技", "运动",
+    "摄影", "阅读", "美食", "旅行", "影视", "绘画", "手工", "写作",
+}
+# 允许的雷点白名单
+_DISLIKE_WHITELIST = {"政治", "恐怖", "剧透", "脏话", "鬼故事", "恐怖片"}
+# 允许的语气词白名单（LLM 爱编「假设性提问」这种不是语气的词）
+_TONE_WHITELIST = {"幽默", "温柔", "直接", "可爱", "简洁", "活泼", "正经", "方言化"}
+# 无意义的 status（LLM 硬凑出来的）
+_STATUS_BLOCK = {"未知", "事实", "无", "正常", "不明", "null", "None"}
+
+
+def _looks_like_question(text: str) -> bool:
+    """判断一段文本是不是「提问」而非「关于用户的事实」。
+
+    用于两个地方：
+      1. 写入时拦截（新数据不脏）
+      2. 读取注入时过滤（历史脏数据不注入）
+    第二处是必须的 —— 已经存进 JSON 的垃圾没人清，光改写入层救不了老用户。
+    """
+    return bool(_QUESTION_RE.search(str(text)))
+
+
+def _clean_facts(facts) -> list[str]:
+    """清洗 facts：去疑问句、去半句碎片、去过长、去空"""
+    out = []
+    for f in facts or []:
+        s = str(f).strip()
+        if not s or len(s) > 20:
+            continue
+        if _looks_like_question(s):
+            continue
+        if _FRAGMENT_RE.search(s):
+            continue
+        out.append(s)
+    return out
+
+
+# 代词 / 疑问词，不能当昵称
+_NAME_BLOCK = {
+    "你", "我", "他", "她", "它", "您", "咱",
+    "你们", "我们", "他们", "她们", "大家", "自己",
+    "这个", "那个", "一个", "什么", "谁", "哪个", "哪里",
+}
+
+
+def _valid_name(name: str) -> bool:
+    """校验昵称是否可信。
+
+    原来只挡了「谁/什么/你/我」这种，**漏了 bot 自己的名字** ——
+    用户调侃「我是幻梦」「幻梦是给…」就会被抽成昵称。
+    实测 52 个用户里 9 个的昵称是「幻梦」（bot 名），只有 12 个是对的。
+    """
+    n = str(name).strip()
+    if not (2 <= len(n) <= 12):
+        return False
+    if n in _NAME_BLOCK or _looks_like_question(n):
+        return False
+    try:
+        from core.config import get_bot_name
+        bn = (get_bot_name() or "").strip().lower()
+        if bn:
+            cand = {bn, bn + "bot", bn.replace("bot", "").strip(), "@" + bn}
+            if n.lower() in cand:
+                return False
+    except Exception:
+        pass
+    return True
+
+
 
 def _load_all() -> dict[str, dict]:
     """加载全部用户画像"""
@@ -74,24 +182,47 @@ def update_profile(user_id: int, updates: dict[str, Any]):
         data[uid] = dict(_DEFAULT_PROFILE)
     p = data[uid]
 
-    # 列表字段合并去重
-    for key in ("tags", "interests", "dislikes", "facts"):
+    # ── 集合语义字段：顺序无所谓，排序去重 ──
+    for key in ("tags", "interests", "dislikes"):
         if key in updates and isinstance(updates[key], list):
+            incoming = [str(x).strip() for x in updates[key] if str(x).strip()]
+            if key == "tags":
+                # tags 只允许白名单身份词。原来 LLM/关键词抽到什么都存，
+                # 攒出「赴汤蹈火」「upload说」「bought sex toys」这种非身份标签。
+                incoming = [t for t in incoming if t in _TAG_WHITELIST]
             existing = set(p.get(key, []))
-            existing.update(updates[key])
+            existing.update(incoming)
             p[key] = sorted(existing)
 
-    # 标量字段覆盖（非空才写）
-    for key in ("name", "tone", "status"):
-        if key in updates and updates[key] and isinstance(updates[key], str):
-            p[key] = updates[key]
+    # ── facts：**保持时间序**，超上限丢最老的 ──
+    #   原来是 sorted()。按字典序排会永久把前几条老噪音钉在开头，
+    #   而 build_profile_text 只取前 N 条 → 新提取到的有效信息永远进不去。
+    if "facts" in updates and isinstance(updates["facts"], list):
+        merged = [str(x).strip() for x in (p.get("facts") or []) if str(x).strip()]
+        for f in _clean_facts(updates["facts"]):
+            if f not in merged:
+                merged.append(f)
+        p["facts"] = merged[-_MAX_FACTS:]
+
+    # ── 标量字段：逐个校验，不再「非空就写」 ──
+    if updates.get("name") and _valid_name(updates["name"]):
+        p["name"] = str(updates["name"]).strip()
+    if updates.get("tone"):
+        t = str(updates["tone"]).strip()
+        if t in _TONE_WHITELIST:      # 挡掉「假设性提问」这种 LLM 编的语气
+            p["tone"] = t
+    if updates.get("status"):
+        s = str(updates["status"]).strip()
+        if s and s not in _STATUS_BLOCK and len(s) <= 20:
+            p["status"] = s
 
     # events 追加
     if "events" in updates and isinstance(updates["events"], list):
         p.setdefault("events", []).extend(updates["events"])
 
     p["last_seen"] = int(time.time())
-    p["message_count"] = p.get("message_count", 0) + updates.get("message_count", 0)
+    # 每次调用代表一次发言（pipeline 每收到一条消息调一次）
+    p["message_count"] = p.get("message_count", 0) + 1
 
     _save_all(data)
 
@@ -152,7 +283,7 @@ def _quick_extract(msg: str) -> dict[str, Any] | None:
         m = re.search(r'(?:^|[，。！？\s])I\'?m\s+([a-zA-Z]{2,8})(?:[，。！？\s]|$)', msg, re.IGNORECASE)
     if m:
         name = m.group(1)
-        if name not in _NOISE_NAMES:
+        if name not in _NOISE_NAMES and _valid_name(name):
             result["name"] = name
 
     # 身份标签
@@ -199,10 +330,15 @@ def _quick_extract(msg: str) -> dict[str, Any] | None:
             break
 
     # 事实
+    #  ★ v2.3.33: 这里**不再提取 facts**。
+    #  原来是 `我(叫|是)X` 的开放匹配，会把角色扮演当成事实：
+    #  实测清洗后仍有 250 条，绝大多数是「我是你主人」「我就是神」「我是fv」
+    #  「我可是茂密」这类玩梗，真正客观事实不到 10 条。
+    #  这类碎片还缺上下文（同一句"我是主人"在不同语境含义相反），
+    #  bot 读了会误判用户身份，收益为负。
+    #  facts 改为只由 LLM 路径产生 —— 它能看整句语义，且 prompt 明确
+    #  「只提取明确提及的信息，不要臆测」，再由 _clean_facts 兜底。
     facts = []
-    m = re.search(r'(?:我|我女朋友|我男朋友|我对象|我家|我养).{0,6}(?:叫|是)([\u4e00-\u9fa5a-zA-Z]{1,6})', msg)
-    if m:
-        facts.append(m.group(0)[:15])
 
     # 偏好语气（要求明确的交流偏好表达）
     tone_map = {
@@ -236,7 +372,7 @@ def _quick_extract(msg: str) -> dict[str, Any] | None:
 
 
 def _parse_llm_result(raw: str) -> dict[str, Any] | None:
-    """解析 LLM 返回的 JSON"""
+    """解析 LLM 返回的 JSON（所有字段都过校验，不信 LLM 的自由发挥）"""
     raw = raw.strip()
     # 去掉可能的 markdown 代码块
     m = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
@@ -244,39 +380,78 @@ def _parse_llm_result(raw: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(m.group(0))
-        result = {}
-        for k in ("name", "tone", "status"):
-            if k in data and data[k]:
-                result[k] = data[k]
-        for k in ("tags", "interests", "facts"):
-            if k in data and isinstance(data[k], list):
-                result[k] = [x for x in data[k] if x]
+        result: dict[str, Any] = {}
+
+        if data.get("name") and _valid_name(data["name"]):
+            result["name"] = str(data["name"]).strip()
+        if data.get("tone") and str(data["tone"]).strip() in _TONE_WHITELIST:
+            result["tone"] = str(data["tone"]).strip()
+        if data.get("status"):
+            s = str(data["status"]).strip()
+            if s not in _STATUS_BLOCK and len(s) <= 20:
+                result["status"] = s
+
+        for k, allow in (("tags", _TAG_WHITELIST), ("interests", _INTEREST_WHITELIST)):
+            if isinstance(data.get(k), list):
+                vals = [str(x).strip() for x in data[k] if str(x).strip()]
+                vals = [v for v in vals if v in allow]
+                if vals:
+                    result[k] = vals
+
+        if isinstance(data.get("facts"), list):
+            f = _clean_facts(data["facts"])
+            if f:
+                result["facts"] = f
+
         return result if result else None
     except json.JSONDecodeError:
         return None
 
 
 def build_profile_text(user_id: int) -> str:
-    """生成画像文本，用于注入 LLM 上下文"""
+    """生成画像文本，用于注入 LLM 上下文。
+
+    ★ 这里**必须再过滤一遍**，不能只靠写入层：
+      已经落盘的脏数据（疑问句 facts、bot 名昵称、一次性话题当兴趣）
+      没人清也不会自动消失，只在写入层拦截救不了老用户。
+      读取层过滤的好处是「存量数据立刻变干净，且不用改历史文件」。
+    """
     p = get_profile(user_id)
     parts = []
 
-    if p.get("name"):
-        parts.append(f"昵称: {p['name']}")
-    if p.get("tags"):
-        parts.append(f"标签: {', '.join(p['tags'])}")
-    if p.get("interests"):
-        parts.append(f"兴趣: {', '.join(p['interests'][:5])}")
-    if p.get("tone"):
+    # 昵称：过校验（挡掉「幻梦」这种 = bot 自己的名字）
+    name = str(p.get("name") or "").strip()
+    if name and _valid_name(name):
+        parts.append(f"昵称: {name}")
+
+    tags = [t for t in (p.get("tags") or []) if t in _TAG_WHITELIST]
+    if tags:
+        parts.append(f"标签: {', '.join(tags)}")
+
+    interests = [i for i in (p.get("interests") or []) if i in _INTEREST_WHITELIST]
+    if interests:
+        parts.append(f"兴趣: {', '.join(interests[:5])}")
+
+    if p.get("tone") and p["tone"] in _TONE_WHITELIST:
         parts.append(f"喜欢语气: {p['tone']}")
-    if p.get("status"):
-        parts.append(f"当前状态: {p['status']}")
-    if p.get("facts"):
-        parts.append(f"已知: {'; '.join(p['facts'][:3])}")
+
+    status = str(p.get("status") or "").strip()
+    if status and status not in _STATUS_BLOCK and len(status) <= 20:
+        parts.append(f"当前状态: {status}")
+
+    # facts：清洗后取**最近的** N 条（保持时间序才有意义）
+    facts = _clean_facts(p.get("facts"))
+    if facts:
+        parts.append(f"已知: {'; '.join(facts[-_INJECT_FACTS:])}")
+
+    dislikes = [d for d in (p.get("dislikes") or []) if d in _DISLIKE_WHITELIST]
+    if dislikes:
+        parts.append(f"避开: {', '.join(dislikes[:3])}")
+
     if p.get("events"):
-        parts.append(f"事件: {'; '.join(e['text'] for e in p['events'][-3:])}")
-    if p.get("dislikes"):
-        parts.append(f"避开: {', '.join(p['dislikes'][:3])}")
+        ev = [e.get("text", "") for e in p["events"][-3:] if isinstance(e, dict) and e.get("text")]
+        if ev:
+            parts.append(f"事件: {'; '.join(ev)}")
 
     return "\n".join(parts) if parts else ""
 
