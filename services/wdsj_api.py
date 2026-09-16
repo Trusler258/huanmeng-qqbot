@@ -23,6 +23,14 @@ last_error = ""
 _shared_client: httpx.AsyncClient | None = None
 _shared_lock = asyncio.Lock()
 
+# ── v2.3.24 查询结果 TTL 缓存 ──
+# 战绩每 4 小时才采集一轮，5 分钟内的重复查询结果必然相同 → 缓存省一次网络往返。
+# key=(player, template, id_type) → (记录时间戳, data)
+import time as _time_mod
+_STATS_TTL = 300.0
+_STATS_CACHE_MAX = 200
+_stats_cache: dict[tuple[str, str, str], tuple[float, dict]] = {}
+
 
 async def _get_client(timeout: float = 15.0) -> httpx.AsyncClient:
     """获取全局共享 AsyncClient（惰性创建 + 线程安全锁）"""
@@ -200,8 +208,22 @@ def build_identity(player: str, id_type: str = "name") -> str:
 
 
 async def query_player_stats(player: str, template_id: str,
-                             id_type: str = "name", timeout: float = 15.0) -> Optional[dict]:
+                             id_type: str = "name", timeout: float = 15.0,
+                             use_cache: bool = True) -> Optional[dict]:
+    """查询玩家某模板战绩。
+
+    ★ v2.3.24 新增 TTL 缓存（默认 300s）：战绩每 4 小时才采集一轮，5 分钟内的
+    重复查询结果必然相同。多人问同一玩家 / 同一人反复查时直接命中缓存，
+    省掉一次完整网络往返。传 use_cache=False 可强制走网络（如需最新快照）。
+    """
     global last_error
+    _ck = (str(player), str(template_id), str(id_type))
+    if use_cache:
+        _hit = _stats_cache.get(_ck)
+        if _hit and (_time_mod.time() - _hit[0]) < _STATS_TTL:
+            logger.info("wdsj 命中查询缓存: player=%s template=%s", player, template_id)
+            last_error = ""
+            return _hit[1]
     encoded = build_identity(player, id_type)
     url = _api_url(f"/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}")
     try:
@@ -222,6 +244,12 @@ async def query_player_stats(player: str, template_id: str,
             logger.warning("wdsj API 业务错误: %s", last_error)
             return None
         last_error = ""
+        if use_cache:
+            _stats_cache[_ck] = (_time_mod.time(), data["data"])
+            if len(_stats_cache) > _STATS_CACHE_MAX:
+                # 简单清理：丢掉最旧的一半，防无限增长
+                for _k in sorted(_stats_cache, key=lambda k: _stats_cache[k][0])[: len(_stats_cache) // 2]:
+                    _stats_cache.pop(_k, None)
         return data["data"]
     except Exception as e:
         last_error = f"{type(e).__name__}: {e}"

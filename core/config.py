@@ -290,6 +290,22 @@ class BotConfig:
 # ── 单例实例 ────────────────────────────────────────────────
 _instance: Optional[BotConfig] = None
 
+# bot 名兜底（v2.3.24）：原先 wzq/go_game/chinese_chess 各自复制了一份
+# `get_config().bot_name or "幻梦"`，改配置时容易漏改。统一走这里。
+_BOT_NAME_FALLBACK = "幻梦"
+
+
+def get_bot_name() -> str:
+    """bot 显示名：取配置，取不到用兜底值。
+
+    永不抛异常 —— 在初始化早期或配置损坏时也能安全调用。
+    """
+    try:
+        cfg = get_config()
+        return (getattr(cfg, "bot_name", "") or _BOT_NAME_FALLBACK)
+    except Exception:
+        return _BOT_NAME_FALLBACK
+
 
 def _load_env_config() -> dict[str, dict]:
     """从 .env 加载 API 密钥和 URL"""

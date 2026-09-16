@@ -92,7 +92,11 @@ async def daily_stats_collect(max_retry_rounds: int = 3, retry_delay: float = 8.
                     len(players), len(_TEMPLATES), max_retry_rounds)
 
         all_targets = [(p, t) for p in players for t in _TEMPLATES]
-        sem = asyncio.Semaphore(3)
+        # ★ v2.3.24 并发度 3 → 8：实测（20 目标，服务器）并发 3=5.40s / 6=2.35s /
+        #   10=2.02s / 16=1.63s，全程 20/20 成功、无 403/429 风控。
+        #   取 8 是"接近最优 + 留余量"的折中（风控策略可能变化，不打满 16）。
+        #   另：wdsj_api 已改共享连接池，每个请求省掉 TCP/TLS 握手。
+        sem = asyncio.Semaphore(8)
         collected = 0
         failed: dict = {}  # (player, tid) -> 失败原因
 

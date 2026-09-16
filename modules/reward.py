@@ -8,8 +8,8 @@
     /~赞赏 del <编号>           删除一条记录（仅管理员）
 
 数据：data/rewards.json
-    {"sponsors": [{"name": "Trusler", "amount": "30", "count": 2,
-                   "date": "2026-09-14", "by": "3483585417", "note": ""}]}
+    {"sponsors": [{"name": "张三", "amount": "30", "count": 2,
+                   "date": "2026-09-14", "by": "10001", "note": ""}]}
 
 **赞助名单常驻注入 system prompt**（services/llm.py::_build_system_text 调 sponsors_hint()），
 让 bot 一直记得谁支持过它——这是用户明确要求的"以表感谢"。
@@ -254,7 +254,7 @@ async def cmd_reward(args, user_id, group_id, sender_name, is_group, bot_qq) -> 
             return "只有管理员能记赞赏名单喵～"
         if len(args) < 3:
             return ("用法：/~赞赏 add <称呼> <金额> [备注]\n"
-                    "例如：/~赞赏 add Trusler 30 服务器续费")
+                    "例如：/~赞赏 add 张三 30 服务器续费")
         name, amount = args[1], args[2]
         note = " ".join(args[3:]) if len(args) > 3 else ""
         ok, msg = add_sponsor(name, amount, by=str(user_id), note=note)

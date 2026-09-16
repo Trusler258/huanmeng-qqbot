@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import os
 import httpx
 from pathlib import Path
 
@@ -22,8 +23,10 @@ from modules._auto_update.state import load_state, save_state, get_file_blob, se
 
 logger = get_logger("auto_update")
 
-GITHUB_REPO = "Trusler258/huanmeng-qqbot"
-GITHUB_BRANCH = "main"
+# 更新源（v2.3.24）：默认官方仓库，可用环境变量覆盖 —— 换部署/用 fork 时
+# 不用改代码。与 plugin_share.PLUGIN_LIB_BASE 同一套覆盖约定。
+GITHUB_REPO = os.environ.get("AUTO_UPDATE_REPO", "Trusler258/huanmeng-qqbot").strip()
+GITHUB_BRANCH = os.environ.get("AUTO_UPDATE_BRANCH", "main").strip()
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
 CACHE_DIR = ".update_cache"
 

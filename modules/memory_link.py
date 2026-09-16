@@ -13,8 +13,8 @@
     （统一入口 cmd_mlink；本文件的 cmd_memory_link/unlink/agree/deny 是它的子实现）
 
 目标写法：
-    p<QQ号>   私聊（如 p3483585417）
-    g<群号>   群聊（如 g247478659）
+    p<QQ号>   私聊（如 p10001）
+    g<群号>   群聊（如 g10001）
     <纯数字>  在群里当群号、在私聊里当对方 QQ 号（按常识默认）
 
 权限规则：
@@ -25,7 +25,7 @@
     3. 关联**群聊** → 需要管理员权限（群记忆涉及他人隐私，不能谁都能拉）
 
 数据：data/memory_links.json
-    {"links": [["g247478659", "p3483585417"]], "pending": {"p3483585417": {"from": "g123", "at": "..."}}}
+    {"links": [["g10001", "p10001"]], "pending": {"p10001": {"from": "g10002", "at": "..."}}}
 """
 
 from __future__ import annotations
@@ -114,16 +114,16 @@ def parse_target(arg: str, current_is_group: bool) -> tuple[str | None, str]:
     """
     s = (arg or "").strip().lower().replace("＃", "").lstrip("#")
     if not s:
-        return None, "没写目标喵～例：/~mlink add p3483585417（私聊）或 g247478659（群聊）"
+        return None, "没写目标喵～例：/~mlink add p10001（私聊）或 g10001（群聊）"
     if s[0] == "p":
         num = s[1:].strip()
         if not num.isdigit():
-            return None, "p 后面要跟 QQ 号喵，例：p3483585417"
+            return None, "p 后面要跟 QQ 号喵，例：p10001"
         return f"p{num}", ""
     if s[0] == "g":
         num = s[1:].strip()
         if not num.isdigit():
-            return None, "g 后面要跟群号喵，例：g247478659"
+            return None, "g 后面要跟群号喵，例：g10001"
         return f"g{num}", ""
     if s.isdigit():
         # 纯数字：群里当群号，私聊里当对方 QQ
@@ -302,7 +302,7 @@ async def cmd_mlink(args, user_id, group_id, sender_name, is_group, bot_qq) -> s
     # add（显式或省略子命令直接给目标）
     target_args = args[1:] if first in ("add", "加", "+") else args
     if not target_args:
-        return "要关联谁呀？例：/~mlink add p3483585417（私聊）或 g247478659（群聊）"
+        return "要关联谁呀？例：/~mlink add p10001（私聊）或 g10001（群聊）"
     return await cmd_memory_link(target_args, user_id, group_id, sender_name, is_group, bot_qq)
 
 
