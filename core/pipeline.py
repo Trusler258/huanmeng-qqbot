@@ -1323,22 +1323,29 @@ async def _async_extract_profile(user_id: int, sender_name: str, msg: str):
         extracted = await extract_from_message(user_id, sender_name, msg)
         if extracted:
             # 防幻觉：用户名/facts 不可能是长句子或指令
+            # v2.3.33: 词表补全 —— 原来只挡 查询/帮我/域名/搜索/什么/怎么，
+            #   漏掉「谁/多少/吗/呢/咋/是不是/如何」，导致「我是谁」「我的好感度是多少」
+            #   这类疑问句被当事实存下（实测 334 条 facts 里 20% 是疑问句）。
+            #   权威判定已收到 core.user_profile._clean_facts，这里只做最后一道兜底。
             for field in ("name", "facts"):
                 val = extracted.get(field, "")
                 if isinstance(val, list):
                     filtered = [v for v in val if isinstance(v, str) and len(v) < 20 and not any(
-                        kw in v for kw in ("查询", "帮我", "我叫", "战绩", "域名", "搜索", "什么", "怎么", "/~")
+                        kw in v for kw in ("查询", "帮我", "我叫", "战绩", "域名", "搜索", "什么", "怎么",
+                                           "谁", "多少", "吗", "呢", "咋", "是不是", "如何", "/~")
                     )]
                     if not filtered:
                         extracted.pop(field, None)
                     else:
                         extracted[field] = filtered
                 elif isinstance(val, str) and val:
-                    if len(val) > 15 or any(kw in val for kw in ("查询", "帮我", "域名", "搜索", "什么", "怎么")):
+                    if len(val) > 15 or any(kw in val for kw in ("查询", "帮我", "域名", "搜索", "什么", "怎么",
+                                                                 "谁", "多少", "吗", "呢", "咋", "是不是", "如何")):
                         extracted.pop(field, None)
-            if not extracted:
-                return
-            update_profile(user_id, extracted)
+        # ★ v2.3.33: 无论提取到什么都记一次发言
+        #   （message_count 原来恒为 0 —— 提取结果里从来没有这个字段，+0 等于没加）
+        update_profile(user_id, extracted or {})
+        if extracted:
             from core.logger import get_logger
             get_logger("pipeline").info("画像更新: uid=%d new=%s", user_id,
                                        {k: extracted[k] for k in sorted(extracted.keys())[:3]})
