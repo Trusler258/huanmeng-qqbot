@@ -19,10 +19,110 @@ from core.logger import get_logger
 
 logger = get_logger("token")
 
-# DeepSeek 价格: ¥/百万 tokens
-PRICE_CACHE_HIT = 0.02    # 缓存命中输入
-PRICE_CACHE_MISS = 1.0    # 缓存未命中输入
-PRICE_OUTPUT = 2.0         # 输出
+# ══════════════════════════════════════════════════════════════
+#  DeepSeek 计价（v2.3.35 重做：按时段 × 按模型 × 按生效日期）
+#
+#  为什么原来不准：
+#    1. 只写了「空闲时段」一档价，没管高峰 —— 高峰是空闲的 2 倍
+#    2. PRICE_OUTPUT 还是涨价前的 2 元，实际 4 元（少算一半）
+#    3. 所有模型一律按 flash 计价，实际库里混着 4 个模型
+#    4. 价格是 2026-09-10 才改的，历史记录用新价算会虚高
+#
+#  峰谷时段（北京时间）：周一至周五 9:00-12:00、14:00-18:00 为高峰，
+#  其余（含周末全天、午休、夜间、清晨）为空闲，空闲价 = 高峰价的一半。
+# ══════════════════════════════════════════════════════════════
+
+# 高峰时段（起, 止，左闭右开）；不在其中即空闲
+_PEAK_WINDOWS = (((9, 0), (12, 0)), ((14, 0), (18, 0)))
+_PEAK_WEEKDAYS = {0, 1, 2, 3, 4}        # 周一=0，周末全天算空闲
+
+# 价格表：[ (生效起始时间, 命中价(峰,闲), 未命中价(峰,闲), 输出价(峰,闲)) ]
+# 单位：元/百万 tokens。倒序匹配第一个 <= 记录时间的条目。
+# 平价时段把「峰」「闲」写同一个值即可。
+_FLASH_TABLE = [
+    # 2026-09-10 12:00 起（当前）：降价至 0.02/1/4
+    (datetime(2026, 9, 10, 12, 0), (0.04, 0.02), (2.0, 1.0), (8.0, 4.0)),
+    # 2026-08-17 00:00 起：全面上调 + 启用峰谷定价
+    (datetime(2026, 8, 17, 0, 0), (0.10, 0.05), (3.0, 1.5), (9.0, 4.5)),
+    # 更早：平价（无峰谷）
+    (datetime(2000, 1, 1), (0.02, 0.02), (1.0, 1.0), (2.0, 2.0)),
+]
+
+_PRO_TABLE = [
+    # 2026-09-14 12:00 起 V4-Pro 请求被路由到 Flash 并按 Flash 计费
+    (datetime(2026, 9, 14, 12, 0), (0.04, 0.02), (2.0, 1.0), (8.0, 4.0)),
+    (datetime(2026, 8, 17, 0, 0), (0.30, 0.15), (9.0, 4.5), (27.0, 13.5)),
+    (datetime(2000, 1, 1), (0.025, 0.025), (3.0, 3.0), (6.0, 6.0)),
+]
+
+_TABLES = {"flash": _FLASH_TABLE, "pro": _PRO_TABLE}
+
+# 模型名 → 计价族。
+# 官方说明：deepseek-chat / deepseek-reasoner 两个名字已弃用，
+# 「分别对应 DeepSeek-V4-Flash 的非思考与思考模式」→ 都按 flash 族计价。
+_MODEL_FAMILY = {
+    "deepseek-flash": "flash",
+    "deepseek-v4-flash": "flash",
+    "deepseek-v4-flash-vision-exp": "flash",
+    "deepseek-v4.1-flash": "flash",
+    "deepseek-chat": "flash",
+    "deepseek-reasoner": "flash",
+    "deepseek-v4-pro": "pro",
+    "deepseek-pro": "pro",
+}
+
+
+def is_peak(dt: datetime) -> bool:
+    """判断某时刻是否处于高峰时段（北京时间，周一至周五 9-12、14-18）"""
+    if dt.weekday() not in _PEAK_WEEKDAYS:
+        return False
+    hm = dt.hour * 60 + dt.minute
+    for (sh, sm), (eh, em) in _PEAK_WINDOWS:
+        if sh * 60 + sm <= hm < eh * 60 + em:
+            return True
+    return False
+
+
+def price_for(model: str, dt: datetime):
+    """取某模型在某时刻的单价，返回 (命中, 未命中, 输出) 或 None（无法计价）。
+
+    无法计价的情形：非 DeepSeek 模型（如 SiliconFlow 上的 Qwen）——
+    返回 None 而不是硬套 flash 价格，避免算出一个看起来精确但错误的值。
+    """
+    fam = _MODEL_FAMILY.get(str(model or "").strip().lower())
+    if not fam:
+        return None
+    peak = is_peak(dt)
+    for since, hit, miss, out in _TABLES[fam]:      # 表内已按时间倒序
+        if dt >= since:
+            return (hit[0] if peak else hit[1],
+                    miss[0] if peak else miss[1],
+                    out[0] if peak else out[1])
+    return None
+
+
+def cost_of_record(rec: dict):
+    """单条记录的（费用, 是否高峰）。无法计价时费用为 None。"""
+    try:
+        dt = datetime.fromisoformat(str(rec.get("time") or ""))
+    except ValueError:
+        return None, False
+    p = price_for(rec.get("model"), dt)
+    if p is None:
+        return None, False
+    hit_price, miss_price, out_price = p
+    prompt = int(rec.get("prompt_tokens") or 0)
+    cached = int(rec.get("cached_tokens") or 0)
+    cached = min(cached, prompt)          # 防脏数据：命中数不可能超过输入
+    out = int(rec.get("completion_tokens") or 0)
+    cost = (cached * hit_price + (prompt - cached) * miss_price + out * out_price) / 1_000_000
+    return cost, is_peak(dt)
+
+
+# 兼容旧引用（/~tokens 等）：给的是当前空闲时段单价
+PRICE_CACHE_HIT = _FLASH_TABLE[0][1][1]      # 0.02
+PRICE_CACHE_MISS = _FLASH_TABLE[0][2][1]     # 1.0
+PRICE_OUTPUT = _FLASH_TABLE[0][3][1]         # 4.0
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 TRACKER_FILE = "token_usage.jsonl"
@@ -99,87 +199,146 @@ def record_usage(
 
 
 def _load_range(from_date: str, to_date: str | None = None) -> list[dict]:
-    """加载指定日期范围的记录"""
-    start = date.fromisoformat(from_date)
-    end = date.fromisoformat(to_date) if to_date else start
-    records = []
-    current = start
-    while current <= end:
-        f = DATA_DIR / f"token_{current.strftime('%Y-%m')}.jsonl"
-        if f.exists():
-            try:
-                for line in f.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    r = json.loads(line)
-                    r_date = r["time"][:10]
-                    if from_date <= r_date <= (to_date or from_date):
-                        records.append(r)
-            except Exception:
-                pass
-        # 月份递增
-        if current.month == 12:
-            current = current.replace(year=current.year + 1, month=1)
+    """加载指定日期范围的记录。
+
+    v2.3.35: 改成按文件 glob + 过滤。
+    原来是「从 start 逐月 +1 直到 end」——累计查询时从 2000-01 开始空转
+    三百多次文件判断。月份文件名本就是天然分片，直接筛出来更清楚也更快。
+    """
+    lo, hi = from_date, (to_date or from_date)
+    out = []
+    for f in sorted(DATA_DIR.glob("token_*.jsonl")):
+        try:
+            for line in f.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                r = json.loads(line)
+                d = str(r.get("time") or "")[:10]
+                if lo <= d <= hi:
+                    out.append(r)
+        except Exception:
+            continue
+    return out
+
+
+def _agg(records: list[dict]) -> dict:
+    """汇总一组记录。
+
+    ★ token 与费用必须**同口径**：只累计能计价的记录。
+      第一版把未计价模型（Qwen）的 token 也加进 prompt/completion，
+      于是「67.4M tokens = ¥29.4」这句里的 token 与钱对应不上
+      （差了 76 万 token）。它们单独报，不混进主数字。
+    """
+    acc = {
+        "prompt": 0, "completion": 0, "cached": 0, "calls": 0,
+        "cost": 0.0, "peak_cost": 0.0, "idle_cost": 0.0,
+        "peak_calls": 0,
+        "unpriced_calls": 0, "unpriced_tokens": 0,
+    }
+    for r in records:
+        prompt = int(r.get("prompt_tokens") or 0)
+        out = int(r.get("completion_tokens") or 0)
+        c, peak = cost_of_record(r)
+        if c is None:
+            acc["unpriced_calls"] += 1
+            acc["unpriced_tokens"] += prompt + out
+            continue
+        acc["calls"] += 1
+        acc["prompt"] += prompt
+        acc["completion"] += out
+        acc["cached"] += min(int(r.get("cached_tokens") or 0), prompt)
+        acc["cost"] += c
+        if peak:
+            acc["peak_cost"] += c
+            acc["peak_calls"] += 1
         else:
-            current = current.replace(month=current.month + 1)
-    return records
+            acc["idle_cost"] += c
+    acc["total_calls"] = acc["calls"] + acc["unpriced_calls"]
+    return acc
+
+
+def _by_model(records: list[dict]) -> list[dict]:
+    """按模型分组统计（库里混着 flash / chat / Qwen 等多个模型，分开看才有意义）"""
+    groups: dict[str, list] = {}
+    for r in records:
+        groups.setdefault(str(r.get("model") or "(未知)"), []).append(r)
+    rows = []
+    for m, rs in groups.items():
+        a = _agg(rs)
+        rows.append({
+            "model": m,
+            "calls": a["total_calls"],
+            "tokens": a["prompt"] + a["completion"] + a["unpriced_tokens"],
+            "cost": a["cost"],
+            "priced": a["calls"] > 0,          # 有可计价记录
+            "unpriced_calls": a["unpriced_calls"],
+        })
+    rows.sort(key=lambda x: -x["tokens"])
+    return rows
 
 
 def calc_cost(today_only: bool = False) -> dict:
-    """计算消耗概览，返回字典"""
-    target = date.today().strftime("%Y-%m-%d") if today_only else "2000-01-01"
-    records = _load_range(target) if today_only else _load_range(target, date.today().strftime("%Y-%m-%d"))
-    
+    """计算消耗概览。
+
+    返回 today / total 两组，字段含义：
+      prompt/completion/cached/calls/cost  —— 保持旧字段，供 /~status 复用
+      peak_cost / idle_cost / peak_calls   —— 峰谷拆分（v2.3.35）
+      unpriced_calls / unpriced_tokens     —— 无法计价的调用（非 DeepSeek 模型）
+      by_model                             —— 按模型分组
+    """
     today_str = date.today().strftime("%Y-%m-%d")
-    today_records = [r for r in records if r["time"][:10] == today_str]
-    
-    def _sum(recs, key):
-        return sum(r.get(key, 0) for r in recs)
-    
-    total_prompt = _sum(records, "prompt_tokens")
-    total_completion = _sum(records, "completion_tokens")
-    total_cached = _sum(records, "cached_tokens")
-    
-    today_prompt = _sum(today_records, "prompt_tokens")
-    today_completion = _sum(today_records, "completion_tokens")
-    today_cached = _sum(today_records, "cached_tokens")
-    
-    def cost_str(prompt, completion, cached):
-        cache_hit = cached / 1_000_000 * PRICE_CACHE_HIT
-        cache_miss = (prompt - cached) / 1_000_000 * PRICE_CACHE_MISS
-        output_cost = completion / 1_000_000 * PRICE_OUTPUT
-        return cache_hit + cache_miss + output_cost
-    
-    return {
-        "today": {
-            "prompt": today_prompt,
-            "completion": today_completion,
-            "cached": today_cached,
-            "calls": len(today_records),
-            "cost": cost_str(today_prompt, today_completion, today_cached),
-        },
-        "total": {
-            "prompt": total_prompt,
-            "completion": total_completion,
-            "cached": total_cached,
-            "calls": len(records),
-            "cost": cost_str(total_prompt, total_completion, total_cached),
-        },
-    }
+    records = _load_range(today_str) if today_only else _load_range("2000-01-01", today_str)
+    today_records = [r for r in records if str(r.get("time") or "")[:10] == today_str]
+
+    res = {"today": _agg(today_records), "total": _agg(records)}
+    res["total"]["by_model"] = _by_model(records)
+    res["peak_now"] = is_peak(datetime.now())
+    return res
+
+
+def _fmt_block(label: str, a: dict, money_digits: int = 4) -> list[str]:
+    """渲染一组统计（今日 / 累计共用）"""
+    prompt = a["prompt"]
+    if not a["calls"]:
+        out = [f"  {label}: 无可计价的调用"]
+        if a["unpriced_calls"]:
+            out.append(f"    ⚠ 另有 {a['unpriced_calls']} 次未计价（非 DeepSeek 模型）")
+        return out
+    hit_rate = (a["cached"] / prompt * 100) if prompt else 0.0
+    lines = [f"  {label}: {a['calls']}次 {prompt + a['completion']:,} tokens = ¥{a['cost']:.{money_digits}f}"]
+    lines.append(f"    输入 {prompt:,}(缓存{a['cached']:,} 命中率{hit_rate:.0f}%) + 输出 {a['completion']:,}")
+    if a["cost"] > 0:
+        idle_calls = a["calls"] - a["peak_calls"]
+        fmt = f"{{:.{money_digits}f}}"
+        lines.append(
+            "    峰谷: 高峰 %d次 %s / 空闲 %d次 %s"
+            % (a["peak_calls"], fmt.format(a["peak_cost"]),
+               idle_calls, fmt.format(a["idle_cost"])))
+    if a["unpriced_calls"]:
+        lines.append(f"    ⚠ 另有 {a['unpriced_calls']} 次未计价（{a['unpriced_tokens']:,} tokens，非 DeepSeek 模型）")
+    return lines
 
 
 async def cmd_cost(args, user_id, group_id, sender_name, is_group, bot_qq):
     """查看 Token 消耗 /~cost"""
     data = calc_cost(today_only=False)
-    t = data["today"]
-    total = data["total"]
-    
+    t, total = data["today"], data["total"]
+
     lines = ["【Token 消耗统计】"]
-    lines.append(f"  今日: {t['calls']}次调用 {t['prompt']+t['completion']} tokens = ¥{t['cost']:.4f}")
-    lines.append(f"    输入 {t['prompt']:,} (缓存{t['cached']:,} 命中率{t['cached']/t['prompt']*100:.0f}%) + 输出 {t['completion']:,}")
-    lines.append(f"  累计: {total['calls']}次调用 {total['prompt']+total['completion']:,} tokens = ¥{total['cost']:.2f}")
-    lines.append(f"    输入 {total['prompt']:,} (缓存{total['cached']:,} 命中率{total['cached']/total['prompt']*100:.0f}%) + 输出 {total['completion']:,}")
+    lines += _fmt_block("今日", t)
+    lines += _fmt_block("累计", total, money_digits=2)
+
+    # 按模型拆分：库里混着多个模型，只给一个总数看不出钱花在哪
+    rows = [r for r in (total.get("by_model") or []) if r["tokens"] > 0]
+    if len(rows) > 1:
+        lines.append("  ── 按模型 ──")
+        for r in rows[:6]:
+            money = f"¥{r['cost']:.2f}" if r["priced"] else "未计价"
+            lines.append(f"    {r['model'][:26]:<26} {r['calls']:>6}次 {r['tokens']:>10,} tk  {money}")
+
+    lines.append("  计费: %s · flash 空闲 0.02/1/4 高峰 0.04/2/8 元每百万"
+                 % ("高峰" if data.get("peak_now") else "空闲"))
     return "\n".join(lines)
 
 
@@ -187,20 +346,54 @@ async def cmd_tokens(args, user_id, group_id, sender_name, is_group, bot_qq):
     """计算 token 数 /~tokens <文本>"""
     if not args:
         return "用法: /~tokens <文本>\n计算文本的 token 数和预估费用喵~"
-    
+
     text = " ".join(args)
     count = _token_count(text)
     if count is None:
         return "Tokenizer 加载失败，请检查 ~/Desktop/deepseek_v3_tokenizer/ 目录喵~"
-    
-    input_cost = count / 1_000_000 * PRICE_CACHE_MISS
-    output_cost = count / 1_000_000 * PRICE_OUTPUT
+
+    # v2.3.35: 峰谷两档都列出来（当前时段标注），输入与输出分开算 ——
+    #          实际计费里输出比输入贵得多，只报一个数会低估
+    now = datetime.now()
+    peak_now = is_peak(now)
+    rows = []
+    for label, peak in (("空闲", False), ("高峰", True)):
+        probe = now if peak == peak_now else _shift_to_other_band(now, peak)
+        p = price_for("deepseek-flash", probe)
+        if p is None:
+            continue
+        _, miss_price, out_price = p
+        in_cost = count / 1_000_000 * miss_price
+        out_cost = count / 1_000_000 * out_price
+        mark = "  ← 当前时段" if peak == peak_now else ""
+        rows.append(f"    {label}: 输入 ¥{in_cost:.6f} / 输出(同量) ¥{out_cost:.6f}{mark}")
+
     lines = [
         f"文本: {text[:60]}{'...' if len(text) > 60 else ''}",
-        f"Token: {count}",
-        f"预估费用: 输入 ¥{input_cost:.6f} / 输出 ¥{output_cost:.6f}（缓存命中更便宜喵）",
+        f"Token: {count}（按 deepseek-flash 计）",
+        "  预估费用:",
+        *rows,
+        "  注: 缓存命中的输入只要 0.02 元/百万，实际通常远低于上面的未命中价",
     ]
     return "\n".join(lines)
+
+
+def _shift_to_other_band(dt: datetime, want_peak: bool) -> datetime:
+    """把一个时间挪到目标峰谷档，用于报价对照（不改真实时间语义）"""
+    if want_peak:
+        # 找一个工作日的高峰时刻
+        d = dt.date()
+        for i in range(7):
+            cand = datetime.combine(d + timedelta(days=i), datetime.min.time()).replace(hour=10)
+            if is_peak(cand):
+                return cand
+    else:
+        d = dt.date()
+        for i in range(7):
+            cand = datetime.combine(d + timedelta(days=i), datetime.min.time()).replace(hour=3)
+            if not is_peak(cand):
+                return cand
+    return dt
 
 
 # ── 缓存命中率分析（/~cache）────────────────────────────
