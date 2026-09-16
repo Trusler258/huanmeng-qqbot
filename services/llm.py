@@ -382,31 +382,113 @@ def _detect_skill_needs(msg: str, is_group: bool) -> set:
     return needs
 
 
-# 网络黑话词典命中词表（v2.3.23）：消息里出现任一 → 注入整本词典。
-# 词表与 data/skills/15_slang.md 词条保持一致；命中即全量注入（词典体积小，避免漏词）。
-# ★ 只收「特征明显」的词。实测（1579 条真实群消息）剔除以下易误报词后误报率归零：
-#   'm3'   → 命中 QQ 文件下载 URL（multimedia...）等
-#   '触'   → 命中「触摸板」「接触」等正常词
-#   '泉'   → 命中「温泉」「泉水」等
-#   '共情' '扫兴' → 本来就是正常中文词，不是黑话
-_SLANG_HIT_WORDS = (
-    "yyds", "nsdd", "破防", "破大防", "硬控", "触烂", "卡皮巴拉", "晕碳", "很解", "很躁",
-    "很玄", "蒸笼", "活人感", "脑腐", "brainrot", "蛋雕", "贴脸开大",
-    "老六", "开黑", "带飞", "躺赢", "上分", "掉分", "手残", "欧皇", "非酋",
-    "空枪", "空大", "退役选手", "双排", "车队", "afk", "氪金", "炸服", "卡服",
-    "蚌埠住了", "绷不住", "双厨狂喜", "电子包浆", "世一", "大癲", "离谱",
-    "已读不回", "要确欸", "包的", "各各", "估咩", "siu4", "mnyy",
-    "sldpk", "pua", "choke", "送人头", "白给", "稳如老狗", "6翻了", "无敌",
-    "下头",
-)
+# 网络黑话词典（v2.3.24）：触发词表**从词典文件自动派生**，不再手工维护两份。
+# 词典条目格式：`- 词1 / 词2：释义`（词典路径 data/skills/15_slang.md，key=slang_dict）
+# LLM 可通过 learn_slang 工具追加条目 —— 加完立刻成为触发词，无需改代码。
+#
+# 排除表：这些词特征不明显，容易在正常中文/URL 里误命中，所以只作释义、不当触发词。
+# 实测依据（1579 条真实群消息）：'m3' 命中 QQ 文件下载 URL；'触' 命中「触摸板」；
+# '泉' 命中「温泉」；'共情'/'扫兴' 本来就是正常中文词。
+_SLANG_EXCLUDE = frozenset({
+    "m3", "触", "泉", "共情", "扫兴", "w", "l", "s", "6", "菜", "肝", "离谱",
+    "无敌", "各各",
+})
+
+# 派生词表缓存：(mtime_ns, size) → 词表
+_slang_terms_cache: tuple[int, int, tuple[str, ...]] | None = None
+
+
+def _parse_slang_terms(dict_text: str) -> tuple[str, ...]:
+    """从词典正文解析触发词表。
+
+    规则：取 `- XXX：释义` 行中 `：` 之前的词，按 ` / ` 拆分；
+    过滤掉过短（<2 字符）与 _SLANG_EXCLUDE 里的词。返回小写元组。
+    """
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in (dict_text or "").split("\n"):
+        line = raw.strip()
+        if not line.startswith("- "):
+            continue
+        head = line[2:]
+        # 释义分隔符：中文全角冒号优先，回退半角
+        for sep in ("：", ":"):
+            if sep in head:
+                head = head.split(sep, 1)[0]
+                break
+        else:
+            continue
+        for part in head.split("/"):
+            t = part.strip().strip("`*「」\"'")
+            if len(t) < 2:
+                continue
+            low = t.lower()
+            if low in _SLANG_EXCLUDE or low in seen:
+                continue
+            seen.add(low)
+            terms.append(low)
+    return tuple(terms)
+
+
+def _slang_terms() -> tuple[str, ...]:
+    """取触发词表（按词典文件 mtime+size 缓存，改词典即时生效）"""
+    global _slang_terms_cache
+    try:
+        p = _SKILLS_DIR / "15_slang.md"
+        st = p.stat()
+        if _slang_terms_cache and _slang_terms_cache[0] == st.st_mtime_ns and _slang_terms_cache[1] == st.st_size:
+            return _slang_terms_cache[2]
+        terms = _parse_slang_terms(p.read_text(encoding="utf-8"))
+        _slang_terms_cache = (st.st_mtime_ns, st.st_size, terms)
+        return terms
+    except Exception:
+        return _slang_terms_cache[2] if _slang_terms_cache else ()
 
 
 def _slang_hit(dict_text: str, low_msg: str) -> bool:
-    """判断消息是否命中黑话词表。dict_text 未用（词表在代码常量里，便于快速短路）"""
-    for w in _SLANG_HIT_WORDS:
+    """判断消息是否命中黑话词表（词表由词典文件派生）"""
+    for w in _slang_terms():
         if w in low_msg:
             return True
     return False
+
+
+def append_slang_term(term: str, meaning: str, category: str = "LLM 自学") -> tuple[bool, str]:
+    """向黑话词典追加一条（供 learn_slang 工具与 /~slang 指令调用）。
+
+    追加后该词自动成为触发词（词表按 mtime 缓存失效重算），无需改代码。
+    返回 (是否成功, 说明)。
+    """
+    term = (term or "").strip()
+    meaning = (meaning or "").strip()
+    if not term or not meaning:
+        return False, "词与释义都不能为空"
+    if len(term) > 24 or len(meaning) > 200:
+        return False, "词最长 24 字、释义最长 200 字"
+    if any(c in term for c in "：:\n") or any(c in meaning for c in "\n"):
+        return False, "词里不能有冒号或换行，释义不能有换行"
+    try:
+        p = _SKILLS_DIR / "15_slang.md"
+        text = p.read_text(encoding="utf-8")
+        # 已存在同名词（忽略大小写）→ 不重复追加
+        if term.lower() in {t.lower() for t in _parse_slang_terms(text)}:
+            return False, f"「{term}」已在词典里"
+        entry = f"- {term}：{meaning}"
+        if not text.endswith("\n"):
+            text += "\n"
+        if category and category not in text:
+            text += f"\n## {category}\n\n{entry}\n"
+        else:
+            text += entry + "\n"
+        p.write_text(text, encoding="utf-8")
+        # 让词表缓存立即失效（mtime 可能同秒）
+        global _slang_terms_cache
+        _slang_terms_cache = None
+        logger.info("黑话词典新增: %s（%s）", term, category)
+        return True, f"已收录「{term}」"
+    except Exception as e:
+        logger.warning("追加黑话词条失败: %s", e)
+        return False, f"写入失败: {e}"
 
 
 def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:

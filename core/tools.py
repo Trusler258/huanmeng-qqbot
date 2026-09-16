@@ -19,6 +19,27 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "learn_slang",
+            "description": (
+                "把新学到的网络黑话/梗记进知识库，以后就能看懂这类说法。"
+                "当你遇到不认识的网络流行语、梗、缩写，且已确认它的意思时调用"
+                "（例如用户解释了、或你搜索确认了）。只记真正的网络用语，"
+                "不要记普通词汇或一次性玩笑。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string", "description": "词或梗本身，如 yyds、鸡你太美"},
+                    "meaning": {"type": "string", "description": "简明释义（一句话，可含用法示例）"},
+                    "category": {"type": "string", "description": "归类，如 缩写梗/语气词/游戏/MC/社交"},
+                },
+                "required": ["term", "meaning"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "weather",
             "description": "查询城市天气。用户问天气/温度/下雨/穿什么时调用。",
             "parameters": {
@@ -777,6 +798,16 @@ async def execute_tool(
     cmd_name = _TOOL_CMD_MAP.get(tool_name)
 
     # 自有实现（不走 COMMAND_MAP）
+    if tool_name == "learn_slang":
+        # v2.3.24: 让 bot 把新学到的网络黑话记进 data/skills/15_slang.md，
+        # 追加后立即成为词典触发词（词表按文件 mtime 自动失效重算）
+        from services.llm import append_slang_term
+        ok, msg = append_slang_term(
+            arguments.get("term", ""),
+            arguments.get("meaning", ""),
+            arguments.get("category", "LLM 自学") or "LLM 自学",
+        )
+        return msg
     if tool_name == "read_url":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
