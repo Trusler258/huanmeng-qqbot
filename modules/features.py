@@ -50,6 +50,15 @@ FEATURES: dict[str, dict] = {
         "desc": "私聊贴贴风格：被养成的叙事自指、节奏切换（撩完掉下来关心）、短句爆破",
         "affects": "关闭后回到默认私聊语气（private_tone 常驻规则）",
     },
+    # v2.3.26: 日榜卡改走 Pillow 绘制（服务器实测 79ms vs Chromium 872ms，快 11 倍；
+    #   一比一复刻，尺寸/位置/配色对齐，平均像素差 2.5%）。渲染异常会自动回退 Chromium，
+    #   所以默认开启；若想强制走 Chromium 对比观感，用 /~key 关掉即可。
+    "pillow_card": {
+        "aliases": ("绘制卡片", "pillow", "快速卡片", "日榜绘制"),
+        "default": True,
+        "desc": "日榜卡用 Pillow 直接绘制：11 倍提速（79ms vs 872ms），省 394MB 内存",
+        "affects": "关闭后回到 Chromium 渲染（同样外观，但每张慢约 0.8 秒）",
+    },
 }
 
 
