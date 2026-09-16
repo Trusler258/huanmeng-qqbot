@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -864,6 +865,29 @@ async def render_board(chat_id: int, cfg, test_mode: bool = False,
     from modules.changelog import render_card_to_image
     import uuid
     filename = f"wzq_{chat_id}_{uuid.uuid4().hex[:8]}.png"
+
+    # ★ v2.3.27: 优先走 Pillow 直绘（1:1 复刻同模板，~80ms vs Chromium ~870ms）。
+    #   由测试项 pillow_card 控制（/~key 可一键回退）；异常自动回退 Chromium。
+    #   注意 Pillow 是纯 CPU 同步调用，必须丢线程池，否则阻塞事件循环。
+    out_path = str(Path(__file__).resolve().parent.parent / "data" / "img_temp" / filename.replace(".png", ".jpg"))
+    try:
+        from modules.features import is_enabled as _feat_on
+        _use = _feat_on("pillow_card")
+    except Exception:
+        _use = False
+    if _use:
+        try:
+            from services.wzq_board_card import save_wzq_board
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: save_wzq_board(game, black_name, white_name, list(COL_LABELS),
+                                       date_str, out_path),
+            )
+            return out_path
+        except Exception as e:
+            logger.warning("五子棋棋盘 Pillow 绘制失败 → 回退 Chromium: %s", e)
+
     return await render_card_to_image(html, filename, width=680)
 
 
