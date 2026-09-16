@@ -14,6 +14,8 @@ _TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "data" / "templates" /
 
 def build_card_html(data: dict) -> str:
     """根据 API 返回数据构造 HTML 卡片内容"""
+    import time as _time
+    _t0 = _time.time() * 1000              # v2.3.32 页脚「渲染时间」起点
     player = data.get("player", {})
     values = data.get("values", {})
     labels = data.get("labels", {})
@@ -66,7 +68,8 @@ def build_card_html(data: dict) -> str:
 
     content = "\n".join(parts)
     tmpl = _TEMPLATE_PATH.read_text(encoding="utf-8")
-    return tmpl.replace("${CARD_CONTENT}", content)
+    from services.card_base import inject_stamp
+    return inject_stamp(tmpl.replace("${CARD_CONTENT}", content), _t0)
 
 
 async def render_wdsj_card(data: dict) -> str | None:

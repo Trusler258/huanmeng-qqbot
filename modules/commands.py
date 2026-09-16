@@ -4190,8 +4190,10 @@ def _daily_rank_payload(rows, today, new_players, time_start="", time_end=""):
 def _build_daily_rank_html(rows, today, new_players, time_start="", time_end=""):
     """起床战争日榜（模板 data/templates/daily_rank_card.html + 数据注入）"""
     import json as _json
+    import time as _time
     from pathlib import Path as _P
 
+    _t0 = _time.time() * 1000              # v2.3.32 页脚「渲染时间」起点
     payload = _daily_rank_payload(rows, today, new_players, time_start, time_end)
     # v2.3.22: 模板标题固定为"今日增量"，统计区间可能是昨日跨天（自动回退时）
     #           → 用 date 字段覆盖标题显示真实归属日期
@@ -4199,7 +4201,8 @@ def _build_daily_rank_html(rows, today, new_players, time_start="", time_end="")
     js = _json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     html = tpl.replace("/*__DAILY_DATA__*/null", js, 1)
     # 副标题已含 date+range（D.date + " · " + D.range），无需额外处理
-    return html
+    from services.card_base import inject_stamp
+    return inject_stamp(html, _t0)
 
 
 def _bot_name() -> str:
@@ -4261,12 +4264,16 @@ def _arena_daily_payload(rows, today, time_start="", time_end=""):
 def _build_arena_daily_html(rows, today, time_start="", time_end=""):
     """竞技场日榜（模板 data/templates/daily_arena_card.html + 数据注入）"""
     import json as _json
+    import time as _time
     from pathlib import Path as _P
 
+    _t0 = _time.time() * 1000              # v2.3.32 页脚「渲染时间」起点
     payload = _arena_daily_payload(rows, today, time_start, time_end)
     tpl = (_P(__file__).resolve().parent.parent / "data" / "templates" / "daily_arena_card.html").read_text(encoding="utf-8")
     js = _json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
-    return tpl.replace("/*__DAILY_DATA__*/null", js, 1)
+    html = tpl.replace("/*__DAILY_DATA__*/null", js, 1)
+    from services.card_base import inject_stamp
+    return inject_stamp(html, _t0)
 
 async def _render_html_to_png(html, prefix, width=740, height=900):
     import time

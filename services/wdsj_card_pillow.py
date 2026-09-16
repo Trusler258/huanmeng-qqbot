@@ -13,13 +13,14 @@ import base64
 import html as _html
 import io
 import math
+import time
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # 按渲染宽度截断文本（card_base 里已有实现，不重复造）
-from services.card_base import truncate
+from services.card_base import truncate, render_stamp
 
 # ══════════════════════════════════════════════════════════
 #  字体
@@ -329,6 +330,7 @@ def render_daily_rank_card(payload: dict, *, width: int = BODY_W,
        newPlayers:[], nextTime, brand}
     """
     extract_icons()
+    _t0 = time.perf_counter()   # 页脚「渲染时间」的耗时基准
     # ★ v2.3.25: 每张卡有自己的配色（起床=暖橙系，竞技场=冷蓝系），
     #   这里按卡覆盖 P 的部分键（未覆盖的沿用起床日榜值）
     PU = {**P, **(palette or {})}
@@ -506,7 +508,10 @@ def render_daily_rank_card(payload: dict, *, width: int = BODY_W,
     if newp:
         ny = ry + NEWP_MT
         box = Image.new("RGB", (CW, NEWP_H), PU["newp_bg"])
-        img.paste(box, (CONTENT_X, ny),
+        # ⚠️ ry = ty + THEAD_H，而 THEAD_H = 35.5 → ny 是 float。
+        #   Pillow 的 paste 只接受整数坐标，传 float 直接 TypeError。
+        #   之前被上层的 try 吞掉、静默回退 Chromium，所以有新人入榜时才暴露。
+        img.paste(box, (CONTENT_X, int(ny)),
                   _rounded_mask((CW, NEWP_H), 12).point(lambda v: int(v * PU["newp_bg_a"])))
         nx = CONTENT_X + NEWP_PAD_X
         ic = _icon("egg", 15)
@@ -520,7 +525,15 @@ def render_daily_rank_card(payload: dict, *, width: int = BODY_W,
 
     # ── 页脚（实测 foot y=466 h=21）──
     fy = ry + FOOT_MT + FOOT_H / 2
-    d.text((CONTENT_X, fy), f"由 {brand} 生成", font=_cjk_font(12), fill=PU["foot"], anchor="lm")
+    _brand_txt = f"由 {brand} 生成"
+    _brand_w = d.textlength(_brand_txt, font=_cjk_font(12))
+    d.text((CONTENT_X, fy), _brand_txt, font=_cjk_font(12), fill=PU["foot"], anchor="lm")
+    # v2.3.32: 渲染时间 —— 淡色小字跟在生成来源右侧，
+    #   格式与双模式卡 #f-time 一致（YYYY-MM-DD HH:MM · NNNms），
+    #   配色沿用页脚色 PU["foot"]（本就在背景上很淡），不另造新色
+    _stamp = render_stamp(int((time.perf_counter() - _t0) * 1000))
+    _stamp_x = CONTENT_X + _brand_w + 7
+    d.text((_stamp_x, fy), _stamp, font=_cjk_font(11), fill=PU["foot"], anchor="lm")
     # 右侧两个药丸 + 中间渐变分隔线
     py = fy - 9
     ph = 18
@@ -539,8 +552,8 @@ def render_daily_rank_card(payload: dict, *, width: int = BODY_W,
                             fill=_blend_at(img, (nx2 + 4, py + 2), PU["newp_bg"], PU["newp_bg_a"]))
         d.text((nx2 + nw / 2, fy), nt, font=_cjk_font(12), fill=PU["newp_fg"], anchor="mm")
     # 渐变分隔线（中间实、两端渐隐，rgba(150,130,110,.25)）
-    _brand_txt = f"由 {brand} 生成"
-    sx0 = int(CONTENT_X + d.textlength(_brand_txt, font=_cjk_font(12)) + 8)
+    # ★ 起点要跟到时间后面，否则分隔线会压在时间上
+    sx0 = int(_stamp_x + d.textlength(_stamp, font=_cjk_font(11)) + 8)
     sx1 = int(nx2 - 8)
     if sx1 > sx0 + 4:
         w = sx1 - sx0

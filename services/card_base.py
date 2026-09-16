@@ -368,3 +368,72 @@ def hash8(s: str) -> str:
         h ^= ord(ch)
         h = (h * 0x01000193) & 0xFFFFFFFF
     return f"{h:08x}"[:8]
+
+
+def render_stamp(ms: int | None = None) -> str:
+    """卡片页脚「渲染时间」文案（Pillow 路径用）。
+
+    格式与双模式卡（wdsj_dual_card.html 的 #f-time）保持一致：
+    日期用 `YYYY-MM-DD HH:MM`，传 ms 时追加本次渲染耗时。
+    """
+    import datetime as _dt
+    text = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    if ms is not None:
+        text += " · %dms" % int(ms)
+    return text
+
+
+def render_stamp_script(t0_epoch_ms: float) -> str:
+    """卡片页脚「渲染时间」注入脚本（HTML / Chromium 路径用）。
+
+    为什么用注入而不是改模板：wdsj 有 6 个模板、5 个构建函数，
+    逐模板加占位符要改 6 处且容易漏；这里统一在 `</body>` 前塞一段脚本，
+    自己找位置挂上去，以后新增卡片自动就有。
+
+    耗时口径与 Pillow 路径一致：都以「开始渲染」为起点
+    （`t0_epoch_ms` 由构建函数用 `time.time()*1000` 记下），
+    到脚本执行完为止 —— 因此包含排队等待 + 浏览器渲染的真实总耗时。
+
+    挂载规则（三张卡的页脚结构不一样，踩过的坑都写在注释里）：
+      1. 已有 `#f-time` 槽位（双模式卡）→ **填进去**，不再追加。
+         第一版直接 append，导致双模式卡一左一右显示两个时间。
+      2. `.foot-l` 是 `display:flex; gap:6px` → inline span 直接追加，
+         **不能再加 margin-left**，否则间距翻倍（gap 已经给了 6px）。
+      3. `.footer` 是 block + 居中 → span 设 `display:block` 另起一行，
+         否则会跟「Powered by …」挤成很长的一行。
+      4. 用 DOMContentLoaded 而不是立即执行：双模式卡的 `init()` 也挂在
+         DOMContentLoaded 上，它会把 `#f-time` 覆盖成不带耗时的版本。
+         我们的监听器后注册 → 后触发 → 最终留下的是带耗时的版本。
+    """
+    return (
+        "<script>(function(){"
+        "var t0=%d;"
+        "function put(){"
+        "var d=new Date(),p=function(n){return String(n).padStart(2,'0')};"
+        "var txt=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+"
+        "p(d.getHours())+':'+p(d.getMinutes())+' \\u00b7 '+Math.round(Date.now()-t0)+'ms';"
+        "var el=document.getElementById('f-time');"
+        "if(!el){"
+        "var h=document.querySelector('.foot-l')||document.querySelector('.footer')"
+        "||document.querySelector('.foot');"
+        "if(!h)return;"
+        "el=document.createElement('span');"
+        "var flex=/(flex)/.test(getComputedStyle(h).display);"
+        "el.setAttribute('style','opacity:.62'+(flex?'':'display:block;margin-top:2px'));"
+        "h.appendChild(el);"
+        "}"
+        "el.textContent=txt;"
+        "}"
+        "if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',put);}"
+        "else{put();}"
+        "})();</script>"
+    ) % int(t0_epoch_ms)
+
+
+def inject_stamp(html: str, t0_epoch_ms: float) -> str:
+    """把「渲染时间」脚本插到 `</body>` 前（没有 body 就追加到末尾）"""
+    script = render_stamp_script(t0_epoch_ms)
+    idx = html.rfind("</body>")
+    if idx < 0:
+        return html + script
+    return html[:idx] + script + html[idx:]

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -17,7 +18,7 @@ from services.card_dark import (
     LIST_PT, LIST_PX, LIST_PB, ENTRY_MB, RANK_W, VALUE_FS, NAME_FS,
     body_bg, glass_card, draw_head, draw_foot, draw_entry, entry_h, lh,
 )
-from services.card_base import cjk, mono, truncate, save_image
+from services.card_base import cjk, mono, truncate, save_image, render_stamp
 
 
 def build_payload(data: dict, bot_name: str = "幻梦") -> dict:
@@ -44,6 +45,7 @@ _RANK_COLORS = {1: C["gold"], 2: C["silver"], 3: C["bronze"]}
 
 def render_leaderboard_card(payload: dict) -> Image.Image:
     """渲染排行榜卡（与 HTML 模板同数据、同外观）"""
+    _t0 = time.perf_counter()   # 页脚「渲染时间」的耗时基准
     entries = payload.get("entries") or []
 
     # ── 高度 ──
@@ -86,8 +88,10 @@ def render_leaderboard_card(payload: dict) -> Image.Image:
         ly += eh + ENTRY_MB
 
     # ── .foot ──
+    # v2.3.32: 渲染时间放在 foot 左侧、紧跟品牌名之后（该槽位原本空着）
     draw_foot(img, CARD_X, CARD_Y + card_h_i - int(round(42.2)), CARD_W,
-              left="", left_brand="幻梦 Bot", right="HUANMENG")
+              left=render_stamp(int((time.perf_counter() - _t0) * 1000)),
+              left_brand="幻梦 Bot", right="HUANMENG")
     return img
 
 

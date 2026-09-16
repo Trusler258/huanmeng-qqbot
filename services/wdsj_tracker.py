@@ -233,6 +233,8 @@ def generate_trend_chart(player, metric, days=None):
 # ------群内总排名------
 async def build_group_rank(group_id, mode_key="bw_kills"):
     """取所有绑定玩家的最新指标值，排序生成排名卡片图片"""
+    import time as _time
+    t0 = _time.time() * 1000               # v2.3.32 页脚「渲染时间」起点
     from modules.commands import _load_wdsj_bindings
     bindings = _load_wdsj_bindings()
 
@@ -276,11 +278,13 @@ async def build_group_rank(group_id, mode_key="bw_kills"):
           {''.join(body_rows)}
         </tbody>
       </table>
+      <div class="footer">Powered by wdsj.net Nexus | 幻梦 QQ Bot</div>
     </div>"""
 
     tmpl_path = Path(__file__).resolve().parent.parent / "data" / "templates" / "wdsj_card.html"
     tmpl = tmpl_path.read_text(encoding="utf-8")
-    full_html = tmpl.replace("${CARD_CONTENT}", html)
+    from services.card_base import inject_stamp
+    full_html = inject_stamp(tmpl.replace("${CARD_CONTENT}", html), t0)
 
     from modules.changelog import render_card_to_image
     import uuid

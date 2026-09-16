@@ -11,6 +11,56 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.32 — wdsj 全部卡片加「渲染时间」+ 修新玩家条崩溃 (2026.9.16)
+一句话总结：wdsj 每一张渲染出来的图，页脚都多一行淡色小字
+`2026-09-16 22:52 · 128ms`，能一眼看出这图是什么时候出的、以及画它花了多久；
+顺带修掉一个「有新人入榜就静默回退 Chromium」的隐藏崩溃。
+
+### 一、为什么做这个
+双模式横屏卡本来就有 `#f-time` 显示生成时间，其它卡（日榜、排行榜、群内排名、
+单模式战绩、指令手册）没有，同一个 bot 出的图风格不统一。
+
+耗时口径统一定义为「**从构建这张卡开始，到出图为止**」：
+- Pillow 路径：`perf_counter()` 围住绘制过程
+- HTML 路径：构建函数记下 `time.time()*1000`，出图后由页面把差值写进页脚
+
+所以这个 ms 包含排队等待 + 浏览器渲染的真实总耗时，可以直接横向比对两条路径
+（实测：Pillow 日榜 91ms / Chromium 同款 273ms）。
+
+### 二、两种渲染路径各自的实现
+| 路径 | 覆盖的卡 | 做法 |
+|---|---|---|
+| Pillow 直绘 | 起床日榜、竞技日榜、排行榜 | 页脚文字后用 `card_base.render_stamp()` 画 11px 小字，颜色沿用页脚色，不另造色 |
+| HTML + Chromium | 双模式卡、群内排名、单模式战绩、指令手册、日榜回退 | `card_base.inject_stamp()` 在 `</body>` 前塞一段脚本，出图时自己找页脚挂上去 |
+
+HTML 侧没有逐模板加占位符（wdsj 有 6 个模板 5 个构建函数，改 6 处必然会漏），
+改成统一注入。踩到三个坑，都写在 `render_stamp_script` 的 docstring 里：
+1. **双模式卡本来就有一个 `#f-time` 槽位** —— 第一版无脑 append，结果卡片上
+   一左一右显示两个时间。改成「有槽位就填进去，没有再新建」。
+2. **`.foot-l` 是 `display:flex; gap:6px`** —— 再给 span 加 `margin-left` 会让
+   间距翻倍。改成读 `getComputedStyle(h).display` 判断，flex 容器交给 gap。
+3. **`.footer` 是 block 居中** —— span 必须设 `display:block` 另起一行，
+   否则跟「Powered by …」挤成很长一条。
+4. 脚本还要挂在 `DOMContentLoaded` 上：双模式卡的 `init()` 也挂在那儿，
+   会把 `#f-time` 覆盖掉；我们的监听器后注册 → 后触发 → 最终留下带耗时的版本。
+
+### 三、【修复】有新人入榜时 Pillow 日榜卡必崩（静默回退 Chromium）
+`services/wdsj_card_pillow.py` 的「新玩家条」里 `img.paste(box, (CONTENT_X, ny), ...)`
+的 `ny` 是 float：
+
+```
+ry = ty + THEAD_H   # THEAD_H = 35.5 → ry 是 float
+ny = ry + NEWP_MT   # → ny 也是 float
+```
+
+Pillow 的 `paste` 只收整数坐标，直接 `TypeError: 'float' object cannot be
+interpreted as an integer`。这个异常被调用方的 `try/except` 吞掉、
+静默回退 Chromium，所以只有当**当天有新人入榜**时才会触发、且表面看不出来
+（只是那张图慢 3 倍）。改成 `int(ny)`，与同文件 `_thly = int(ty + THEAD_H) - 1`
+的写法保持一致。
+
+> 为什么之前的像素校验没发现：校验用的载荷 `newPlayers` 是空的，没走到这个分支。
+
 ## v2.3.31 — 面板新增赞赏管理页 + 面板多项显示修复 (2026.9.16)
 一句话总结：面板能直接管赞赏名单和赞赏码了（不用再敲 `/~赞赏 add`），同时把指令页、
 缩略图、记忆、运行总览、趋势图、数据库、群详情、游戏战绩这一批显示问题一并修掉。
