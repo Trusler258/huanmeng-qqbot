@@ -103,6 +103,7 @@ class WSConnectionManager:
         Returns:
             是否发送成功
         """
+        payload = norm_payload_paths(payload)      # CQ 码路径规范化（见该函数说明）
         last_exc = None
         for attempt in range(max_retries + 1):
             async with self._lock:
@@ -153,6 +154,7 @@ class WSConnectionManager:
 
             echo = f"api_{_uuid.uuid4().hex[:12]}"
             payload = {"action": action, "echo": echo, "params": params or {}}
+            payload = norm_payload_paths(payload)   # CQ 码路径规范化（见该函数说明）
 
             try:
                 # 发送请求
@@ -282,10 +284,80 @@ def fix_cq_paths(text: str) -> str:
       1. 一处覆盖全部（含未来新写的漏网代码）
       2. 正则锚定在 CQ 码 `file=` 参数内，**不会误伤正文里正常的 URL/代码片段**
          （这是当初不敢在出口做粗粒度替换的原因）
+
+    ★ 两层防护，分工不同，**都要保留**：
+      - `norm_payload_paths()` 在 `WSConnectionManager` 内层 —— 保证**发出去的**
+        都是规范路径，覆盖 `send()` 与 `call_api()` 两条通道
+      - 本函数在 `send_group_msg` / `send_private_msg` / `_send_and_record` 里
+        提前调用 —— 保证**录进 msglog 的**也是规范路径（`_log_bot_sent` 用的是
+        函数内的局部变量，管理器那层改不到它）
     """
     if "file:////" not in text:
         return text
     return _CQ_PATH_RE.sub(r'\1file:///', text)
+
+
+# 需要规范化 message 的 OneBot 动作
+_MSG_ACTIONS = {
+    "send_group_msg", "send_private_msg", "send_msg",
+    "send_group_forward_msg", "send_private_forward_msg",
+}
+
+# 消息段形态（数组形式）里 file 字段的四斜杠
+_SEG_PATH_RE = re.compile(r'file:////+')
+
+
+def norm_payload_paths(payload: dict) -> dict:
+    """规范化 OneBot payload 里 message 的 CQ 码路径（四斜杠 → 三斜杠）。
+
+    ★ 为什么放在 `WSConnectionManager` 这一层，而不是在出口逐个补：
+      bot 有**两条**发送通道，只补一条必然漏：
+        - `send_group_msg` / `send_private_msg` / `_send_and_record` → `call_api`
+        - `agnes.py` / `commands.py` / `earthquake.py` 直接 `mgr.send(payload)`
+      实测就有 4 处走后者绕过出口。收口在管理器内部，两条通道+将来新写的都覆盖。
+
+    兼容两种 message 形态：
+      - 字符串 CQ 码：`[CQ:image,file=file:////root/x.png]` → 复用 fix_cq_paths（锚定在 CQ 内，不误伤正文）
+      - 消息段数组：`[{"type":"image","data":{"file":"file:////root/x.png"}}]` → 只动 data.file 字段
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("action") not in _MSG_ACTIONS:
+        return payload
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return payload
+    msg = params.get("message")
+    new_msg = None
+
+    if isinstance(msg, str):
+        fixed = fix_cq_paths(msg)
+        if fixed is not msg:
+            new_msg = fixed
+    elif isinstance(msg, list):
+        segs = []
+        dirty = False
+        for seg in msg:
+            if isinstance(seg, dict):
+                data = seg.get("data")
+                if isinstance(data, dict):
+                    f = data.get("file")
+                    if isinstance(f, str) and "file:////" in f:
+                        seg = dict(seg)
+                        seg["data"] = dict(data)
+                        seg["data"]["file"] = _SEG_PATH_RE.sub("file:///", f)
+                        dirty = True
+            segs.append(seg)
+        if dirty:
+            new_msg = segs
+
+    if new_msg is None:
+        return payload
+    new_params = dict(params)
+    new_params["message"] = new_msg
+    out = dict(payload)
+    out["params"] = new_params
+    return out
 
 
 
