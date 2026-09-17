@@ -17,6 +17,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.sender import fix_cq_paths  # noqa: E402
 
+
+# ── 测试自清：这些用例会真的写进生产 msglog（假群号 123/456/9） ──
+# 2026-09-17 教训：第一版没清，生产 data/msglog/ 里留下了 msglog_123/456.jsonl
+MSGLOG_DIR = Path(__file__).resolve().parent.parent / "data" / "msglog"
+_TEST_IDS = ("123", "456", "9")
+
+
+def _snapshot_test_msglog() -> set:
+    """记录测试开始前已存在的测试用 msglog（只删我们自己新建的）"""
+    return {i for i in _TEST_IDS if (MSGLOG_DIR / f"msglog_{i}.jsonl").exists()}
+
+
+def _cleanup_test_msglog(preexisting: set):
+    """删掉测试新建的 msglog 文件；已存在的（万一撞上真群）只提示不动"""
+    for i in _TEST_IDS:
+        f = MSGLOG_DIR / f"msglog_{i}.jsonl"
+        if not f.exists():
+            continue
+        if i in preexisting:
+            print("  !! 假群号 %s 的 msglog 本来就存在，未删除：%s" % (i, f))
+            continue
+        f.unlink()
+        print("  (已清理测试产物 %s)" % f.name)
+
 PASS, FAIL = [], []
 
 
@@ -141,6 +165,7 @@ async def test_wiring():
 
 
 def main():
+    _pre = _snapshot_test_msglog()
     print("\n=== 一、四斜杠被修正（事故原型）===")
     case("图片 CQ 四斜杠",
          "[CQ:image,file=file:////root/bot/data/img_temp/daily_767190084.jpg]",
@@ -211,6 +236,8 @@ def main():
     asyncio.get_event_loop().run_until_complete(test_wiring())
     print("\n=== 八、管理器层收口（send / call_api 两条通道）===")
     asyncio.get_event_loop().run_until_complete(test_manager_layer())
+
+    _cleanup_test_msglog(_pre)
 
     print("\n" + "=" * 52)
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))
