@@ -18,6 +18,7 @@ data/economy.json
 data/search.db
 data/msglog/
 data/stats_*.json
+data/power/*.jsonl          # 功耗采样（运行时数据；config.json / calib.json 保留可版本化）
 data/stats_archive/
 data/Group_members_name.txt
 data/recall.json
