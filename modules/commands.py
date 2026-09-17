@@ -60,6 +60,7 @@ from core.bot_notes import cmd_note
 from core.ctx_usage import cmd_ctx
 from modules.msg_relay import cmd_say
 from modules.reward import cmd_reward   # ★ 赞赏码 / 赞助名单
+from modules.power import cmd_power      # ★ 服务器功耗 / 电费（仅管理员）
 from modules.memory_link import cmd_mlink   # ★ 跨聊天记忆关联（单一入口）
 
 # ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
@@ -4049,6 +4050,10 @@ COMMAND_MAP: dict[str, callable] = {
     "赞赏":       cmd_reward,
     "赞助":       cmd_reward,
     "sponsor":    cmd_reward,
+    # ── 服务器功耗 / 电费（仅管理员）──
+    "power":      cmd_power,
+    "功耗":       cmd_power,
+    "电费":       cmd_power,
 }
 
 
