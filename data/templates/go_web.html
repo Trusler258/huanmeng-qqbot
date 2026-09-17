@@ -18,7 +18,7 @@
 <div class="wrap">
 
   <div class="topbar">
-    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GO</span></div>
+    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">围棋</span></div>
     <div class="tb-sep"></div>
     <span class="chip" id="chip-room">房间 <b>--</b></span>
     <span class="chip role" id="chip-role" style="display:none"></span>
@@ -138,6 +138,7 @@ const CELL_BASE = {9: 46, 13: 34, 19: 27};
 let busy = false, finished = false, curN = 0;
 let LETTERS = "", STAR = [], boardCache = null, lastCache = null, tipTimer = null;
 let me = "", myColor = 0, spectator = false;
+let myTurnNow = false;   // render 里更新；play() 靠它判断能否乐观落子
 
 const $ = id => document.getElementById(id);
 
@@ -226,15 +227,29 @@ async function play(el) {
   if (boardCache && boardCache[r][c]) return;
   busy = true;
   tip("落子中…");
+  // ★ 乐观渲染（v2.3.38）：见 wzq_web.html::play 的详细说明。
+  //   本页走 Cloudflare Tunnel（一次往返 1.3~1.6s），点完还要再取一次盘面，
+  //   等响应再画会有明显延迟感。先本地画，服务端返回后由 refresh() 覆盖。
+  const prevBoard = boardCache ? boardCache.map(row => row.slice()) : null;
+  const prevLast = lastCache;
+  const optimistic = !!myTurnNow && !!boardCache;
+  if (optimistic) {
+    boardCache[r][c] = myColor;
+    lastCache = [r, c];
+    paint();
+  }
+  function rollback() {
+    if (optimistic) { boardCache = prevBoard; lastCache = prevLast; paint(); }
+  }
   try {
     const res = await fetch(`${API_BASE}/api/r/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({coord: `${r + 1},${c + 1}`})
     }).then(x => x.json());
-    if (!res.ok) { tip(res.msg || "这手不行"); await refresh(); return; }
+    if (!res.ok) { rollback(); tip(res.msg || "这手不行"); await refresh(); return; }
     tip(res.msg || "落子成功");
     await refresh();
-  } catch (e) { tip("网络错误，稍后重试"); }
+  } catch (e) { rollback(); tip("网络错误，稍后重试"); }
   finally { busy = false; }
 }
 
@@ -323,6 +338,7 @@ function render(st) {
 
   const turnIsBlack = st.turn === 1;
   const myTurn = !finished && !spectator && st.turn === myColor;
+  myTurnNow = myTurn;      // 供 play() 的乐观渲染判断（见该函数注释）
   const bActive = !finished && turnIsBlack;
   const wActive = !finished && !turnIsBlack;
   $("badge-black").textContent = finished ? "已结束" : (bActive ? (spectator || myColor === 1 ? "行棋中" : "等待") : "等待");
