@@ -460,6 +460,9 @@ async def _send_and_record(content: str, chat_id: int, is_group: bool,
             msg_id = int(resp.get("message_id", 0))
     except Exception:
         logger.debug("call_api 发送失败，回退到 fire-and-forget")
+        # ★ 注意：send_by_chat_type 内部（send_group_msg/send_private_msg）
+        #   已经写过 msglog 了，这里**不要**再补一次 _log_bot_sent。
+        #   v2.3.36 修复：原来这里又显式写了一遍，fallback 路径每条消息落盘两次。
         await send_by_chat_type(content, chat_id, is_group, user_id)
         # ★ fallback 也录 stats
         if is_group and chat_id in cfg.group_list:
@@ -468,27 +471,36 @@ async def _send_and_record(content: str, chat_id: int, is_group: bool,
                 record_message(chat_id, cfg.bot_qq, content, cfg.bot_name)
             except Exception:
                 pass
-        # v2.3.17: fallback 路径私聊也补 msglog（此前只有群聊有记录）
-        _log_bot_sent(chat_id, content)
         return 0
 
-    # ★ 录制到 msglog（撤回支持）和 stats（统计）
-    # v2.3.17: 私聊也录 msglog——此前私聊 LLM 管线（send_sentences → 本函数）
-    # 完全不写 msglog，而命令层 send_private_msg 有 _log_bot_sent，两条路径
-    # 录制不一致，导致"查 bot 发过什么表情"在私聊场景查不到（实测 16:22 轮
-    # 发了 6 句+1 图 msglog 零记录）。撤回模块本身只处理群聊，私聊录了也不会误匹配。
-    if msg_id:
-        _log_bot_sent(chat_id, content, msg_id=msg_id)
-    else:
-        _log_bot_sent(chat_id, content)
-
+    # ★ 录制到 msglog（撤回支持）与 stats（统计）
+    #
+    # v2.3.36 修复「同一条消息落盘两次」：
+    #   _log_bot_sent（sender 侧，v2.0.4af）与 record_incoming_message（recall 侧）
+    #   写的是**同一个文件**、**完全相同的 entry 结构**（msg_id/time/user_id/type/
+    #   content/recalled），原来在群聊白名单里两个都被调用 → 每条 bot 消息写两遍。
+    #   实测 msglog_247478659.jsonl：bot 消息 719 条，按 (msg_id,内容) 去重后仅 625 条，
+    #   **94 条完全重复且 msg_id 相同** —— 确认是记录侧重复，不是真的发了两条
+    #   （日志里 send_group_msg 只成功一次）。
+    #   重复记录会污染记忆检索、统计计数与用户画像的消息条数。
+    #
+    # 分工：群聊白名单走 recall 的录制（撤回匹配依赖它按 msg_id 定位）；
+    #       私聊 / 非白名单群 / recall 异常时，兜底走 sender 自己的 _log_bot_sent。
+    _logged = False
     if is_group and chat_id in cfg.group_list:
         try:
             from modules.recall import record_incoming_message
             record_incoming_message(chat_id, cfg.bot_qq, msg_id, "bot", content)
+            _logged = True
         except Exception as e:
             logger.debug("recall录制bot消息失败: %s", e)
-            pass
+
+    if not _logged:
+        # v2.3.17: 私聊也录 msglog（此前私聊 LLM 管线不写，命令层却写，两边不一致）
+        if msg_id:
+            _log_bot_sent(chat_id, content, msg_id=msg_id)
+        else:
+            _log_bot_sent(chat_id, content)
 
     if is_group and chat_id in cfg.group_list:
         try:
