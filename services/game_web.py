@@ -540,24 +540,36 @@ async def room_move(code: str, request: Request, t: str = ""):
             r, c = int(body.get("r")), int(body.get("c"))
         except Exception:
             return JSONResponse({"ok": False, "msg": "坐标不对喵~"})
+        # ★ sig 必须在走子**之前**取（v2.3.38 修，用户实测 bug）
+        #   `_finished_now` 的判定是「sig 是 playing 且走完后读到 finished」，
+        #   而这里原来把 `_finish_sig()` 写在 `web_move()` **之后** —— 拿到的是
+        #   走完后的 "finished"，条件永远不成立 → 五子棋终局既不播报也不归档。
+        #   现象：页面显示「对局结束 · XXX 获胜」，但群里一条消息都没有，
+        #   房间还挂在 game_rooms.json 里（用户实测）。
+        #   对照：go 分支与 xq 分支都是**走子前**取 sig，所以它们没这个问题。
+        sig = _finish_sig(kind, game)
         ok, msg = W.web_move(chat, uid, r, c)
         if not ok:
             return JSONResponse({"ok": False, "msg": msg})
-        # 人机模式：AI 后台应手（线程池执行）——expert 算 8s 期间页面轮询
+        # 人机模式：AI 后台应手（线程池执行）——expert 算 2~8s 期间页面轮询
         # 能立刻看到"AI 正在思考…"，不再整体干等响应
         g2 = W.get_game(chat)
         if g2 and g2.status == "playing" and g2.white == 0 and g2.turn == 2:
+            ai_sig = _finish_sig(kind, g2)   # AI 走子前再取一次（AI 也可能赢）
 
             async def _ai_reply():
                 try:
                     ai_ok, ai_msg = await W.ai_move_async(chat)
                     if not ai_ok:
                         logger.warning("五子棋 AI 应手失败: %s", ai_msg)
+                    # ★ AI 这手也可能终局（AI 五连 / 人禁手判负）——原来只在人走完
+                    #   后检测一次，AI 赢的局同样不播报不归档
+                    _schedule_finish_flow(code, room, kind, chat, ai_sig)
                 except Exception as e:
                     logger.warning("五子棋 AI 应手异常: %s", e)
 
             asyncio.get_running_loop().create_task(_ai_reply())
-        _schedule_finish_flow(code, room, kind, chat, _finish_sig(kind, game))
+        _schedule_finish_flow(code, room, kind, chat, sig)
         return JSONResponse({"ok": True, "msg": msg})
 
     # 象棋

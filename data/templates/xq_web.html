@@ -38,7 +38,7 @@
 <div class="wrap">
 
   <div class="topbar">
-    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">XIANGQI</span></div>
+    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">象棋</span></div>
     <div class="tb-sep"></div>
     <span class="chip" id="chip-room">房间 <b>--</b></span>
     <span class="chip role" id="chip-role" style="display:none"></span>
@@ -300,14 +300,37 @@ function pieceName(ch) {
 async function sendMove(uci) {
   busy = true;
   tip("走棋中…");
+  // ★ 乐观渲染（v2.3.38）：见 wzq_web.html::play 的详细说明。
+  //   象棋本页同样走 Cloudflare Tunnel，等两次往返会有明显延迟感。
+  //   UCI 形如 "h2e2"，用已有的 parseSq 解析起止格，本地先把子挪过去
+  //   （吃子自然被覆盖），服务端返回后由 refresh() 覆盖成权威盘面。
+  const prevGrid = gridCache ? gridCache.map(row => row.slice()) : null;
+  const prevLast = lastCache;
+  let optimistic = false;
+  if (myTurn && gridCache && uci.length >= 4) {
+    try {
+      const a = parseSq(uci.slice(0, 2)), b = parseSq(uci.slice(2, 4));
+      if (gridCache[a.r] && gridCache[b.r]) {
+        gridCache[b.r][b.c] = gridCache[a.r][a.c];
+        gridCache[a.r][a.c] = "";
+        lastCache = uci;
+        paint();
+        optimistic = true;
+      }
+    } catch (e) { /* 解析失败就不乐观渲染，交给服务端 */ }
+  }
+  function rollback() {
+    if (optimistic) { gridCache = prevGrid; lastCache = prevLast; paint(); }
+  }
   try {
     const res = await fetch(`${API_BASE}/api/r/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({uci})
     }).then(x => x.json());
+    if (!res.ok) rollback();
     tip(res.msg || (res.ok ? "走棋成功" : "这步不行"));
     await refresh();
-  } catch (e) { tip("网络错误，稍后重试"); }
+  } catch (e) { rollback(); tip("网络错误，稍后重试"); }
   finally { busy = false; }
 }
 

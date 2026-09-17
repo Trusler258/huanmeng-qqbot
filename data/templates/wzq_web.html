@@ -21,7 +21,7 @@
 <div class="wrap">
 
   <div class="topbar">
-    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">GOMOKU</span></div>
+    <div class="brand"><span class="nm">幻梦</span><span class="sl">/</span><span class="tp">五子棋</span></div>
     <div class="tb-sep"></div>
     <span class="chip" id="chip-room">房间 <b>--</b></span>
     <span class="chip role" id="chip-role" style="display:none"></span>
@@ -137,6 +137,7 @@ const N = 15, CELL_BASE = 34, LETTERS = "ABCDEFGHIJKLMNO";
 let busy = false, finished = false, built = false;
 let boardCache = null, lastCache = null, myColor = 0, tipTimer = null;
 let spectator = false;
+let myTurnNow = false;   // render 里更新；play() 靠它判断能否乐观落子
 
 const $ = id => document.getElementById(id);
 
@@ -241,15 +242,32 @@ async function play(el) {
   if (boardCache && boardCache[r][c]) return;
   busy = true;
   tip("落子中…");
+  // ★ 乐观渲染（v2.3.38）：先把子画在自己这边，不等网络往返。
+  //   背景：本页走 Cloudflare Tunnel，一次往返首字节 1.3~1.6s；
+  //   而点完还要 `await fetch(move)` 再 `await refresh()` 取盘面 = 两次往返
+  //   ≈ 2.6s，正好和 AI 思考时间（expert ~2.4s）撞在一起 ——
+  //   用户看到的就是「要等机器人思考完才显示我下的棋」。
+  //   本地先画，服务端返回后由 refresh() 覆盖成权威盘面；失败则回滚。
+  const prevBoard = boardCache ? boardCache.map(row => row.slice()) : null;
+  const prevLast = lastCache;
+  const optimistic = !!myTurnNow && !!boardCache;
+  if (optimistic) {
+    boardCache[r][c] = myColor;
+    lastCache = [r, c];
+    paint();
+  }
+  function rollback() {
+    if (optimistic) { boardCache = prevBoard; lastCache = prevLast; paint(); }
+  }
   try {
     const res = await fetch(`${API_BASE}/api/r/${ROOM}/move?t=${TOKEN}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({r, c})
     }).then(x => x.json());
-    if (!res.ok) { tip(res.msg || "这手不行"); await refresh(); return; }
+    if (!res.ok) { rollback(); tip(res.msg || "这手不行"); await refresh(); return; }
     tip(res.msg || "落子成功");
     await refresh();
-  } catch (e) { tip("网络错误，稍后重试"); }
+  } catch (e) { rollback(); tip("网络错误，稍后重试"); }
   finally { busy = false; }
 }
 
@@ -334,6 +352,7 @@ function render(st) {
   $("k-w").textContent = `盘面 ${100 - pB}%`;
 
   const myTurn = !finished && !waiting && !spectator && st.turn === myColor;
+  myTurnNow = myTurn;      // 供 play() 的乐观渲染判断（见该函数注释）
   $("badge-black").textContent = finished ? "已结束" : (st.turn === 1 ? (spectator || myColor === 1 ? "行棋中" : "等待") : "等待");
   $("badge-white").textContent = finished ? "已结束" : (st.turn === 2 ? (spectator || myColor === 2 ? "行棋中" : "等待") : "等待");
   $("badge-black").classList.toggle("on", st.turn === 1 && !finished && !waiting);
