@@ -60,17 +60,32 @@ def _make_interim_sender(chat_id: int, is_group: bool, user_id: int,
     用户看到重复句子。这里留痕，主回复发送前做去重（见 _dedup_against_lead）。"""
     async def _send(text: str):
         try:
-            # v2.1.12: 先导语 + 思考标记（回调已记录 secs、未应用过 → 挂前缀）
-            if thought_ctx and thought_ctx.get("secs") and not thought_ctx.get("applied"):
-                text = f"[已思考{thought_ctx['secs']}秒] {text}"
-                thought_ctx["applied"] = True
-            await send_sentences(
-                [text], chat_id, is_group,
-                user_id=user_id if not is_group else None,
-                min_interval=0.2, max_interval=0.2,
-            )
-            if sent_lead is not None:
-                sent_lead.append(text)
+            # ★ v2.3.36: 先导语也必须按 || 拆分。
+            #   事故（2026-09-17 实测）：LLM 在轮1把先导语写成一串多句
+            #     "诶？主人你这是让我把赞赏码发出来呀～ || 那我试试，不过文件要是还没传上去…"
+            #   而这里原来写死 send_sentences([text], ...) 整条发出，
+            #   "||" 就原样泄漏到群里。口径与主回复对齐（主回复按 " || " 拆）。
+            parts = [p.strip() for p in re.split(r'\|\|\|?', text) if p.strip()]
+            parts = [re.sub(r'\|', '', p).strip() for p in parts]
+            parts = [p for p in parts if p][:3]   # 上限 3 条，防刷屏
+            if not parts:
+                # 整条只有分隔符/空白 → 没有可发内容，别把 "||" 发出去
+                if not re.sub(r'\|', '', text).strip():
+                    return
+                parts = [re.sub(r'\|', '', text).strip()]
+            for idx, part in enumerate(parts):
+                # v2.1.12: 思考标记只挂第一条（用户看到的第一条文本）
+                if (idx == 0 and thought_ctx and thought_ctx.get("secs")
+                        and not thought_ctx.get("applied")):
+                    part = f"[已思考{thought_ctx['secs']}秒] {part}"
+                    thought_ctx["applied"] = True
+                await send_sentences(
+                    [part], chat_id, is_group,
+                    user_id=user_id if not is_group else None,
+                    min_interval=0.2, max_interval=0.2,
+                )
+                if sent_lead is not None:
+                    sent_lead.append(part)
         except Exception:
             logger.warning("先导语发送失败: %s", str(text)[:30], exc_info=True)
     return _send
