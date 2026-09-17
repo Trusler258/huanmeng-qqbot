@@ -256,9 +256,37 @@ def build_local_image_cq(local_path: str) -> str:
     Linux 绝对路径如 /root/bot/xx.png 直接拼 file:/// 会变成 file:////root/...（4 斜杠），
     NapCat 剥掉 file:// 后得到 //root/... 报 ENOENT。这里去掉开头斜杠再拼，
     确保结果是 file:///root/bot/xx.png（协议 + 1 个根斜杠）。
+
+    ⚠️ 这是**新增发图代码的正确入口**。但项目里仍有 10+ 处手工拼
+    `f"[CQ:image,file=file:///{绝对路径}]"` 没走它 —— 见 `fix_cq_paths()` 的说明。
     """
     normalized = str(local_path).replace("\\", "/").lstrip("/")
     return f"[CQ:image,file=file:///{normalized}]"
+
+
+# 匹配 CQ 码里 file= 参数中的多余斜杠（file: 后 4 个及以上 /）
+_CQ_PATH_RE = re.compile(r'(\[CQ:[^\]]*?\bfile=)file:////+')
+
+
+def fix_cq_paths(text: str) -> str:
+    """把 CQ 码里 file= 的 `file:////`（四斜杠）规范成 `file:///`（三斜杠）。
+
+    背景（2026-09-17 实测）：项目里多处手工拼 `file:///{绝对路径}`，而绝对路径
+    本身以 `/` 开头 → `file:////root/...`。实测 msglog 里 **175 条四斜杠 vs
+    108 条三斜杠**，即多数图片走了不规范路径。
+
+    **但近 7 天日志 0 次 ENOENT** —— NapCat 会 normalize，所以这是代码卫生问题，
+    不是活跃故障。
+
+    修在**发送出口**而不是逐个改那 10+ 处手拼点，理由：
+      1. 一处覆盖全部（含未来新写的漏网代码）
+      2. 正则锚定在 CQ 码 `file=` 参数内，**不会误伤正文里正常的 URL/代码片段**
+         （这是当初不敢在出口做粗粒度替换的原因）
+    """
+    if "file:////" not in text:
+        return text
+    return _CQ_PATH_RE.sub(r'\1file:///', text)
+
 
 
 async def send_group_msg(message: str, group_id: int) -> bool:
@@ -272,6 +300,7 @@ async def send_group_msg(message: str, group_id: int) -> bool:
     """
     mgr = get_ws_manager()
     cfg = get_config()
+    message = fix_cq_paths(message)          # CQ 码路径规范化（见 fix_cq_paths）
     data = await mgr.call_api("send_group_msg", {"group_id": group_id, "message": message}, timeout=8.0)
     if not data:
         # 超时/失败不重发（消息可能已送达，重发=重复），也不补 fallback（同理）
@@ -287,6 +316,7 @@ async def send_private_msg(message: str, user_id: int) -> bool:
     """发送私聊文本消息（v2.0.4af: call_api 确认；v2.0.4ah: 去掉重试防重复）"""
     mgr = get_ws_manager()
     cfg = get_config()
+    message = fix_cq_paths(message)          # CQ 码路径规范化（见 fix_cq_paths）
     data = await mgr.call_api("send_private_msg", {"user_id": user_id, "message": message}, timeout=8.0)
     if not data:
         logger.warning("send_private_msg 未确认(超时/失败) user=%d 不重发防重复", user_id)
@@ -446,6 +476,7 @@ async def _send_and_record(content: str, chat_id: int, is_group: bool,
                             user_id: int | None, cfg) -> int:
     """发送消息 + 录制到 msglog/stats，返回 message_id"""
     mgr = get_ws_manager()
+    content = fix_cq_paths(content)          # CQ 码路径规范化（见 fix_cq_paths）
     if is_group:
         action = "send_group_msg"
         params = {"group_id": chat_id, "message": content}
