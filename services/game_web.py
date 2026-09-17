@@ -482,31 +482,67 @@ async def room_page(code: str, request: Request, t: str = ""):
                         .replace("${TOKEN}", t))
 
 
-@app.get("/api/r/{code}/state")
-async def room_state(code: str, t: str = ""):
-    room, uid, game, role, err = _auth(code, t)
-    if err:
-        return _deny(err)
-    if not game:
-        return JSONResponse({"ok": True, "gone": True, "role": role,
-                             "room": str(code).upper(), "kind": room.get("kind")})
+_STATE_VOLATILE = {"ok", "room", "kind", "role", "spectator", "elapsed", "sig"}
+
+
+def _state_sig(st: dict) -> str:
+    """状态指纹 —— 长轮询用来判断"画面变了没"。
+
+    只留会影响画面的字段，**必须排除 `elapsed`**（每秒都在变，否则永远"变了"，
+    长轮询退化成每秒返回一次）。也对 gone/denied 这类短状态有效。
+    """
+    payload = {k: v for k, v in st.items() if k not in _STATE_VOLATILE}
+    try:
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        raw = str(payload)
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _build_state(room: dict, uid: int) -> Optional[dict]:
+    """取某房间的棋局快照（不含身份字段），没有对局返回 None"""
     kind = room.get("kind")
     chat = _chat_of(room)
     if kind == "go":
         from modules import go_game as G
-        st = G.web_state(chat, uid)
-    elif kind == "wzq":
+        return G.web_state(chat, uid)
+    if kind == "wzq":
         from modules import wzq as W
-        st = W.web_state(chat, uid)
-    else:
-        from modules import chinese_chess as X
-        st = X.web_state(chat, uid)
-    if st is None:
-        return JSONResponse({"ok": True, "gone": True, "role": role,
-                             "room": str(code).upper(), "kind": kind})
-    st.update({"ok": True, "room": str(code).upper(), "kind": kind,
-               "role": role, "spectator": role == "spectator"})
-    return JSONResponse(st)
+        return W.web_state(chat, uid)
+    from modules import chinese_chess as X
+    return X.web_state(chat, uid)
+
+
+@app.get("/api/r/{code}/state")
+async def room_state(code: str, t: str = "", wait: int = 0, sig: str = ""):
+    """棋局快照；`wait=1&sig=xxx` 时长轮询：状态没变就压住请求，变了立刻回。
+
+    ★ 为什么要长轮询（v2.3.39）：本服务对外走 Cloudflare Tunnel，单请求往返
+      1.3~1.6s。普通轮询下「对手落子 → 观战端看到」实测 ~1.9s，而且如果落子
+      发生时恰好有一个请求在途，那个请求读到的是**落子前**的状态，等于白等一个
+      往返（实测接续轮询反而更慢，~2.7s）。长轮询让请求**一直被服务端压住**，
+      状态一变立刻响应，把延迟压到「一个单程」。
+    """
+    room, uid, game, role, err = _auth(code, t)
+    if err:
+        return _deny(err)
+    gone_body = {"ok": True, "gone": True, "role": role,
+                 "room": str(code).upper(), "kind": room.get("kind")}
+    if not game:
+        return JSONResponse(gone_body)
+
+    deadline = (time.monotonic() + min(wait, 25)) if wait else None
+    while True:
+        st = _build_state(room, uid)
+        if st is None:
+            return JSONResponse(gone_body)
+        st.update({"ok": True, "room": str(code).upper(), "kind": room.get("kind"),
+                   "role": role, "spectator": role == "spectator"})
+        cur = _state_sig(st)
+        st["sig"] = cur
+        if deadline is None or not sig or cur != sig or time.monotonic() >= deadline:
+            return JSONResponse(st)
+        await asyncio.sleep(0.15)      # 进程内轮询，不占网络
 
 
 @app.post("/api/r/{code}/move")
