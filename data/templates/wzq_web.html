@@ -138,6 +138,13 @@ let busy = false, finished = false, built = false;
 let boardCache = null, lastCache = null, myColor = 0, tipTimer = null;
 let spectator = false;
 let myTurnNow = false;   // render 里更新；play() 靠它判断能否乐观落子
+// ★ 乐观渲染的两个保护（v2.3.39，修「子会闪回原位」）
+//   pendingMinMoves: 乐观画子后，服务端至少要有的手数。轮询回来的**旧状态**
+//     （手数没到）必须丢弃，否则会把刚画的子擦掉 → 闪回。
+//   pendingUntil: 兜底超时，避免一直等不到而永久忽略状态。
+//   stateSeq/appliedSeq: 丢弃「比已渲染过的更旧」的响应（请求并发时的乱序到达）。
+let pendingMinMoves = 0, pendingUntil = 0, stateSeq = 0, appliedSeq = 0;
+let curMoves = 0;        // 最近一次被接受的状态里的手数
 
 const $ = id => document.getElementById(id);
 
@@ -185,7 +192,11 @@ function buildBoard() {
   let hits = "";
   for (let r = 0; r < n; r++) {
     for (let c = 0; c < n; c++) {
-      hits += `<div class="hit" data-r="${r}" data-c="${c}" style="left:${c * cell}px;top:${r * cell}px;width:${cell}px;height:${cell}px"></div>`;
+      // ★ data-r 用 (n-1-r)：视觉最上面一行 = 数组下标 n-1 = 坐标行 n（v2.3.39 修）
+      //   原来直接写 r，而下标 0 在最上面、左侧行标签却写的是 n-r（顶行=15），
+      //   两者矛盾 → 点最上面一行会被记成 A1，板面相对坐标体系整体上下镜像，
+      //   和终局卡片图（行15在上）看着就是反的。
+      hits += `<div class="hit" data-r="${n - 1 - r}" data-c="${c}" style="left:${c * cell}px;top:${r * cell}px;width:${cell}px;height:${cell}px"></div>`;
     }
   }
   const h = $("hits");
@@ -255,9 +266,16 @@ async function play(el) {
     boardCache[r][c] = myColor;
     lastCache = [r, c];
     paint();
+    // 乐观之后服务端至少该有 curMoves+1 手；在那之前到达的旧状态一律丢弃，
+    // 否则轮询里在落子前发出的请求晚到会把刚画的子擦掉（闪回）
+    pendingMinMoves = curMoves + 1;
+    pendingUntil = Date.now() + 6000;   // 兜底：避免一直等不到而永久忽略状态
   }
   function rollback() {
-    if (optimistic) { boardCache = prevBoard; lastCache = prevLast; paint(); }
+    if (optimistic) {
+      boardCache = prevBoard; lastCache = prevLast; paint();
+      pendingMinMoves = 0;              // 失败就别再拦状态了
+    }
   }
   try {
     const res = await fetch(`${API_BASE}/api/r/${ROOM}/move?t=${TOKEN}`, {
@@ -302,6 +320,15 @@ function setStatus(cls, text) {
 
 function render(st) {
   if (!st.ok) { tip("链接无效或已过期"); return; }
+  // ★ 丢弃「比乐观渲染更旧」的状态（v2.3.39）：乐观画子后，1 秒轮询里那些
+  //   在落子之前发出的请求会晚到，带回手数更少的旧盘面 → 把刚画的子擦掉（闪回）。
+  //   等服务端手数追上来，或超过兜底时限，才恢复接受状态。
+  if (pendingMinMoves && (st.move_count || 0) < pendingMinMoves
+      && Date.now() < pendingUntil) {
+    return;
+  }
+  pendingMinMoves = 0;
+  curMoves = st.move_count || 0;   // 供 play() 计算"乐观之后服务端至少该有几手"
   spectator = st.role === "spectator";
   $("chip-room").innerHTML = `房间 <b>${ROOM}</b>`;
   const rc = $("chip-role");
@@ -397,8 +424,11 @@ function render(st) {
 }
 
 async function refresh() {
+  const my = ++stateSeq;          // ★ 乱序保护：只接受不比自己已渲染的更旧的响应
   try {
     const st = await fetch(`${API_BASE}/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    if (my < appliedSeq) return;  // 已有更新的响应渲染过 → 丢弃这条旧响应
+    appliedSeq = my;
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }

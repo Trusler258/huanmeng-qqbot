@@ -139,6 +139,8 @@ let busy = false, finished = false, curN = 0;
 let LETTERS = "", STAR = [], boardCache = null, lastCache = null, tipTimer = null;
 let me = "", myColor = 0, spectator = false;
 let myTurnNow = false;   // render 里更新；play() 靠它判断能否乐观落子
+let pendingMinMoves = 0, pendingUntil = 0, stateSeq = 0, appliedSeq = 0;
+let curMoves = 0;        // 最近一次被接受的状态里的手数
 
 const $ = id => document.getElementById(id);
 
@@ -189,7 +191,8 @@ function buildBoard(n, letters, stars) {
   let hits = "";
   for (let r = 0; r < n; r++) {
     for (let c = 0; c < n; c++) {
-      hits += `<div class="hit" data-r="${r}" data-c="${c}" style="left:${c * cell}px;top:${r * cell}px;width:${cell}px;height:${cell}px"></div>`;
+      // ★ data-r 用 (n-1-r)：视觉最上面一行 = 下标 n-1 = 坐标行 n（v2.3.39 修，与 wzq 同因：原来下标 0 在最上面、行标签却写 n-r，二者矛盾）
+      hits += `<div class="hit" data-r="${n - 1 - r}" data-c="${c}" style="left:${c * cell}px;top:${r * cell}px;width:${cell}px;height:${cell}px"></div>`;
     }
   }
   const h = $("hits");
@@ -237,9 +240,15 @@ async function play(el) {
     boardCache[r][c] = myColor;
     lastCache = [r, c];
     paint();
+    // 乐观之后服务端至少该有 curMoves+1 手；在那之前到达的旧状态一律丢弃（防闪回）
+    pendingMinMoves = curMoves + 1;
+    pendingUntil = Date.now() + 6000;
   }
   function rollback() {
-    if (optimistic) { boardCache = prevBoard; lastCache = prevLast; paint(); }
+    if (optimistic) {
+      boardCache = prevBoard; lastCache = prevLast; paint();
+      pendingMinMoves = 0;
+    }
   }
   try {
     const res = await fetch(`${API_BASE}/api/r/${ROOM}/move?t=${TOKEN}`, {
@@ -284,6 +293,14 @@ function setStatus(cls, text) {
 
 function render(st) {
   if (!st.ok) { tip("链接无效或已过期"); return; }
+  // ★ 丢弃「比乐观渲染更旧」的状态（v2.3.39）：乐观画子后，1 秒轮询里那些
+  //   在落子之前发出的请求会晚到，带回手数更少的旧盘面 → 把刚挪的子擦掉（闪回）。
+  if (pendingMinMoves && (st.move_count || 0) < pendingMinMoves
+      && Date.now() < pendingUntil) {
+    return;
+  }
+  pendingMinMoves = 0;
+  curMoves = st.move_count || 0;
   finished = !!st.finished;
   spectator = st.role === "spectator";
   me = st.role || "";
@@ -384,8 +401,11 @@ function render(st) {
 }
 
 async function refresh() {
+  const my = ++stateSeq;          // ★ 乱序保护：只接受不比自己已渲染的更旧的响应
   try {
     const st = await fetch(`${API_BASE}/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    if (my < appliedSeq) return;  // 已有更新的响应渲染过 → 丢弃这条旧响应
+    appliedSeq = my;
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }
