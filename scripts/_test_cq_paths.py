@@ -30,6 +30,83 @@ def case(name, src, want):
     ck(name, got == want, "" if got == want else "\n        得到 %r\n        期望 %r" % (got, want))
 
 
+# ── 管理器层收口验证：send() 与 call_api() 两条通道 ──────────
+async def test_manager_layer():
+    """`agnes/commands/earthquake` 走的是 mgr.send(payload)（不是 call_api），
+    只补出口会漏掉它们。这里验证管理器内层的 norm_payload_paths 覆盖两条通道。"""
+    import json
+    import services.sender as S
+
+    captured = []
+
+    class FakeWS:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, raw):
+            self.sent.append(raw)
+
+        async def recv(self):
+            # 让 call_api 能拿到一条 retcode=0 的响应
+            return json.dumps({"retcode": 0, "echo": self._echo, "data": {}})
+
+    bad_cq = "[CQ:image,file=file:////root/bot/x.png]"
+
+    mgr = S.WSConnectionManager("127.0.0.1", 9)
+
+    # --- 通道 A: send(payload)，模拟 agnes/commands/earthquake 的用法 ---
+    ws = FakeWS()
+    mgr._ws = ws
+
+    async def fake_ensure():
+        return True
+    mgr._ensure_connected = fake_ensure
+    await mgr.send({"action": "send_group_msg", "params": {"group_id": 1, "message": bad_cq}})
+    ck("send() 通道已规范化", ws.sent and "file:////" not in ws.sent[-1]
+       and "file:///root/bot/x.png" in ws.sent[-1], ws.sent[-1][:70] if ws.sent else "")
+
+    # --- 通道 B: call_api(action, params) ---
+    ws2 = FakeWS()
+    mgr._ws = ws2
+    orig_recv = ws2.recv
+
+    async def recv_with_echo():
+        return json.dumps({"retcode": 0, "echo": mgr._last_echo, "data": {}})
+    # call_api 内部按 echo 匹配，这里简化：直接让 recv 返回带任意 echo 的响应
+    async def recv_any():
+        return json.dumps({"retcode": 0, "echo": "x", "data": {}})
+    ws2.recv = recv_any
+    try:
+        await mgr.call_api("send_group_msg", {"group_id": 1, "message": bad_cq}, timeout=1.5)
+    except Exception:
+        pass
+    ck("call_api() 通道已规范化", ws2.sent and "file:////" not in ws2.sent[-1]
+       and "file:///root/bot/x.png" in ws2.sent[-1], ws2.sent[-1][:70] if ws2.sent else "")
+    mgr._ws = None
+
+    # --- 非消息动作不被动 ---
+    p = S.norm_payload_paths({"action": "get_msg", "params": {"message": bad_cq}})
+    ck("非消息动作不改动", p["params"]["message"] == bad_cq)
+
+    # --- 消息段数组形态 ---
+    seg_payload = {"action": "send_group_msg", "params": {"message": [
+        {"type": "text", "data": {"text": "看图 file:////keep/me"}},
+        {"type": "image", "data": {"file": "file:////root/bot/a.png"}},
+    ]}}
+    out = S.norm_payload_paths(seg_payload)
+    segs = out["params"]["message"]
+    ck("段形态: data.file 已规范化", segs[1]["data"]["file"] == "file:///root/bot/a.png",
+       segs[1]["data"]["file"])
+    ck("段形态: 文本段不动", segs[0]["data"]["text"] == "看图 file:////keep/me",
+       segs[0]["data"]["text"])
+    ck("段形态: 不改原对象", seg_payload["params"]["message"][1]["data"]["file"]
+       == "file:////root/bot/a.png")
+
+    # --- 无四斜杠时返回原对象（零拷贝快路径）---
+    clean = {"action": "send_group_msg", "params": {"message": "[CQ:image,file=file:///ok.png]"}}
+    ck("无四斜杠返回原对象", S.norm_payload_paths(clean) is clean)
+
+
 # ── 链路接线验证：函数写对了但没接上 = 没修 ──────────────
 # 单独一节，用 mock 捕获真正传给 NapCat 的 message，确认出口确实调用了 fix_cq_paths
 async def test_wiring():
@@ -132,6 +209,8 @@ def main():
 
     print("\n=== 七、链路接线（mock 捕获真实发出的 message）===")
     asyncio.get_event_loop().run_until_complete(test_wiring())
+    print("\n=== 八、管理器层收口（send / call_api 两条通道）===")
+    asyncio.get_event_loop().run_until_complete(test_manager_layer())
 
     print("\n" + "=" * 52)
     print("通过 %d 项，失败 %d 项" % (len(PASS), len(FAIL)))

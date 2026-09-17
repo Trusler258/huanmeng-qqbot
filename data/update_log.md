@@ -67,6 +67,32 @@
 > ② 光匹配卡片标题含"统计"也不行 —— 左侧那张叫「**有统计的群**」也含"统计"，
 >    会先被匹配到然后报 0 行。要用 `^群\s*\d+\s*统计` 锚定。
 
+### 六、CQ 路径规范化收口到 WS 管理器（补掉 4 处绕过）
+上一轮把 `fix_cq_paths()` 加在 `send_group_msg` / `send_private_msg` / `_send_and_record`
+三个出口，但盘点后发现 **bot 有两条发送通道**，只补了一条：
+
+| 通道 | 调用方 |
+|---|---|
+| `mgr.call_api(action, params)` | `send_group_msg` / `send_private_msg` / `_send_and_record` |
+| **`mgr.send(payload)`** | **`agnes.py` / `commands.py` / `earthquake.py` / `pgr.py`（4 处绕过）** |
+
+**改法**：新增 `norm_payload_paths()` 并挂在 `WSConnectionManager` 的 `send()` 与
+`call_api()` **内部** —— 收口在最底层，两条通道 + 将来新写的代码都覆盖，
+不必再去追每个调用点。
+
+兼容两种 message 形态：
+- 字符串 CQ 码 → 复用 `fix_cq_paths()`（正则锚定 CQ 的 `file=` 参数内，不误伤正文）
+- 消息段数组 → 只动 `data.file` 字段，文本段里的 `file:////` 保持原样
+
+**两层防护分工（都要保留）**：
+- 管理器内层 → 保证**发出去的**是规范路径
+- 出口函数提前调用 → 保证**录进 msglog 的**也是规范路径（`_log_bot_sent` 用的是
+  函数内局部变量，管理器那层改不到）
+
+测试 `scripts/_test_cq_paths.py` 扩到 **30 项**：新增「管理器层两条通道」
+（用真实 `WSConnectionManager` 实例 + 假 WS，捕获实际发出的报文）、
+消息段形态、非消息动作不动、无四斜杠时零拷贝返回原对象。
+
 ## v2.3.36 — 修 FC 先导语泄漏 || 分隔符 (2026.9.17)
 一句话总结：FC 轮1 的「先导语」原来把整条文本当一句话发出，LLM 用 || 写的多句会原样泄漏到群里；
 现改为与主回复同口径拆分。另外改掉了提示词里把 || 当反例示范的写法（断源），
