@@ -144,6 +144,7 @@ let myTurnNow = false;   // render 里更新；play() 靠它判断能否乐观�
 //   pendingUntil: 兜底超时，避免一直等不到而永久忽略状态。
 //   stateSeq/appliedSeq: 丢弃「比已渲染过的更旧」的响应（请求并发时的乱序到达）。
 let pendingMinMoves = 0, pendingUntil = 0, stateSeq = 0, appliedSeq = 0;
+let lastSig = "";       // 上次状态指纹；有值就带上去让服务端做长轮询（见 refresh）
 let curMoves = 0;        // 最近一次被接受的状态里的手数
 
 const $ = id => document.getElementById(id);
@@ -426,9 +427,18 @@ function render(st) {
 async function refresh() {
   const my = ++stateSeq;          // ★ 乱序保护：只接受不比自己已渲染的更旧的响应
   try {
-    const st = await fetch(`${API_BASE}/api/r/${ROOM}/state?t=${TOKEN}`).then(x => x.json());
+    // ★ 长轮询（v2.3.39）：带上上次的状态指纹，服务端会把请求**压住**直到状态变化，
+    //   再立刻返回。普通轮询下"对手落子 → 这里看到"要 ~1.9s（隧道往返 1.3s + 空转），
+    //   长轮询可压到接近一个单程。
+    //   服务端若还没升级（响应里没有 sig），lastSig 会一直是空串 → 自动退回普通轮询。
+    let url = `${API_BASE}/api/r/${ROOM}/state?t=${TOKEN}`;
+    // ⚠️ wait 是**秒数**不是布尔（服务端 min(wait,25)）——
+    //   第一版传 wait=1（当布尔用），等于只压 1 秒就返回，白折腾。
+    if (lastSig) url += `&wait=25&sig=${encodeURIComponent(lastSig)}`;
+    const st = await fetch(url).then(x => x.json());
     if (my < appliedSeq) return;  // 已有更新的响应渲染过 → 丢弃这条旧响应
     appliedSeq = my;
+    if (typeof st.sig === "string" && st.sig) lastSig = st.sig;
     render(st);
   } catch (e) { /* 静默，下轮再试 */ }
 }
@@ -442,7 +452,21 @@ window.addEventListener("resize", () => {
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 refresh();
-setInterval(() => { if (!document.hidden) refresh(); }, 1000);
+// ★ 接续轮询（v2.3.39）：上一次响应回来就立刻发下一次，而不是固定等 1 秒。
+//   本页走 CF Tunnel，单请求往返 1.3~1.6s；固定 1s 间隔会让「空转 1s」叠加在
+//   往返之上 —— 观战端实测「对手落子 → 自己看到」要 ~1.9s，改成接续后 ≈ 一次往返。
+//   观战者没有本地动作可乐观渲染，这条对观战体验最关键。
+//   250ms 下限：本地/内网低延迟时避免把请求打爆。
+//   因为是 await 串行发出，同一时刻只有一个在途请求，天然不会乱序。
+async function pollLoop() {
+  for (;;) {
+    if (!document.hidden) await refresh();
+    // 长轮询生效时请求本身就被服务端压着，间隔可以很短；
+    // 退回普通轮询时给足间隔，避免低延迟环境下打爆请求。
+    await new Promise(r => setTimeout(r, lastSig ? 100 : 700));
+  }
+}
+pollLoop();
 </script>
 </body>
 </html>
