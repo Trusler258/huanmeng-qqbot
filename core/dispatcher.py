@@ -267,9 +267,9 @@ class EventDispatcher:
             f"QQ: {user_id}\n"
             f"理由: {comment}\n"
             f"---\n"
-            f"发送 /#添加 接受\n"
-            f"发送 /#添加 wl 接受并加入私聊白名单\n"
-            f"发送 /#拒绝 拒绝"
+            f"通过好友: 发送 /#添加\n"
+            f"通过好友并添加至白名单: 发送 /#添加 wl\n"
+            f"拒绝: 发送 /#拒绝"
         )
         try:
             await send_private_msg(msg, admin_qq)
