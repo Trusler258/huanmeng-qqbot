@@ -1208,6 +1208,13 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         """执行单个 JSON CALL 并按结果类型就地发送。返回原始结果。"""
         cmd_text = f"/~{fc['name']} {fc['args']}".strip()
         logger.info("JSON CALL(交错): %s (by=%s)", cmd_text, fc["caller_name"])
+        # ★ v2.3.47: 工具调用提示与指令执行**同时**发出（原来统一堆在末尾，
+        #   和指令输出脱节——用户 2026-09-18 12:35 明确要求同步）
+        _a = (fc["args"] or "").strip()
+        await send_by_chat_type(
+            f"[工具调用: {fc['name']}{' ' + _a if _a else ''}]",
+            chat_id, is_group=is_group,
+            user_id=user_id if not is_group else None)
         if not fc.get("valid"):
             err_msg = f"指令 /~{fc['name']} 不存在喵~\n请联系管理员 @{cfg.admin_qq}"
             await send_by_chat_type(err_msg, chat_id, is_group=is_group,
@@ -1271,14 +1278,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 await send_sentences(sentences[_idx:], chat_id, is_group,
                                      user_id=user_id if not is_group else None,
                                      faces=_faces_per_sentence[_idx:])
-            # 工具调用通知保持在末尾（沿用 2026-09-14 的展示设计）
-            if executed_calls:
-                call_hints = []
-                for name, args_str in executed_calls:
-                    _a = (args_str or "").strip()
-                    call_hints.append(f"[工具调用: {name}{' ' + _a if _a else ''}]")
-                await send_by_chat_type("\n".join(call_hints), chat_id, is_group=is_group,
-                                        user_id=user_id if not is_group else None)
+            # 工具调用提示已随各指令就地发出（v2.3.47），不再统一堆末尾
             # 搜索类结果 → LLM 转述（与旧路径同一 prompt 风格）
             if _search_results:
                 _fc0, _res0 = _search_results[0]
