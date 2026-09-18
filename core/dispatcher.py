@@ -124,6 +124,26 @@ class EventDispatcher:
             group_id = event.get("group_id", 0)
             user_id = event.get("user_id", 0)
             cfg = get_config()
+            # ★ v2.3.43: bot 自己被拉进群 → 通知管理员（含非白名单群，这正是重点）
+            if int(user_id) == int(cfg.bot_qq):
+                in_wl = group_id in cfg.group_list
+                logger.info("🚪 bot 被加入群 %d (白名单=%s)", group_id, in_wl)
+                # 去重：NapCat 对同一次入群可能推送多次
+                dedup = f"group_join:{group_id}"
+                if dedup in self._seen_ids:
+                    return
+                self._seen_ids[dedup] = None
+                from modules.admin_notify import notify_admin
+                wl_note = "已在白名单" if in_wl else "⚠️ 不在白名单（bot 在该群会保持静默，只响应指令）"
+                await notify_admin(
+                    f"[入群通知]\n"
+                    f"bot 被加入了群 {group_id}\n"
+                    f"状态: {wl_note}\n"
+                    f"---\n"
+                    f"拉进去的人: {event.get('operator_id', '未知')}\n"
+                    f"如需退出可在面板操作或手动处理"
+                )
+                return  # bot 入群不走欢迎语流程
             # 仅在白名单群 + 配置了欢迎语的群发送
             if group_id in cfg.group_list:
                 gs = cfg.group_settings.get(group_id, {})
@@ -182,8 +202,43 @@ class EventDispatcher:
         )
 
     async def _handle_request(self, event: dict):
-        """处理 request 类型事件：好友请求"""
+        """处理 request 类型事件：好友请求 / 加群邀请·申请"""
         request_type = event.get("request_type", "")
+
+        # ★ v2.3.43: 加群邀请/申请 → 通知管理员（之前完全没处理，被拉群毫无感知）
+        if request_type == "group":
+            group_id = event.get("group_id", 0)
+            user_id = event.get("user_id", 0)
+            comment = event.get("comment", "") or ""
+            flag = event.get("flag", "")
+            # sub_type: add=申请入群(一般是别人要进) invite=bot 被邀请(重点)
+            sub = event.get("sub_type", "")
+            # 去重：同一 flag 只通知一次
+            dedup = f"group_req:{hash(flag) & 0xFFFFFFFF}"
+            if dedup in self._seen_ids:
+                return
+            self._seen_ids[dedup] = None
+            logger.info("🚪 加群请求: sub=%s group=%d user=%d", sub, group_id, user_id)
+            from modules.admin_notify import notify_admin
+            if sub == "invite":
+                # 邀请人昵称尽量取到
+                nick = event.get("nickname") or event.get("invitor_nick") or str(user_id)
+                await notify_admin(
+                    f"[加群邀请]\n"
+                    f"bot 被邀请加入群 {group_id}\n"
+                    f"邀请人: {nick} ({user_id})\n"
+                    f"理由: {comment or '（无）'}\n"
+                    f"---\n"
+                    f"接受后 bot 会进群；进群即会收到[入群通知]，非白名单群保持静默"
+                )
+            else:
+                await notify_admin(
+                    f"[入群申请]\n"
+                    f"群 {group_id} 有新成员申请\n"
+                    f"申请人: {user_id}\n理由: {comment or '（无）'}"
+                )
+            return
+
         if request_type != "friend":
             logger.debug("忽略 request: type=%s", request_type)
             return
