@@ -175,20 +175,6 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "agent_think",
-            "description": "复杂分析工具。需要分析聊天记录、总结讨论、多步推理时调用。简单问题不需要调用。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {"type": "string", "description": "要分析的问题"},
-                },
-                "required": ["question"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "system_status",
             "description": "查看主人电脑状态（当前窗口、在听什么歌）。仅限管理员使用。",
             "parameters": {"type": "object", "properties": {}, "required": []},
