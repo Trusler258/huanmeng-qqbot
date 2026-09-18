@@ -1,46 +1,16 @@
 {
-  "11111": {
-    "name": "小明",
-    "tags": [
-      "学生",
-      "程序员"
-    ],
-    "interests": [
-      "游戏",
-      "编程"
-    ],
-    "dislikes": [
-      "政治"
-    ],
-    "tone": "",
-    "events": [],
-    "status": "备考中",
-    "facts": [
-      "我是小明"
-    ],
-    "last_seen": 1785156363,
-    "message_count": 0
-  },
-  "22222": {
-    "name": "小红",
-    "tags": [
-      "大学生"
-    ],
-    "interests": [
-      "游戏",
-      "编程",
-      "音乐"
-    ],
-    "dislikes": [
-      "政治"
-    ],
-    "tone": "",
-    "events": [],
-    "status": "生气中",
-    "facts": [
-      "我是小红"
-    ],
-    "last_seen": 1785155922,
-    "message_count": 0
+  "g100:1": {
+    "qq": "1",
+    "scope": "group",
+    "group": "100",
+    "nick": "小明",
+    "role": "高中生",
+    "demands": "写代码",
+    "preference": "",
+    "habit": "深夜活跃",
+    "warning": "",
+    "days": 3,
+    "msg_count": 50,
+    "updated_at": 1789691112
   }
 }
