@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import httpx
 
 from core.logger import get_logger
@@ -33,6 +34,8 @@ class EventDispatcher:
         # 用 dict 保持插入顺序（Python 3.7+），set 是无序的，截断时会随机丢一半
         self._seen_ids: dict[str, None] = {}
         self._seen_max = 500  # 去重集合上限
+        # ★ v2.3.44: 非白名单群"未授权"提示的每群冷却（防陌生人刷指令刷出bot刷屏）
+        self._unauth_warn: dict[int, float] = {}
 
     @property
     def msg_count(self) -> int:
@@ -322,9 +325,31 @@ class EventDispatcher:
                             pass
                         return  # 指令不在白名单
 
+        # ★ v2.3.44: 非白名单群 → 对话和指令**全部关闭**。
+        #   旧逻辑放行指令（陌生群可无门槛用 /~xxx），是安全口子：
+        #   被拉进陌生群的人能用签到/经济/游戏等所有有状态指令。
+        #   现在陌生群里用指令 → 英文提示"此群未授权"（每群 60s 冷却防刷屏）。
+        if is_group and chat_id not in cfg.group_list:
+            if is_command:
+                now = time.monotonic()
+                last = self._unauth_warn.get(chat_id, 0.0)
+                if now - last >= 60.0:
+                    self._unauth_warn[chat_id] = now
+                    from services.sender import send_group_msg
+                    try:
+                        await send_group_msg(
+                            "This group is not authorized / not in the whitelist.",
+                            chat_id,
+                        )
+                        logger.info("非白名单群指令已拒绝并提示: group=%d", chat_id)
+                    except Exception as e:
+                        logger.warning("发送未授权提示失败: %s", e)
+                else:
+                    logger.debug("非白名单群指令已拒绝(冷却中): group=%d", chat_id)
+            return  # 陌生群：无论是否指令，一律不进管道
+
         if is_group:
-            if chat_id not in cfg.group_list and not is_command:
-                return  # 非白名单群 → 彻底静默，不记日志、不计数量、不处理图片
+            pass  # 白名单群 → 正常处理（下方统一流程）
         else:
             if not cfg.enable_private and not is_command:
                 return  # 私聊未启用
