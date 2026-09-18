@@ -53,7 +53,7 @@ async def main():
 
     await P.process_message(
         msg_type="文字",
-        msg_content="帮我查下功耗，查完评价一下省不省电",
+        msg_content=(sys.argv[1] if len(sys.argv) > 1 else "帮我查下功耗，查完评价一下省不省电"),
         chat_id=chat,
         sender_name="Trusler",
         user_id=admin,
@@ -61,7 +61,7 @@ async def main():
         bot_qq=cfg.bot_qq,
         raw_event={"message_id": "e2e_test_1", "message_type": "group",
                    "group_id": chat, "user_id": admin},
-        raw_message=f"[CQ:at,qq={cfg.bot_qq}] 帮我查下功耗，查完评价一下省不省电",
+        raw_message=f"[CQ:at,qq={cfg.bot_qq}] " + (sys.argv[1] if len(sys.argv) > 1 else "帮我查下功耗，查完评价一下省不省电"),
         is_command=False,
     )
     # 等待发送任务与后台 CALL 结果任务完成
