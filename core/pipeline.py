@@ -1261,6 +1261,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 for fc in _by_pos.get(pos, []):
                     res = await _exec_flow_call(fc)
                     call_results.append(res)
+                    # ★ 指令输出写回上下文——模型后续说话才有真实数据可依，
+                    #   否则又会像 11:31 那样编"150瓦3.6度"（起因正是这个）
+                    if res and not str(res).startswith("[CALL错误]") and fc["name"] not in ("write_code", "note"):
+                        ctx.append_to_context(chat_id, f"[系统] 调用结果: {_ctx_safe(str(res)[:200])}")
                     if fc["name"] in ("search", "read") and res and not str(res).startswith("[CALL错误]"):
                         _search_results.append((fc, res))
             if _idx < len(sentences):
