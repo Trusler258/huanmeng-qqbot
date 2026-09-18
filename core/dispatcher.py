@@ -188,7 +188,8 @@ class EventDispatcher:
         sender_name = cfg.get_display_name(user_id, group_id) if is_group else cfg.qq_name_map.get(str(user_id), str(user_id))
 
         # ★ 白名单检查：非白名单群/私聊不响应戳一戳
-        if is_group and group_id not in cfg.group_list:
+        # ★ v2.3.50: 管理员豁免（同消息管道——admin 在陌生群戳 bot 也应响应）
+        if is_group and group_id not in cfg.group_list and user_id != cfg.admin_qq:
             logger.debug("戳一戳忽略(非白名单群): group=%d", group_id)
             return
         if not is_group and cfg.private_whitelist and user_id not in cfg.private_whitelist:
