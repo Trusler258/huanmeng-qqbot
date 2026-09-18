@@ -63,13 +63,40 @@ async def approve_request(flag: str, add_whitelist: bool = False) -> str:
 
         msg = f"已通过 {req['nickname']}({req['user_id']}) 的好友请求"
         if add_whitelist:
-            from core.config import get_config
+            from core.config import get_config, _CONFIG_DIR
             cfg = get_config()
             wl = list(cfg.private_whitelist or [])
             if req["user_id"] not in wl:
                 wl.append(req["user_id"])
                 cfg.private_whitelist = wl  # 更新内存中的白名单
-                msg += " 并加入私聊白名单（需要 /~reload 后持久化）"
+                # ★ v2.3.45: 持久化写回 adapter_config.toml。
+                #   旧实现只改内存，/~reload（重读磁盘）或重启后白名单就丢了
+                #   （旧注释"需要 /~reload 后持久化"方向反了——reload 恰恰会冲掉它）。
+                try:
+                    # ★ 不用 toml.dumps 重写整个文件——会重排键序、丢注释。
+                    #   文本级操作：已有限制行就替换，没有就追加小节，其余原样保留。
+                    import re as _re
+                    path = _CONFIG_DIR / "adapter_config.toml"
+                    text = path.read_text(encoding="utf-8") if path.exists() else ""
+                    arr = "[" + ", ".join(str(x) for x in wl) + "]"
+                    pat = _re.compile(
+                        r"^(\s*private_whitelist\s*=\s*)\[.*?\]", _re.M | _re.S)
+                    if pat.search(text):
+                        text = pat.sub(lambda m: m.group(1) + arr, text, count=1)
+                    else:
+                        block = f"\n[chat]\nprivate_whitelist = {arr}\n"
+                        if _re.search(r"^\s*\[chat\]\s*$", text, _re.M):
+                            # 已有 [chat] 小节：把键插到小节开头之后
+                            text = _re.sub(r"(^\s*\[chat\]\s*$)",
+                                           r"\1" + f"\nprivate_whitelist = {arr}",
+                                           text, count=1, flags=_re.M)
+                        else:
+                            text = text.rstrip("\n") + "\n" + block
+                    path.write_text(text, encoding="utf-8")
+                    msg += " 并已加入私聊白名单（已持久化）"
+                except Exception as e:
+                    logger.warning("白名单持久化写回失败: %s", e)
+                    msg += " 并已加入私聊白名单（⚠️ 写回配置失败，重启后会丢）"
         return msg
     except Exception as e:
         logger.error("批准好友请求失败: %s", e)
