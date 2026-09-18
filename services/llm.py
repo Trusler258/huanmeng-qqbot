@@ -1501,11 +1501,23 @@ async def generate_multi_reply_with_tools(
         #   现象：LLM 写"帮你搜搜看吧"却整段被吞，工具执行完(13s+)才一次性出正文，
         #   期间用户以为 bot 没反应，且铺垫丢失后正文开头突兀。
         #   只发第一轮，后续轮 content 丢弃（防刷屏，最终回复会覆盖）。
+        lead_sent = False
         if (
             round_idx == 0 and result.tool_calls and interim_cb
             and (result.content or "").strip()
         ):
             lead = result.content.strip()
+            # ★ v2.3.42: 模型在工具轮里也可能把回复写成 JSON（{"replies":[...]}）
+            #   —— 原过滤器直接拒发 JSON，草稿被扣下；先试着解出纯文本再发。
+            #   （2026-09-18 戳一戳实测：轮1草稿"手拿开啦"被扣，轮2模型以为已说过）
+            if lead.startswith("{"):
+                try:
+                    _j = json.loads(lead)
+                    _rs = _j.get("replies") or []
+                    if _rs and isinstance(_rs[0], str) and _rs[0].strip():
+                        lead = _rs[0].strip()
+                except Exception:
+                    pass
             # 过滤：只发"值得先说的话"——短自然语；JSON/长文/代码块/指令文本不发
             if (
                 1 < len(lead) <= 120
@@ -1522,15 +1534,26 @@ async def generate_multi_reply_with_tools(
                 logger.info("FC: 轮1先导语先发 (%d字): %s", len(lead), lead[:60])
                 try:
                     await interim_cb(lead)
+                    lead_sent = True
                 except Exception:
                     logger.warning("FC: 先导语发送失败: %s...", lead[:30], exc_info=True)
 
         logger.info("FC: 轮%d 检测到 %d 个工具调用", round_idx + 1, len(result.tool_calls))
+        # ★ v2.3.42: 保留进历史的轮 content 必须与"用户实际看到的"一致。
+        #   - 先导语发出去了 → 历史里存**发出去的纯文本**（JSON 草稿要替换掉，
+        #     否则下一轮模型对着 JSON 出戏）
+        #   - 没发出去（被过滤器拒/没传 interim_cb）→ 必须标注"这是未发送的草稿"，
+        #     否则下一轮模型以为用户已经看到，说出"刚才就回你一句手拿开啦"
+        #     这种凭空引用（2026-09-18 戳一戳实测）。
+        keep = (result.content or "").strip()
+        if lead_sent and keep.startswith("{"):
+            keep = lead
+        keep_msg = keep if keep and len(keep) <= 300 else None
+        if keep_msg and not lead_sent:
+            keep_msg = "[内部草稿，尚未发送给用户；不要引用它、不要假装已经说过] " + keep_msg
         msgs.append({
             "role": "assistant",
-            # ★ 保留轮 content：让后续轮/最终轮 LLM 看到自己已说过的先导语，
-            #   最终回复才不会重复"我查查/稍等"等动手前用语（仅保留短内容防污染）
-            "content": (result.content or None) if result.content and len(result.content) <= 300 else None,
+            "content": keep_msg,
             # v2.1.10: 思考模式启用时，带 tools 请求必须回传 reasoning_content（否则 400）
             "reasoning_content": result.reasoning or None,
             "tool_calls": [
