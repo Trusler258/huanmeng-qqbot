@@ -1563,6 +1563,26 @@ async def generate_multi_reply_with_tools(
         })
 
         # 并行执行本轮所有工具
+        # ★ v2.3.48: FC 原生工具也发"[工具调用: xxx]"提示（此前只有 JSON calls 路径有，
+        #   用户实测搜索时毫无提示，还以为 bot 没搜）。经 interim_cb 就地发出——
+        #   与指令执行同时（用户 12:35 的要求同样适用于 FC 路径）。
+        if interim_cb is not None:
+            async def _hint(tc):
+                try:
+                    _a = str(tc.get("arguments") or "").strip()
+                    if _a.startswith("{"):
+                        try:
+                            _a = ", ".join(f"{k}={v}" for k, v in json.loads(_a).items())
+                        except Exception:
+                            pass
+                    if len(_a) > 60:
+                        _a = _a[:60] + "..."
+                    await interim_cb(f"[工具调用: {tc['name']}{' ' + _a if _a else ''}]")
+                except Exception:
+                    logger.warning("FC: 工具提示发送失败: %s", tc.get("name"), exc_info=True)
+            for tc in result.tool_calls:
+                await _hint(tc)
+
         async def run_one(tc):
             # 单工具超时（移植 kook 67dd501：工具级超时表，防止慢工具拖死整轮）
             try:
@@ -1639,6 +1659,22 @@ async def generate_multi_reply_with_tools(
                 "禁止说'这个我知道''我记得''早就知道'这类装作自己本来就会的话。"
             ),
         })
+        # ★ v2.3.48: 搜索空结果诚实守卫 —— 实测 search_web 只返回 65 字符标题头
+        #   （= 没搜到内容），模型照样编出"预警系统自动触发、震级没那么大"等细节。
+        _thin_search = any(
+            name in ("search_web", "search", "read") and 0 < len(txt) < 120
+            for (tc, txt) in tool_results
+            for name in [tc["name"]]
+        )
+        if _thin_search:
+            _final_msgs.append({
+                "role": "system",
+                "content": (
+                    "⚠️ 刚才的搜索**没有返回有效内容**（只有标题头/字符极少）。"
+                    "请诚实告诉用户这次没查到有效信息，可以建议稍后再试或换个问法。"
+                    "**严禁编造任何具体细节**（数字/时间/原因/官方说法一律不许出现）。"
+                ),
+            })
         json_raw = await call_llm(
             reply_model, _final_msgs,
             max_tokens=max(max_tokens or 0, 8000),
