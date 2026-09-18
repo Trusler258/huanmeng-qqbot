@@ -308,8 +308,11 @@ class EventDispatcher:
         )
 
         # ★ 分群指令白名单（群内才检查）
-        # ★ v2.3.49: 发言者是管理员 → 绕过分群指令白名单（管理员不受群级限制）
-        if is_command and is_group and user_id != cfg.admin_qq:
+        # ★ v2.3.49a: 群在聊天白名单里（聊天已开放）→ cmd_whitelist 不生效，
+        #   该群所有指令可用（用户 2026-09-18：聊天白名单开放则指令白名单一起开放）。
+        #   发言者是管理员 → 同样绕过（v2.3.49）。
+        if is_command and is_group and user_id != cfg.admin_qq \
+                and chat_id in cfg.group_list:
             gs = cfg.group_settings.get(chat_id, {})
             if "cmd_whitelist" in gs:
                 grp_cmds = gs["cmd_whitelist"]
