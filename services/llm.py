@@ -1718,6 +1718,31 @@ def _polish_replies(replies: list) -> list:
     return out
 
 
+def _split_inline_cmds(replies: list, calls: list) -> tuple[list, list]:
+    """★ v2.3.46: replies 允许混入指令项 {"cmd":"power","args":"明细"}。
+
+    字符串=说话、对象=执行指令，按数组顺序交错执行（replies1→指令→replies2）。
+    指令项提取进 calls 并记 _after=前面文本句数；发送端据此排时间线。
+    纯字符串 replies 时行为与旧版完全一致。
+    """
+    if not any(isinstance(r, dict) for r in replies):
+        return replies, calls
+    texts: list = []
+    inline: list = []
+    for r in replies:
+        if isinstance(r, dict):
+            name = str(r.get("cmd") or r.get("name") or "").strip().lstrip("~")
+            if name:
+                inline.append({
+                    "name": name,
+                    "args": str(r.get("args", "")).strip(),
+                    "_after": len(texts),   # 前面已有多少句文本
+                })
+        elif isinstance(r, str) and r.strip():
+            texts.append(r)
+    return texts, list(calls or []) + inline
+
+
 def _parse_reply(
     raw: str,
     speaker_name: str = "",
@@ -1744,11 +1769,12 @@ def _parse_reply(
             return replies, fav_change, [], "", "", None, "", None, None, "user", {}, None
         if isinstance(replies[0], list):
             replies = [str(r) for r in replies[0]]
+            calls = data.get("calls", [])
         else:
+            replies, calls = _split_inline_cmds(replies, data.get("calls", []))
             replies = [str(r) for r in replies]
 
         fav_change = data.get("fav", 0)
-        calls = data.get("calls", [])
         face_cq = ""
         face = data.get("face")
         if face:
@@ -2055,11 +2081,12 @@ async def generate_multi_reply(
             return replies, fav_change, [], "", "", "", None, None, None, "user", {}, []
         if isinstance(replies[0], list):
             replies = [str(r) for r in replies[0]]
+            calls = data.get("calls", [])
         else:
+            replies, calls = _split_inline_cmds(replies, data.get("calls", []))
             replies = [str(r) for r in replies]
 
         fav_change = data.get("fav", 0)
-        calls = data.get("calls", [])
 
         face_cq = ""
         face = data.get("face")

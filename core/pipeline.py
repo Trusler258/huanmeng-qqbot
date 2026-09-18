@@ -901,10 +901,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         sentences = _new_lines
 
     # ------CALL执行------
+    # ★ v2.3.46: 交错执行 —— LLM 在 replies 里混入 {"cmd":...} 项时
+    #   （解析层已转成 calls + _after=前面文本句数），按用户可见顺序执行：
+    #   文本1 → 指令(输出发群里) → 文本2 …
+    #   全部 call 都没有 _after 时走原路径，行为与旧版完全一致。
+    _interleaved = any(isinstance(c, dict) and "_after" in c for c in (llm_calls or []))
+    _flow_calls: list = []   # 交错模式：解析好的调用（含 caller 归属与插入位置）
     executed_calls = []
     call_results = []
     call_texts = []  # 延迟执行的发文件类 CALL
-    if llm_calls:
+    if llm_calls and not _interleaved:
         for call in llm_calls:
             if not isinstance(call, dict):
                 continue
@@ -947,6 +953,36 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                                            is_group=True, user_id=None)
                     call_results.append(f"[CALL错误] {e}")
             executed_calls.append((cmd_name, cmd_args))
+    elif llm_calls and _interleaved:
+        # 交错模式：此处只做 caller 归属与位置解析，真正执行推迟到发送时间线
+        from modules.commands import COMMAND_MAP as _CM
+        for call in llm_calls:
+            if not isinstance(call, dict):
+                continue
+            cmd_name = str(call.get("name", "")).strip().lstrip("~")
+            cmd_args = str(call.get("args", "")).strip()
+            if not cmd_name:
+                continue
+            caller_id = user_id
+            caller_name = display_name
+            if isinstance(actor, dict) and actor.get("qq"):
+                caller_id = int(actor["qq"])
+                caller_name = actor.get("name", display_name)
+            elif origin == "bot":
+                caller_id = bot_qq
+                caller_name = cfg.bot_name
+            _flow_calls.append({
+                "name": cmd_name,
+                "args": cmd_args,
+                "valid": cmd_name in _CM,
+                "after": max(0, min(int(call.get("_after") or 0), 10 ** 6)),
+                "caller_id": caller_id,
+                "caller_name": caller_name,
+            })
+            executed_calls.append((cmd_name, cmd_args))
+        logger.info("交错回复: %d句 + %d个穿插指令 at=%s",
+                    len(sentences), len(_flow_calls),
+                    [fc["after"] for fc in _flow_calls])
 
     is_at_me = raw_message and f"[CQ:at,qq={bot_qq}]" in raw_message
     combined_reply = " || ".join(sentences)
@@ -1142,7 +1178,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ★ 这是**有意设计**（用户 2026-09-14 明确说明）：把 bot 调用了哪个指令作为一条
     #   消息发给用户看，效果类似"展示工具调用"。
     #   ⚠️ 不要当调试残留删掉！曾误判为泄漏并删除，被用户纠正后已恢复。
-    if executed_calls:
+    if executed_calls and not _interleaved:
         call_hints = []
         for name, args_str in executed_calls:
             _a = (args_str or "").strip()
@@ -1165,15 +1201,130 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         thought_ctx["applied"] = True
         logger.info("主回复前置 [已思考%d秒]", thought_ctx["secs"])
 
-    task = asyncio.create_task(send_sentences(
-        sentences, chat_id, is_group,
-        user_id=user_id if not is_group else None,
-        faces=_faces_per_sentence,
-    ))
-    ctx.set_active_send_task(chat_id, task)
+    # ------发送------
+    # ★ v2.3.46 交错模式：文本与指令按时间线顺序执行
+    #   （文本用 send_sentences 原样发；指令执行后输出就地发群里）
+    async def _exec_flow_call(fc) -> object:
+        """执行单个 JSON CALL 并按结果类型就地发送。返回原始结果。"""
+        cmd_text = f"/~{fc['name']} {fc['args']}".strip()
+        logger.info("JSON CALL(交错): %s (by=%s)", cmd_text, fc["caller_name"])
+        if not fc.get("valid"):
+            err_msg = f"指令 /~{fc['name']} 不存在喵~\n请联系管理员 @{cfg.admin_qq}"
+            await send_by_chat_type(err_msg, chat_id, is_group=is_group,
+                                    user_id=user_id if not is_group else None)
+            return "[CALL错误] 指令不存在"
+        try:
+            result = await handle_command(cmd_text, fc["caller_id"], chat_id,
+                                          fc["caller_name"], is_group, bot_qq, raw_message)
+        except Exception as e:
+            logger.warning("交错CALL执行失败 [%s]: %s", fc["name"], e)
+            err_msg = f"指令 /~{fc['name']} 执行失败喵~\n错误: {str(e)[:200]}\n请联系管理员 @{cfg.admin_qq}"
+            await send_by_chat_type(err_msg, chat_id, is_group=is_group,
+                                    user_id=user_id if not is_group else None)
+            return f"[CALL错误] {e}"
+        if not result:
+            return result
+        if isinstance(result, str) and result.startswith("__EQ_CARD__:"):
+            png = result.split(":", 1)[1]
+            cq = f"[CQ:image,file=file:///{png.replace(chr(92), '/')}]"
+            await send_by_chat_type(cq, chat_id, is_group=is_group,
+                                    user_id=user_id if not is_group else None)
+        elif isinstance(result, str) and "[CQ:image" in result:
+            # ★ v2.3.6 规则沿用：结果自带图 → 原样直发（转述必丢 CQ 码）
+            await send_by_chat_type(result, chat_id, is_group=is_group,
+                                    user_id=user_id if not is_group else None)
+        elif fc["name"] in ("write_code", "note"):
+            # write_code 的文件由指令自身发送；note 静默（首轮已说"记下了"）
+            pass
+        elif fc["name"] in ("search", "read"):
+            # 搜索结果太 raw，不直发 → 交给流程末尾的 LLM 转述
+            pass
+        else:
+            await send_by_chat_type(result, chat_id, is_group=is_group,
+                                    user_id=user_id if not is_group else None)
+        return result
+
+    if _interleaved and _flow_calls:
+        _by_pos: dict = {}
+        for fc in _flow_calls:
+            _by_pos.setdefault(min(fc["after"], len(sentences)), []).append(fc)
+        _search_results: list = []   # 搜索类结果留到末尾转述
+
+        async def _run_flow():
+            _idx = 0
+            for pos in sorted(set(list(_by_pos.keys()) + [len(sentences)])):
+                if pos > _idx:
+                    await send_sentences(sentences[_idx:pos], chat_id, is_group,
+                                         user_id=user_id if not is_group else None,
+                                         faces=_faces_per_sentence[_idx:pos])
+                    _idx = pos
+                for fc in _by_pos.get(pos, []):
+                    res = await _exec_flow_call(fc)
+                    call_results.append(res)
+                    if fc["name"] in ("search", "read") and res and not str(res).startswith("[CALL错误]"):
+                        _search_results.append((fc, res))
+            if _idx < len(sentences):
+                await send_sentences(sentences[_idx:], chat_id, is_group,
+                                     user_id=user_id if not is_group else None,
+                                     faces=_faces_per_sentence[_idx:])
+            # 工具调用通知保持在末尾（沿用 2026-09-14 的展示设计）
+            if executed_calls:
+                call_hints = []
+                for name, args_str in executed_calls:
+                    _a = (args_str or "").strip()
+                    call_hints.append(f"[工具调用: {name}{' ' + _a if _a else ''}]")
+                await send_by_chat_type("\n".join(call_hints), chat_id, is_group=is_group,
+                                        user_id=user_id if not is_group else None)
+            # 搜索类结果 → LLM 转述（与旧路径同一 prompt 风格）
+            if _search_results:
+                _fc0, _res0 = _search_results[0]
+                ctx.append_to_context(chat_id, f"[系统] 调用结果: {_ctx_safe(str(_res0)[:200])}")
+                try:
+                    from services.llm import call_llm as raw_llm, _build_system_text
+                    follow_sys = _build_system_text(cfg.bot_name, cfg.system_prompt, is_group)
+                    follow = await raw_llm(cfg.reply_model, [
+                        {"role": "system", "content": follow_sys},
+                        {"role": "user", "content": (
+                            "你刚才搜索了以下内容。输出严格按照 cfg.reply_schema JSON 格式，"
+                            "包含 replies/fav/calls/face/mood/action 字段。\n"
+                            "replies 数组 4-8 句，每句讲一个事实要点，按时间顺序排列，讲透为止。\n"
+                            "用你的正常语气和人设回复。\n"
+                            f"搜索结果:\n{str(_res0)[:4000]}"
+                        )},
+                    ], temperature=0.7, timeout=30.0)
+                    if follow and follow.strip():
+                        f_text = follow.strip()
+                        if f_text.startswith('{') and '"replies"' in f_text:
+                            try:
+                                import json as _json
+                                _p = _json.loads(f_text)
+                                for sentence in (_p.get("replies") or []):
+                                    sentence = str(sentence)[:3000].strip()
+                                    sentence, _fcq = extract_inline_face(sentence)
+                                    if sentence:
+                                        ctx.append_to_context(chat_id, _ctx_safe(f"{cfg.bot_name}: {sentence}", 200))
+                                        await send_by_chat_type(sentence, chat_id, is_group=is_group,
+                                                                user_id=user_id if not is_group else None)
+                                    if _fcq:
+                                        await send_by_chat_type(_fcq, chat_id, is_group=is_group,
+                                                                user_id=user_id if not is_group else None)
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.warning("交错搜索转述失败: %s", e)
+
+        task = asyncio.create_task(_run_flow())
+        ctx.set_active_send_task(chat_id, task)
+    else:
+        task = asyncio.create_task(send_sentences(
+            sentences, chat_id, is_group,
+            user_id=user_id if not is_group else None,
+            faces=_faces_per_sentence,
+        ))
+        ctx.set_active_send_task(chat_id, task)
 
     # ------CALL结果回发------
-    if call_results:
+    if call_results and not _interleaved:
         async def _send_call_results():
             await task
             # 等待文字全部发出后，再执行发文件类 CALL
