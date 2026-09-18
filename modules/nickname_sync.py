@@ -18,6 +18,9 @@ logger = get_logger("nickname_sync")
 
 _ROLES_PATH = Path(__file__).resolve().parent.parent / "config" / "roles.toml"
 _GROUP_NICK_PATH = Path(__file__).resolve().parent.parent / "data" / "group_nicknames.json"
+# ★ 群名单独落盘：OneBot 的群消息事件里**不带群名**，bot 只在调 get_group_list
+#   时能拿到。面板的「群管理 / 白名单管理」要显示群名，只能读这里。
+_GROUP_NAME_PATH = Path(__file__).resolve().parent.parent / "data" / "group_names.json"
 
 
 # ── 分群昵称文件读写 ──────────────────────────────────────
@@ -38,6 +41,38 @@ def _load_group_nicks() -> dict[str, dict[str, str]]:
 def _save_group_nicks(data: dict[str, dict[str, str]]) -> None:
     _GROUP_NICK_PATH.parent.mkdir(parents=True, exist_ok=True)
     _GROUP_NICK_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _save_group_names(data: dict[str, str]) -> None:
+    """群名落盘 {群号: 群名}。空数据不覆盖旧文件（避免同步失败把群名抹了）。"""
+    if not data:
+        return
+    _GROUP_NAME_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # 与旧文件合并：本次没拉到的群保留上次的群名
+    old = {}
+    if _GROUP_NAME_PATH.exists():
+        try:
+            raw = json.loads(_GROUP_NAME_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                old = {str(k): str(v) for k, v in raw.items()}
+        except Exception:
+            old = {}
+    old.update({str(k): str(v) for k, v in data.items()})
+    _GROUP_NAME_PATH.write_text(json.dumps(old, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _pick_group_names(groups) -> dict[str, str]:
+    """从 get_group_list 的返回里挑出 {群号: 群名}"""
+    out: dict[str, str] = {}
+    if isinstance(groups, list):
+        for g in groups:
+            if not isinstance(g, dict):
+                continue
+            gid = str(g.get("group_id", 0) or 0)
+            name = str(g.get("group_name", "") or "").strip()
+            if gid and gid != "0" and name:
+                out[gid] = name
+    return out
 
 
 # ── 敏感昵称过滤 ──────────────────────────────────────────
@@ -94,9 +129,11 @@ async def _do_sync():
 
     # 群成员 → 分群 map（card 优先）+ 全局兜底（主页昵称）
     group_map: dict[str, dict[str, str]] = {}
+    gname_map: dict[str, str] = {}
     try:
         glist = await get_ws_manager().call_api("get_group_list", timeout=10)
         groups = glist if isinstance(glist, list) else (glist.get("data", glist) if glist else [])
+        gname_map = _pick_group_names(groups)
         if isinstance(groups, list):
             for g in groups:
                 gid = str(g.get("group_id", 0))
@@ -128,6 +165,7 @@ async def _do_sync():
         return
 
     _save_group_nicks(group_map)
+    _save_group_names(gname_map)
     _merge_global_map(global_map)
     logger.info("自动昵称同步完成: 分群 %d 个群 | 全局 %d 条", len(group_map), len(global_map))
 
@@ -165,6 +203,7 @@ async def sync_and_report(chat_id: int = None, is_group: bool = False) -> str:
     blocked = _blocked_names(cfg)
     group_map: dict[str, dict[str, str]] = _load_group_nicks()
     global_map: dict[str, str] = {}
+    gname_map: dict[str, str] = {}
     source = ""
 
     if is_group and chat_id:
@@ -205,6 +244,7 @@ async def sync_and_report(chat_id: int = None, is_group: bool = False) -> str:
         try:
             glist = await get_ws_manager().call_api("get_group_list", timeout=10)
             groups = glist if isinstance(glist, list) else (glist.get("data", glist) if glist else [])
+            gname_map = _pick_group_names(groups)
             if isinstance(groups, list):
                 for g in groups:
                     gid = str(g.get("group_id", 0))
@@ -234,6 +274,7 @@ async def sync_and_report(chat_id: int = None, is_group: bool = False) -> str:
         return "未获取到任何昵称数据"
 
     _save_group_nicks(group_map)
+    _save_group_names(gname_map)
     g_added = _merge_global_map(global_map)
 
     if is_group:
