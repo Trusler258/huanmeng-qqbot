@@ -56,17 +56,22 @@ MAX_CHARS = 2200          # 单次送 LLM 的文本上限（超了从最早裁�
 LLM_TIMEOUT = 45.0
 
 # 字段定义：key → 注入时的显示名
+#
+# ★ v2.3.41 改造：原来拆成 身份/常问/偏好/习惯/注意 五个固定字段 ——
+#   实践下来问题很明显：LLM 为了"填满字段"会硬凑，甚至把玩梗当身份写进去，
+#   读起来也像表格不像人话。
+#   改成 **nick + text 两个字段**：text 是一段自然语言，不分点、不带标签。
+#   nick 单独保留是因为 /~权力 set nick 等逻辑依赖它。
 FIELD_LABELS = {
     "nick": "昵称",
-    "role": "身份",
-    "demands": "常问",
-    "preference": "偏好",
-    "habit": "习惯",
-    "warning": "注意",
+    "text": "画像",
 }
 _FIELDS = tuple(FIELD_LABELS.keys())
-_FIELD_MAX = {"nick": 16, "role": 60, "demands": 70, "preference": 70,
-              "habit": 70, "warning": 70}
+_FIELD_MAX = {"nick": 16, "text": 220}
+# 旧格式的五个字段（2026-09 之前的数据）。读取时兼容，新写入一律走 text
+_LEGACY_FIELDS = ("role", "demands", "preference", "habit", "warning")
+_LEGACY_LABELS = {"role": "身份", "demands": "常问", "preference": "偏好",
+                  "habit": "习惯", "warning": "注意"}
 
 # LLM 可能用来表示「没信息」的写法，一律当空
 _PLACEHOLDER = {"", "未提及", "未知", "无", "暂无", "不清楚", "不确定", "未知晓",
@@ -292,30 +297,24 @@ def _parse_fields(raw: str) -> dict[str, str]:
 _PROMPT = """你在为 QQ 机器人维护一份用户画像。请根据【旧画像】和【新聊天记录】输出更新后的画像。
 
 输出要求：
-1. 只输出一个 JSON 对象，不要解释、不要 markdown 代码块
-2. 字段固定为：{fields}
-3. 每个字段一句话，尽量精简（不超过 40 字）；没有依据的填"未提及"
-4. 在旧画像的基础上**更新**：保留仍然成立的、补充新发现的、淘汰过时或已被推翻的
-5. 只写聊天记录里能明确看出的内容，禁止臆测
+1. 只输出一个 JSON 对象，不要解释、不要 markdown 代码块。字段固定为：nick, text
+   - nick: 他希望你怎么称呼他；看不出来就填空字符串 ""
+   - text: 一段自然语言描述。**不要分点、不要标签、不要换行**，就是一两句通顺的话
+2. text 的写法：像跟熟人介绍这个人那样自然地说出来，不要套模板。
+   好例子："他常在群里问电脑硬件怎么选，喜欢直接要结论、不爱铺垫，晚上十点后基本不说话。"
+   坏例子（不要这样写）："身份：学生 常问：硬件 偏好：精简 注意：别催他"
+3. **只写聊天记录里能明确看出的内容，没有依据的不要编** —— 宁可少写也不要凑。
+4. 在旧画像的基础上**更新**：保留仍然成立的、补充新发现的、淘汰过时或已被推翻的。
 
-这三个字段的含义：
-- nick: 用户希望被怎么称呼
-- demands: 经常找你帮什么忙（提问方向）
-- preference: 希望你怎么回答（详细/精简、要不要举例、语气等）
-- habit: 交流习惯（说话方式、提问风格、作息等）
-- warning: 需要避免或特别注意的事
-
-特别注意（这类内容**不算**用户信息，不要写进画像）：
+特别注意（这类内容**不算**用户信息，不要写进 text）：
 - 玩梗与角色扮演：例如"我是你主人""我就是神""我是废物"这类，是玩笑不是身份
 - 反问与疑问：例如"我是谁""我的好感度是多少"，这是他在提问，不是他的信息
 - 一次性的闲聊：某天恰好聊到的技术名词、新闻、临时任务，不是长期兴趣
-- **他给别人提的建议**：例如他劝别人"晚上别练"，那是他的观点，
-  不要写成他自己的 preference 或 warning（那是别人的约束，不是他的）
+- **他给别人提的建议**：他劝别人"晚上别练"是观点不是他自己的习惯，别写成他的偏好或注意事项
 - 隐私：真实姓名、住址、联系方式、账号密码一律不写
 
 判断依据是**反复出现的稳定特征**，而不是某一句话。
-有依据就写出来（一天里反复提到的话题、长期做的事都算依据）；
-确实看不出来才填"未提及"，别把"未提及"当成省事的默认值。
+确实看不出来就写空字符串 "" —— 别把"未提及"当默认值，那会让 text 变成一堆占位符。
 
 【旧画像】
 {old}
@@ -331,10 +330,19 @@ def _render_old(p: dict) -> str:
     if not p:
         return "（无，这是第一次建档）"
     lines = []
-    for f in _FIELDS:
-        v = _clean_value(p.get(f), f)
-        if v:
-            lines.append("%s(%s): %s" % (FIELD_LABELS[f], f, v))
+    body = _clean_value(p.get("text"), "text")
+    if body:
+        # 新格式：正文是一段自然语言，原样给 LLM，别再套标签
+        lines.append(body)
+    else:
+        # 旧记录兼容：五个固定字段带标签拼出来
+        for f in ("role", "demands", "preference", "habit", "warning"):
+            v = _clean_value(p.get(f), f)
+            if v:
+                lines.append("%s(%s): %s" % (f, f, v))
+    nick_v = _clean_value(p.get("nick"), "nick")
+    if nick_v:
+        lines.append("称呼(nick): %s" % nick_v)
     meta = []
     if p.get("days"):
         meta.append("已建档 %d 天" % p["days"])
@@ -393,6 +401,11 @@ async def update_one(key: str, msgs: list[str], date_str: str,
         new_v = _clean_value(fields.get(f), f)
         if new_v:
             p[f] = new_v
+    # 已经在写新格式就顺手清掉旧格式的五个字段 —— 留着会让面板详情里新旧并存，
+    # 看着像两份画像。只在新格式有内容时才清（避免清空还没迁移成功的记录）
+    if p.get("text"):
+        for legacy in ("role", "demands", "preference", "habit", "warning"):
+            p.pop(legacy, None)
     p["nick"] = final_nick
     p["days"] = int(p.get("days") or 0) + (0 if p.get("updated_at") == _date_ts(date_str) else 1)
     p["updated_at"] = int(time.time())
@@ -441,7 +454,19 @@ def _format_msgs(msgs: list[str]) -> str:
 # ══════════════════════════════════════════════════════════
 
 def _usable(p: Optional[dict]) -> bool:
-    return bool(p) and any(_clean_value(p.get(f), f) for f in _FIELDS)
+    """画像是否可用（有内容）。
+
+    ★ 注意：不能只判 text —— 旧记录是五个固定字段（role/demands/…），
+    若只判 text 会让旧画像全部变成"不可用"，群里第一次说话就认不出人了。
+    """
+    if not p:
+        return False
+    if _clean_value(p.get("text"), "text"):
+        return True
+    if _clean_value(p.get("nick"), "nick"):
+        return True
+    return any(_clean_value(p.get(f), f)
+               for f in ("role", "demands", "preference", "habit", "warning"))
 
 
 def build_profile_text(chat_id, user_id, is_group: bool,
@@ -469,14 +494,23 @@ def build_profile_text(chat_id, user_id, is_group: bool,
     if not _usable(p):
         return ""
 
-    lines = []
-    for f in _FIELDS:
-        v = _clean_value(p.get(f), f)
-        if v:
-            lines.append("%s: %s" % (FIELD_LABELS[f], v))
-    if not lines:
+    body = _clean_value(p.get("text"), "text")
+    nick = _clean_value(p.get("nick"), "nick")
+    if not body:
+        # text 没有时回退旧格式的五个字段（老记录没有 text，只有 role/demands/…）。
+        # ⚠️ 这里**不能**写成 `if not body and not nick` —— 昵称非空时会把整个回退
+        # 跳过，旧画像的 role/demands 就全丢了（实测踩过：注入只剩"称呼：小明"）。
+        for f in _LEGACY_FIELDS:
+            v = _clean_value(p.get(f), f)
+            if v:
+                body = (body + "；" if body else "") + "%s: %s" % (_LEGACY_LABELS[f], v)
+    if not body and not nick:
         return ""
-    return "【发言者画像 · %s】\n%s" % (source, "\n".join(lines))
+    head = "【发言者画像 · %s】" % source
+    # text 本身是一段自然语言，不要再套"画像："前缀 —— 套了就又变回标签腔
+    if body and nick:
+        return "%s\n称呼：%s\n%s" % (head, nick, body)
+    return "%s\n%s" % (head, body or ("称呼：%s" % nick))
 
 
 # ══════════════════════════════════════════════════════════

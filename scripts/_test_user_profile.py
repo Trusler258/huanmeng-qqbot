@@ -54,7 +54,8 @@ def main():
     ck("密码丢弃", up._clean_value("密码是 abc123", "warning") == "")
     ck("换行折叠", up._clean_value("写代码\n排查bug", "demands") == "写代码 排查bug")
     ck("首尾句号去掉", up._clean_value("精简一点。", "preference") == "精简一点")
-    ck("超长截断", len(up._clean_value("啰" * 200, "role")) <= up._FIELD_MAX["role"])
+    ck("超长截断", len(up._clean_value("啰" * 400, "text")) <= up._FIELD_MAX["text"])
+    ck("旧字段仍可清洗（兼容旧记录）", up._clean_value("高中生，写机器人", "role") == "高中生，写机器人")
     ck("正常值保留", up._clean_value("高中生，写机器人", "role") == "高中生，写机器人")
 
     print("\n=== 四、昵称校验 ===")
@@ -68,18 +69,19 @@ def main():
     ck("配置昵称放宽到 24", len(up._valid_nick("x" * 40, "1", limit=24)) == 24)
 
     print("\n=== 五、JSON 解析 ===")
-    r = up._parse_fields('{"nick":"A","role":"学生","demands":"写代码",'
-                         '"preference":"精简","habit":"直接","warning":"未提及"}')
-    ck("正常 JSON", r.get("role") == "学生" and r.get("warning") == "未提及")
-    r2 = up._parse_fields('```json\n{"role":"程序员"}\n```')
-    ck("剥离代码块", r2.get("role") == "程序员")
-    r3 = up._parse_fields('{"role":"学生"\n"demands":"写代码"}')   # 坏 JSON
-    ck("坏 JSON 退化为正则捞取", r3.get("role") == "学生", r3)
+    # ★ v2.3.41 起字段是 nick + text（一段自然语言），不再是五个固定字段
+    r = up._parse_fields('{"nick":"A","text":"他常在群里问硬件怎么选，喜欢直接要结论。"}')
+    ck("正常 JSON", r.get("text") == "他常在群里问硬件怎么选，喜欢直接要结论。"
+       and r.get("nick") == "A", r)
+    r2 = up._parse_fields('```json\n{"nick":"B","text":"他是程序员，写机器人。"}\n```')
+    ck("剥离代码块", r2.get("text") == "他是程序员，写机器人。")
+    r3 = up._parse_fields('{"nick":"C"\n"text":"他经常调试代码。"}')   # 坏 JSON
+    ck("坏 JSON 退化为正则捞取", r3.get("text") == "他经常调试代码。", r3)
     ck("乱码返回空", up._parse_fields("完全不是 json") == {})
     ck("空串返回空", up._parse_fields("") == {})
 
     print("\n=== 六、注入 ===")
-    # 直接构造一份画像
+    # ① 旧格式记录（五个固定字段）—— 验证兼容路径：没有 text 时回退拼旧字段
     up._save_all({
         "g100:1": {"qq": "1", "scope": "group", "group": "100", "nick": "小明",
                    "role": "高中生", "demands": "写代码", "preference": "",
@@ -103,6 +105,17 @@ def main():
     ck("回退内容仍是该用户的", "身份: 高中生" in t3)
     ck("关掉回退则不注入", up.build_profile_text(200, 1, True, allow_cross_scope=False) == "")
     ck("完全没画像不注入", up.build_profile_text(999, 88888, True) == "")
+
+    # ② 新格式记录（text 一段自然语言）—— 验证不再套标签、昵称单独给
+    up._save_all({
+        "g200:2": {"qq": "2", "scope": "group", "group": "200", "nick": "阿黄",
+                   "text": "在校高中生，会开发 QQ 机器人，偏好简洁精炼的回复。",
+                   "days": 5, "msg_count": 80, "updated_at": int(time.time())},
+    })
+    t4 = up.build_profile_text(200, 2, True)
+    ck("新格式注入正文", "在校高中生，会开发 QQ 机器人" in t4, t4)
+    ck("新格式带称呼", "称呼：阿黄" in t4, t4)
+    ck("新格式不再套标签", "画像:" not in t4 and "身份:" not in t4, t4)
 
     print("\n=== 七、当天消息聚合（真实 msglog，只读）===")
     from datetime import datetime, timedelta
