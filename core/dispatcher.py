@@ -329,11 +329,13 @@ class EventDispatcher:
                             pass
                         return  # 指令不在白名单
 
-        # ★ v2.3.44: 非白名单群 → 对话和指令**全部关闭**。
+        # ★ v2.3.50: 非白名单群 → 对话和指令**全部关闭**（管理员豁免）。
         #   旧逻辑放行指令（陌生群可无门槛用 /~xxx），是安全口子：
         #   被拉进陌生群的人能用签到/经济/游戏等所有有状态指令。
         #   现在陌生群里用指令 → 英文提示"此群未授权"（每群 60s 冷却防刷屏）。
-        if is_group and chat_id not in cfg.group_list:
+        #   ★ 管理员不受此限制（v2.3.49 的本意：admin 在群里就绕过白名单），
+        #     否则管理员进新群调试/加白名单都不行——实测 17:48 被自己拦。
+        if is_group and chat_id not in cfg.group_list and user_id != cfg.admin_qq:
             if is_command:
                 now = time.monotonic()
                 last = self._unauth_warn.get(chat_id, 0.0)
