@@ -690,7 +690,13 @@ def render_steam_card(payload: dict, root=None) -> Image.Image:
     _ring(img, rx2, ry2, lc, val_h, 5, acc, 0.20)
     d = ImageDraw.Draw(img)
     if V.get("priced"):
-        d.text((rx2 + LVL_PAD_X, ry2 + LVL_PAD_Y), "库存价值（现价合计）", font=_txt(14),
+        # 计价不全时必须标出来（否则看图的人会把"部分合计"当"全部库存价值"）
+        _cov = int(V.get("priced") or 0)
+        _tot = int(V.get("count") or 0)
+        _vtitle = "库存价值（现价合计）"
+        if _tot and _cov < _tot:
+            _vtitle = "库存价值（现价合计 · 仅 %d/%d 款已计价）" % (_cov, _tot)
+        d.text((rx2 + LVL_PAD_X, ry2 + LVL_PAD_Y), _vtitle, font=_txt(14),
                fill=DIM, anchor="lt")
         d.text((rx2 + LVL_PAD_X, ry2 + LVL_PAD_Y + 20), "¥" + "{:,.2f}".format(
             (V.get("final") or 0) / 100.0), font=_num(34, True), fill=acc, anchor="lt")
