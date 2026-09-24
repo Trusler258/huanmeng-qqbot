@@ -107,6 +107,20 @@ async def _api(path: str, **params):
     return await _get_json(f"{API}/{path}", params)
 
 
+async def reachable(timeout: float = 5.0) -> bool:
+    """轻量探测 api 域是否可达（免 key 的 GetServerInfo）。
+
+    为什么需要它：Steam 对国内断的时候，第一个业务请求要干等 25s 超时才失败，
+    整条「取数 → 渲染」白等半分钟。先花几秒探一下，不通就直接走缓存快照。
+    """
+    try:
+        await _get_json(f"{API}/ISteamWebAPIUtil/GetServerInfo/v1/", timeout=timeout)
+        return True
+    except Exception as e:
+        logger.debug("Steam api 域不可达: %s: %r", type(e).__name__, e)
+        return False
+
+
 # ── 绑定（QQ ↔ SteamID）──────────────────────────────────────
 
 def _load_bind() -> dict:
@@ -387,6 +401,102 @@ async def recent_achievements(steamid: str, appid, limit: int = 4) -> list:
             "ts": ts,
             "icon_url": info.get("icon") or "",
         })
+    return out
+
+
+# ── 游戏库价值（仓库价值）────────────────────────────────────
+PRICE_CACHE = DATA / "steam_assets" / "prices.json"
+_PRICE_TTL = 86400          # 价格一天变不了太多，缓存 24h（省掉每次 4 批请求）
+
+
+def _price_cache() -> dict:
+    try:
+        return json.loads(PRICE_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _price_save(m: dict) -> None:
+    try:
+        PRICE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        PRICE_CACHE.write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.debug("价格缓存写入失败: %s", e)
+
+
+async def library_value(appids, cc: str = "cn", batch: int = 10) -> dict:
+    """游戏库总价值：分批查 store 的 price_overview，累加原价与现价。
+
+    ⚠️ 三个实测点：
+      1. **必须带 `filters=price_overview`** —— 多 appid 时配 `filters=basic` 会 400
+         （单 appid 时 basic 正常，所以这个坑只在批量时才暴露）。
+      2. 批量别贪大：实测 100 个一批必超时，25 个一批在 store 慢时也整批失败
+         → 默认 10 个一批，失败自动重试一次。
+      3. 免费游戏 / 该区未售的没有 price_overview，计入 unpriced（不是 0 元），
+         否则总价值会被严重低估。
+    结果按 appid 缓存 24h，且**每批都落盘**（整轮几分钟，中途断了不该全白跑）。
+    """
+    ids = [str(a) for a in appids if a]
+    if not ids:
+        return {}
+
+    cache = _price_cache()
+    now = time.time()
+    out = {"original": 0, "final": 0, "priced": 0, "unpriced": 0,
+           "currency": "", "count": len(ids)}
+
+    miss = []
+    for k in ids:
+        c = cache.get(k)
+        if c and (now - float(c.get("t") or 0)) < _PRICE_TTL:
+            out["original"] += int(c.get("o") or 0)
+            out["final"] += int(c.get("f") or 0)
+            out["currency"] = c.get("c") or out["currency"]
+            if c.get("p"):
+                out["priced"] += 1
+            else:
+                out["unpriced"] += 1
+        else:
+            miss.append(k)
+
+    for i in range(0, len(miss), batch):
+        chunk = miss[i:i + batch]
+        d = None
+        for attempt in (1, 2):
+            try:
+                d = await _get_json(f"{STORE}/api/appdetails",
+                                    {"appids": ",".join(chunk),
+                                     "filters": "price_overview",
+                                     "cc": cc, "l": "schinese"}, timeout=35)
+                break
+            except Exception as e:
+                logger.debug("批量查价失败（%d 个, 第 %d 次）: %s: %r",
+                             len(chunk), attempt, type(e).__name__, e)
+                await asyncio.sleep(1.5)
+        if not isinstance(d, dict):
+            out["unpriced"] += len(chunk)
+            continue
+        for k in chunk:
+            dd = (d.get(k) or {}).get("data") or {}
+            po = dd.get("price_overview") or {}
+            if po:
+                o = int(po.get("initial") or 0)
+                f = int(po.get("final") or 0)
+                c = po.get("currency") or ""
+                out["original"] += o
+                out["final"] += f
+                out["currency"] = c or out["currency"]
+                out["priced"] += 1
+                cache[k] = {"o": o, "f": f, "c": c, "p": 1, "t": now}
+            else:
+                out["unpriced"] += 1
+                cache[k] = {"o": 0, "f": 0, "c": "", "p": 0, "t": now}
+        # 每批都落盘：整轮很慢（92 款分批、store 慢时可能几分钟），
+        # 只在最后写的话中途超时就全白跑
+        _price_save(cache)
+
+    _price_save(cache)
+    out["saved"] = max(0, out["original"] - out["final"])
     return out
 
 

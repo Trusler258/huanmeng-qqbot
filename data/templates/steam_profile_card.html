@@ -3,7 +3,12 @@
 <head>
 <meta charset="utf-8">
 <!--
-  Steam 风格个人资料卡（设计稿 / Pillow 渲染器的对照基准）
+  Steam 风格个人资料卡 —— 元素与配色参考稿
+
+  ⚠️ 生产渲染走 services/steam_card_pillow.py（Pillow 直绘，~280ms；
+     Chromium 在 i3-2130 上单张 ~900ms）。**当前线上是横屏 2560 宽三栏**，
+     布局以 Pillow 那份为准；本文件保留为配色/元素的对照参考
+     （内容块：顶栏 logo / hero / 资料区 / 7 格统计条 / 三栏 / 页脚）。
 
   视觉依据：抓自 store.steampowered.com/public/css/v6/home.css 与 shared_global.css
     主背景 #1b2838 / 更深处 #0a141d / 顶栏 #171a21
@@ -12,16 +17,15 @@
     正文 #c6d4df、#c7d5e0   次要 #8f98a0
     「游戏中」绿：官方 shared_global.css 里 #90ba3c 出现 4 次（最高频绿）
       配色梯度 #a3cf06 -> #5c7e10 -> #25310f（亮绿到深绿）
-  字体：拉丁/数字 = HarmonyOS Sans Medium（子集内联，17KB）；中文回退 Noto Sans CJK SC
-    注意：Steam 官方 Motiva Sans 是商业字体（授权禁止未购买使用），不内联
+  官方图形：data/steam_assets/brand/（抓自 store.akamai.steamstatic.com）
+    steam_header_logo.png（264x66 RGBA，顶栏 + hero 水印）
+    logo_valve.png（92x26 RGBA，页脚）
+    注意 Motiva Sans 是商业字体（授权禁止未购买使用），不内联
 
   注入点（字面量只能出现在真正被替换的位置！注释里再写一遍会被
   str.replace(...,1) 抢走第一处，导致数据被塞进注释、真注入点空着 —— 已踩过）：
     · 字体 base64 → head 内 @font-face 的 url()
     · 数据 JSON  → body 末尾的 window.CARD_DATA
-
-  渲染：生产走 services/steam_card_pillow.py（Pillow 直绘，~80ms）。
-    本模板保留为设计稿与像素对照基准（Chromium 在 i3-2130 上单张 ~900ms）。
 -->
 <style>
 @font-face{

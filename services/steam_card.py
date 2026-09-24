@@ -46,6 +46,28 @@ def _data_uri(p) -> str:
     return ""
 
 
+def _png_uri(p) -> str:
+    """PNG 版（logo 需要透明通道，不能按 jpeg 标 MIME）"""
+    try:
+        p = Path(p)
+        if p.exists() and p.stat().st_size > 0:
+            return "data:image/png;base64," + base64.b64encode(p.read_bytes()).decode()
+    except Exception:
+        pass
+    return ""
+
+
+BRAND_DIR = ROOT / "data" / "steam_assets" / "brand"
+
+
+def brand_assets() -> dict:
+    """Steam / Valve 官方 logo（浅色透明 PNG，抓自 store.akamai.steamstatic.com）"""
+    return {
+        "steam_logo": _png_uri(BRAND_DIR / "steam_header_logo.png"),
+        "valve_logo": _png_uri(BRAND_DIR / "logo_valve.png"),
+    }
+
+
 async def _enrich(g: dict, key: str) -> dict:
     """一行游戏数据：中文名 + 时长 + 横幅图（并发取）"""
     aid = g.get("appid")
@@ -89,6 +111,10 @@ async def _fetch_payload(steamid: str, top_n: int, recent_n: int, ach_n: int) ->
     top = sorted(games, key=lambda g: g.get("playtime_forever", 0), reverse=True)[:top_n]
     recent = sorted(recent_raw, key=lambda g: g.get("playtime_2weeks", 0),
                     reverse=True)[:recent_n]
+
+    # 库存价值（分批查 store，带 24h 缓存；免费/锁区游戏计入 unpriced）
+    # 注意：必须在 games 定义**之后**调用（曾在定义前引用，报 UnboundLocalError）
+    value = await S.library_value([g.get("appid") for g in games])
 
     top_items = list(await asyncio.gather(*[_enrich(g, "playtime_forever") for g in top]))
     recent_items = list(await asyncio.gather(*[_enrich(g, "playtime_2weeks") for g in recent]))
@@ -139,6 +165,11 @@ async def _fetch_payload(steamid: str, top_n: int, recent_n: int, ach_n: int) ->
             "top_share": round(top_hours * 100.0 / total_hours, 1) if total_hours else 0.0,
         },
         "achievements": ach_recent,
+        "value": value,
+        # 完整 appid 列表也存进快照：这样以后 api 域断了、store 还通时，
+        # 仍能重新查价格刷新"库存价值"（两个域名经常一个通一个不通）
+        "appids": [g.get("appid") for g in games if g.get("appid")],
+        "brand": brand_assets(),
         "ach_game": "冰与火之舞",
         "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
@@ -189,10 +220,20 @@ async def build_payload(steamid: str, top_n: int = 10, recent_n: int = 8,
       渲染层在页脚标注"缓存数据"）。两者都不可用才返回 {}。
     """
     payload = {}
+    # 先花几秒探测连通性：不通就直接走快照，别让用户干等 25s 超时
+    if not await S.reachable():
+        cached = _load_cache(steamid)
+        if cached:
+            logger.info("Steam api 域不可达，直接用缓存快照 steamid=%s（%.1f 小时前）",
+                        steamid, cached.get("stale_age_h", 0))
+            return cached
     try:
         payload = await _fetch_payload(steamid, top_n, recent_n, ach_n)
     except Exception as e:
-        logger.warning("Steam 取数失败（将尝试缓存）: %s", e)
+        # 打全 traceback：这里曾经只打 str(e)，遇到消息为空的异常（超时类）
+        # 完全看不出是哪一步断的
+        logger.warning("Steam 取数失败（将尝试缓存）: %s: %r", type(e).__name__, e,
+                       exc_info=True)
     if payload:
         payload["_cached_at"] = time.time()
         _save_cache(steamid, payload)
