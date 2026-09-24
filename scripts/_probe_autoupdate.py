@@ -37,3 +37,6 @@ async def main():
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
+
+# 验证记录（v2.3.54）：行尾统一为 LF 后，patch 上下文能正常对齐，
+# 不再因为 CRLF/LF 不一致而把所有文件都推给 LLM 整文件融合。
