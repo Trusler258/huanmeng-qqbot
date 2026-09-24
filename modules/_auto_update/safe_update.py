@@ -388,7 +388,9 @@ async def safe_check_and_update(
 
     # 6. Risk Assessment
     assessment = analyzer.assess_risk(actionable)
-    await _report(progress, f"分析完成，风险等级 {assessment.level}")
+    # ★ 进度精简（v2.3.53）：LOW/MED 不单独播报，只有 HIGH 才需要人工注意
+    if assessment.level == "HIGH":
+        await _report(progress, "本次更新风险等级 HIGH，建议确认后再继续")
 
     # check_only：只报告，不应用
     if check_only:
@@ -438,7 +440,6 @@ async def safe_check_and_update(
             return f"更新已取消（高风险未获审批）：{assessment.reason}"
 
     # 8. Test（staging 语法检查）
-    await _report(progress, "正在做语法检查…")
     test_errors = _staging_test(actionable, root)
     if test_errors:
         return "更新中止：语法检查未通过，未应用任何改动。\n" + "\n".join(test_errors)
@@ -452,7 +453,6 @@ async def safe_check_and_update(
                 + "\n".join(dep_install_errors)
 
     # 10. Snapshot（生产应用前）
-    await _report(progress, "已创建快照，准备应用…")
     snap = _snap.create_snapshot(actionable, head)
 
     # 11. Production Apply（走 Diff + 最小 Patch，沿用现有 patcher）
@@ -478,7 +478,6 @@ async def safe_check_and_update(
         return "\n".join(lines)
 
     # 12. Health Check（P0 升级）：语法编译 + 缺失本地模块 + 真实启动冒烟测试
-    await _report(progress, "正在健康检查…")
     _health_errors = _health_check(actionable, root)
     for m in _check_local_imports(actionable, root):
         _health_errors.append(f"[缺失本地模块] {m}")
@@ -493,7 +492,11 @@ async def safe_check_and_update(
     # 13. 全部成功 → 提交更新（重新计算基线，推进 remote_sha 到本次 commit）
     _rebuild_baseline(state, actionable, head)
     _eng.save_state(root, state)
-    await _report(progress, "更新完成")
+    # ★ 完成摘要：列出本次更新的文件（最多 10 个，其余省略）
+    _names = [str(f.get("filename", "")) for f in actionable]
+    _head, _rest = _names[:10], len(_names) - 10
+    _listing = "、".join(_head) + (f"（另有 {_rest} 个略）" if _rest > 0 else "")
+    await _report(progress, f"更新完成\n文件: {_listing}")
     parts = [f"已安全更新 {len(actionable)} 个文件（{res['ok']} 处成功, {res['skip']} 处跳过）"]
     if res["skip"]:
         parts.append(_format_skip_details(res["skip_details"]))
@@ -822,7 +825,7 @@ async def _apply_production(
     # ── LLM 精准修复失效文件（先诊断出是哪几个，再逐个融合）─────────
     for item in llm_fix:
         rel = item.get("filename", "")
-        await _report(progress, f"失效文件 {rel} 走 LLM 精准融合…")
+        await _report(progress, f"失效文件 {rel} — 正在 LLM 融合修复…")
         if await _merge_with_llm(root, item, state, head):
             ok += 1
             logger.info("LLM 修复成功: %s", rel)
