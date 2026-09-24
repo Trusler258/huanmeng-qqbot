@@ -17,7 +17,7 @@
 **指令**（项目规范前缀是 `/~`，不是 `/`）：
     /~steam price <游戏名|商店链接>   当前价 + 折扣 + 地区对比（+史低）
     /~steam px <游戏名>               快捷版：只给第一条匹配
-    /~steam who [@某人|SteamID]       查 Steam 状态（发卡片图）
+    /~steam who [@某人|SteamID] / me  查 Steam 状态（me = 看自己，同 /~wdsj me 的习惯）
     /~在干嘛 [@某人]                  同上（独立入口）
     /~steam bd <SteamID|资料链接>     绑定；bd 查看自己；bd del 解绑；bd list 列表
     /~steam help                      帮助

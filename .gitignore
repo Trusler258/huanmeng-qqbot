@@ -33,6 +33,9 @@ data/wzq_games.json
 data/xq_games.json
 data/wzq_results.json
 data/game_rooms.json
+# Steam 运行时数据（绑定关系是 QQ↔SteamID，属隐私；价格账本同为运行时产物）
+data/steam_bind.json
+data/steam_price_history.json
 
 # === 日志 ===
 /logs/
