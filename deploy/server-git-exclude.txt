@@ -1,0 +1,46 @@
+# ── 服务器本地排除（只影响本机，不会提交到仓库）────────────────
+# 仓库的 .gitignore 管不到的"服务器特有"文件，让 git status 保持干净。
+# 注意：已跟踪的文件不受排除规则影响（那些要靠 git rm --cached 处理）。
+# 部署方式：scp 到 /root/bot/.git/info/exclude
+
+# 运行时数据：JSON / 图片 / 音频
+data/*.json
+data/*.png
+data/*.wav
+data/faces/
+data/faces_backup_*/
+
+# 运行时目录
+data/images/
+data/img_temp/
+data/stm/
+data/templates/old/
+data/agnes_output
+data/videos/
+data/audio/
+data/tts_temp/
+
+# 备份、临时包、旧版本目录
+*.bak
+*.bak_*
+*.broken
+*.tar.gz
+*.zip
+0.7.4/
+
+# 临时排查脚本（本地一次性工具，不入库）
+_patch_*.py
+_uid_test.py
+_check*.py
+_diag*.py
+
+# 历史遗留 / 重复文件（服务器上有但仓库不跟踪）
+core/bot.py
+core/features.py
+
+# 更新系统快照缓存
+.update_cache/
+
+# 面板（独立部署在 /root/huanmeng-panel）
+panel/
+panel_web/
