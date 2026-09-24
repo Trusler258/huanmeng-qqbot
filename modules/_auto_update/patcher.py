@@ -148,15 +148,60 @@ def apply_hunks(
     Returns:
         (merged_lines, apply_ok, skipped)
     """
+    merged, apply_ok, skipped, _ = apply_hunks_detailed(
+        local_lines, hunks, protected_ranges
+    )
+    return merged, apply_ok, skipped
+
+
+def apply_hunks_detailed(
+    local_lines: list[str],
+    hunks: list[PatchHunk],
+    protected_ranges: list[tuple[int, int]] | None = None,
+) -> tuple[list[str], int, int, list[dict]]:
+    """
+    将 hunks 应用到本地文件内容，返回 (合并结果, 成功数, 跳过数, 跳过明细)。
+
+    跳过明细为 list[dict]，每个跳过项形如：
+        {"old_start": int, "reason": str}
+    reason 取值:
+        "protected"     与保护区重叠
+        "no_context"    上下文滑动匹配不到本地内容
+        "out_of_range"  替换目标行号超出文件范围
+        "no_payload"    新文件模式下块为空
+
+    Args:
+        local_lines: 本地文件所有行 (0-indexed)
+        hunks: 解析后的 hunk 列表
+        protected_ranges: 保护区 [(start_line_0idx, end_line_0idx), ...]
+
+    Returns:
+        (merged_lines, apply_ok, skipped, skip_details)
+    """
     if protected_ranges is None:
         protected_ranges = []
 
     result = local_lines[:]
     apply_ok = 0
     skipped = 0
+    skip_details: list[dict] = []
     offset = 0  # 累积行号偏移（插入/删除导致）
 
     for hunk in hunks:
+        # 新增文件（@@ -0,0 +1,N @@）：本地为空、旧计数为 0，直接整块写入。
+        # 否则 _find_context_match 会因无上下文返回 hint_pos=-1 而被误判为 skip，
+        # 导致新增文件永不落盘（Phase20 健康检查"文件缺失"根因）。
+        if not local_lines and hunk.old_start == 0 and hunk.old_count == 0:
+            block = _reconstruct_block(hunk)
+            if block:
+                result = block[:]
+                offset = len(block)
+                apply_ok += 1
+            else:
+                skipped += 1
+                skip_details.append({"old_start": hunk.old_start, "reason": "no_payload"})
+            continue
+
         # 计算在已调整的本地文件中的位置
         adjusted_start = hunk.old_start - 1 + offset  # → 0-indexed
 
@@ -165,18 +210,21 @@ def apply_hunks(
             adjusted_start, adjusted_start + hunk.old_count, protected_ranges
         ):
             skipped += 1
+            skip_details.append({"old_start": hunk.old_start, "reason": "protected"})
             continue
 
         # 滑动匹配上下文
         match_pos = _find_context_match(result, adjusted_start, hunk)
         if match_pos < 0:
             skipped += 1
+            skip_details.append({"old_start": hunk.old_start, "reason": "no_context"})
             continue
 
         # 应用替换
         old_end = match_pos + hunk.old_count
         if old_end > len(result):
             skipped += 1
+            skip_details.append({"old_start": hunk.old_start, "reason": "out_of_range"})
             continue
 
         # 应用替换：用完整重建的新块替换旧块
@@ -186,21 +234,22 @@ def apply_hunks(
         offset += delta
         apply_ok += 1
 
-    return result, apply_ok, skipped
+    return result, apply_ok, skipped, skip_details
 
 
 def _find_context_match(
     result: list[str], hint_pos: int, hunk: PatchHunk
 ) -> int:
     """
-    在 result 中滑动查找与 hunk 上下文匹配的位置。
+    在 result 中滑动查找与 hunk 旧内容匹配的位置。
     返回匹配的起始行号 (0-indexed)，失败返回 -1。
 
-    优先匹配 hint_pos 附近（大多数情况补丁位置正确）。
+    旧内容 = 上下文行 + 删除行（按原始顺序），这样即使 hunk 中间有 +/− 变更，
+    上下文被分割也能正确匹配（真实 GitHub diff 常见）。
     """
-    ctx = hunk.ctx_lines
+    ctx = _old_block(hunk)
     if not ctx:
-        return hint_pos  # 无上下文 = 盲替换
+        return hint_pos  # 无旧内容 = 盲替换
 
     plen = len(result)
     clen = len(ctx)
@@ -216,6 +265,18 @@ def _find_context_match(
 
     # 第二轮: 全文件
     return _scan_range(result, ctx, 0, plen - clen + 1)
+
+
+def _old_block(hunk: PatchHunk) -> list[str]:
+    """按原始顺序重建 hunk 的旧内容（上下文行 + 删除行）。"""
+    block: list[str] = []
+    for line in hunk.raw_lines:
+        if line.startswith(" "):
+            block.append(line[1:])
+        elif line.startswith("-"):
+            block.append(line[1:])
+        # '+' 行是新增，不属于旧内容；'\' 行忽略
+    return block
 
 
 def _scan_range(

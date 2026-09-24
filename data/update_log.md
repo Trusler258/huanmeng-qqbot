@@ -11,6 +11,57 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.52 — 移植安全自动更新系统（/~update 全流水线）(2026.9.24)
+一句话总结：QQ bot 现在能从 GitHub 安全拉取代码更新，带快照、健康检查与失败自动回滚。
+
+**背景**：QQ bot 早有一个简版自动更新（`modules/_auto_update/{engine,patcher,state}.py`
++ `/~update` 指令），但只有"Git patch 行级合并"，没有任何安全保证。
+KOOK 端后来把它升级成完整的 Phase 16 安全流水线，本次移植过来。
+
+**新增的流水线**（`modules/_auto_update/`）：
+    Fetch → Compare → Diff → 代码分析(AST) → 依赖分析 → 风险评估(HIGH/MED/LOW)
+    → Staging 应用 → 测试(py_compile) → Health Check → 生产应用 → Snapshot → 失败自动回滚
+  · `safe_update.py`（843 行）安全编排主流程
+  · `analyzer.py` 代码 / 依赖分析
+  · `severity.py` 风险分级
+  · `snapshot.py` 快照与回滚
+  · `engine.py` / `patcher.py` 升级为 KOOK 成熟版（新增 token 认证、限流识别、
+    URL 编码、compute_local_blob 等）
+
+**指令**（`/~update` 早已注册，本次换底层实现）：
+  · `/~update`       走完整安全流水线（成功后 5 秒自动重启）
+  · `/~update check` 只读对比，不改动任何文件
+  · `/~update force` 强制全量对比（跳过 SHA 缓存）
+  · `/~update test`  连通性测试（无需权限）
+  · `/~upd`          同上（短别名）
+
+**为 QQ bot 做的适配**：
+  · 更新源 → `Trusler258/huanmeng-qqbot` @ `main`（兼容旧环境变量 AUTO_UPDATE_REPO）
+  · 去掉 KOOK 的 notify_system / 卡片渲染（QQ bot 无通知系统），结果直接文本返回
+  · 进度推送走 `services.sender.send_by_chat_type`
+  · 事件走 `core.eventbus` 的 EVENT_UPDATE_STARTED / EVENT_UPDATE_COMPLETED
+  · 不支持 resend / approve / deny 子命令（依赖通知系统）
+
+**`.bot_protect` 保护清单**（这些不会被 GitHub 覆盖）：
+  config / data / logs / outputs / panel_src_remote / panel_web / modules_private
+  + 私有模块与 API（gh、wdsj、weather、chinese_chess、tuf_* 等）
+  ⚠️ 尤其是 config：服务器上的 toml 是仓库版的超集，被覆盖会直接丢数据。
+
+**修掉一个上游 bug（KOOK 版本同样存在）**：
+  `safe_update._merge_with_llm` 把"文件在 base commit 里不存在(404)"当成失败抛出，
+  导致**远程新增的文件**永远无法通过融合应用。改为：404 → 空基线（新文件没有
+  共同祖先），仅当 head 也不存在（远程已删除）才跳过融合。实测修复后融合成功。
+
+**实测结论**（在服务器上直接调用，等价于管理员发指令）：
+  · `test`  → GitHub 连通 815ms；仓库/分支/最新提交均正确
+  · `check` → 服务器与 GitHub 仅差 1 个文件，风险 LOW
+  · `apply` → 创建快照 → patch 失败 → LLM 三路融合成功 → 安全更新 1 个文件
+  · 再 `check` → "已是最新"
+
+**⚠️ 部署范式提醒**：自动更新以 GitHub 为唯一权威源。以后只在服务器上 scp 直推、
+没有推到 GitHub 的改动，更新时会走 LLM 三路融合（保留本地 + 应用远程）。
+建议统一为"本地改 → 推送 → `/~update`"。
+
 ## v2.3.51 — 修复面板趋势图只有 1 天数据（统计归档未适配）(2026.9.22)
 一句话总结：面板折线图读不到 bot 每天归档的历史统计，导致"昨天有数据、今天变 0"。
 

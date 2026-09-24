@@ -1,0 +1,860 @@
+"""
+Phase 16 代码级更新：安全更新流水线（Huanmeng 2.0）
+
+把现有 patch 引擎升级为"安全代码级更新"，明确禁止收到 commit 后直接覆盖生产。
+
+流程：
+    Remote Fetch → Compare → Diff → Code Analysis → Dependency Analysis
+    → Risk Assessment → Staging Apply → Test → Health Check
+    → Production Apply → Snapshot → Rollback
+
+设计约束：
+- 复用现有 engine.py 的 fetch/compare/patch 能力，不重复实现网络层。
+- 生产应用前先创建 Snapshot；Test 失败 / 启动失败 / Health Check 失败自动 Rollback。
+- 高风险（HIGH）默认要求人工确认，未确认不应用到生产。
+- 更新失败（patch 上下文不匹配）先诊断失效文件清单，再对失效文件逐个 LLM 三路融合
+  精准修复（保留本地改动 + 应用远程）；修复失败保留本地，不强制对齐、不破坏他人改动。
+"""
+from __future__ import annotations
+
+import asyncio
+import difflib
+import os
+import py_compile
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+from core.logger import get_logger
+from modules._auto_update import engine as _eng
+from modules._auto_update import patcher
+from modules._auto_update import snapshot as _snap
+from modules._auto_update import analyzer
+
+logger = get_logger("auto_update.safe")
+
+# 审批接口：外部可注入 (files, assessment) -> bool 来决定高风险是否放行
+_approve_callback = None
+
+
+def set_approve_callback(cb) -> None:
+    """注入人工/审批确认回调。cb(files, assessment) -> bool。"""
+    global _approve_callback
+    _approve_callback = cb
+
+
+def _root() -> Path:
+    return _eng._root()
+
+
+def _skip_prefix(rel_path: str) -> bool:
+    return _eng._skip_prefix(rel_path)
+
+
+def _is_protected(rel_path: str, protect: set[str]) -> bool:
+    return _eng._is_protected(rel_path, protect)
+
+
+# ── 阶段：合并内容（staging，不写盘） ─────────────────────
+async def _diff_stats(item: dict, root: Path) -> tuple[int, int]:
+    """计算文件新增/删除行数。
+    优先用 compare 返回的 additions/deletions；缺失时（全量下载分支）下载远程内容
+    与本地文件做 difflib 对比，得到真实 +xxx -xxx。"""
+    add = item.get("additions")
+    dele = item.get("deletions")
+    if add is not None and dele is not None:
+        return add, dele
+    rel = item.get("filename", "")
+    raw_url = item.get("raw_url", "")
+    if not raw_url:
+        return 0, 0
+    try:
+        async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
+            resp = await dl.get(_eng._normalize_raw_url(raw_url))
+            resp.raise_for_status()
+        remote = resp.text.splitlines(keepends=True)
+    except Exception:
+        logger.warning("获取 %s 远程内容失败，无法统计差异", rel)
+        return 0, 0
+    local = _eng._read_local(root, rel)
+    sm = difflib.SequenceMatcher(None, local, remote, autojunk=False)
+    add = dele = 0
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "insert":
+            add += j2 - j1
+        elif tag == "delete":
+            dele += i2 - i1
+        elif tag == "replace":
+            add += j2 - j1
+            dele += i2 - i1
+    return add, dele
+
+
+def _compute_merged(item: dict, root: Path) -> tuple[Optional[list], str, int, int]:
+    """计算某文件合并后的行内容（内存态），返回 (lines, status, ok, skip)。"""
+    rel = item.get("filename", "")
+    status = item.get("status", "")
+    patch_text = item.get("patch", "")
+    if status == "removed":
+        return None, "removed", 0, 0
+    if not patch_text:
+        # 无 patch → 全量下载（首次/force）
+        return None, "download", 0, 0
+    hunks = patcher.parse_patch(patch_text)
+    if not hunks:
+        return None, "noop", 0, 0
+    local_lines = _eng._read_local(root, rel)
+    merged, aok, sk = patcher.apply_hunks(local_lines, hunks)
+    return merged, status, aok, sk
+
+
+# ── 阶段：AST 代码分析 ───────────────────────────────────
+def _code_analysis(files: list[dict], root: Path) -> list[analyzer.FileAnalysis]:
+    results = []
+    for item in files:
+        rel = item.get("filename", "")
+        if not rel or _skip_prefix(rel) or not analyzer.is_python_path(rel):
+            continue
+        merged, status, _, _ = _compute_merged(item, root)
+        if merged is None:
+            continue
+        content = "".join(merged)
+        fa = analyzer.analyze_python(rel, content)
+        fa.status = status
+        results.append(fa)
+    return results
+
+
+# ── 阶段：Test（语法编译） ────────────────────────────────
+def _staging_test(files: list[dict], root: Path) -> list[str]:
+    """对本次改动的 .py 文件做 py_compile 语法检查（staging 内容）。返回错误列表。"""
+    errors = []
+    for item in files:
+        rel = item.get("filename", "")
+        if not rel or _skip_prefix(rel) or not analyzer.is_python_path(rel):
+            continue
+        merged, status, _, _ = _compute_merged(item, root)
+        if merged is None:
+            continue
+        content = "".join(merged)
+        try:
+            compile(content, rel, "exec")
+        except SyntaxError as e:
+            errors.append(f"[语法错误] {rel} 第{e.lineno}行: {e.msg}")
+    return errors
+
+
+# ── 阶段：Health Check（生产文件落盘校验） ────────────────
+def _health_check(files: list[dict], root: Path) -> list[str]:
+    """
+    生产应用后对磁盘上的实际文件做 Health Check：
+    - 改动过的 .py 文件必须能通过 compile（文件可读、写入完整、语法正确）。
+    - 新增 import 不能指向本地不存在的模块（避免启动 ImportError）。
+    返回错误列表；非空即触发自动回滚。
+    """
+    errors = []
+    for item in files:
+        rel = item.get("filename", "")
+        if not rel or _skip_prefix(rel) or not analyzer.is_python_path(rel):
+            continue
+        fpath = root / rel
+        if not fpath.exists():
+            # 文件缺失：_apply_production 已尽力下载/合并，仍未落地说明该文件本次
+            # 无法同步。降级为"跳过该文件"而非整体回滚，避免单文件缺失连累其他更新
+            # （用户诉求：缺失了跳过即可，不影响其他内容更新，tests/ 本就不同步）。
+            logger.warning("健康检查: %s 仍缺失，跳过该文件（不阻断本次更新）", rel)
+            continue
+        try:
+            content = fpath.read_text(encoding="utf-8")
+            compile(content, rel, "exec")
+        except SyntaxError as e:
+            errors.append(f"[健康检查] {rel} 第{e.lineno}行语法错误: {e.msg}")
+        except OSError as e:
+            errors.append(f"[健康检查] 读取 {rel} 失败: {e}")
+        # 新增 import 探测：本地不存在且非 stdlib/三方库 → 警告级，不阻断
+        if item.get("status") == "added":
+            for imp in analyzer.extract_imports(content):
+                base = imp.split(".")[0]
+                if not (root / (imp.replace(".", "/") + ".py")).exists() \
+                        and not _is_stdlib(base):
+                    logger.warning("健康检查: %s 引用可能的第三方/新模块 %s", rel, imp)
+    return errors
+
+
+def _is_stdlib(mod: str) -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec(mod) is not None
+    except Exception:
+        return False
+
+
+# ── 依赖管理：缺失本地模块阻断 + 新增依赖自动安装 ─────────
+def _check_local_imports(files: list[dict], root: Path) -> list[str]:
+    """静态校验改动文件 content 里 import 的本地模块文件是否真实存在。
+
+    改动文件合并后新增/引用的本地模块（顶层包在项目根内）若文件缺失、
+    且不在本次更新的 added/modified 集合内 → 判为"缺失本地模块"阻断错误，
+    可提前拦截 cmd_cards.py 丢失引发的 ModuleNotFoundError。
+    """
+    errors: list[str] = []
+    being_added = {
+        f.get("filename", "") for f in files if f.get("status") in ("added", "modified")
+    }
+    for item in files:
+        rel = item.get("filename", "")
+        if not rel or _skip_prefix(rel) or not analyzer.is_python_path(rel):
+            continue
+        merged, _, _, _ = _compute_merged(item, root)
+        if merged is None:  # removed / download / noop
+            continue
+        content = "".join(merged)
+        for imp in analyzer.extract_imports(content):
+            dest = analyzer.resolve_project_module(root, imp)
+            if dest is None:
+                continue  # 非本地模块（stdlib / 三方库）
+            rel_dest = dest.relative_to(root).as_posix()
+            if not dest.exists() and rel_dest not in being_added:
+                errors.append(f"{rel} 引用本地模块 {imp}（{rel_dest}）不存在")
+    return errors
+
+
+async def _ensure_dependencies(files: list[dict], root: Path) -> list[str]:
+    """requirements.txt 变化时，自动安装新增依赖。返回错误列表（空 = 成功）。"""
+    req = next((f for f in files if f.get("filename") == "requirements.txt"), None)
+    if not req:
+        return []
+    raw_url = req.get("raw_url", "")
+    if not raw_url:
+        return ["requirements.txt 无 raw_url，无法安装依赖"]
+    try:
+        async with _eng.httpx.AsyncClient(timeout=20, verify=False, follow_redirects=True) as dl:
+            resp = await dl.get(_eng._normalize_raw_url(raw_url))
+            resp.raise_for_status()
+        req_text = resp.text
+    except Exception as e:
+        return [f"下载 requirements.txt 失败: {e}"]
+    tmp = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+            tf.write(req_text)
+            tmp = tf.name
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", tmp],
+            capture_output=True, text=True, timeout=240,
+        )
+        if proc.returncode != 0:
+            tail = (proc.stdout or "")[-300:] + (proc.stderr or "")[-300:]
+            return [f"pip install 返回异常:\n{tail}"]
+        return []
+    except subprocess.TimeoutExpired:
+        return ["pip install 超时（>240s），需手动安装依赖后重试"]
+    except Exception as e:
+        return [f"pip install 执行异常: {e}"]
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+
+# ── Health Check 升级：真实启动冒烟测试（subprocess 隔离） ──
+def _smoke_startup(files: list[dict], root: Path, timeout: int = 60) -> list[str]:
+    """在子进程里导入本次改动的全部本地模块，模拟一次真实启动。
+
+    仅把 ImportError / ModuleNotFoundError / SyntaxError 判为阻断错误
+    （正是"更新后 ModuleNotFoundError / 直接崩溃"的根因）；其他运行时异常
+    不阻断，避免误伤合法更新。子进程独立执行，即便某模块 import 级有副作用
+    也不会影响正在运行的 Bot。返回阻断错误列表（空 = 通过）。
+    """
+    mods: list[str] = []
+    for item in files:
+        rel = item.get("filename", "")
+        if not rel or _skip_prefix(rel) or not analyzer.is_python_path(rel):
+            continue
+        if rel in ("main.py", "__main__.py") or rel.rstrip("/").endswith("__main__.py"):
+            continue  # 入口脚本会拉起 Bot，跳过 import 冒烟
+        mods.append(rel[:-3].replace("/", "."))
+    if not mods:
+        return []
+    script = (
+        "import importlib, sys\n"
+        f"sys.path.insert(0, {str(root)!r})\n"
+        f"mods = {repr(mods)}\n"
+        "block = []\n"
+        "for m in mods:\n"
+        "    try:\n"
+        "        importlib.import_module(m)\n"
+        "    except (ImportError, ModuleNotFoundError, SyntaxError) as e:\n"
+        "        block.append((m, repr(e)))\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "if block:\n"
+        "    for m, e in block:\n"
+        "        print('BLOCK', m, e, flush=True)\n"
+        "    sys.exit(1)\n"
+        "print('OK')\n"
+    )
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return [f"启动冒烟测试超时（>{timeout}s），未完成 import 校验"]
+    except Exception as e:
+        return [f"启动冒烟测试执行失败: {e}"]
+    blocks: list[str] = []
+    for line in r.stdout.splitlines():
+        if line.startswith("BLOCK"):
+            parts = line.split(" ", 2)
+            mod = parts[1] if len(parts) > 1 else "?"
+            err = parts[2] if len(parts) > 2 else ""
+            blocks.append(f"{mod}: {err}")
+    return blocks
+
+
+# ── 主入口：安全更新 ──────────────────────────────────────
+async def _report(progress, msg: str) -> None:
+    """若注入了进度回调则发送一条进度消息（best-effort，失败不阻断）"""
+    if progress is None:
+        return
+    try:
+        await progress(msg)
+    except Exception as e:
+        logger.debug("进度上报失败: %s", e)
+
+
+async def safe_check_and_update(
+    check_only: bool = False,
+    force: bool = False,
+    require_approval: bool = True,
+    progress=None,
+) -> str:
+    """Phase 16 安全更新流水线。返回面向用户的文本报告。
+
+    progress: 可选 async 回调 `async def progress(msg: str)`，用于在更新各阶段
+    向用户实时上报进度。
+    """
+    root = _root()
+    state = _eng.load_state(root)
+
+    # 1. Remote Fetch
+    await _report(progress, "正在获取远程版本…")
+    head = await _eng._get_head_sha()
+    if not head:
+        return "无法连接 GitHub，请检查网络"
+
+    # 2 & 3. Compare + Diff
+    stored = state.get("remote_sha", "")
+    if not force and stored == head:
+        return "已是最新"
+    base = stored if stored and not force else ""
+    files = await _eng._fetch_compare(base, head)
+    if not files:
+        if stored:
+            state["remote_sha"] = head
+            state.pop("files", None)
+            _eng.save_state(root, state)
+            files = await _eng._fetch_all_files(head)
+        else:
+            files = await _eng._fetch_all_files(head)
+        if not files:
+            return "无法获取完整文件列表，请检查网络"
+
+    commit_log = await _eng._fetch_commit_log(base, head) if base else ""
+    protect = _eng._load_protect_list()
+
+    # 过滤掉保护/跳过文件（merge: 标记的行在 _load_protect_list 已被剔除，
+    # 正常参与更新；patch 失效时自动走 LLM 精准修复，无需单独标记）
+    actionable = [
+        f for f in files
+        if f.get("filename", "") and not _skip_prefix(f["filename"])
+        and not _is_protected(f["filename"], protect)
+    ]
+    if not actionable:
+        return "无可用更新（全部为受保护/跳过文件）"
+    await _report(progress, f"发现 {len(actionable)} 个待更新文件，开始分析…")
+
+    # 4. Code Analysis
+    analyses = _code_analysis(actionable, root)
+    python_files = [f for f in actionable if analyzer.is_python_path(f["filename"])]
+
+    # 5. Dependency Analysis
+    dep_issues = analyzer.analyze_dependencies(actionable, root)
+    dep_blockers = [d for d in dep_issues if d.level == "ERROR"]
+
+    # 6. Risk Assessment
+    assessment = analyzer.assess_risk(actionable)
+    await _report(progress, f"分析完成，风险等级 {assessment.level}")
+
+    # check_only：只报告，不应用
+    if check_only:
+        parts = [f"待更新 {len(actionable)} 个文件（风险等级: {assessment.level}）"]
+        # 每个文件显示 +新增 -删除 行数，最多展示前 20 个，其余折叠
+        MAX_SHOW = 20
+        shown = actionable[:MAX_SHOW]
+        for f in shown:
+            rel = f["filename"]
+            add, dele = await _diff_stats(f, root)
+            tag = assessment.by_file.get(rel, "?")
+            parts.append(f"  [{tag}] {rel}  +{add} -{dele}")
+        hidden = len(actionable) - len(shown)
+        if hidden > 0:
+            parts.append(f"  … 其余 {hidden} 个文件已折叠")
+        if dep_blockers:
+            parts.append("依赖阻断:")
+            parts.extend(f"  ! {d.message}" for d in dep_blockers)
+        for m in _check_local_imports(actionable, root):
+            parts.append(f"  ! [缺失本地模块] {m}")
+        if python_files:
+            parts.append(f"含 {len(python_files)} 个 Python 文件（将做 AST/语法分析）")
+        if commit_log:
+            parts.append(commit_log)
+        return "\n".join(parts)
+
+    # 7. 依赖硬阻断：缺失本地模块 / 被删模块仍被引用 → 直接阻断更新（P0）
+    for m in _check_local_imports(actionable, root):
+        dep_blockers.append(analyzer.DependencyIssue("ERROR", f"[缺失本地模块] {m}"))
+    if dep_blockers:
+        blocked = "\n".join(f"  ! {d.message}" for d in dep_blockers[:20])
+        if len(dep_blockers) > 20:
+            blocked += f"\n  … 其余 {len(dep_blockers) - 20} 项"
+        return ("更新被阻止：检测到依赖/缺失模块问题，未应用任何改动，未推进版本。\n"
+                + blocked)
+
+    # 8. Risk gate：高风险默认要求人工确认
+    if require_approval and assessment.level == "HIGH":
+        if _approve_callback is None:
+            return (f"更新被拒绝：检测到 {len(assessment.high_files)} 个高风险文件，"
+                    f"未配置人工审批回调。\n{assessment.reason}")
+        if asyncio.iscoroutinefunction(_approve_callback):
+            approved = await _approve_callback(actionable, assessment)
+        else:
+            approved = _approve_callback(actionable, assessment)
+        if not approved:
+            return f"更新已取消（高风险未获审批）：{assessment.reason}"
+
+    # 8. Test（staging 语法检查）
+    await _report(progress, "正在做语法检查…")
+    test_errors = _staging_test(actionable, root)
+    if test_errors:
+        return "更新中止：语法检查未通过，未应用任何改动。\n" + "\n".join(test_errors)
+
+    # 9. 依赖安装：requirements.txt 变化时自动补装新增依赖，失败则阻断（P0）
+    if "requirements.txt" in {f.get("filename", "") for f in actionable}:
+        await _report(progress, "正在安装新增依赖…")
+        dep_install_errors = await _ensure_dependencies(actionable, root)
+        if dep_install_errors:
+            return "更新被阻止：新增依赖安装失败，未应用任何改动，未推进版本。\n" \
+                + "\n".join(dep_install_errors)
+
+    # 10. Snapshot（生产应用前）
+    await _report(progress, "已创建快照，准备应用…")
+    snap = _snap.create_snapshot(actionable, head)
+
+    # 11. Production Apply（走 Diff + 最小 Patch，沿用现有 patcher）
+    res = await _apply_production(actionable, root, head, state, progress)
+
+    # P0: 任何文件失败（未落地 / 下载失败）→ 整体回滚，视为事务失败，绝不推进版本
+    if res["failed"]:
+        _snap.rollback(snap, reason="更新失败（文件未落地）")
+        blocked = "\n".join(f"  - {f}" for f in res["failed"])
+        return ("更新失败，已整体回滚，未推进版本。\n失败文件:\n" + blocked)
+
+    # P0: 存在 hunk 跳过（本地改动冲突）或 LLM 修复失败（保留本地）→
+    # 保留已应用内容，但不推进版本，明确列出未更新的文件（诊断信息）。
+    if res["partial"] or res["not_updated"]:
+        lines = []
+        if res["not_updated"]:
+            lines.append(f"以下 {len(res['not_updated'])} 个文件未能应用更新（本地改动已保留，未被覆盖）：\n"
+                         + "\n".join(f"  - {f}" for f in res["not_updated"]))
+        if res["partial"]:
+            lines.append("部分文件存在 hunk 跳过（保留本地改动）：\n"
+                         + "\n".join(f"  - {f}" for f in res["partial"]))
+        lines.append("未推进版本，可处理后重试 .update（已应用的更新会保留）")
+        return "\n".join(lines)
+
+    # 12. Health Check（P0 升级）：语法编译 + 缺失本地模块 + 真实启动冒烟测试
+    await _report(progress, "正在健康检查…")
+    _health_errors = _health_check(actionable, root)
+    for m in _check_local_imports(actionable, root):
+        _health_errors.append(f"[缺失本地模块] {m}")
+    _block_errors = _smoke_startup(actionable, root)
+    if _block_errors:
+        _health_errors.extend(f"[启动冒烟] {b}" for b in _block_errors)
+    if _health_errors:
+        _snap.rollback(snap, reason="Health Check 失败")
+        return ("更新已应用但 Health Check 失败，已自动回滚，未推进版本。\n"
+                + "\n".join(_health_errors))
+
+    # 13. 全部成功 → 提交更新（重新计算基线，推进 remote_sha 到本次 commit）
+    _rebuild_baseline(state, actionable, head)
+    _eng.save_state(root, state)
+    await _report(progress, "更新完成")
+    parts = [f"已安全更新 {len(actionable)} 个文件（{res['ok']} 处成功, {res['skip']} 处跳过）"]
+    if res["skip"]:
+        parts.append(_format_skip_details(res["skip_details"]))
+    if commit_log:
+        parts.append(commit_log)
+    return "\n".join(parts)
+
+
+def _rebuild_baseline(state: dict, files: list[dict], head: str) -> None:
+    """更新成功后重新计算基线：推进 remote_sha 到本次应用的 commit，
+    并清理已删除文件的 blob 追踪，保证下次只对比增量差异。"""
+    state["remote_sha"] = head
+    removed = {f["filename"] for f in files if f.get("status") == "removed"}
+    if removed:
+        state.setdefault("files", {})
+        for rel in removed:
+            state["files"].pop(rel, None)
+
+
+async def _merge_with_llm(root: Path, item: dict, state: dict, head: str) -> bool:
+    """LLM 三路融合：base(remote_sha 基线) + local(服务器本地改动) + head(远程新代码)。
+
+    用于 patch 行级合并失效（上下文不匹配 / 一个 hunk 都没应用）的文件：
+    保留本地未推送的改动意图，同时完整应用远程最新更新。融合结果必须通过
+    语法校验；任何失败返回 False，由调用方保留本地文件不动（不破坏他人改动）。
+    """
+    rel = item.get("filename", "")
+    local_path = root / rel
+    if not local_path.exists():
+        return False
+    base_sha = state.get("remote_sha", "")
+    if not base_sha or not _eng.GITHUB_API:
+        return False
+
+    import base64
+
+    async def _fetch(sha: str) -> str | None:
+        """取某个 commit 里的文件内容。该 commit 里没有这个文件 → None（不是错误）。
+
+        ⚠️ 这里必须区分"文件不存在(404)"和"真的失败"：
+        远程**新增**的文件在 base commit 里必然不存在，若把 404 当成异常抛出，
+        融合会直接放弃（实测报 "LLM 融合前置下载失败 ... 404 Not Found"）。
+        正确语义是：base 缺失 = 空基线（该文件没有共同祖先）。
+        """
+        url = f"{_eng.GITHUB_API}/contents/{_eng._normalize_rel_path(rel)}?ref={sha}"
+        async with _eng.httpx.AsyncClient(timeout=20, verify=False) as dl:
+            resp = await dl.get(url, headers=_eng._gh_headers())
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return base64.b64decode(resp.json().get("content", "") or "").decode("utf-8", errors="replace")
+
+    try:
+        base_text = await _fetch(base_sha)
+        head_text = await _fetch(head)
+    except Exception as e:
+        logger.warning("LLM 融合前置下载失败 %s: %s", rel, e)
+        return False
+
+    if head_text is None:
+        # 远程已经没有这个文件了（被删除）→ 融合无意义，交给上层处理
+        logger.warning("%s 在远程已不存在，跳过 LLM 融合", rel)
+        return False
+    # base 为 None = 远程本次新增该文件 → 基线按空内容处理
+    base_text = base_text or ""
+
+    local_text = local_path.read_text(encoding="utf-8", errors="replace")
+
+    # 大小保护：超大文件（如 >60KB）超出 LLM 可靠输出范围，跳过融合、保留本地
+    if len(local_text) > 60000 or len(head_text) > 60000 or len(base_text) > 60000:
+        logger.warning("%s 过大（>60KB），跳过 LLM 融合，保留本地", rel)
+        return False
+
+    # 本地已是 head 内容 → 无需融合
+    if head_text == local_text:
+        return True
+
+    prompt = (
+        "你是资深 Python 工程师。下面给出同一个文件的三个版本：\n\n"
+        "# [BASE] 旧基线版本（本次更新前，两者共同的祖先）：\n"
+        "```python\n" + base_text + "\n```\n\n"
+        "# [LOCAL] 服务器本地当前版本（相对 BASE 含有本地未推送的改动，必须保留其功能意图）：\n"
+        "```python\n" + local_text + "\n```\n\n"
+        "# [REMOTE] 远程最新版本（相对 BASE 含有别人已推送的更新，必须完整应用）：\n"
+        "```python\n" + head_text + "\n```\n\n"
+        "请融合这三个版本：\n"
+        "1. 完整保留 LOCAL 相对 BASE 的所有本地改动（这是本机独有功能，不能丢）；\n"
+        "2. 完整应用 REMOTE 相对 BASE 的所有远程更新（不能遗漏）；\n"
+        "3. 两者冲突时，若远程改动是结构性的（改名/重构）则跟随 REMOTE 并保留本地功能意图。\n"
+        "输出完整的融合后文件内容：纯代码，不要任何解释，不要 markdown 代码围栏，不要省略号。"
+    )
+
+    try:
+        from services.llm import call_llm
+        from core.config import get_config
+        raw = await call_llm(
+            get_config().reply_model,
+            [{"role": "user", "content": prompt}],
+            max_tokens=8192, temperature=0.1, timeout=120,
+        )
+        if not raw or len(raw) < 50:
+            logger.warning("LLM 融合返回空/过短: %s", rel)
+            return False
+        out = _strip_code_fence(raw)
+        compile(out, rel, "exec")  # 语法校验，失败抛 SyntaxError
+        _eng._write_local(root, rel, out.splitlines(keepends=True))
+        try:
+            blob = _eng.compute_local_blob(root, rel)
+            _eng.set_file_blob(state, rel, blob, 1, 0)
+        except Exception:
+            pass
+        logger.info("LLM 三路融合成功: %s (base=%d→local=%d→head=%d)",
+                    rel, len(base_text), len(local_text), len(head_text))
+        return True
+    except SyntaxError as e:
+        logger.warning("LLM 融合结果语法错误 %s 第%d行: %s", rel, e.lineno, e.msg)
+        return False
+    except Exception as e:
+        logger.warning("LLM 融合失败 %s: %s", rel, e)
+        return False
+
+
+def _strip_code_fence(text: str) -> str:
+    """去除 LLM 输出可能包裹的 markdown 代码围栏。"""
+    t = text.strip()
+    if t.startswith("```"):
+        # 去掉首行围栏
+        first_nl = t.find("\n")
+        t = t[first_nl + 1:] if first_nl != -1 else t
+        # 去掉末尾围栏
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    return t.rstrip() + "\n"
+
+
+async def _download_via_api(root: Path, item: dict, state: dict, head: str) -> bool:
+    """通过 api.github.com contents API 下载单文件（服务器可直连，raw 被墙时兜底）。
+
+    与 engine._get_blob_sha 同走 api.github.com 通道，返回的 base64 解码后即仓库
+    原始内容（LF 行尾），可直接落盘。成功返回 True（已写盘并更新 blob 追踪）。
+    """
+    rel = item.get("filename", "")
+    if not rel or not _eng.GITHUB_API:
+        return False
+    import base64
+    url = f"{_eng.GITHUB_API}/contents/{_eng._normalize_rel_path(rel)}?ref={head}"
+    try:
+        async with _eng.httpx.AsyncClient(timeout=20, verify=False) as dl:
+            resp = await dl.get(url, headers=_eng._gh_headers())
+            resp.raise_for_status()
+            data = resp.json()
+            content = base64.b64decode(data.get("content", "") or "").decode("utf-8", errors="replace")
+        _eng._write_local(root, rel, content.splitlines(keepends=True))
+        try:
+            blob = _eng.compute_local_blob(root, rel)
+            _eng.set_file_blob(state, rel, blob, 1, 0)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.warning("API 下载 %s 失败: %s", rel, e)
+        return False
+
+
+async def _download_full(root: Path, item: dict, state: dict, head: str) -> bool:
+    """全量下载并落盘一个文件（本地缺失 / 无 patch / 冲突对齐时使用）。成功返回 True。
+
+    raw.githubusercontent 优先；raw 被墙/超时自动回退 api.github.com contents API
+    （与 _get_blob_sha 同通道，服务器可直连），两者都失败返回 False。
+    """
+    rel = item.get("filename", "")
+    raw_url = item.get("raw_url", "")
+    if raw_url:
+        try:
+            async with _eng.httpx.AsyncClient(timeout=15, verify=False) as dl:
+                resp = await dl.get(_eng._normalize_raw_url(raw_url))
+                resp.raise_for_status()
+            _eng._write_local(root, rel, resp.text.splitlines(keepends=True))
+            try:
+                blob = _eng.compute_local_blob(root, rel)
+                _eng.set_file_blob(state, rel, blob, 1, 0)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logger.warning("raw 下载 %s 失败，回退 API: %s", rel, e)
+    return await _download_via_api(root, item, state, head)
+
+
+async def _rebuild_from_patch(root: Path, item: dict, state: dict, head: str) -> bool:
+    """用 new-file patch 在空内容上重建本地缺失文件（纯本地，不依赖网络下载）。
+
+    仅处理 @@ -0,0 +1,N @@ 新增文件 hunk：本地无旧内容可保留，直接整块写入。
+    成功落地返回 True（已写盘并更新 blob 追踪）；无新增 hunk 或全部 skip 返回 False，
+    由调用方回退到全量下载。这样 raw 下载被墙/超时时新增文件仍能通过 patch 落地。
+    """
+    rel = item.get("filename", "")
+    patch_text = item.get("patch", "")
+    if not patch_text:
+        return False
+    hunks = patcher.parse_patch(patch_text)
+    new_hunks = [h for h in hunks if h.old_start == 0 and h.old_count == 0]
+    if not new_hunks:
+        return False
+    try:
+        merged, aok, sk, _skd = patcher.apply_hunks_detailed([], new_hunks)
+    except AttributeError:
+        # 兼容旧版 patcher.py（服务器尚未同步 apply_hunks_detailed）
+        merged, aok, sk = patcher.apply_hunks([], new_hunks)
+    if aok <= 0:
+        return False
+    _eng._write_local(root, rel, merged)
+    try:
+        blob = _eng.compute_local_blob(root, rel)
+        _eng.set_file_blob(state, rel, blob, aok, sk)
+    except Exception:
+        pass
+    return True
+
+
+async def _apply_production(
+    files: list[dict], root: Path, head: str, state: dict, progress=None,
+) -> dict:
+    """逐文件应用 patch/diff 到生产（沿用现有 patcher 行级合并）。
+
+    策略（不破坏本地/他人改动）：
+    - 能 patch 就 patch；patch 对不齐（no_context / 一个 hunk 都没应用）
+      的文件先诊断出来，统一走 LLM 三路融合精准修复（保留本地改动 + 应用远程）；
+    - LLM 修复失败 → 保留本地文件不动，记入 not_updated 报告（不强制覆盖、不整体回滚）；
+    - 只有真正无法落地的缺失文件/下载失败才记入 failed（触发整体回滚）。
+
+    事务化返回 dict：
+        ok            成功落地/应用的 hunk 数（含全量下载/LLM 融合计 1）
+        skip          被跳过的 hunk 数
+        skip_details  跳过明细 {file, old_start, reason}
+        failed        真正失败的缺失/下载失败文件 → 触发整体回滚
+        partial       已部分应用（存在 hunk 跳过、保留本地改动）的文件，不推进版本
+        not_updated   LLM 修复失败、保留本地未覆盖的文件，不推进版本
+    """
+    ok = 0
+    skip = 0
+    skip_details: list[dict] = []
+    failed: list[str] = []
+    partial: list[str] = []
+    not_updated: list[str] = []
+    llm_fix: list[dict] = []  # patch 对不齐、待 LLM 精准修复的文件 item
+    total = len(files)
+
+    for idx, item in enumerate(files, start=1):
+        rel = item.get("filename", "")
+        status = item.get("status", "")
+        patch_text = item.get("patch", "")
+        await _report(progress, f"正在应用 {idx}/{total}: {rel}")
+
+        if status == "removed":
+            local = root / rel
+            if local.exists():
+                local.unlink()
+            ok += 1
+            continue
+
+        # 本地文件缺失：diff 的 hunk 只在旧文件存在时才能按上下文定位合并；
+        # 空文件上除 new-file（@@ -0,0 +1,N @@）外会全体 skip → 永不落盘
+        # （历史更新曾因此让 music_status.py 一直缺失，/listening 报 ModuleNotFoundError）。
+        # 缺失文件无本地内容可保留 → 先用 new-file patch 本地重建（不依赖网络），
+        # 重建不了再全量下载兜底；两者都失败才记入 failed（触发整体回滚）。
+        if not (root / rel).exists():
+            if await _rebuild_from_patch(root, item, state, head):
+                ok += 1
+            elif await _download_full(root, item, state, head):
+                ok += 1
+            else:
+                failed.append(rel)
+            continue
+
+        # 本地已存在但无 patch → 本次无内容变更（避免覆盖本地改动），跳过
+        if not patch_text:
+            continue
+
+        hunks = patcher.parse_patch(patch_text)
+        if not hunks:
+            # 有 patch 文本却解析不出 hunk（二进制/重命名等）：非新增非删除，
+            # 无内容落地，避免误判为失败，仅计数为 skip
+            skip += 1
+            continue
+
+        try:
+            merged, aok, sk, skd = patcher.apply_hunks_detailed(
+                _eng._read_local(root, rel), hunks
+            )
+        except AttributeError:
+            # 兼容旧版 patcher.py（服务器尚未同步 apply_hunks_detailed）：
+            # 退化为 apply_hunks，仅得到 (merged, aok, sk)，跳过明细记为空。
+            merged, aok, sk = patcher.apply_hunks(
+                _eng._read_local(root, rel), hunks
+            )
+            skd = []
+        if aok > 0:
+            no_ctx = any(d.get("reason") == "no_context" for d in skd)
+            if no_ctx:
+                # 本地有改动导致上下文不匹配：不写"半应用"结果（避免污染本地），
+                # 交 LLM 三路融合精准修复（保留本地改动 + 应用远程更新）。
+                llm_fix.append(item)
+                for d in skd:
+                    skip_details.append({"file": rel, "old_start": d.get("old_start", 0),
+                                         "reason": d.get("reason", "unknown")})
+                continue
+            _eng._write_local(root, rel, merged)
+            try:
+                blob = _eng.compute_local_blob(root, rel)
+                _eng.set_file_blob(state, rel, blob, aok, sk)
+            except Exception:
+                pass
+            ok += aok
+            skip += sk
+            if sk > 0:
+                partial.append(rel)  # 有 hunk 跳过（如保护区重叠）→ 未完全落地
+        else:
+            # 有有效 patch 却一个 hunk 都未应用（对不齐）→ 交 LLM 精准修复，
+            # 本地文件保持不动；不直接覆盖、不判失败回滚。
+            llm_fix.append(item)
+        for d in skd:
+            skip_details.append({"file": rel, "old_start": d.get("old_start", 0),
+                                 "reason": d.get("reason", "unknown")})
+
+    # ── LLM 精准修复失效文件（先诊断出是哪几个，再逐个融合）─────────
+    for item in llm_fix:
+        rel = item.get("filename", "")
+        await _report(progress, f"失效文件 {rel} 走 LLM 精准融合…")
+        if await _merge_with_llm(root, item, state, head):
+            ok += 1
+            logger.info("LLM 修复成功: %s", rel)
+        else:
+            not_updated.append(rel)  # 保留本地，不破坏别人的东西
+
+    return {
+        "ok": ok, "skip": skip, "skip_details": skip_details,
+        "failed": failed, "partial": partial, "not_updated": not_updated,
+    }
+
+
+def _format_skip_details(skip_details: list[dict], limit: int = 8) -> str:
+    """把跳过明细格式化为人类可读文本。
+
+    每项形如 "- <file> 第 <old_start> 行: <原因>"，最多展示 limit 项，
+    超出折叠为「… 其余 N 项已折叠」。
+    """
+    reason_map = {
+        "protected": "与保护区重叠",
+        "no_context": "上下文不匹配（本地改动较大）",
+        "out_of_range": "目标行号超出文件范围",
+        "no_payload": "新文件块为空",
+        "unknown": "未知原因",
+    }
+    if not skip_details:
+        return "跳过明细: 无"
+    lines = [f"跳过 hunks 明细（共 {len(skip_details)} 项）:"]
+    shown = skip_details[:limit]
+    for d in shown:
+        reason = reason_map.get(d.get("reason", ""), d.get("reason", "未知原因"))
+        lines.append(f"- {d.get('file', '?')} 第 {d.get('old_start', 0)} 行: {reason}")
+    if len(skip_details) > limit:
+        lines.append(f"… 其余 {len(skip_details) - limit} 项已折叠")
+    return "\n".join(lines)
