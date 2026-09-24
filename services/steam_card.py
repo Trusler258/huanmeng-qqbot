@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Steam 资料卡 HTML 构建（/~steam who 用）
+"""Steam 资料卡：数据组装 + 两种渲染器
 
-模板：data/templates/steam_profile_card.html
-字体：拉丁/数字内联 HarmonyOS Sans 子集（17KB），中文靠回退走服务器 Noto Sans CJK SC
+  · `build_payload()`     取数据（唯一数据来源，两个渲染器共用）
+  · `render_html()`       注入模板 → 自包含 HTML（设计稿对照 / 调试用）
+  · `render_card()`       委托 services/steam_card_pillow（生产路径，Pillow 直绘）
 
-⚠️ 模板里的注入标记必须唯一 —— **注释里也不要写那两个标记的字面量**，
+为什么生产走 Pillow：服务器是 i3-2130，Chromium 单张卡约 900ms 且常驻近 400MB；
+Pillow 约 20~80ms、内存几十 MB。实测见 docs（wdsj 卡片同一结论）。
+
+模板：data/templates/steam_profile_card.html（视觉基准，改样子先改它，再改 Pillow）
+
+注意：模板里的注入标记必须唯一 —— **注释里也不要写那两个标记的字面量**，
    否则 str.replace(..., 1) 会替换到注释那一处，整个数据 JSON 被塞进注释、
    真注入点空着（踩过，表现为"卡片上字段全是 —"）。下面有 assert 防呆。
 """
@@ -13,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -54,18 +61,29 @@ async def _enrich(g: dict, key: str) -> dict:
     }
 
 
-async def build_profile_html(steamid: str, top_n: int = 8, recent_n: int = 6) -> str:
-    """生成自包含 HTML（字体与图片全部内联）。拿不到玩家资料时返回空串"""
+async def _fetch_payload(steamid: str, top_n: int, recent_n: int, ach_n: int) -> dict:
+    """真正去各处取数（任何一步抛异常都由 build_payload 兜住）"""
     prof = await S.player_summary(steamid)
     if not prof:
-        return ""
+        return {}
 
-    owned, recent_raw, level = await asyncio.gather(
+    owned, recent_raw, level, badges, friends = await asyncio.gather(
         S.owned_games(steamid),
         S.recent_games(steamid, count=recent_n),
         S.steam_level(steamid),
+        S.profile_badges(steamid),
+        S.friend_count(steamid),
     )
     ach = await S.achievements(steamid, ACH_APPID)
+    ach_recent = await S.recent_achievements(steamid, ACH_APPID, ach_n)
+    # 成就图标（小图，并发下载并落盘缓存 → 转 data URI）
+    if ach_recent:
+        icons = await asyncio.gather(*[
+            S.ach_icon(ACH_APPID, a.get("apiname", ""), a.get("icon_url", ""))
+            for a in ach_recent
+        ])
+        for a, p in zip(ach_recent, icons):
+            a["icon"] = _data_uri(p)
 
     games = owned.get("games") or []
     top = sorted(games, key=lambda g: g.get("playtime_forever", 0), reverse=True)[:top_n]
@@ -84,7 +102,10 @@ async def build_profile_html(steamid: str, top_n: int = 8, recent_n: int = 6) ->
             created = ""
 
     total_hours = round(sum(g.get("playtime_forever", 0) for g in games) / 60.0)
-    payload = {
+    # 游戏库概览（填满左栏用；全部本地可算，不额外请求）
+    played = sum(1 for g in games if g.get("playtime_forever", 0) > 0)
+    top_hours = (top[0].get("playtime_forever", 0) / 60.0) if top else 0.0
+    return {
         "profile": {
             "name": prof.get("name", ""),
             "steamid": steamid,
@@ -93,20 +114,102 @@ async def build_profile_html(steamid: str, top_n: int = 8, recent_n: int = 6) ->
             "online": prof.get("online", False),
             "state_kind": prof.get("state_kind", ""),
             "state_text": prof.get("state_text", ""),
+            "game_now": prof.get("in_game", ""),
             "avatar": avatar,
+            "avatar_path": str(await S.avatar_file(steamid, prof.get("avatar", ""))),
         },
         "stats": {
             "games": owned.get("count", len(games)),
             "hours": total_hours,
             "ach_got": ach.get("got", 0),
             "ach_total": ach.get("total", 0),
+            "badges": badges.get("count"),
+            "friends": friends,
+            "xp": badges.get("xp"),
+            "xp_cur": badges.get("xp_cur"),
+            "xp_need": badges.get("xp_need"),
         },
         "recent": recent_items,
         "recent_sum": round(sum(g.get("playtime_2weeks", 0) for g in recent) / 60.0, 1),
         "top": top_items,
+        "library": {
+            "played": played,
+            "unplayed": max(0, len(games) - played),
+            "avg": round(total_hours / played, 1) if played else 0.0,
+            "top_share": round(top_hours * 100.0 / total_hours, 1) if total_hours else 0.0,
+        },
+        "achievements": ach_recent,
+        "ach_game": "冰与火之舞",
         "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
+
+# ── 缓存快照（Steam 在国内时通时断，实测整段 API 会连续超时）──────
+CACHE_DIR = ROOT / "data" / "steam_cache"
+CACHE_MAX_AGE = 86400 * 3        # 3 天内的快照还能用
+
+
+def _cache_file(steamid: str) -> Path:
+    return CACHE_DIR / ("%s.json" % steamid)
+
+
+def _save_cache(steamid: str, payload: dict) -> None:
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        p = _cache_file(steamid)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(p)
+    except Exception as e:
+        logger.debug("卡片缓存写入失败: %s", e)
+
+
+def _load_cache(steamid: str) -> dict:
+    """读上次成功的快照；过期或损坏返回 {}"""
+    try:
+        p = _cache_file(steamid)
+        d = json.loads(p.read_text(encoding="utf-8"))
+        ts = float(d.get("_cached_at") or 0)
+        if not ts or (time.time() - ts) > CACHE_MAX_AGE:
+            return {}
+        d["stale"] = True
+        d["stale_at"] = d.get("updated", "")
+        d["stale_age_h"] = round((time.time() - ts) / 3600.0, 1)
+        return d
+    except Exception:
+        return {}
+
+
+async def build_payload(steamid: str, top_n: int = 10, recent_n: int = 8,
+                        ach_n: int = 4) -> dict:
+    """取全部要展示的数据。
+
+    Steam 在国内会整段不通（实测 api+store 同时 http=000），所以：
+      成功 → 落盘快照；失败 → 回退最近 3 天内的快照（payload["stale"]=True，
+      渲染层在页脚标注"缓存数据"）。两者都不可用才返回 {}。
+    """
+    payload = {}
+    try:
+        payload = await _fetch_payload(steamid, top_n, recent_n, ach_n)
+    except Exception as e:
+        logger.warning("Steam 取数失败（将尝试缓存）: %s", e)
+    if payload:
+        payload["_cached_at"] = time.time()
+        _save_cache(steamid, payload)
+        return payload
+
+    cached = _load_cache(steamid)
+    if cached:
+        logger.info("Steam 不可用，改用缓存快照 steamid=%s（%.1f 小时前）",
+                    steamid, cached.get("stale_age_h", 0))
+        return cached
+    return {}
+
+
+def render_html(payload: dict) -> str:
+    """把 payload 注入自包含 HTML（字体与图片全部内联）—— 设计稿 / 调试用"""
+    if not payload:
+        return ""
     try:
         html = TPL_FILE.read_text(encoding="utf-8")
     except Exception as e:
@@ -129,3 +232,24 @@ async def build_profile_html(steamid: str, top_n: int = 8, recent_n: int = 6) ->
 
     S.flush_zh()          # 中文名缓存落盘
     return html
+
+
+async def build_profile_html(steamid: str, top_n: int = 10, recent_n: int = 8) -> str:
+    """取数 + 生成 HTML（保留旧接口，供设计稿对照与探针使用）"""
+    return render_html(await build_payload(steamid, top_n=top_n, recent_n=recent_n))
+
+
+async def render_card(steamid: str, out_path, top_n: int = 10, recent_n: int = 8):
+    """【生产路径】取数 + Pillow 直绘 → 保存图片，返回 Path（失败返回 None）"""
+    from services import steam_card_pillow as CP
+
+    payload = await build_payload(steamid, top_n=top_n, recent_n=recent_n)
+    if not payload:
+        return None
+    try:
+        img = CP.render_steam_card(payload, root=ROOT)
+        S.flush_zh()
+        return CP.save_steam_card(img, out_path)
+    except Exception as e:
+        logger.error("卡片渲染失败: %s", e, exc_info=True)
+        return None

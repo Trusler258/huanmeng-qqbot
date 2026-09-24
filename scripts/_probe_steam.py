@@ -51,7 +51,7 @@ def main():
         full = api("ISteamWebAPIUtil/GetSupportedAPIList/v1/")
         ifs = full.get("apilist", {}).get("interfaces", [])
         n_methods = sum(len(i.get("methods", [])) for i in ifs)
-        print("[1] key 有效 ✓  全量注册表: %d 个命名空间 / %d 个方法" % (len(ifs), n_methods))
+        print("[1] key 有效 / 全量注册表: %d 个命名空间 / %d 个方法" % (len(ifs), n_methods))
         for want in ("IPlayerService", "ISteamUser", "ISteamUserStats", "IPublishedFileService"):
             hit = next((i for i in ifs if i.get("name") == want), None)
             if hit:
@@ -73,7 +73,7 @@ def main():
             continue
         if r.get("success") == 1:
             sid = r.get("steamid")
-            print("    %-22s → %s  ★" % (v, sid))
+            print("    %-22s -> %s" % (v, sid))
             break
         print("    %-22s 不存在 (success=%s)" % (v, r.get("success")))
     if not sid:
@@ -104,7 +104,7 @@ def main():
         games = r.get("games", [])
         print("    游戏总数 : %s 个" % r.get("game_count", len(games)))
         if not games:
-            print("    ⚠ 返回空 —— 多半是「游戏详情」未设为公开（不是接口坏了）")
+            print("    注意：返回空 —— 多半是「游戏详情」未设为公开（不是接口坏了）")
         else:
             top = sorted(games, key=lambda g: g.get("playtime_forever", 0), reverse=True)[:6]
             print("    时长榜前 6:")

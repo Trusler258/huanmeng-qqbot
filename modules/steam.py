@@ -56,29 +56,22 @@ async def _notify(text: str, user_id: int, group_id: int, is_group: bool) -> Non
         logger.debug("提示发送失败: %s", e)
 
 
-async def _send_card(html: str, user_id: int, group_id: int, is_group: bool) -> bool:
-    """渲染卡片 HTML 并发图（复用全局浏览器单例）"""
-    from modules.changelog import _ensure_browser
+async def _send_card(steamid: str, user_id: int, group_id: int, is_group: bool) -> bool:
+    """Pillow 直绘卡片并发图。
+
+    不再走 Chromium：服务器 i3-2130 上单张约 900ms、常驻近 400MB；
+    现在 ~80ms、内存几十 MB（渲染实现在 services/steam_card_pillow.py）。
+    """
+    from services import steam_card as SC
     from services.sender import send_group_msg, send_private_msg
+
     out = ROOT / "data" / "img_temp" / ("steam_%d.png" % int(time.time() * 1000))
     try:
-        browser = await _ensure_browser()
-        page = await browser.new_page(viewport={"width": 1800, "height": 1600},
-                                      device_scale_factor=2)
-        await page.set_content(html, wait_until="load")
-        try:
-            await page.evaluate("document.fonts.ready")
-        except Exception:
-            pass
-        await page.wait_for_timeout(1200)
-        el = await page.query_selector("body")
         out.parent.mkdir(parents=True, exist_ok=True)
-        if el:
-            await el.screenshot(path=str(out))
-        else:
-            await page.screenshot(path=str(out), full_page=True)
-        await page.close()
-        cq = "[CQ:image,file=file:///%s]" % str(out).replace(chr(92), "/")
+        p = await SC.render_card(steamid, out)
+        if not p:
+            return False
+        cq = "[CQ:image,file=file:///%s]" % str(p).replace(chr(92), "/")
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
         return True
     except Exception as e:
@@ -150,7 +143,7 @@ async def _do_price(term: str, short: bool) -> str:
             try:
                 prev = S.record_price(appid, p["final"], p.get("currency", ""))
                 if prev:
-                    lines.append("  ⚠ 比我们记过的最低价（%s 分）还低" % prev)
+                    lines.append("  注意：比我们记过的最低价（%s 分）还低" % prev)
             except Exception:
                 pass
 
@@ -199,17 +192,19 @@ async def _do_who(args, user_id, group_id, is_group, sender_name) -> str | None:
                     "（SteamID64 就是个人资料页链接里那串 17 位数字）")
         return "%s 还没绑定 Steam 喵~（让他用 /~steam bd 绑一下）" % who
 
-    await _notify("⏳ 正在查 %s 的 Steam…" % ("你的" if target == user_id else "对方"), 
+    await _notify("正在查 %s 的 Steam…" % ("你的" if target == user_id else "对方"), 
                   user_id, group_id, is_group)
+    ok = await _send_card(steamid, user_id, group_id, is_group)
+    if ok:
+        return None
+    # 渲染失败时区分"资料不公开"和"渲染出错"
     try:
-        html = await SC.build_profile_html(steamid)
-    except Exception as e:
-        logger.warning("资料卡构建失败: %s", e)
-        return "查不到数据（Steam 接口不通或账号设了私密）"
-    if not html:
-        return "查不到这个账号，或者它的资料不公开喵~"
-    ok = await _send_card(html, user_id, group_id, is_group)
-    return None if ok else "卡片发送失败了喵~"
+        prof = await S.player_summary(steamid)
+    except Exception:
+        prof = {}
+    if not prof:
+        return "查不到这个账号，或者接口不通喵~"
+    return "卡片渲染失败了喵~（详情看服务器日志）"
 
 
 async def _do_bind(args, user_id, group_id, is_group) -> str:

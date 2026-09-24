@@ -92,7 +92,7 @@ _ZH_CACHE = None
 def zh_name(appid, fallback=""):
     """中文游戏名：store API + 本地缓存
 
-    ⚠️ Web API 的 GetOwnedGames 只返回英文名（如 "A Dance of Fire and Ice"），
+    注意：Web API 的 GetOwnedGames 只返回英文名（如 "A Dance of Fire and Ice"），
     中文名只能走 store 的 appdetails（l=schinese），所以要单独查 + 缓存。
     """
     global _ZH_CACHE
@@ -157,7 +157,7 @@ def main():
     state_kind = "ingame" if game_now else ("" if online else "off")
     print(f"    {p.get('personaname')} / {state_text}")
 
-    # ⚠️ 不加 include_appinfo —— 带它响应大 10 倍（本地实测 15KB 要 100s 才回），
+    # 注意：不加 include_appinfo —— 带它响应大 10 倍（本地实测 15KB 要 100s 才回），
     #    而游戏名反正要单独查 store（为了中文名），所以这里只要 appid + 时长
     print("[2] 游戏库")
     owned = api("IPlayerService/GetOwnedGames/v1/", steamid=SID,

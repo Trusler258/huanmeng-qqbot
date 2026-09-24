@@ -3,20 +3,25 @@
 <head>
 <meta charset="utf-8">
 <!--
-  Steam 风格个人资料卡
+  Steam 风格个人资料卡（设计稿 / Pillow 渲染器的对照基准）
 
-  视觉依据：抓自 store.steampowered.com/public/css/v6/home.css（官方 CSS）
+  视觉依据：抓自 store.steampowered.com/public/css/v6/home.css 与 shared_global.css
     主背景 #1b2838 / 更深处 #0a141d / 顶栏 #171a21
     招牌渐变 linear-gradient(-60deg, #67c1f5 0%, #417a9b 100%)
     强调色 #67c1f5（官方 CSS 中出现 35 次，最高频）/ 深蓝 #417a9b
     正文 #c6d4df、#c7d5e0   次要 #8f98a0
-  字体：拉丁/数字 = HarmonyOS Sans Medium（子集内联，17KB）；中文回退 Noto Sans CJK SC（服务器已装）
-    ⚠️ Steam 官方 Motiva Sans 是商业字体（授权禁止未购买使用），不内联
+    「游戏中」绿：官方 shared_global.css 里 #90ba3c 出现 4 次（最高频绿）
+      配色梯度 #a3cf06 -> #5c7e10 -> #25310f（亮绿到深绿）
+  字体：拉丁/数字 = HarmonyOS Sans Medium（子集内联，17KB）；中文回退 Noto Sans CJK SC
+    注意：Steam 官方 Motiva Sans 是商业字体（授权禁止未购买使用），不内联
 
-  注入点（⚠️ 字面量只能出现在真正被替换的位置！注释里再写一遍会被
+  注入点（字面量只能出现在真正被替换的位置！注释里再写一遍会被
   str.replace(...,1) 抢走第一处，导致数据被塞进注释、真注入点空着 —— 已踩过）：
     · 字体 base64 → head 内 @font-face 的 url()
     · 数据 JSON  → body 末尾的 window.CARD_DATA
+
+  渲染：生产走 services/steam_card_pillow.py（Pillow 直绘，~80ms）。
+    本模板保留为设计稿与像素对照基准（Chromium 在 i3-2130 上单张 ~900ms）。
 -->
 <style>
 @font-face{
@@ -38,6 +43,8 @@
   --line:rgba(255,255,255,.07);
   --rowbg:rgba(0,0,0,.20);
   --rowbg2:rgba(0,0,0,.10);
+  /* 「游戏中」主题（body.ingame 时覆盖） */
+  --ingame:#90ba3c;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -66,10 +73,13 @@ body{
 .topright{margin-left:auto;display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--dim)}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--blue);box-shadow:0 0 8px rgba(103,193,245,.85)}
 
-/* ── Hero 蓝色渐变横幅 ──────────────────── */
+/* ── Hero 渐变横幅（在线蓝 / 游戏中绿）────── */
 .hero{
   height:118px;position:relative;overflow:hidden;
   background:linear-gradient(-60deg,#67c1f5 0%,#417a9b 55%,#2a475e 100%);
+}
+body.ingame .hero{
+  background:linear-gradient(-60deg,#a3cf06 0%,#5c7e10 55%,#25310f 100%);
 }
 .hero::after{
   content:"";position:absolute;inset:0;
@@ -79,6 +89,17 @@ body{
   content:"";position:absolute;inset:0;
   background:linear-gradient(180deg,rgba(10,20,29,.15) 0%,rgba(10,20,29,.65) 100%);
 }
+/* 游戏中：hero 右侧显示当前游戏 */
+.hero-now{
+  position:absolute;right:38px;top:22px;z-index:1;
+  display:none;align-items:center;gap:10px;
+  font-size:15px;color:rgba(255,255,255,.92);
+  background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.16);
+  border-radius:3px;padding:6px 13px;backdrop-filter:blur(2px);
+}
+.hero-now.on{display:inline-flex}
+.hero-now b{font-weight:700}
+.hero-now i{width:7px;height:7px;border-radius:50%;background:#d6f56a;display:block}
 
 /* ── 资料区 ─────────────────────────────── */
 .ident{display:flex;gap:26px;padding:0 38px;margin-top:-58px;position:relative;z-index:2}
@@ -87,6 +108,7 @@ body{
   border:3px solid #2a475e;background:#0e141b;object-fit:cover;
   box-shadow:0 6px 22px rgba(0,0,0,.6);
 }
+body.ingame .avatar{border-color:#5c7e10}
 .ident-main{padding-top:66px;flex:1;min-width:0}
 .nameline{display:flex;align-items:baseline;gap:16px}
 .pname{font-size:36px;font-weight:700;color:#fff;letter-spacing:.3px}
@@ -97,7 +119,7 @@ body{
 }
 .state.off{color:var(--dim);background:rgba(143,152,160,.10);border-color:rgba(143,152,160,.3)}
 /* Steam 的「游戏中」是绿色，与在线的蓝色区分开 */
-.state.ingame{color:#90ba3c;background:rgba(144,186,60,.10);border-color:rgba(144,186,60,.35)}
+.state.ingame{color:var(--ingame);background:rgba(144,186,60,.10);border-color:rgba(144,186,60,.35)}
 .state i{width:8px;height:8px;border-radius:50%;background:currentColor;display:block}
 .meta{margin-top:12px;font-size:15px;color:var(--dim);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .meta .sep{opacity:.35}
@@ -109,63 +131,121 @@ body{
   border:1px solid var(--blue-d);color:var(--blue);
   font-family:"HMSans",sans-serif;font-size:15px;font-weight:700;
 }
+body.ingame .lvl{background:radial-gradient(circle at 50% 30%,#3c5210,#1c2608);border-color:#5c7e10;color:var(--ingame)}
 
-/* ── 统计条 ─────────────────────────────── */
+/* ── 统计条（6 格）─────────────────────── */
 .stats{
   margin:24px 38px 0;display:flex;
   background:var(--rowbg);border:1px solid var(--line);border-radius:4px;
   overflow:hidden;
 }
-.stat{flex:1;padding:17px 24px;position:relative}
+.stat{flex:1;padding:15px 22px;position:relative}
 .stat+.stat::before{content:"";position:absolute;left:0;top:16%;height:68%;width:1px;background:var(--line)}
 .stat .k{font-size:13.5px;color:var(--dim);letter-spacing:.4px}
-.stat .v{font-family:"HMSans",sans-serif;font-size:29px;font-weight:700;color:#fff;margin-top:5px;line-height:1.15}
-.stat .v small{font-size:15px;font-weight:400;color:var(--dim);margin-left:5px}
+.stat .v{font-family:"HMSans",sans-serif;font-size:27px;font-weight:700;color:#fff;margin-top:5px;line-height:1.15}
+.stat .v small{font-size:14px;font-weight:400;color:var(--dim);margin-left:5px}
 .stat.hl .v{color:var(--blue)}
+body.ingame .stat.hl .v{color:var(--ingame)}
 
 /* ── 分区 ───────────────────────────────── */
-.cols{display:flex;gap:22px;padding:26px 38px 0}
+.cols{display:flex;gap:22px;padding:24px 38px 0}
 .col{flex:1;min-width:0;display:flex;flex-direction:column}
 .sect{display:flex;align-items:center;gap:10px;margin-bottom:11px}
 .sect i{width:3px;height:15px;background:var(--blue);border-radius:2px;display:block}
 .sect h2{font-size:16.5px;font-weight:700;color:#fff;letter-spacing:.5px}
 .sect em{font-style:normal;font-size:13px;color:var(--dim);margin-left:auto}
+body.ingame .sect i{background:var(--ingame)}
 
 .rows{border:1px solid var(--line);border-radius:4px;overflow:hidden}
 .row{
-  display:flex;align-items:center;gap:15px;padding:11px 15px;
+  display:flex;align-items:center;gap:14px;padding:10px 15px;
   background:var(--rowbg);position:relative;
 }
 .row:nth-child(even){background:var(--rowbg2)}
 .row+.row{border-top:1px solid rgba(255,255,255,.045)}
 .row img{
-  width:132px;height:62px;flex:0 0 132px;object-fit:cover;
+  width:124px;height:58px;flex:0 0 124px;object-fit:cover;
   border-radius:3px;background:#0e141b;display:block;
 }
+.row .rk{
+  font-family:"HMSans",sans-serif;color:var(--blue);font-size:14px;font-weight:700;
+  flex:0 0 24px;text-align:right;
+}
+body.ingame .row .rk{color:var(--ingame)}
 .row-main{flex:1;min-width:0}
 .row-name{
-  font-size:16px;color:var(--white);white-space:nowrap;overflow:hidden;
+  font-size:15.5px;color:var(--white);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;line-height:1.35;
 }
-.bar{height:4px;border-radius:2px;background:rgba(255,255,255,.08);margin-top:8px;overflow:hidden}
+.bar{height:4px;border-radius:2px;background:rgba(255,255,255,.08);margin-top:7px;overflow:hidden}
 .bar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,var(--blue-d),var(--blue))}
+body.ingame .bar i{background:linear-gradient(90deg,#5c7e10,#a3cf06)}
 .row-h{
   text-align:right;flex:0 0 auto;font-family:"HMSans",sans-serif;
   white-space:nowrap;
 }
-.row-h b{font-size:20px;color:var(--blue);font-weight:700}
+.row-h b{font-size:19px;color:var(--blue);font-weight:700}
+body.ingame .row-h b{color:var(--ingame)}
 .row-h span{display:block;font-size:12px;color:var(--dim);margin-top:3px;letter-spacing:.3px}
 .empty{padding:26px 16px;text-align:center;color:var(--dim);font-size:14.5px;background:var(--rowbg2)}
 .subtotal{
-  margin-top:auto;padding:11px 16px;border-radius:4px;display:flex;
+  margin-top:11px;padding:10px 16px;border-radius:4px;display:flex;
   align-items:center;justify-content:space-between;
   background:rgba(103,193,245,.07);border:1px solid rgba(103,193,245,.18);
   font-size:14px;color:var(--txt-2);
 }
 .subtotal b{font-family:"HMSans",sans-serif;font-size:18px;color:var(--blue);font-weight:700}
+body.ingame .subtotal{background:rgba(144,186,60,.07);border-color:rgba(144,186,60,.18)}
+body.ingame .subtotal b{color:var(--ingame)}
+
+/* 等级进度卡（填平左栏）*/
+.lvlcard{
+  margin-top:11px;padding:13px 16px;border-radius:4px;
+  background:var(--rowbg);border:1px solid var(--line);
+}
+.lvlcard .lr{display:flex;align-items:baseline;justify-content:space-between;font-size:13.5px;color:var(--dim)}
+.lvlcard .lr b{font-family:"HMSans",sans-serif;font-size:15px;color:var(--txt-2);font-weight:700}
+.lvlcard .track{height:6px;border-radius:3px;background:rgba(255,255,255,.08);margin-top:9px;overflow:hidden}
+.lvlcard .track i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--blue-d),var(--blue))}
+body.ingame .lvlcard .track i{background:linear-gradient(90deg,#5c7e10,#a3cf06)}
+
+/* 游戏库概览（左栏底部，flex:1 撑满剩余高度 —— 与 Pillow 的自适应高度对应）*/
+.libcard{
+  margin-top:11px;flex:1;display:flex;flex-direction:column;
+  border-radius:4px;background:var(--rowbg);border:1px solid var(--line);overflow:hidden;
+}
+.libcard .lr{
+  flex:1;display:flex;align-items:center;justify-content:space-between;
+  padding:0 16px;font-size:13.5px;color:var(--dim);
+}
+.libcard .lr+.lr{border-top:1px solid rgba(255,255,255,.06)}
+.libcard .lr b{font-family:"HMSans",sans-serif;font-size:15px;color:var(--txt-2);font-weight:700}
+
+/* ── 最近解锁成就 ───────────────────────── */
+.achwrap{margin:22px 38px 0}
+.achlist{display:flex;gap:14px}
+.ach{
+  flex:1;min-width:0;display:flex;gap:11px;align-items:center;
+  padding:11px 14px;border-radius:4px;
+  background:var(--rowbg);border:1px solid var(--line);
+}
+.ach .ico{
+  width:38px;height:38px;flex:0 0 38px;border-radius:4px;
+  background:linear-gradient(135deg,#2a475e,#16202d);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+  font-family:"HMSans",sans-serif;font-size:16px;font-weight:700;color:var(--blue);
+  overflow:hidden;
+}
+.ach .ico img{width:100%;height:100%;object-fit:cover;display:block}
+.ach .tx{min-width:0;flex:1}
+.ach .nm{
+  font-size:14.5px;color:var(--white);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;line-height:1.3;
+}
+.ach .tm{font-size:12px;color:var(--dim);margin-top:3px}
 
 .foot{
-  margin:26px 38px 0;padding:14px 0 22px;border-top:1px solid var(--line);
+  margin:22px 38px 0;padding:14px 0 22px;border-top:1px solid var(--line);
   display:flex;justify-content:space-between;font-size:12.5px;color:var(--dim);
   letter-spacing:.3px;
 }
@@ -179,7 +259,9 @@ body{
   <div class="topright"><span class="dot"></span><span id="tp-state">在线</span></div>
 </div>
 
-<div class="hero"></div>
+<div class="hero">
+  <div class="hero-now" id="hero-now"><i></i><span>正在玩 <b id="now-game">—</b></span></div>
+</div>
 
 <div class="ident">
   <img class="avatar" id="avatar" alt="">
@@ -202,7 +284,9 @@ body{
   <div class="stat"><div class="k">游戏数量</div><div class="v num" id="s-games">—</div></div>
   <div class="stat"><div class="k">累计时长</div><div class="v num" id="s-hours">—<small>小时</small></div></div>
   <div class="stat hl"><div class="k">成就</div><div class="v num" id="s-ach">—</div></div>
-  <div class="stat"><div class="k">在线状态</div><div class="v" id="s-state" style="font-size:23px">—</div></div>
+  <div class="stat"><div class="k">徽章</div><div class="v num" id="s-badges">—</div></div>
+  <div class="stat"><div class="k">好友</div><div class="v num" id="s-friends">—</div></div>
+  <div class="stat"><div class="k">在线状态</div><div class="v" id="s-state" style="font-size:22px">—</div></div>
 </div>
 
 <div class="cols">
@@ -210,11 +294,26 @@ body{
     <div class="sect"><i></i><h2>最近两周</h2><em id="recent-n"></em></div>
     <div class="rows" id="recent"></div>
     <div class="subtotal" id="recent-sum" style="display:none"></div>
+    <div class="lvlcard">
+      <div class="lr"><span>Steam 等级进度</span><span><b id="xp-now">—</b> XP</span></div>
+      <div class="track"><i id="xp-bar" style="width:0%"></i></div>
+      <div class="lr" style="margin-top:7px"><span id="xp-need">—</span><span></span></div>
+    </div>
+    <div class="libcard">
+      <div class="lr"><span>玩过的游戏</span><b id="lib-played">—</b></div>
+      <div class="lr"><span>平均每款时长</span><b id="lib-avg">—</b></div>
+      <div class="lr"><span>最常玩占比</span><b id="lib-share">—</b></div>
+    </div>
   </div>
   <div class="col">
     <div class="sect"><i></i><h2>游戏时长榜</h2><em id="top-n"></em></div>
     <div class="rows" id="top"></div>
   </div>
+</div>
+
+<div class="achwrap">
+  <div class="sect"><i></i><h2>最近解锁的成就</h2><em id="ach-n"></em></div>
+  <div class="achlist" id="achs"></div>
 </div>
 
 <div class="foot">
@@ -234,6 +333,9 @@ window.CARD_DATA = /*__CARD_DATA__*/null;
     .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 
   const P = D.profile || {}, S = D.stats || {};
+  const ingame = P.state_kind === "ingame" || !!P.game_now;
+  if (ingame) document.body.classList.add("ingame");
+
   document.getElementById("pname").textContent = P.name || "—";
   document.getElementById("lvl-txt").textContent = P.level != null ? P.level : "—";
   document.getElementById("created").textContent = P.created || "—";
@@ -246,19 +348,40 @@ window.CARD_DATA = /*__CARD_DATA__*/null;
   stEl.querySelector("span").textContent = P.state_text || (on ? "在线" : "离线");
   document.getElementById("tp-state").textContent = P.state_text || (on ? "在线" : "离线");
 
+  // 游戏中 → hero 右侧显示当前游戏
+  if (P.game_now) {
+    document.getElementById("now-game").textContent = P.game_now;
+    document.getElementById("hero-now").classList.add("on");
+  }
+
   document.getElementById("s-games").textContent = S.games != null ? S.games : "—";
   document.getElementById("s-hours").innerHTML =
     (S.hours != null ? Number(S.hours).toLocaleString("en-US") : "—") + "<small>小时</small>";
   document.getElementById("s-ach").textContent =
     (S.ach_got != null ? S.ach_got + " / " + S.ach_total : "—");
+  document.getElementById("s-badges").textContent = S.badges != null ? S.badges : "—";
+  document.getElementById("s-friends").textContent = S.friends != null ? S.friends : "—";
   document.getElementById("s-state").textContent = P.state_text || (on ? "在线" : "离线");
   document.getElementById("updated").textContent = D.updated || "";
+
+  // 等级进度
+  if (S.xp != null) {
+    document.getElementById("xp-now").textContent = Number(S.xp).toLocaleString("en-US");
+    const need = Number(S.xp_need || 0);
+    const pct = need > 0 ? Math.max(1, Math.min(100, (Number(S.xp_cur || 0) / need) * 100)) : 100;
+    document.getElementById("xp-bar").style.width = pct.toFixed(1) + "%";
+    document.getElementById("xp-need").textContent = need > 0
+      ? "距下一级还需 " + Number(need - (S.xp_cur || 0)).toLocaleString("en-US") + " XP"
+      : "已达最高等级";
+  } else {
+    document.getElementById("xp-need").textContent = "等级数据不可用";
+  }
 
   function rowHTML(g, maxH, rank){
     const h = Number(g.hours || 0);
     const pct = maxH > 0 ? Math.max(2, Math.min(100, h / maxH * 100)) : 0;
     const img = g.img ? `<img src="${g.img}" alt="">` : `<img alt="">`;
-    const rk = rank ? `<span style="font-family:HMSans;color:#67c1f5;font-size:14px;font-weight:700;flex:0 0 26px;text-align:right">${rank}</span>` : "";
+    const rk = rank ? `<span class="rk">${rank}</span>` : "";
     return `<div class="row">${rk}${img}
       <div class="row-main">
         <div class="row-name">${esc(g.name)}</div>
@@ -288,6 +411,24 @@ window.CARD_DATA = /*__CARD_DATA__*/null;
     ? top.map((g, i) => rowHTML(g, maxT, i + 1)).join("")
     : `<div class="empty">没有数据</div>`;
   document.getElementById("top-n").textContent = top.length ? "共 " + (S.games || top.length) + " 款" : "";
+
+  const achs = D.achievements || [];
+  document.getElementById("achs").innerHTML = achs.length
+    ? achs.map(a => `<div class="ach">
+        <div class="ico">${a.icon ? `<img src="${a.icon}" alt="">` : "ACH"}</div>
+        <div class="tx"><div class="nm">${esc(a.name)}</div><div class="tm">${esc(a.game || D.ach_game || "")} · ${esc(a.date || "")}</div></div>
+      </div>`).join("")
+    : `<div class="empty" style="flex:1;border-radius:4px;border:1px solid var(--line)">近期没有解锁记录</div>`;
+  document.getElementById("ach-n").textContent = achs.length ? achs.length + " 项" : "";
+
+  // 游戏库概览
+  const L = D.library || {};
+  document.getElementById("lib-played").textContent =
+    (L.played != null ? L.played : "—") + " / " + (S.games != null ? S.games : "—") + " 款";
+  document.getElementById("lib-avg").textContent =
+    (L.avg != null ? Number(L.avg).toFixed(1) : "—") + " 小时";
+  document.getElementById("lib-share").textContent =
+    (L.top_share != null ? Number(L.top_share).toFixed(1) : "—") + "%";
 })();
 </script>
 </body>
