@@ -3,6 +3,8 @@
 > 服务地址：`https://steamapi.truslerweb.dpdns.org`
 > 部署方式与踩坑见 `deploy/cf-steam-proxy/README.md`（Cloudflare Worker）
 >
+> 作者：**Trusler** · [@Trusler258](https://github.com/Trusler258) ｜ © 2026
+>
 > 文中的响应结构与耗时**均为实测**；`steamid`、`TOKEN` 等已替换成占位符。
 
 ## 一、它是干什么的
