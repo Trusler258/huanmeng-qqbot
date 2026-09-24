@@ -131,3 +131,7 @@ data/steam_cache/
 
 # 排查/调试产物（下划线开头）
 data/_*
+
+# CF Worker 的临时密钥文件（绝不入库）
+deploy/cf-steam-proxy/_secrets.json
+deploy/cf-steam-proxy/.dev.vars

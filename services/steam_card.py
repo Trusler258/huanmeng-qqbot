@@ -97,7 +97,8 @@ async def _fetch_payload(steamid: str, top_n: int, recent_n: int, ach_n: int) ->
         S.friend_count(steamid),
     )
     ach = await S.achievements(steamid, ACH_APPID)
-    ach_recent = await S.recent_achievements(steamid, ACH_APPID, ach_n)
+    # 传入 ach 复用：recent_achievements 内部本会再查一次（跨境白花一趟）
+    ach_recent = await S.recent_achievements(steamid, ACH_APPID, ach_n, ach_data=ach)
     # 成就图标（小图，并发下载并落盘缓存 → 转 data URI）
     if ach_recent:
         icons = await asyncio.gather(*[
@@ -112,13 +113,19 @@ async def _fetch_payload(steamid: str, top_n: int, recent_n: int, ach_n: int) ->
     recent = sorted(recent_raw, key=lambda g: g.get("playtime_2weeks", 0),
                     reverse=True)[:recent_n]
 
+    # 先批量预取这十几款的中文名（一次请求搞定）——否则下面 _enrich 会逐个查，
+    # 走代理时每趟跨境 1~2s，冷启动要多花十几秒
+    await S.prefetch_zh_names([g.get("appid") for g in (top + recent)])
+
     # 库存价值（分批查 store，带 24h 缓存；免费/锁区游戏计入 unpriced）
     # 注意：必须在 games 定义**之后**调用（曾在定义前引用，报 UnboundLocalError）
     value = await S.library_value([g.get("appid") for g in games])
 
     top_items = list(await asyncio.gather(*[_enrich(g, "playtime_forever") for g in top]))
     recent_items = list(await asyncio.gather(*[_enrich(g, "playtime_2weeks") for g in recent]))
-    avatar = _data_uri(await S.avatar_file(steamid, prof.get("avatar", "")))
+    # 头像只取一次（原来在 profile 里又 await 了一次 avatar_file）
+    avatar_path = await S.avatar_file(steamid, prof.get("avatar", ""))
+    avatar = _data_uri(avatar_path)
 
     created = ""
     if prof.get("created"):
@@ -142,7 +149,7 @@ async def _fetch_payload(steamid: str, top_n: int, recent_n: int, ach_n: int) ->
             "state_text": prof.get("state_text", ""),
             "game_now": prof.get("in_game", ""),
             "avatar": avatar,
-            "avatar_path": str(await S.avatar_file(steamid, prof.get("avatar", ""))),
+            "avatar_path": str(avatar_path),
         },
         "stats": {
             "games": owned.get("count", len(games)),
@@ -178,6 +185,10 @@ async def _fetch_payload(steamid: str, top_n: int, recent_n: int, ach_n: int) ->
 # ── 缓存快照（Steam 在国内时通时断，实测整段 API 会连续超时）──────
 CACHE_DIR = ROOT / "data" / "steam_cache"
 CACHE_MAX_AGE = 86400 * 3        # 3 天内的快照还能用
+FRESH_TTL = 90.0                 # 秒：这么新的快照**直接出图**，同时后台刷新
+                                 #   （stale-while-revalidate —— 重复查询毫秒级返回，
+                                 #    代价是「正在玩」最多滞后 90 秒）
+_refreshing: set = set()
 
 
 def _cache_file(steamid: str) -> Path:
@@ -211,14 +222,58 @@ def _load_cache(steamid: str) -> dict:
         return {}
 
 
+def _load_raw(steamid: str):
+    """读快照原始内容（**不**标 stale），返回 (payload, 距今年龄秒)"""
+    try:
+        d = json.loads(_cache_file(steamid).read_text(encoding="utf-8"))
+        ts = float(d.get("_cached_at") or 0)
+        return (d, time.time() - ts) if ts else (None, 1e9)
+    except Exception:
+        return None, 1e9
+
+
+def _spawn_refresh(steamid: str, top_n: int, recent_n: int, ach_n: int) -> None:
+    """后台刷新快照（不阻塞本次出图）；同一 steamid 同时只跑一个"""
+    if steamid in _refreshing:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _refreshing.add(steamid)
+
+    async def _job():
+        try:
+            p = await _fetch_payload(steamid, top_n, recent_n, ach_n)
+            if p:
+                p["_cached_at"] = time.time()
+                _save_cache(steamid, p)
+                logger.debug("后台刷新快照完成 steamid=%s", steamid)
+        except Exception as e:
+            logger.debug("后台刷新快照失败: %s: %r", type(e).__name__, e)
+        finally:
+            _refreshing.discard(steamid)
+
+    loop.create_task(_job())
+
+
 async def build_payload(steamid: str, top_n: int = 10, recent_n: int = 8,
                         ach_n: int = 4) -> dict:
     """取全部要展示的数据。
 
-    Steam 在国内会整段不通（实测 api+store 同时 http=000），所以：
-      成功 → 落盘快照；失败 → 回退最近 3 天内的快照（payload["stale"]=True，
-      渲染层在页脚标注"缓存数据"）。两者都不可用才返回 {}。
+    三级策略（按代价从低到高）：
+      1. 快照在 FRESH_TTL 内 → **直接返回**（毫秒级出图），同时后台静默刷新
+      2. 真取数：成功 → 落盘快照
+      3. 取数失败 → 回退 3 天内的快照（payload["stale"]=True，
+         渲染层在页脚标注"缓存数据 X 小时前"）；两者都不可用才返回 {}
     """
+    raw, age = _load_raw(steamid)
+    if raw and raw.get("profile") and age <= FRESH_TTL:
+        raw["stale"] = False
+        _spawn_refresh(steamid, top_n, recent_n, ach_n)
+        logger.debug("命中新鲜快照（%.0fs 前），直接出图并后台刷新", age)
+        return raw
+
     payload = {}
     # 先花几秒探测连通性：不通就直接走快照，别让用户干等 25s 超时
     if not await S.reachable():
