@@ -27,7 +27,7 @@ HELP = "\n".join([
     "【Steam 指令 /~steam】",
     "  price <游戏名|链接>  价格 · 折扣 · 地区对比（+史低）",
     "  px <游戏名>          快捷版，只给第一条匹配",
-    "  who [@某人]          查 Steam 状态（发卡片图）",
+    "  who [@某人] / me     查 Steam 状态（发卡片图）",
     "  bd <SteamID|链接>    绑定；bd 查看；bd del 解绑；bd list 列表",
     "  help                 本帮助",
     "另一种写法：/~在干嘛 @某人",
@@ -283,6 +283,9 @@ async def cmd_steam(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not rest:
             return "用法：/~steam px <游戏名>"
         return await _do_price(" ".join(rest), short=True)
+    if action in ("me", "自己", "我的"):
+        # /~steam me —— 看自己（等同 who 不带参数，跟 /~wdsj me 的习惯一致）
+        return await _do_who([], user_id, group_id, is_group, sender_name)
     if action in ("who", "谁", "状态"):
         return await _do_who(rest, user_id, group_id, is_group, sender_name)
     if action in ("bd", "bind", "绑定"):
