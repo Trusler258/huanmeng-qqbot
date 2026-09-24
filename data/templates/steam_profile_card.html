@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!--
+  Steam 风格个人资料卡
+
+  视觉依据：抓自 store.steampowered.com/public/css/v6/home.css（官方 CSS）
+    主背景 #1b2838 / 更深处 #0a141d / 顶栏 #171a21
+    招牌渐变 linear-gradient(-60deg, #67c1f5 0%, #417a9b 100%)
+    强调色 #67c1f5（官方 CSS 中出现 35 次，最高频）/ 深蓝 #417a9b
+    正文 #c6d4df、#c7d5e0   次要 #8f98a0
+  字体：拉丁/数字 = HarmonyOS Sans Medium（子集内联，17KB）；中文回退 Noto Sans CJK SC（服务器已装）
+    ⚠️ Steam 官方 Motiva Sans 是商业字体（授权禁止未购买使用），不内联
+
+  注入点（⚠️ 字面量只能出现在真正被替换的位置！注释里再写一遍会被
+  str.replace(...,1) 抢走第一处，导致数据被塞进注释、真注入点空着 —— 已踩过）：
+    · 字体 base64 → head 内 @font-face 的 url()
+    · 数据 JSON  → body 末尾的 window.CARD_DATA
+-->
+<style>
+@font-face{
+  font-family:"HMSans";
+  src:url(data:font/woff2;base64,__FONT_B64__) format("woff2");
+  font-weight:400 700;
+  font-display:block;
+}
+:root{
+  --bg-1:#1b2838;
+  --bg-2:#0a141d;
+  --topbar:#171a21;
+  --blue:#67c1f5;
+  --blue-d:#417a9b;
+  --txt:#c6d4df;
+  --txt-2:#c7d5e0;
+  --white:#ffffff;
+  --dim:#8f98a0;
+  --line:rgba(255,255,255,.07);
+  --rowbg:rgba(0,0,0,.20);
+  --rowbg2:rgba(0,0,0,.10);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  width:1600px;
+  font-family:"HMSans","Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;
+  background:linear-gradient(180deg,var(--bg-1) 0%,var(--bg-2) 100%);
+  color:var(--txt);
+  -webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;
+}
+.num{font-family:"HMSans",sans-serif;font-variant-numeric:tabular-nums}
+
+/* ── 顶栏 ───────────────────────────────── */
+.topbar{
+  height:58px;background:var(--topbar);
+  display:flex;align-items:center;gap:22px;padding:0 38px;
+  border-bottom:1px solid rgba(0,0,0,.5);
+}
+.brand{
+  font-family:"HMSans",sans-serif;font-size:23px;font-weight:700;
+  letter-spacing:2.5px;color:#fff;opacity:.95;
+}
+.brand span{color:var(--blue)}
+.topnav{display:flex;gap:20px;font-size:14.5px;color:var(--dim)}
+.topnav b{color:var(--blue);font-weight:500}
+.topright{margin-left:auto;display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--blue);box-shadow:0 0 8px rgba(103,193,245,.85)}
+
+/* ── Hero 蓝色渐变横幅 ──────────────────── */
+.hero{
+  height:118px;position:relative;overflow:hidden;
+  background:linear-gradient(-60deg,#67c1f5 0%,#417a9b 55%,#2a475e 100%);
+}
+.hero::after{
+  content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(-60deg,rgba(255,255,255,.07) 0 2px,transparent 2px 16px);
+}
+.hero::before{
+  content:"";position:absolute;inset:0;
+  background:linear-gradient(180deg,rgba(10,20,29,.15) 0%,rgba(10,20,29,.65) 100%);
+}
+
+/* ── 资料区 ─────────────────────────────── */
+.ident{display:flex;gap:26px;padding:0 38px;margin-top:-58px;position:relative;z-index:2}
+.avatar{
+  width:150px;height:150px;border-radius:6px;flex:0 0 150px;
+  border:3px solid #2a475e;background:#0e141b;object-fit:cover;
+  box-shadow:0 6px 22px rgba(0,0,0,.6);
+}
+.ident-main{padding-top:66px;flex:1;min-width:0}
+.nameline{display:flex;align-items:baseline;gap:16px}
+.pname{font-size:36px;font-weight:700;color:#fff;letter-spacing:.3px}
+.state{
+  display:inline-flex;align-items:center;gap:8px;font-size:15px;
+  color:var(--blue);background:rgba(103,193,245,.10);
+  border:1px solid rgba(103,193,245,.32);border-radius:3px;padding:3px 12px;
+}
+.state.off{color:var(--dim);background:rgba(143,152,160,.10);border-color:rgba(143,152,160,.3)}
+/* Steam 的「游戏中」是绿色，与在线的蓝色区分开 */
+.state.ingame{color:#90ba3c;background:rgba(144,186,60,.10);border-color:rgba(144,186,60,.35)}
+.state i{width:8px;height:8px;border-radius:50%;background:currentColor;display:block}
+.meta{margin-top:12px;font-size:15px;color:var(--dim);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.meta .sep{opacity:.35}
+.meta b{color:var(--txt-2);font-weight:500}
+.lvl{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:30px;height:30px;padding:0 8px;border-radius:50%;
+  background:radial-gradient(circle at 50% 30%,#2a475e,#16202d);
+  border:1px solid var(--blue-d);color:var(--blue);
+  font-family:"HMSans",sans-serif;font-size:15px;font-weight:700;
+}
+
+/* ── 统计条 ─────────────────────────────── */
+.stats{
+  margin:24px 38px 0;display:flex;
+  background:var(--rowbg);border:1px solid var(--line);border-radius:4px;
+  overflow:hidden;
+}
+.stat{flex:1;padding:17px 24px;position:relative}
+.stat+.stat::before{content:"";position:absolute;left:0;top:16%;height:68%;width:1px;background:var(--line)}
+.stat .k{font-size:13.5px;color:var(--dim);letter-spacing:.4px}
+.stat .v{font-family:"HMSans",sans-serif;font-size:29px;font-weight:700;color:#fff;margin-top:5px;line-height:1.15}
+.stat .v small{font-size:15px;font-weight:400;color:var(--dim);margin-left:5px}
+.stat.hl .v{color:var(--blue)}
+
+/* ── 分区 ───────────────────────────────── */
+.cols{display:flex;gap:22px;padding:26px 38px 0}
+.col{flex:1;min-width:0;display:flex;flex-direction:column}
+.sect{display:flex;align-items:center;gap:10px;margin-bottom:11px}
+.sect i{width:3px;height:15px;background:var(--blue);border-radius:2px;display:block}
+.sect h2{font-size:16.5px;font-weight:700;color:#fff;letter-spacing:.5px}
+.sect em{font-style:normal;font-size:13px;color:var(--dim);margin-left:auto}
+
+.rows{border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.row{
+  display:flex;align-items:center;gap:15px;padding:11px 15px;
+  background:var(--rowbg);position:relative;
+}
+.row:nth-child(even){background:var(--rowbg2)}
+.row+.row{border-top:1px solid rgba(255,255,255,.045)}
+.row img{
+  width:132px;height:62px;flex:0 0 132px;object-fit:cover;
+  border-radius:3px;background:#0e141b;display:block;
+}
+.row-main{flex:1;min-width:0}
+.row-name{
+  font-size:16px;color:var(--white);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;line-height:1.35;
+}
+.bar{height:4px;border-radius:2px;background:rgba(255,255,255,.08);margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,var(--blue-d),var(--blue))}
+.row-h{
+  text-align:right;flex:0 0 auto;font-family:"HMSans",sans-serif;
+  white-space:nowrap;
+}
+.row-h b{font-size:20px;color:var(--blue);font-weight:700}
+.row-h span{display:block;font-size:12px;color:var(--dim);margin-top:3px;letter-spacing:.3px}
+.empty{padding:26px 16px;text-align:center;color:var(--dim);font-size:14.5px;background:var(--rowbg2)}
+.subtotal{
+  margin-top:auto;padding:11px 16px;border-radius:4px;display:flex;
+  align-items:center;justify-content:space-between;
+  background:rgba(103,193,245,.07);border:1px solid rgba(103,193,245,.18);
+  font-size:14px;color:var(--txt-2);
+}
+.subtotal b{font-family:"HMSans",sans-serif;font-size:18px;color:var(--blue);font-weight:700}
+
+.foot{
+  margin:26px 38px 0;padding:14px 0 22px;border-top:1px solid var(--line);
+  display:flex;justify-content:space-between;font-size:12.5px;color:var(--dim);
+  letter-spacing:.3px;
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">STEAM<span>.</span></div>
+  <div class="topnav"><b>个人资料</b><span>游戏库</span><span>成就</span></div>
+  <div class="topright"><span class="dot"></span><span id="tp-state">在线</span></div>
+</div>
+
+<div class="hero"></div>
+
+<div class="ident">
+  <img class="avatar" id="avatar" alt="">
+  <div class="ident-main">
+    <div class="nameline">
+      <div class="pname" id="pname">—</div>
+      <div class="state" id="state"><i></i><span>在线</span></div>
+    </div>
+    <div class="meta">
+      <span>Steam 等级 <b id="lvl-txt">—</b></span>
+      <span class="sep">|</span>
+      <span>注册于 <b id="created">—</b></span>
+      <span class="sep">|</span>
+      <span id="sid" class="num">—</span>
+    </div>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="k">游戏数量</div><div class="v num" id="s-games">—</div></div>
+  <div class="stat"><div class="k">累计时长</div><div class="v num" id="s-hours">—<small>小时</small></div></div>
+  <div class="stat hl"><div class="k">成就</div><div class="v num" id="s-ach">—</div></div>
+  <div class="stat"><div class="k">在线状态</div><div class="v" id="s-state" style="font-size:23px">—</div></div>
+</div>
+
+<div class="cols">
+  <div class="col">
+    <div class="sect"><i></i><h2>最近两周</h2><em id="recent-n"></em></div>
+    <div class="rows" id="recent"></div>
+    <div class="subtotal" id="recent-sum" style="display:none"></div>
+  </div>
+  <div class="col">
+    <div class="sect"><i></i><h2>游戏时长榜</h2><em id="top-n"></em></div>
+    <div class="rows" id="top"></div>
+  </div>
+</div>
+
+<div class="foot">
+  <span>数据来源 Steam Web API · 仅公开展示</span>
+  <span id="updated">—</span>
+</div>
+
+<script>
+// 数据注入点：bot 用真实数据 JSON 替换下面这行的 null（标记在文件中唯一）
+window.CARD_DATA = /*__CARD_DATA__*/null;
+
+(function render(){
+  const D = window.CARD_DATA;
+  if (!D) return;                                  // 未注入时静默，便于原型预览
+
+  const esc = s => String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+  const P = D.profile || {}, S = D.stats || {};
+  document.getElementById("pname").textContent = P.name || "—";
+  document.getElementById("lvl-txt").textContent = P.level != null ? P.level : "—";
+  document.getElementById("created").textContent = P.created || "—";
+  document.getElementById("sid").textContent = P.steamid || "—";
+  if (P.avatar) document.getElementById("avatar").src = P.avatar;
+
+  const stEl = document.getElementById("state");
+  const on = !!P.online;
+  stEl.className = "state" + (P.state_kind ? " " + P.state_kind : (on ? "" : " off"));
+  stEl.querySelector("span").textContent = P.state_text || (on ? "在线" : "离线");
+  document.getElementById("tp-state").textContent = P.state_text || (on ? "在线" : "离线");
+
+  document.getElementById("s-games").textContent = S.games != null ? S.games : "—";
+  document.getElementById("s-hours").innerHTML =
+    (S.hours != null ? Number(S.hours).toLocaleString("en-US") : "—") + "<small>小时</small>";
+  document.getElementById("s-ach").textContent =
+    (S.ach_got != null ? S.ach_got + " / " + S.ach_total : "—");
+  document.getElementById("s-state").textContent = P.state_text || (on ? "在线" : "离线");
+  document.getElementById("updated").textContent = D.updated || "";
+
+  function rowHTML(g, maxH, rank){
+    const h = Number(g.hours || 0);
+    const pct = maxH > 0 ? Math.max(2, Math.min(100, h / maxH * 100)) : 0;
+    const img = g.img ? `<img src="${g.img}" alt="">` : `<img alt="">`;
+    const rk = rank ? `<span style="font-family:HMSans;color:#67c1f5;font-size:14px;font-weight:700;flex:0 0 26px;text-align:right">${rank}</span>` : "";
+    return `<div class="row">${rk}${img}
+      <div class="row-main">
+        <div class="row-name">${esc(g.name)}</div>
+        <div class="bar"><i style="width:${pct.toFixed(1)}%"></i></div>
+      </div>
+      <div class="row-h"><b>${h.toLocaleString("en-US",{minimumFractionDigits:1,maximumFractionDigits:1})}</b><span>小时</span></div>
+    </div>`;
+  }
+
+  const recent = D.recent || [];
+  const maxR = Math.max.apply(null, recent.map(g => Number(g.hours || 0)).concat([1]));
+  document.getElementById("recent").innerHTML = recent.length
+    ? recent.map(g => rowHTML(g, maxR, 0)).join("")
+    : `<div class="empty">最近两周没有游玩记录</div>`;
+  document.getElementById("recent-n").textContent = recent.length ? recent.length + " 款" : "";
+  const sumEl = document.getElementById("recent-sum");
+  if (sumEl && recent.length && D.recent_sum != null) {
+    sumEl.style.display = "flex";
+    sumEl.innerHTML = "<span>两周合计</span><span><b>"
+      + Number(D.recent_sum).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      + "</b> 小时</span>";
+  }
+
+  const top = D.top || [];
+  const maxT = Math.max.apply(null, top.map(g => Number(g.hours || 0)).concat([1]));
+  document.getElementById("top").innerHTML = top.length
+    ? top.map((g, i) => rowHTML(g, maxT, i + 1)).join("")
+    : `<div class="empty">没有数据</div>`;
+  document.getElementById("top-n").textContent = top.length ? "共 " + (S.games || top.length) + " 款" : "";
+})();
+</script>
+</body>
+</html>
