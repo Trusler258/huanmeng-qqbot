@@ -23,7 +23,8 @@ import os
 import httpx
 
 from core.logger import get_logger
-from modules._auto_update.engine import GITHUB_API, GITHUB_BRANCH, GITHUB_REPO
+from modules._auto_update.engine import (GITHUB_API, GITHUB_BRANCH, GITHUB_REPO,
+                                         _gh_headers)
 from modules._auto_update.safe_update import safe_check_and_update
 
 logger = get_logger("auto_update")
@@ -154,7 +155,11 @@ async def _test_connectivity() -> str:
     # 1. DNS / 直连
     try:
         async with httpx.AsyncClient(timeout=8, verify=False) as c:
-            r = await c.get(f"{GITHUB_API}/commits/{GITHUB_BRANCH}")
+            # ★ 必须带 token 头（v2.3.54）：匿名配额仅 60 次/小时，而"连通性测试"
+            #   恰恰是用来排查限流的，不能自己反过来撞在限流上（否则配了 token
+            #   也显示"触发限流"，误判成没配好）。
+            r = await c.get(f"{GITHUB_API}/commits/{GITHUB_BRANCH}",
+                            headers=_gh_headers())
         ms = int((time.time() - t0) * 1000)
         if r.status_code == 200:
             data = r.json()
