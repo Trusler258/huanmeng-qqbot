@@ -5,7 +5,7 @@
 
 指令入口：/~steam price|px|who|bd|help、/~在干嘛
 
-⚠️ 三条实测经验（都踩过，改这个文件前先读）：
+注意：三条实测经验（都踩过，改这个文件前先读）：
   1. 查账号**必须**用 SteamID64 或资料链接，绝不用昵称猜 vanity ——
      曾用 ResolveVanityURL?vanityurl=trusler 解析到一个陌生人（他抢注了这个自定义 URL），
      白排查一小时并误导用户去改本来没问题的隐私设置。
@@ -171,7 +171,7 @@ async def resolve_steamid(text: str) -> tuple:
     """把用户输入解析成 SteamID64
 
     返回 (steamid, 错误提示)。支持：SteamID64 / profiles 链接 / id/xxx 链接。
-    ⚠️ 不猜昵称 —— 那是踩过的坑。
+    注意：不猜昵称 —— 那是踩过的坑。
     """
     if not steam_key():
         return "", "未配置 STEAM_KEY"
@@ -234,7 +234,7 @@ async def player_summary(steamid: str) -> dict:
 async def owned_games(steamid: str) -> dict:
     """游戏库 + 时长
 
-    ⚠️ 不加 include_appinfo：那个响应大 10 倍（实测 15KB 要 100s），
+    注意：不加 include_appinfo：那个响应大 10 倍（实测 15KB 要 100s），
     游戏名走 zh_name() 单独查（反正中文名也要查 store）。
     """
     r = await _api("IPlayerService/GetOwnedGames/v1/", steamid=steamid,
@@ -274,6 +274,122 @@ async def achievements(steamid: str, appid: int) -> dict:
             "total": len(ach), "list": ach}
 
 
+async def friend_count(steamid: str) -> Optional[int]:
+    """好友数。资料/好友列表不公开时返回 None（展示成 —，不是 0）"""
+    try:
+        r = await _api("ISteamUser/GetFriendList/v1/", steamid=steamid,
+                       relationship="friend")
+    except Exception as e:
+        logger.debug("好友列表不可用 %s: %s", steamid, e)
+        return None
+    fl = (r.get("friendslist") or {}).get("friends")
+    return len(fl) if fl is not None else None
+
+
+async def profile_badges(steamid: str) -> dict:
+    """徽章数 + 等级 XP 进度。
+
+    XP 三个字段的语义（容易搞混）：
+      player_xp                       总 XP
+      player_xp_needed_current_level  当前等级起点所需 XP
+      player_xp_needed_to_level_up    距下一级还需多少 XP
+    → 本级的已得 XP = player_xp - player_xp_needed_current_level
+    """
+    try:
+        r = await _api("IPlayerService/GetBadges/v1/", steamid=steamid)
+    except Exception as e:
+        logger.debug("徽章数据不可用 %s: %s", steamid, e)
+        return {}
+    b = r.get("response") or {}
+    if not b:
+        return {}
+    total = b.get("player_xp")
+    base = b.get("player_xp_needed_current_level")
+    need = b.get("player_xp_needed_to_level_up")
+    cur = None
+    if isinstance(total, int) and isinstance(base, int):
+        cur = max(0, total - base)
+    return {"count": len(b.get("badges") or []), "xp": total, "level": b.get("player_level"),
+            "xp_cur": cur, "xp_need": need}
+
+
+# 成就定义缓存：schema 一天都不会变，进程内存缓存足够（重启即失效）
+_schema_cache: dict = {}
+ACH_DIR = DATA / "steam_assets" / "ach"
+
+
+async def ach_schema(appid) -> dict:
+    """成就定义 apiname -> {name, desc, hidden, icon}，中文优先（l=schinese）"""
+    key = str(appid)
+    if key in _schema_cache:
+        return _schema_cache[key]
+    m: dict = {}
+    try:
+        r = await _api("ISteamUserStats/GetSchemaForGame/v2/", appid=appid, l="schinese")
+        st = ((r.get("game") or {}).get("availableGameStats") or {})
+        for a in st.get("achievements") or []:
+            an = a.get("name")
+            if an:
+                m[an] = {"name": a.get("displayName") or an,
+                         "desc": a.get("description") or "",
+                         "hidden": bool(a.get("hidden")),
+                         "icon": a.get("icon") or ""}
+    except Exception as e:
+        logger.warning("成就定义获取失败 appid=%s: %s", appid, e)
+    _schema_cache[key] = m
+    return m
+
+
+async def ach_icon(appid, apiname: str, url: str) -> Optional[Path]:
+    """成就图标（小图，缓存到 data/steam_assets/ach/）
+
+    schema 给的域名是 steamcdn-a.akamaihd.net，国内不稳；
+    换 cloudflare / fastly 两个 CDN 镜像试（头像那边也是同一套路）。
+    """
+    if not url:
+        return None
+    try:
+        ACH_DIR.mkdir(parents=True, exist_ok=True)
+        out = ACH_DIR / ("%s_%s.jpg" % (appid, apiname))
+        if out.exists() and out.stat().st_size > 0:
+            return out
+        for host in ("cdn.cloudflare.steamstatic.com", "cdn.akamai.steamstatic.com"):
+            try:
+                u = re.sub(r"^https?://[^/]+", "https://" + host, url)
+                raw = await _get_bytes(u, timeout=20)
+                if raw:
+                    out.write_bytes(raw)
+                    return out
+            except Exception as e:
+                logger.debug("成就图标下载失败 %s %s: %s", host, apiname, e)
+    except Exception as e:
+        logger.debug("成就图标缓存失败 %s: %s", apiname, e)
+    return None
+
+
+async def recent_achievements(steamid: str, appid, limit: int = 4) -> list:
+    """最近解锁的成就（按 unlocktime 倒序）。拿不到返回空列表"""
+    res = await achievements(steamid, appid)
+    lst = [a for a in (res.get("list") or []) if a.get("achieved")]
+    if not lst:
+        return []
+    lst.sort(key=lambda x: x.get("unlocktime", 0), reverse=True)
+    sch = await ach_schema(appid)
+    out = []
+    for a in lst[:limit]:
+        apiname = a.get("apiname") or ""
+        info = sch.get(apiname) or {}
+        ts = a.get("unlocktime") or 0
+        out.append({
+            "apiname": apiname,
+            "name": info.get("name") or apiname,
+            "date": time.strftime("%Y-%m-%d", time.localtime(ts)) if ts else "",
+            "ts": ts,
+            "icon_url": info.get("icon") or "",
+        })
+    return out
+
+
 # ── 游戏名（中文优先，带缓存）────────────────────────────────
 
 _zh_cache: Optional[dict] = None
@@ -304,9 +420,12 @@ def flush_zh() -> None:
 
 
 async def zh_name(appid, fallback: str = "") -> str:
-    """中文游戏名。Web API 只给英文名，中文只能查 store（l=schinese）
+    """游戏名（中文优先，查不到退英文）
 
-    ⚠️ 查不到时**不写缓存** —— store 时通时断，写空值会导致以后永远拿不到。
+    注意两点（都实测过）：
+      1. 查不到时**不写缓存** —— store 时通时断，写空值会导致以后永远拿不到。
+      2. `l=schinese` 对没有中文名的游戏会返回**英文名**（Steam 的行为）；
+         真的返回空时再试一次 `l=english`，避免卡片上出现 "appid 1167630" 这种兜底。
     """
     global _zh_dirty
     cache = _load_zh()
@@ -314,13 +433,18 @@ async def zh_name(appid, fallback: str = "") -> str:
     if cache.get(k):
         return cache[k]
     name = ""
-    try:
-        d = await _get_json(f"{STORE}/api/appdetails",
-                            {"appids": appid, "filters": "basic",
-                             "cc": "cn", "l": "schinese"}, timeout=20)
-        name = ((d.get(k) or {}).get("data") or {}).get("name") or ""
-    except Exception as e:
-        logger.debug("中文名查询失败 appid=%s: %s", appid, e)
+    for lang in ("schinese", "english"):
+        try:
+            # 超时给到 30s：国内到 store 时通时断，20s 会偶发丢名字
+            # （表现为卡片上出现 "appid 1167630"，实际 store 是查得到的）
+            d = await _get_json(f"{STORE}/api/appdetails",
+                                {"appids": appid, "filters": "basic",
+                                 "cc": "cn", "l": lang}, timeout=30)
+            name = ((d.get(k) or {}).get("data") or {}).get("name") or ""
+        except Exception as e:
+            logger.debug("游戏名查询失败 appid=%s lang=%s: %s", appid, lang, e)
+        if name:
+            break
     if name:
         cache[k] = name
         _zh_dirty = True
@@ -388,7 +512,7 @@ async def history_low(appid, cc: str = "cn") -> dict:
     调用方降级成"暂无史低数据"，不影响其它信息。
 
     两步：lookup（appid → ITAD id，GET）→ prices/v3（POST，body 是 id 数组）
-    ⚠️ prices/v3 必须 POST，写 GET 会 405（此段未实测，缺 key —— 拿到 key 后校验）
+    注意：prices/v3 必须 POST，写 GET 会 405（此段未实测，缺 key —— 拿到 key 后校验）
     """
     key = itad_key()
     if not key:
