@@ -82,24 +82,109 @@ def has_key() -> bool:
 
 
 # ── HTTP ──────────────────────────────────────────────────────
+#
+# 两条取数通道（配了 STEAM_PROXY 走 Worker，否则一切照旧直连）：
+#   直连：服务器 → Steam（国内时通时断，不通时每个请求干等 25~30s 超时）
+#   代理：服务器 → CF Worker（境外边缘）→ Steam；Worker 源码 deploy/cf-steam-proxy/
+#
+# 实测收益（92 款游戏价格）：直连 75,013 ms → 代理 3,873 ms，
+# 且有价覆盖 37/92 → 72/92（Worker 侧到 Steam 更稳，拿得全）。
+
+_PROXY_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+# 共享 AsyncClient：跨境每趟 TLS 握手要 1~2s，复用连接后同一批请求能省掉大部分。
+# 注意 httpx.AsyncClient 绑定 event loop —— 探针里多次 asyncio.run 会换 loop，
+# 所以检测到 loop 变化就重建（否则报 "attached to a different loop"）。
+_client = None
+_client_loop = None
+
+
+def _http_client():
+    import asyncio
+    import httpx
+    global _client, _client_loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if _client is None or _client.is_closed or _client_loop is not loop:
+        _client = httpx.AsyncClient(
+            timeout=30.0, trust_env=False, verify=False, headers=UA,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=16,
+                                keepalive_expiry=90.0))
+        _client_loop = loop
+    return _client
+
+
+def proxy_url() -> str:
+    return _env("STEAM_PROXY").rstrip("/")
+
+
+def proxy_token() -> str:
+    return _env("STEAM_PROXY_TOKEN")
+
+
+def proxy_on() -> bool:
+    return bool(proxy_url())
+
+
+def _split_url(url: str):
+    """整条 Steam URL → Worker 的 (kind, path)；非 api/store 域名返回 (None, "")"""
+    if url.startswith(API):
+        return "api", url[len(API):].lstrip("/")
+    if url.startswith(STORE):
+        return "store", url[len(STORE):].lstrip("/")
+    return None, ""
+
+
+async def _proxy_call(ops: list, timeout: float = 60.0) -> list:
+    """一次 POST 打多个 op 到 Worker（Worker 内部并发执行），按序返回结果
+
+    合并请求是这里的关键：跨境每趟 1~2s，若一个 Steam 请求占一趟，
+    一张卡片几十趟反而比直连更慢。
+    """
+    headers = {"Content-Type": "application/json", "User-Agent": _PROXY_UA}
+    tk = proxy_token()
+    if tk:
+        headers["X-Proxy-Token"] = tk
+    c = _http_client()
+    r = await c.post(proxy_url(), json={"ops": ops}, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    d = r.json()
+    if not d.get("ok"):
+        raise RuntimeError("proxy 拒绝: %s" % d.get("error"))
+    return d.get("r") or []
+
 
 async def _get_json(url: str, params: Optional[dict] = None, timeout: float = 25.0):
-    """GET → JSON（trust_env=False：绕过机器上的 http_proxy，Steam 走直连）"""
-    import httpx
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False, verify=False,
-                                 headers=UA) as c:
-        r = await c.get(url, params=params)
-        r.raise_for_status()
-        return r.json()
+    """GET → JSON
+
+    配了 STEAM_PROXY 时改走 Worker —— **key 交给 Worker 注入，服务器不再外传**；
+    否则直连 Steam（trust_env=False：绕过机器上的 http_proxy）。
+    """
+    if proxy_on():
+        kind, path = _split_url(url)
+        if kind:
+            q = dict(params or {})
+            q.pop("key", None)          # Worker 侧持 key，不必往外传
+            rs = await _proxy_call([{"k": kind, "p": path, "q": q}],
+                                   timeout=max(20.0, timeout + 10))
+            r0 = rs[0] if rs else {}
+            if r0.get("ok") and r0.get("data") is not None:
+                return r0["data"]
+            raise RuntimeError("proxy op 失败: %s"
+                               % (r0.get("error") or r0.get("status")))
+    r = await _http_client().get(url, params=params, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
 
 
 async def _get_bytes(url: str, timeout: float = 30.0) -> bytes:
-    import httpx
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False, verify=False,
-                                 headers=UA, follow_redirects=True) as c:
-        r = await c.get(url)
-        r.raise_for_status()
-        return r.content
+    r = await _http_client().get(url, timeout=timeout)
+    r.raise_for_status()
+    return r.content
 
 
 async def _api(path: str, **params):
@@ -108,16 +193,21 @@ async def _api(path: str, **params):
 
 
 async def reachable(timeout: float = 5.0) -> bool:
-    """轻量探测 api 域是否可达（免 key 的 GetServerInfo）。
+    """轻量探测取数通道是否可用。
 
     为什么需要它：Steam 对国内断的时候，第一个业务请求要干等 25s 超时才失败，
     整条「取数 → 渲染」白等半分钟。先花几秒探一下，不通就直接走缓存快照。
+    配了代理就探 Worker 的健康检查（它自带到 Steam 的通路）。
     """
     try:
+        if proxy_on():
+            r = await _http_client().get(proxy_url() + "/", timeout=timeout)
+            r.raise_for_status()
+            return bool((r.json() or {}).get("has_steam_key"))
         await _get_json(f"{API}/ISteamWebAPIUtil/GetServerInfo/v1/", timeout=timeout)
         return True
     except Exception as e:
-        logger.debug("Steam api 域不可达: %s: %r", type(e).__name__, e)
+        logger.debug("Steam 取数通道不可用: %s: %r", type(e).__name__, e)
         return False
 
 
@@ -381,9 +471,13 @@ async def ach_icon(appid, apiname: str, url: str) -> Optional[Path]:
     return None
 
 
-async def recent_achievements(steamid: str, appid, limit: int = 4) -> list:
-    """最近解锁的成就（按 unlocktime 倒序）。拿不到返回空列表"""
-    res = await achievements(steamid, appid)
+async def recent_achievements(steamid: str, appid, limit: int = 4, ach_data=None) -> list:
+    """最近解锁的成就（按 unlocktime 倒序）。拿不到返回空列表
+
+    `ach_data` 可传入已有的 achievements() 结果复用 —— 否则这里会**再查一次**
+    （卡片取数时上游刚查过，重复一趟跨境请求白花 1~4s）。
+    """
+    res = ach_data if ach_data else await achievements(steamid, appid)
     lst = [a for a in (res.get("list") or []) if a.get("achieved")]
     if not lst:
         return []
@@ -424,6 +518,25 @@ def _price_save(m: dict) -> None:
         logger.debug("价格缓存写入失败: %s", e)
 
 
+def _price_accum(out: dict, cache: dict, keys, data: dict, now: float) -> None:
+    """把一批 appdetails 结果累加进 out 并写缓存（直连/代理两路共用）"""
+    for k in keys:
+        dd = (data.get(k) or {}).get("data") or {}
+        po = dd.get("price_overview") or {}
+        if po:
+            o = int(po.get("initial") or 0)
+            f = int(po.get("final") or 0)
+            c = po.get("currency") or ""
+            out["original"] += o
+            out["final"] += f
+            out["currency"] = c or out["currency"]
+            out["priced"] += 1
+            cache[k] = {"o": o, "f": f, "c": c, "p": 1, "t": now}
+        else:
+            out["unpriced"] += 1
+            cache[k] = {"o": 0, "f": 0, "c": "", "p": 0, "t": now}
+
+
 async def library_value(appids, cc: str = "cn", batch: int = 10,
                         budget: float = 75.0) -> dict:
     """游戏库总价值：分批查 store 的 price_overview，累加原价与现价。
@@ -459,6 +572,30 @@ async def library_value(appids, cc: str = "cn", batch: int = 10,
                 out["unpriced"] += 1
         else:
             miss.append(k)
+
+    if not miss:
+        out["saved"] = max(0, out["original"] - out["final"])
+        return out
+
+    # ── 优先走代理：一次请求把缺的全查回来 ──
+    # Worker 内部按 15 个一批并发再合并。实测 92 款 3.9s；
+    # 而直连分批要 75s，且 store 一慢就整批失败、价格覆盖率只有一半（37/92 → 72/92）。
+    if proxy_on():
+        try:
+            rs = await _proxy_call(
+                [{"k": "store", "p": "api/appdetails",
+                  "q": {"appids": ",".join(miss), "filters": "price_overview",
+                        "cc": cc, "l": "schinese"}}],
+                timeout=min(150.0, max(40.0, budget)))
+            d = (rs[0].get("data") if rs else None) or {}
+        except Exception as e:
+            logger.warning("代理查价失败（退回直连分批）: %s: %r", type(e).__name__, e)
+            d = {}
+        if isinstance(d, dict) and d:
+            _price_accum(out, cache, miss, d, now)
+            _price_save(cache)
+            out["saved"] = max(0, out["original"] - out["final"])
+            return out
 
     chunks = [miss[i:i + batch] for i in range(0, len(miss), batch)]
     # 并发发批次：串行时 92 款要十几分钟（store 慢，每批失败还要重试一次），
@@ -501,21 +638,7 @@ async def library_value(appids, cc: str = "cn", batch: int = 10,
         if not isinstance(d, dict):
             out["unpriced"] += len(chunk)
             continue
-        for k in chunk:
-            dd = (d.get(k) or {}).get("data") or {}
-            po = dd.get("price_overview") or {}
-            if po:
-                o = int(po.get("initial") or 0)
-                f = int(po.get("final") or 0)
-                c = po.get("currency") or ""
-                out["original"] += o
-                out["final"] += f
-                out["currency"] = c or out["currency"]
-                out["priced"] += 1
-                cache[k] = {"o": o, "f": f, "c": c, "p": 1, "t": now}
-            else:
-                out["unpriced"] += 1
-                cache[k] = {"o": 0, "f": 0, "c": "", "p": 0, "t": now}
+        _price_accum(out, cache, chunk, d, now)
     # 并发结束后统一落盘（并发里逐批写会互相覆盖）
     _price_save(cache)
     out["saved"] = max(0, out["original"] - out["final"])
@@ -549,6 +672,48 @@ def flush_zh() -> None:
         _zh_dirty = False
     except Exception as e:
         logger.debug("中文名缓存写入失败: %s", e)
+
+
+async def prefetch_zh_names(appids) -> int:
+    """批量预取中文名（只补缺失的），返回新增条数
+
+    为什么需要它：`zh_name()` 是逐个查的，卡片要 18 款就是 18 趟请求 ——
+    走代理时每趟跨境 1~2s，冷启动能吃掉十几秒。这里合并成**一次** Worker 请求
+    （多 op，Worker 内部并发查）后再逐个读缓存，冷启动降到 1s 上下。
+    注意用 `filters=basic` 必须**单个 appid 一 op**：多 appid + basic 会 400。
+    """
+    global _zh_dirty
+    cache = _load_zh()
+    miss = []
+    for a in appids:
+        k = str(a) if a else ""
+        if k and not cache.get(k) and k not in miss:
+            miss.append(k)
+    if not miss:
+        return 0
+    added = 0
+    if proxy_on():
+        try:
+            ops = [{"k": "store", "p": "api/appdetails",
+                    "q": {"appids": k, "filters": "basic",
+                          "cc": "cn", "l": "schinese"}} for k in miss]
+            rs = await _proxy_call(ops, timeout=60)
+            for k, r in zip(miss, rs):
+                nm = ((((r.get("data") or {}).get(k) or {}).get("data") or {})
+                      .get("name") or "").strip()
+                if nm:
+                    cache[k] = nm
+                    added += 1
+        except Exception as e:
+            logger.debug("中文名批量预取失败: %s: %r", type(e).__name__, e)
+    else:
+        res = await asyncio.gather(*[zh_name(k) for k in miss],
+                                   return_exceptions=True)
+        added = sum(1 for x in res if isinstance(x, str) and x and not x.startswith("appid "))
+    if added:
+        _zh_dirty = True
+        flush_zh()
+    return added
 
 
 async def zh_name(appid, fallback: str = "") -> str:

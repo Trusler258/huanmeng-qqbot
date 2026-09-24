@@ -1,0 +1,10 @@
+name = "steamapi-truslerweb"
+main = "_worker.js"
+compatibility_date = "2026-09-24"
+
+# 不占 *.workers.dev 子域（国内被墙，绑自定义域才可达）
+workers_dev = false
+
+routes = [
+  { pattern = "steamapi.truslerweb.dpdns.org", custom_domain = true }
+]

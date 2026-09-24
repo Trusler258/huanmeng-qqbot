@@ -11,6 +11,51 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.59 — Steam 取数改走 CF Worker 中转（卡片提速 13 倍）(2026.9.24)
+一句话总结：国内直连 Steam 时通时断（每个请求干等 25~30s 超时），改成经 Cloudflare
+Worker 境外中转后，卡片取数 80.5s → 5.9s，重复查询 0.45s。
+
+**现象**（用户反馈"好慢啊"）：逐步计时剖析显示 `build_payload` 共 80.5s，
+其中 `library_value`（92 款游戏价格）**一项就占 75.0s**，其余全部加起来才 5.5s。
+
+**根因**：国内到 Steam 的链路不稳 —— store 批量查价 10 个一批、并发 4 批，
+75s 预算跑满仍有 55 款没查到（有价覆盖仅 37/92）；api 域与 store 域还会同时
+http=000（DNS 正常、TCP 不通），每次断 20 分钟上下，一天三次。
+
+**方案**：新增 Cloudflare Worker `steamapi.truslerweb.dpdns.org`
+（源码 `deploy/cf-steam-proxy/`，独立部署，不占 bot 服务器资源）：
+  · 一次 POST 可带多个 op，Worker 内部并发执行 —— 减少跨境往返
+  · `appids` 超过 15 个自动分批并发再合并，对调用方始终是"一次请求一份结果"
+  · **Steam key 只存在 Worker secret**，服务器不再持有（更安全）
+  · path 白名单 + `X-Proxy-Token` 鉴权（不是开放代理）
+
+bot 侧（`services/steam_api.py`）**透明接入** —— 配了 `STEAM_PROXY` 走 Worker，
+不配则一切照旧直连，随时可退回：
+  · `_get_json` / `_get_bytes` / `reachable` 增加代理分支
+  · `library_value` 代理下一次请求查完 92 款（3.9s vs 75s）
+  · 新增 `prefetch_zh_names()`：18 款中文名合并成 1 次请求（原逐个查 = 18 趟）
+  · **共享 httpx.AsyncClient**：跨境每趟 TLS 握手 1~2s，复用连接省掉大部分
+  · 新增 SWR（`FRESH_TTL=90s`）：快照够新直接出图 + 后台静默刷新
+    → 重复查询 0.45s；代价是「正在玩」最多滞后 90 秒
+
+顺手修掉两处重复请求：
+  · `achievements` 被查两次（`recent_achievements` 内部又调一次）→ 加 `ach_data` 复用
+  · `avatar_file` 被 await 两次 → 改成一次
+
+**实测**（服务器上直接调用，等价于管理员发指令）：
+    冷态（真取数）        5.92 s   （原 80.52 s）
+    SWR 热态（重复查询）   0.45 s
+    92 款价格一次请求      3.87 s   （原 75.01 s）
+    有价覆盖              72/92    （原 37/92）
+
+**Worker 侧的四个坑**（详见 `deploy/cf-steam-proxy/README.md`）：
+  1. `*.workers.dev` 国内被墙 → 必须绑自定义域（`custom_domain = true`）
+  2. `wrangler secret put` 在 Windows 上撞 libuv 断言且**实际没写进去**
+     （健康检查仍 `has_steam_key: false`）→ 改用 `wrangler secret bulk`
+  3. wrangler 是原生 Windows 程序，不认 MSYS 的 `/tmp` 路径（解析成 `G://tmp`）
+     → 用项目内相对路径
+  4. CF 边缘会拦 `Python-urllib/3.x` 的 UA（403）；`httpx` 与 `curl` 正常
+
 ## v2.3.58 — Steam 卡片改横屏三栏 + 库存价值 + 官方 logo (2026.9.24)
 一句话总结：卡片从竖屏 1600 改成横屏 2560 三栏，新增「游戏库总价值」，并换上 Steam 官方图形。
 
