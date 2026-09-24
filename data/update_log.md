@@ -11,6 +11,55 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.56 — Steam 状态监控插件（价格查询 + 状态卡片 + 绑定）(2026.9.24)
+一句话总结：新增 /~steam 系列指令，能查游戏价格/史低/地区对比，也能把绑定玩家的 Steam 状态发成卡片。
+
+**指令**（项目规范前缀是 `/~`，不是 `/`）：
+    /~steam price <游戏名|商店链接>   当前价 + 折扣 + 地区对比（+史低）
+    /~steam px <游戏名>               快捷版：只给第一条匹配
+    /~steam who [@某人|SteamID]       查 Steam 状态（发卡片图）
+    /~在干嘛 [@某人]                  同上（独立入口）
+    /~steam bd <SteamID|资料链接>     绑定；bd 查看自己；bd del 解绑；bd list 列表
+    /~steam help                      帮助
+
+**文件**：
+  · `services/steam_api.py`   数据层（绑定 / 玩家 / 库 / 成就 / 搜索 / 价格 / 素材缓存，34 个函数）
+  · `services/steam_card.py`  资料卡 HTML 构建（模板 + 字体/图片内联 + 注入防呆）
+  · `modules/steam.py`        指令层（分发 price/px/who/bd/help）
+  · `modules/commands.py`     COMMAND_MAP 注册 `steam` / `在干嘛`
+  · `modules/help_card.py`    _CMD_CAT + _EXTRA_DESC 各补两条（指令卡自动同步）
+  · `data/templates/steam_profile_card.html`  卡片模板（1600×1210，Steam 官方配色）
+  · `data/steam_assets/`      素材缓存（HarmonyOS 拉丁子集 17KB + 游戏横幅 + 头像）
+
+**数据来源**：
+  · 价格/搜索 → `store.steampowered.com`（**必须带 User-Agent**，否则返回空 body）
+  · 玩家/库/成就 → `api.steampowered.com`（需 STEAM_KEY，已写入 `config/.env`）
+  · 免费游戏没有 `price_overview`，靠 `is_free` 判断
+  · 地区对比默认 cn/us/ar，**自动跳过查不到价格的区域**（俄罗斯区已停售）
+  · 中文游戏名：Web API 只给英文名 → 查 store `appdetails(l=schinese)` 并缓存
+
+**史低（需要额外 key，可选）**：
+  Steam 官方**不提供**历史最低价。要显示史低须配 IsThereAnyDeal 的免费 key
+  （isthereanydeal.com/apps → 写入 `config/.env` 的 `ITAD_KEY`），配了即自动启用；
+  没配时该行显示"未配 ITAD_KEY"，不影响其它信息。
+  另附自记价格：每次查询记录价格，破纪录时提示（用久了自然有价值）。
+
+**踩坑与修正**：
+  1. ⚠️ **按自定义 URL 绑定时容易认错人** —— 实测绑 `trusler` 解析到的是**另一个人**
+     （76561199369605414，昵称 GLizzyFactori，他抢注了这个 vanity）。
+     现在按 vanity 绑定会显示昵称并提醒核对；**推荐始终用 SteamID64**
+     （个人资料页链接里那 17 位数字）。
+  2. 卡片模板的注入标记若在注释里也出现，`replace(...,1)` 会替换到注释那处 → 数据全丢。
+     已在 `services/steam_card.py` 加 assert 防呆。
+  3. `except: 返回空` 会把网络错误吞掉（本项目第二次踩）→ 全部改成打日志。
+
+**验证**（`scripts/_probe_steam_cmd.py`，不发消息，直接调函数）：
+  price 双人成行 → ¥59.40（-70%，原价 ¥198）+ 三国比价 ✓
+  px Hades → Hades II ¥108（附带"另有 9 条相似结果"）✓
+  商店链接 → appid 977950 ✓
+  绑定解析：SteamID64 / profiles 链接 / vanity（带核对提醒）✓
+  卡片构建 → 329KB，无占位符残留 ✓
+
 ## v2.3.55 — 语境感知：陈述一句 ≠ 求教，别把闲聊变开课 (2026.9.24)
 一句话总结：用户在闲聊里提到技术名词（比如回答"课上讲什么"时说"mysql 多表查询"），
 bot 不再自动开课，改成顺着接话或反问。

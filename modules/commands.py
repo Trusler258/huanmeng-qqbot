@@ -34,6 +34,10 @@ from modules.nasa import cmd_nasa
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
 from modules.voice import cmd_voice
 try:
+    from modules.steam import cmd_steam, cmd_steam_doing
+except ImportError:          # 缺依赖时不拖垮整条指令链路
+    cmd_steam = cmd_steam_doing = None
+try:
     from modules.ping import cmd_ping
 except ImportError:
     async def cmd_ping(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -4054,6 +4058,9 @@ COMMAND_MAP: dict[str, callable] = {
     "power":      cmd_power,
     "功耗":       cmd_power,
     "电费":       cmd_power,
+    # ── Steam 状态 / 价格 ──
+    "steam":      cmd_steam,
+    "在干嘛":     cmd_steam_doing,
 }
 
 
