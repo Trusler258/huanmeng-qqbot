@@ -424,7 +424,8 @@ def _price_save(m: dict) -> None:
         logger.debug("价格缓存写入失败: %s", e)
 
 
-async def library_value(appids, cc: str = "cn", batch: int = 10) -> dict:
+async def library_value(appids, cc: str = "cn", batch: int = 10,
+                        budget: float = 75.0) -> dict:
     """游戏库总价值：分批查 store 的 price_overview，累加原价与现价。
 
     ⚠️ 三个实测点：
@@ -459,20 +460,44 @@ async def library_value(appids, cc: str = "cn", batch: int = 10) -> dict:
         else:
             miss.append(k)
 
-    for i in range(0, len(miss), batch):
-        chunk = miss[i:i + batch]
-        d = None
-        for attempt in (1, 2):
-            try:
-                d = await _get_json(f"{STORE}/api/appdetails",
-                                    {"appids": ",".join(chunk),
-                                     "filters": "price_overview",
-                                     "cc": cc, "l": "schinese"}, timeout=35)
-                break
-            except Exception as e:
-                logger.debug("批量查价失败（%d 个, 第 %d 次）: %s: %r",
-                             len(chunk), attempt, type(e).__name__, e)
-                await asyncio.sleep(1.5)
+    chunks = [miss[i:i + batch] for i in range(0, len(miss), batch)]
+    # 并发发批次：串行时 92 款要十几分钟（store 慢，每批失败还要重试一次），
+    # 并发 4 批后一轮降到 2~3 分钟。别开太大，Steam 会限流。
+    sem = asyncio.Semaphore(4)
+    lock = asyncio.Lock()
+
+    async def _fetch(chunk):
+        async with sem:
+            for attempt in (1, 2):
+                try:
+                    d = await _get_json(f"{STORE}/api/appdetails",
+                                        {"appids": ",".join(chunk),
+                                         "filters": "price_overview",
+                                         "cc": cc, "l": "schinese"}, timeout=30)
+                    if isinstance(d, dict):
+                        return chunk, d
+                except Exception as e:
+                    logger.debug("批量查价失败（%d 个, 第 %d 次）: %s: %r",
+                                 len(chunk), attempt, type(e).__name__, e)
+                    await asyncio.sleep(1.0)
+            return chunk, None
+
+    # 总时间预算：查价不能把整张卡拖死（Steam 断的时候每批都要等到超时）。
+    # 超预算就只收已完成的批次，剩下的留给下次（缓存会逐轮补全）。
+    tasks = [asyncio.create_task(_fetch(c)) for c in chunks]
+    done, pending = await asyncio.wait(tasks, timeout=budget)
+    for tk in pending:
+        tk.cancel()
+    results = []
+    for tk in done:
+        if tk.cancelled() or tk.exception() is not None:
+            continue
+        results.append(tk.result())
+    if pending:
+        logger.info("价格查询超预算 %.0fs，本轮只完成 %d/%d 批（其余下次补）",
+                    budget, len(results), len(chunks))
+
+    for chunk, d in results:
         if not isinstance(d, dict):
             out["unpriced"] += len(chunk)
             continue
@@ -491,10 +516,7 @@ async def library_value(appids, cc: str = "cn", batch: int = 10) -> dict:
             else:
                 out["unpriced"] += 1
                 cache[k] = {"o": 0, "f": 0, "c": "", "p": 0, "t": now}
-        # 每批都落盘：整轮很慢（92 款分批、store 慢时可能几分钟），
-        # 只在最后写的话中途超时就全白跑
-        _price_save(cache)
-
+    # 并发结束后统一落盘（并发里逐批写会互相覆盖）
     _price_save(cache)
     out["saved"] = max(0, out["original"] - out["final"])
     return out
