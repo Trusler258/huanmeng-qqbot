@@ -439,7 +439,13 @@ class EventDispatcher:
                 or re.search(rf'\[CQ:at,qq={bot_qq}[,\]]', raw_message or "")
             )
             img_result = await self._process_image(msg_content, cfg, chat_id, is_group, user_id, sender_name, is_img_mentioned)
-            if is_img_mentioned and not img_result.startswith("[图片]"):
+            # ★ v2.3.60 fix: 这里必须**精确匹配**，不能用 startswith！
+            #   同步识别成功时返回的是 `[图片]:描述"..."`（**也以 [图片] 开头**），
+            #   用 startswith 会把成功误判成"没描述" → msg_type 保持"图片"
+            #   → pipeline 判"非文字消息，不进入回复管道" → @bot 发图静默不回复。
+            #   裸 `[图片]`（关闭识别/识别失败/后台异步）才是"不进管道"的信号，
+            #   与 pipeline.py 的 `msg_content == "[图片]"` 判断保持一致。
+            if is_img_mentioned and img_result.strip() != "[图片]":
                 msg_type = "文字"
             if text_prefix:
                 msg_content = f"{text_prefix} {img_result}"
