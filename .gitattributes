@@ -1,0 +1,37 @@
+# 统一行尾为 LF —— 这不是风格偏好，是自动更新的硬要求。
+#
+# 背景：/~update 靠「本地文件的 git blob SHA」与 GitHub 返回的 files[].sha
+# 比对来判断某文件是否需要更新。CRLF 与 LF 的 blob 不同，会造成：
+#   1. 内容明明一样的文件，每次都被判为「待更新」
+#   2. patch 上下文对不齐（LF 的补丁打到 CRLF 文件上必然失配）
+#   3. 于是所有文件统统丢给 LLM 三路融合 —— 又慢又费 token
+# 实测（2026-09-24）：修之前服务器 164 个 .py 是 CRLF，一次更新 8 个文件
+# 全部走了 LLM 整文件融合；统一成 LF 后 blob 与仓库逐字节一致。
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.bmp binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.rar binary
+*.pdf binary
+*.db binary
+*.sqlite binary
+*.pyc binary
+*.so binary
+*.dll binary
+*.exe binary
+*.mp3 binary
+*.mp4 binary
+*.webm binary

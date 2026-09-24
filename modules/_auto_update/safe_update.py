@@ -749,6 +749,24 @@ async def _apply_production(
         rel = item.get("filename", "")
         status = item.get("status", "")
         patch_text = item.get("patch", "")
+
+        # ★ v2.3.54：内容已与远程目标**逐字节一致** → 直接算成功，连 patch 都
+        #   不做。典型场景：远程把某文件当作"新增"（base commit 里没有），而
+        #   服务器上早已通过 scp 放好了同一份内容 —— 这种 patch 必然一个 hunk
+        #   都对不上，会白跑一次**整文件** LLM 融合（实测 8 个文件全中招）。
+        #   compute_local_blob 与 GitHub 的 files[].sha 都是标准 git blob SHA，
+        #   可直接比较；sha 缺失时不做判断，退回原流程。
+        if status != "removed":
+            _lb = _eng.compute_local_blob(root, rel)
+            if _lb and _lb == (item.get("sha") or ""):
+                try:
+                    _eng.set_file_blob(state, rel, _lb, 1, 0)
+                except Exception:
+                    pass
+                ok += 1
+                logger.info("内容已一致，跳过 LLM 融合: %s", rel)
+                continue
+
         await _report(progress, f"正在应用 {idx}/{total}: {rel}")
 
         if status == "removed":
