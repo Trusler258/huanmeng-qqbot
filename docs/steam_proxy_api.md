@@ -328,3 +328,120 @@ wrangler secret bulk _secrets.json       # 改 secret（会自动触发新版本
 rm -f _secrets.json
 wrangler tail                            # 实时日志
 ```
+
+## 十二、令牌管理与面板页
+
+### 12.1 两种 token 别混（最常见的误解）
+
+| | **代理令牌** `PROXY_TOKEN` / `PROXY_TOKENS` | **Cloudflare API Token** `CF_API_TOKEN` |
+|---|---|---|
+| 是什么 | 别人**调用代理**时的通行证 | 面板**改 Cloudflare 设置**的钥匙 |
+| 谁用 | 你、你朋友（各自的程序） | 只有服务器上的面板 |
+| 请求时放哪 | `X-Proxy-Token:` 请求头 | `Authorization: Bearer …` 调 CF API |
+| 存在哪 | `.env` + CF secret（**两处**） | 只存 `.env` |
+| 本页管吗 | 管 | 不管（只被面板内部使用） |
+
+**代理令牌不可能只存一处**：
+
+```
+朋友的程序 ──直接请求──> Cloudflare Worker   ← 鉴权在这里发生
+                              ↑
+                  必须知道令牌才能放行（CF 读不出已有 secret 的值，
+                  所以令牌必须写进去；而"写进去"这一步需要 CF API Token）
+
+面板显示令牌 ──读──> 服务器 config/.env      ← 留档在这里
+```
+
+- 只存 CF → 面板没法显示令牌（CF 只回名字不回值），管理页就做不出来
+- 只存 .env → Worker 认不了，令牌形同虚设
+
+所以 **`.env` 是真相源，CF 是它的生效副本** —— 面板每次操作都是
+「先写 `.env`，再把整份同步到 CF」。
+
+### 12.2 面板页：配置 → Steam 代理
+
+打开 `https://<你的面板地址>/config/proxy`（菜单：**配置 → Steam 代理**）。
+
+![页面](preview_proxy_page.png)
+
+生成令牌时的弹窗（明文 + 可直接转发的整段说明）：
+
+![生成令牌](preview_proxy_modal.png)
+
+能做的事：
+
+| 操作 | 说明 |
+|---|---|
+| 看令牌列表 | 主令牌 / 额外令牌、备注、脱敏显示（可点「显示」看全文） |
+| 生成新令牌 | 填个备注（给谁用）→ 生成 → 弹窗显示明文 + 一段可直接转发给对方的内容 |
+| 撤销 | 点对应行的「撤销」→ 只删这一个，**不影响其他人、不用换主令牌** |
+| 同步到 Cloudflare | 手动把 `.env` 全量推一遍（怀疑不一致时用） |
+| 状态自检 | Worker 名、账号、CF 连通性、CF 侧已有的 secret 名 |
+
+**改完不用重启 bot** —— 额外令牌只影响 CF 侧（Worker 的鉴权），bot 自己的主令牌没动。
+只有**换主令牌**才需要手改服务器 `config/.env` 的 `STEAM_PROXY_TOKEN` 并重启 bot
+（面板不允许改主令牌，避免把自己踢下线）。
+
+### 12.3 用什么格式存
+
+```
+# /root/bot/config/.env
+STEAM_PROXY_TOKEN=<主令牌>                      # bot 自己在用
+STEAM_PROXY_TOKENS=<令牌>:<备注>,<令牌>:<备注>   # 给别人的，逗号分隔
+```
+
+`.env` 里的格式与 CF 侧 `PROXY_TOKENS` **完全一致** —— 同步就是原样搬运，
+中间不做任何转换，所以面板上看到的和 Worker 生效的必然一致。
+
+⚠️ 备注里不能有 `,` 和 `:`（会破坏 `令牌:备注` 的编码），面板会自动替换成空格。
+
+### 12.4 面板需要的 CF 权限
+
+面板调 Cloudflare API 写 secret，需要 `CF_API_TOKEN` 具备：
+
+```
+Account → Workers 脚本 → 编辑
+```
+
+获取：`https://dash.cloudflare.com/profile/api-tokens` → Create Token →
+Create Custom Token → 权限选上面那条 → 账号资源选自己的账号。
+
+⚠️ 权限改动后可能不是立即生效（实测等 40 秒仍可能拒绝），
+过一会儿再试即可；**令牌值本身不用变**。
+
+### 12.5 硬约束：CF 读不出已有 secret 的值
+
+Cloudflare 的 API **只返回 secret 的名字，不返回值**。所以：
+
+- 想「从 CF 反查谁拿了哪个令牌」——**做不到**，必须自己存台账
+- 本项目的台账就是 `config/.env` 本身（单一真相源，不再另留一份明文文件）
+
+这也是为什么面板的列表来自 `.env` 而不是 CF。
+
+### 12.6 面板接口（供二次开发）
+
+前缀 `/api/steam-proxy`，均需面板登录态：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/status` | CF 连通性 + 权限自检（返回 worker / account_id / ok / cf_secrets） |
+| GET | `/tokens` | 令牌列表（读 `.env`）+ CF 同步状态（返回 tokens / count / cf_ok …） |
+| POST | `/tokens` | 生成新令牌，body `{"label": "给谁用"}`，返回明文令牌（**只此一次**） |
+| DELETE | `/tokens/{id}` | 撤销；`id` 取列表里的 `id` 字段（`main` 拒绝） |
+| POST | `/sync` | 把 `.env` 全量同步到 Cloudflare |
+
+⚠️ `/status` 与 `/tokens` **字段不重叠** —— `worker`/`account_id`/`ok` 只在 `/status`，
+`tokens`/`count`/`cf_error` 只在 `/tokens`。前端必须把两个响应合并，
+只取其中一个会让「Worker 名」显示成 `--`、CF 状态错显「异常」。
+
+### 12.7 验收
+
+`tests/_verify_proxy_page.py`（服务器上跑）—— 真机 Playwright + 真调 Worker：
+
+```bash
+cd /root/bot && python3 tests/_verify_proxy_page.py
+```
+
+21 项断言，含**端到端闭环**：面板生成令牌 → 用这个令牌真调一次 Worker（200）
+→ 撤销 → 同一令牌立即 401，且主令牌与朋友令牌都不受影响。
+脚本会把自己造的令牌删干净（finally 兜底），可重复运行。

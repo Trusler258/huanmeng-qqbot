@@ -137,3 +137,6 @@ deploy/cf-steam-proxy/_secrets.json
 deploy/cf-steam-proxy/.dev.vars
 
 deploy/cf-steam-proxy/tokens.local.md
+
+# wrangler 本地状态
+deploy/cf-steam-proxy/.wrangler/
