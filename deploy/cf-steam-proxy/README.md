@@ -41,10 +41,31 @@ POST /                                   批量代理
 cd deploy/cf-steam-proxy
 wrangler deploy                       # 首次部署：自动建 DNS + 签证书
 # secret 用 bulk 写（单个 put 在 Windows 上会撞 libuv 断言，看似失败其实没写进去）
-printf '{"STEAM_KEY":"<key>","PROXY_TOKEN":"<随机串>"}' > _secrets.json
+printf '{"STEAM_KEY":"<key>","PROXY_TOKEN":"<主令牌>","PROXY_TOKENS":"<额外令牌:备注>,..."}' > _secrets.json
 wrangler secret bulk _secrets.json
 rm -f _secrets.json
 ```
+
+### 多令牌（一人一个，便于单独撤销）
+
+| 变量 | 用途 |
+|---|---|
+| `PROXY_TOKEN` | 主令牌（本项目 bot 服务器用） |
+| `PROXY_TOKENS` | **额外令牌，逗号分隔** —— 给朋友 / 别的机器的放这里 |
+
+两项都支持 `token:备注` 形式，备注只给人看（鉴权只取冒号前那段）：
+
+```
+PROXY_TOKENS = friend-d328bb8d...:朋友,friend-1a2b3c...:测试机
+```
+
+要停掉某个人，把他那一段从 `PROXY_TOKENS` 里删掉再 `secret bulk` 即可 ——
+**不影响其他人**，也不用改主令牌。
+
+`GET /` 会返回 `tokens: N`（只报数量，不泄露值），便于确认改对了。
+
+⚠️ Cloudflare **不允许读取已有 secret 的值**（API 只返回名字）。所以「谁拿了哪个令牌」
+必须自己存台账，别指望从 CF 侧查回来。
 
 客户端（bot）侧配两个环境变量即可，**不配则一切照旧走直连**：
 
