@@ -46,6 +46,10 @@ wrangler secret bulk _secrets.json
 rm -f _secrets.json
 ```
 
+> **日常不用敲命令行** —— 幻梦面板「配置 → Steam 代理」页可以直接增删令牌
+> （改 `config/.env` 并自动同步到 CF secret），见 `docs/steam_proxy_api.md` §12。
+> 下面这段是手工兜底 / 换域名时用的。
+
 ### 多令牌（一人一个，便于单独撤销）
 
 | 变量 | 用途 |
