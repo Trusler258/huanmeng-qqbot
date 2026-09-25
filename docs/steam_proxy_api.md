@@ -76,7 +76,7 @@ curl -s -X POST "$STEAM_PROXY/" \
 | 头 | 必填 | 说明 |
 |---|---|---|
 | `Content-Type` | 是 | `application/json` |
-| `X-Proxy-Token` | 视部署而定 | 与 Worker 的 `PROXY_TOKEN` 一致；不一致返回 **401** |
+| `X-Proxy-Token` | 视部署而定 | 服务端配的令牌之一；不匹配返回 **401**<br>（支持多令牌、一人一个，便于单独撤销 —— 见 `deploy/cf-steam-proxy/README.md`） |
 | `User-Agent` | **建议填** | 见下方「403 排查」—— CF 会拦 Python 默认 UA |
 
 **请求体**

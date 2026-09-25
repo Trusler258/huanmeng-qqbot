@@ -135,3 +135,5 @@ data/_*
 # CF Worker 的临时密钥文件（绝不入库）
 deploy/cf-steam-proxy/_secrets.json
 deploy/cf-steam-proxy/.dev.vars
+
+deploy/cf-steam-proxy/tokens.local.md
