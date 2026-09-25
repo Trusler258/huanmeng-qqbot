@@ -76,6 +76,30 @@ function json(obj, status = 200) {
   });
 }
 
+/**
+ * 允许的令牌集合（支持多令牌：一人一个，便于单独撤销）
+ *   PROXY_TOKEN   主令牌（单个，向后兼容；也可写逗号分隔的多个）
+ *   PROXY_TOKENS  额外令牌，逗号分隔 —— 给朋友用的放这里
+ *
+ * 每一项支持 `token:备注` 形式（备注只用于人看/面板展示，鉴权只取冒号前那段），
+ * 例如：`friend-abc...:小明,friend-def...:测试机`。
+ * 令牌本身不含冒号（生成时用 `friend-` + hex），所以切分安全。
+ *
+ * 两者都为空 = 不校验（仅供调试，正式部署务必配置）
+ */
+function allowedTokens(env) {
+  const out = [];
+  const push = (v) => String(v || "").split(",").forEach((s) => {
+    const t = s.trim();
+    if (!t) return;
+    const token = t.split(":")[0].trim();
+    if (token && out.indexOf(token) === -1) out.push(token);
+  });
+  push(env.PROXY_TOKEN);
+  push(env.PROXY_TOKENS);
+  return out;
+}
+
 /** 读边缘缓存；未命中则请求并写回缓存 */
 async function cachedText(url, headers, ctx) {
   const cache = caches.default;
@@ -210,7 +234,8 @@ export default {
         service: "steam-api-proxy",
         host: url.hostname,
         has_steam_key: !!env.STEAM_KEY,
-        auth_required: !!env.PROXY_TOKEN,
+        auth_required: allowedTokens(env).length > 0,
+        tokens: allowedTokens(env).length,
         ad_batch: AD_BATCH,
         max_ops: MAX_OPS,
         ping: cachedTest || undefined,
@@ -221,9 +246,10 @@ export default {
       return json({ ok: false, error: "POST only" }, 405);
     }
 
-    if (env.PROXY_TOKEN) {
-      const got = request.headers.get("x-proxy-token") || "";
-      if (got !== env.PROXY_TOKEN) {
+    const allowed = allowedTokens(env);
+    if (allowed.length) {
+      const got = (request.headers.get("x-proxy-token") || "").trim();
+      if (allowed.indexOf(got) === -1) {
         return json({ ok: false, error: "unauthorized" }, 401);
       }
     }
