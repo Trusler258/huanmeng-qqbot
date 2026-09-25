@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -54,6 +55,17 @@ async def _notify(text: str, user_id: int, group_id: int, is_group: bool) -> Non
         await (send_group_msg(text, group_id) if is_group else send_private_msg(text, user_id))
     except Exception as e:
         logger.debug("提示发送失败: %s", e)
+
+
+async def _delayed_notify(text: str, user_id: int, group_id: int, is_group: bool,
+                          delay: float = 2.0) -> None:
+    """延迟发提示：查询快（SWR 命中约 0.5s）时会被调用方 cancel，
+    避免「正在查」闪一下就跟着出图 —— 无谓的消息能少一条是一条"""
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return
+    await _notify(text, user_id, group_id, is_group)
 
 
 async def _send_card(steamid: str, user_id: int, group_id: int, is_group: bool) -> bool:
@@ -192,9 +204,16 @@ async def _do_who(args, user_id, group_id, is_group, sender_name) -> str | None:
                     "（SteamID64 就是个人资料页链接里那串 17 位数字）")
         return "%s 还没绑定 Steam 喵~（让他用 /~steam bd 绑一下）" % who
 
-    await _notify("正在查 %s 的 Steam…" % ("你的" if target == user_id else "对方"), 
-                  user_id, group_id, is_group)
-    ok = await _send_card(steamid, user_id, group_id, is_group)
+    # ★ v2.3.61 文案修正：旧写法 `"正在查 %s 的 Steam…" % ("你的" if ...)` 拼出
+    #   「正在查 你的 的 Steam…」。上面 182 行的 who 本来就是现成称呼（"你"/<@QQ>）。
+    #   同时改为延迟 2s 才发：SWR 命中时 0.5s 内就出图，提示会被 cancel 不发送。
+    tip = "正在查你的 Steam…" if target == user_id else "正在查 %s 的 Steam…" % who
+    tip_task = asyncio.ensure_future(
+        _delayed_notify(tip, user_id, group_id, is_group, delay=2.0))
+    try:
+        ok = await _send_card(steamid, user_id, group_id, is_group)
+    finally:
+        tip_task.cancel()
     if ok:
         return None
     # 渲染失败时区分"资料不公开"和"渲染出错"
