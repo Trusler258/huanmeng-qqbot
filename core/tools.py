@@ -219,18 +219,40 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "calc",
+            "name": "run_code",
             "description": (
-                "执行Python代码进行数学计算。用户给出数学题、方程、方程组、计算题时必须调用此工具用代码精确求解，不要心算。"
-                "可用模块: math, fractions, decimal, statistics, sympy(如已安装)。"
-                "代码中用print()输出最终答案。对于方程组，检查是否有解/是否矛盾。"
+                "在沙箱中真实运行代码并返回运行输出。用户给出数学题/方程/方程组/计算题，"
+                "或需要实跑一段代码验证算法、逻辑、边界情况时，必须调用此工具，"
+                "不要心算，也不要只写代码却声称已经跑出结果。"
+                "支持 python（默认）与 cpp 两种语言。"
+                "Python 只有标准库（math/fractions/decimal/statistics/itertools 等，无第三方库、无法联网）；"
+                "C++ 按 C++14 用 g++ 编译执行。"
+                "代码必须把最终结果打印出来（Python 用 print()，C++ 用 std::cout），否则拿不到答案。"
+                "解方程组时要判断是无解还是无穷多解，并把结论打印出来。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "code": {"type": "string", "description": "Python代码，用print()输出最终答案"},
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "cpp"],
+                        "description": "代码语言，默认 python",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "源码。language=python 时为 Python 代码；C++ 时可直接放一个 main.cpp 的内容",
+                    },
+                    "files": {
+                        "type": "object",
+                        "description": "C++ 多文件源码 {文件名: 内容}，如 {\"main.cpp\":\"...\"}；不填则用 code 作为 main.cpp",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "stdin": {
+                        "type": "string",
+                        "description": "可选，程序的标准输入内容（需要输入数据时用）",
+                    },
                 },
-                "required": ["code"],
+                "required": [],
             },
         },
     },
@@ -253,7 +275,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "system_status": "",  # 自有实现
     "whois":       "whois",  # ★ 域名查询
     "pgr":         "pgr",
-    "calc":        "",  # 自有实现（沙箱 Python 执行）
+    "run_code":    "",  # 自有实现（沙箱执行 Python / C++）
 }
 
 
@@ -323,7 +345,7 @@ TOOL_TIMEOUTS: dict[str, float] = {
     "chess":       10.0,
     "whois":       15.0,
     "pgr":         20.0,
-    "calc":        10.0,
+    "run_code":    25.0,
     "system_status": 10.0,
 }
 
@@ -612,81 +634,125 @@ async def _system_status() -> str:
         return "PC 状态模块未加载"
 
 
-# ── Python 沙箱计算 ──────────────────────────────────────
+# ── 沙箱代码执行（run_code）───────────────────────────────
+#
+# v2.3.62：把原 calc（_python_eval，正则黑名单 + sys.executable -c）整体换成
+# core/sandbox 的真实沙箱执行，并改名 run_code、支持 Python + C++。
+#
+# 相比旧实现：
+#   · 旧版靠 _FORBIDDEN_RE 正则黑名单"猜"危险代码，绕过方式多（字符串拼接、
+#     getattr(__builtins__) 等），且只支持 Python；
+#   · 新版是硬限制：独立临时目录、超时强杀、setrlimit 限内存/CPU、输出截断、
+#     子进程 env 清洗（见 core/sandbox._run_proc），不依赖正则。
+# 但沙箱不是容器——本身仍能读服务器文件，故保留一层"防手滑"正则，
+# 挡掉联网 / 起子进程 / 读敏感路径这三类高危动作（见 _SANDBOX_BLOCK_RE）。
 
-def _fold_truncate(text: str, max_len: int) -> str:
-    """截断时保留头尾、折叠中间（移植 kook 6cda8e0：只保头会丢尾部结果）。"""
-    if len(text) <= max_len:
-        return text
-    head = max_len // 2
-    tail = max_len - head
-    return text[:head] + f"\n...[中间省略 {len(text) - max_len} 字符]...\n" + text[-tail:]
+# 单次运行时限（秒）：Python 纯计算很快；C++ 要留出 g++ 编译时间
+_CODE_TIMEOUT_PY: float = 8.0
+_CODE_TIMEOUT_CPP: float = 16.0
+# 代码体积上限（防把整本小说塞进来）
+_MAX_CODE_CHARS: int = 8000
+# 单路输出上限（比全局 MAX_OUTPUT 放宽，多给 LLM 一点上下文）
+_CODE_MAX_OUTPUT: int = 2000
 
-
-_FORBIDDEN_RE = re.compile(
-    r'\b(?:import|from)\s+(?:os|sys|subprocess|shutil|socket|urllib|http'
-    r'|pathlib|ctypes|pickle|marshal|tempfile|glob|platform|inspect'
-    r'|importlib|threading|multiprocessing|asyncio|signal|resource'
-    r'|pty|builtins)\b'
-    r'|\b(?:__import__|exec|eval|compile|open|globals|locals|vars|input'
-    r'|getattr|setattr|delattr)\s*\('
-    r'|os\.system\s*\('
-    r'|subprocess\.'
-    r'|__class__|__subclasses__|__bases__|__mro__'
-    r'|__globals__|__builtins__|__code__|__func__',
-    re.MULTILINE,
+# 高危动作正则（大小写不敏感）。命中即拒绝执行，不进入子进程。
+# 说明：这不是唯一防线，只是拦住最直白的越权动作；真正的隔离靠 core.sandbox。
+_SANDBOX_BLOCK_RE = re.compile(
+    # ① 联网 / 起进程 / 原生调用
+    r'\b(?:subprocess|multiprocessing|pty|ctypes|socket|socketserver|paramiko'
+    r'|ftplib|smtplib|telnetlib|urllib|requests|httpx|aiohttp|websocket)\b'
+    r'|\bos\.(?:system|popen|exec\w*|spawn\w*|fork|kill|remove|unlink|rmdir)\b'
+    # 裸进程调用（C++ 的 system()/popen()/exec*()、Python 的 exec()）
+    r'|\b(?:system|popen|fork|exec|execl|execlp|execle|execv|execvp|execve'
+    r'|execvpe|CreateProcess|WinExec|ShellExecute\w*)\s*\('
+    r'|\bshutil\.(?:rmtree|move)\b'
+    # ② 读敏感路径（服务器凭据 / 私钥 / 系统账户库）
+    r'|(?:/root/|/etc/|/var/lib/|\.ssh\b|id_rsa|\.env\b|\.pem\b'
+    r'|passwd|shadow|credential|secret)',
+    re.IGNORECASE,
 )
 
 
-async def _python_eval(code: str) -> str:
-    """沙箱执行 Python 代码，返回 stdout 输出。限时 5 秒，禁止文件/系统/网络操作。"""
-    import sys
-    import os
+def _fmt_sandbox_result(result: dict, label: str) -> str:
+    """把 sandbox 的 dict 结果整理成给 LLM 看的文本。"""
+    if result.get("timed_out"):
+        return f"[{label} 执行超时] 超过时限，已强制终止（可能是死循环或计算量过大）"
+    rc = result.get("returncode", -1)
+    out = (result.get("stdout") or "").strip()
+    err = (result.get("stderr") or "").strip()
+    if rc != 0:
+        parts = [f"[{label} 执行失败] 退出码 {rc}"]
+        if out:
+            parts.append("stdout:\n" + out)
+        if err:
+            parts.append("stderr:\n" + err)
+        return "\n".join(parts)
+    if out:
+        return out
+    if err:
+        # 退出码 0 但有 stderr（多为 warning）→ 原文给出，别丢
+        return err
+    return f"[{label} 运行成功但无输出] 代码没有 print/输出任何内容，请让代码打印结果"
 
-    # 安全检查
-    if _FORBIDDEN_RE.search(code):
-        return "[执行失败] 代码包含禁止操作（文件/系统/网络访问被禁止）"
 
-    if len(code) > 5000:
-        return "[执行失败] 代码过长，最大 5000 字符"
+async def _run_code(language: str, code: str, files: dict | None = None,
+                    stdin_data: str = "") -> str:
+    """沙箱执行 LLM 生成的代码（Python / C++），返回真实运行输出。
 
-    # 最小化环境变量
-    safe_env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/tmp"),
-        "LANG": "en_US.UTF-8",
-        "LC_ALL": "en_US.UTF-8",
-    }
+    与 write_code（只生成代码文件发群）不同：这里是真的跑一遍并把运行结果拿回来，
+    用来根治"声称算过了但其实是心算/编的"。
+    """
+    from core import sandbox as _sb
 
+    lang = (language or "python").strip().lower()
+    # 我们自己写进沙箱的源码文件名，不算"代码生成的文件"
+    input_names: set[str] = set()
+
+    if lang in ("cpp", "c++", "cxx", "c"):
+        src: dict[str, str] = dict(files or {})
+        if not src and code:
+            src = {"main.cpp": code}
+        if not src:
+            return "[执行失败] 未提供 C++ 源码（用 code 传单个 main.cpp，或用 files 传多文件）"
+        joined = "\n".join(src.values())
+        if len(joined) > _MAX_CODE_CHARS:
+            return f"[执行失败] C++ 代码过长，最大 {_MAX_CODE_CHARS} 字符"
+        hit = _SANDBOX_BLOCK_RE.search(joined)
+        if hit:
+            return f"[执行失败] 代码包含被沙箱禁止的操作（{hit.group(0)}）"
+        input_names = set(src)
+        result = await _sb.compile_and_run_cpp(
+            src, timeout=_CODE_TIMEOUT_CPP, stdin_data=stdin_data,
+            max_output=_CODE_MAX_OUTPUT)
+        label = "C++"
+    else:
+        if not code:
+            return "[执行失败] 未提供代码"
+        if len(code) > _MAX_CODE_CHARS:
+            return f"[执行失败] 代码过长，最大 {_MAX_CODE_CHARS} 字符"
+        hit = _SANDBOX_BLOCK_RE.search(code)
+        if hit:
+            return f"[执行失败] 代码包含被沙箱禁止的操作（{hit.group(0)}）"
+        result = await _sb.run_python(
+            code, timeout=_CODE_TIMEOUT_PY, stdin_data=stdin_data,
+            max_output=_CODE_MAX_OUTPUT)
+        label = "Python"
+
+    text = _fmt_sandbox_result(result, label)
+
+    # 产物只列名不发送（临时目录随后清理）；要发文件请走 write_code
     try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", code,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=safe_env,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
-        # 保头尾折叠中间（移植 kook 6cda8e0：只保头会丢尾部结果致 LLM 编造）
-        out = _fold_truncate(stdout.decode(errors="replace").strip(), 2000)
-        err = stderr.decode(errors="replace")[:500].strip()
-
-        if proc.returncode != 0:
-            if err:
-                return f"[执行失败] {err}"
-            return "[执行失败] 程序异常退出"
-
-        if not out and err:
-            return f"[执行失败] {err}"
-
-        return out or "[无输出]"
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        return "[执行失败] 执行超时（超过 5 秒）"
-    except Exception as e:
-        return f"[执行失败] {e}"
+        arts = [a for a in _sb.collect_artifacts(result.get("tmp_dir", ""))
+                if a.name not in input_names]
+        if arts:
+            text += "\n[代码生成的文件] " + "、".join(a.name for a in arts)
+    except Exception:
+        pass
+    try:
+        _sb.cleanup(result.get("tmp_dir", ""))
+    except Exception:
+        pass
+    return text
 
 
 async def _read_url(url: str) -> str | None:
@@ -831,8 +897,13 @@ async def execute_tool(
         return await _agent_think(arguments.get("question", ""), group_id if is_group else user_id, is_group)
     if tool_name == "system_status":
         return await _system_status()
-    if tool_name == "calc":
-        return await _python_eval(arguments.get("code", ""))
+    if tool_name == "run_code":
+        return await _run_code(
+            arguments.get("language", "python") or "python",
+            arguments.get("code", "") or "",
+            arguments.get("files") or {},
+            arguments.get("stdin", "") or "",
+        )
 
     if not cmd_name:
         # 插件动态注册的工具：LLM 对话自动发现并调用，回退到插件 handler

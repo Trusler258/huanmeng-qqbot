@@ -785,7 +785,7 @@ _CMD_DESC = {
     "tufsearch":"搜索 TUFD 谱面",
     "tuf谱面":  "同 tufsearch",
     "analyze": "分析谱面数据",
-    "calc":    "执行Python代码进行数学计算（方程/方程组/计算题），用代码精确求解",
+    "run_code": "沙箱里真实运行代码（Python / C++）并把运行结果拿回来，用于数学题/方程/算法验证",
     # 系统
     "help":    "显示帮助信息",
     "ping":    "检查机器人是否在线",
@@ -1615,7 +1615,7 @@ async def generate_multi_reply_with_tools(
 
             if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text:
                 errors.append(tool_text)
-            elif tc["name"] in ("calc", "wdsj_query", "weather", "search_web", "earthquake", "sys", "pc"):
+            elif tc["name"] in ("run_code", "wdsj_query", "weather", "search_web", "earthquake", "sys", "pc"):
                 data_results.append(tool_text)
             elif tool_text:
                 action_results.append(tool_text)

@@ -58,9 +58,40 @@ def _limit_preexec(mem_mb: int, cpu_sec: int) -> callable | None:
     return _apply
 
 
+def _safe_env() -> dict[str, str]:
+    """最小化子进程环境变量：不把 bot 自己的凭据继承给沙箱代码。
+
+    子进程默认继承父进程 env，于是被测代码一句 `import os; print(os.environ)`
+    就能把 DEEPSEEK_KEY / STEAM_PROXY_TOKEN / ZHIPU_KEY 之类打进群里。
+    这里只保留运行必需的几项；Windows 额外保留系统必需项（缺 SystemRoot 时
+    部分程序会直接启动失败）。
+    """
+    env: dict[str, str] = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if os.name == "nt":
+        for k in ("SystemRoot", "SystemDrive", "COMSPEC", "PATHEXT",
+                  "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+                  "APPDATA", "LOCALAPPDATA"):
+            v = os.environ.get(k)
+            if v:
+                env[k] = v
+    # 临时目录（g++ / Python 编译缓存需要）
+    for k in ("TMPDIR", "TMP", "TEMP"):
+        v = os.environ.get(k)
+        if v:
+            env[k] = v
+    return env
+
+
 async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
                     stdin_data: str = "", max_output: int = MAX_OUTPUT) -> dict:
-    """通用子进程执行：限时、限资源、截断输出。返回 dict。
+    """通用子进程执行：限时、限资源、清洗 env、截断输出。返回 dict。
 
     max_output: 单路输出截断长度（默认 MAX_OUTPUT=1500）。调用方（如沙箱插件）
     可传更大值让 LLM 看到更完整输出（"输出全丢给 LLM"），仅调整截断上限，
@@ -70,6 +101,7 @@ async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
         "cwd": str(cwd),
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.PIPE,
+        "env": _safe_env(),
     }
     if stdin_data:
         kwargs["stdin"] = asyncio.subprocess.PIPE
