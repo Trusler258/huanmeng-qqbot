@@ -25,6 +25,17 @@ _group_queues: dict[int, asyncio.PriorityQueue] = {}
 _group_tasks: dict[int, asyncio.Task] = {}
 _seq_counter = itertools.count(1)   # 全局递增序号：保证 (priority, seq) 唯一可比
 
+# ── 重命令旁路并发（v2.3.64）──
+# 背景：per-group worker 是**串行**的。同群多人同时发 /~wdsj 会排队一个个跑，
+#   且每条命令里的 API 请求 + Playwright 渲染全程占着该群 worker，把同群其他
+#   消息的回复也一起堵住（用户实测"查询的时候会卡回复"）。
+# 方案：标记为重命令的消息**不占用本群 worker**，丢到旁路任务里并发执行。
+#   命令不参与 LLM 对话上下文（pipeline 在指令分支直接 return，不写 group_context），
+#   所以打乱顺序是安全的；真正的渲染并发由 changelog._render_semaphore(2) 兜底限流。
+#   重命令白名单见 modules/commands.HEAVY_COMMANDS。
+_detached_semaphore = asyncio.Semaphore(6)   # 旁路任务全局并发上限
+_detached_tasks: set = set()                 # 持有引用防 GC
+
 # ── 渲染队列（串行化，避免抢 Chromium）──
 _render_queue: asyncio.Queue | None = None
 _render_task: asyncio.Task | None = None
@@ -51,12 +62,40 @@ def _get_or_create_queue(chat_id: int) -> asyncio.PriorityQueue:
     return _group_queues[chat_id]
 
 
+def _spawn_detached(chat_id: int, kwargs: dict) -> None:
+    """把重命令丢到旁路任务并发执行，不阻塞本群 worker（v2.3.64）。
+
+    命令不写 LLM 上下文，顺序无关；并发量由 _detached_semaphore 与渲染层
+    changelog._render_semaphore(2) 双重限流。
+    """
+    async def _runner():
+        from core.pipeline import process_message
+        async with _detached_semaphore:
+            try:
+                await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error("[队列] 群%d 旁路命令超时(>%.0fs)已放弃: '%s...'",
+                             chat_id, _GROUP_MSG_TIMEOUT,
+                             str(kwargs.get("msg_content", ""))[:40])
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("[队列] 群%d 旁路命令异常: %s", chat_id, e)
+
+    task = asyncio.ensure_future(_runner())
+    _detached_tasks.add(task)
+    task.add_done_callback(_detached_tasks.discard)
+    logger.info("[队列] 群%d 重命令转旁路并发（在跑 %d 条）: '%s...'",
+                chat_id, len(_detached_tasks), str(kwargs.get("msg_content", ""))[:30])
+
+
 async def _group_worker(chat_id: int, queue: asyncio.PriorityQueue):
     """某个群的 worker，串行处理该群消息。
     ★ v2.0.4r 加固：
       - 单条消息总超时 _GROUP_MSG_TIMEOUT（wait_for），超时打日志后跳过继续出队，
         单条卡死不再拖死整个群队列
       - 任何意外异常 → 记录后自动续命重跑，worker 永不静默死亡
+    ★ v2.3.64：带 _detached 标记的重命令走旁路并发，不占用本群 worker。
     """
     from core.pipeline import process_message
     while True:
@@ -71,22 +110,30 @@ async def _group_worker(chat_id: int, queue: asyncio.PriorityQueue):
             logger.error("[队列] 群%d worker 取消息异常: %s → 重试", chat_id, e)
             await asyncio.sleep(1)
             continue
-        _t0 = _time.monotonic()
         try:
-            await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
-            _dt = _time.monotonic() - _t0
-            if _dt > 5:
-                logger.info("[队列] 群%d 消息处理完成 耗时%.1fs: '%s...'",
-                            chat_id, _dt, str(kwargs.get("msg_content", ""))[:30])
-        except asyncio.TimeoutError:
-            logger.error("[队列] 群%d 消息处理超时(>%.0fs)已强制跳过: '%s...' → 继续下一条",
-                         chat_id, _GROUP_MSG_TIMEOUT, str(kwargs.get("msg_content", ""))[:40])
+            # ★ v2.3.64: 重命令 → 旁路并发，立刻腾出 worker 处理下一条
+            if kwargs.pop("_detached", False):
+                _spawn_detached(chat_id, kwargs)
+                continue
+
+            _t0 = _time.monotonic()
+            try:
+                await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
+                _dt = _time.monotonic() - _t0
+                if _dt > 5:
+                    logger.info("[队列] 群%d 消息处理完成 耗时%.1fs: '%s...'",
+                                chat_id, _dt, str(kwargs.get("msg_content", ""))[:30])
+            except asyncio.TimeoutError:
+                logger.error("[队列] 群%d 消息处理超时(>%.0fs)已强制跳过: '%s...' → 继续下一条",
+                             chat_id, _GROUP_MSG_TIMEOUT, str(kwargs.get("msg_content", ""))[:40])
         except asyncio.CancelledError:
-            queue.task_done()
-            break
+            raise
         except Exception as e:
             logger.error("[队列] 群%d 处理异常: %s", chat_id, e)
         finally:
+            # ★ v2.3.64: 原来 CancelledError 分支里也调了一次 task_done() → 双重调用
+            #   会抛 ValueError('task_done() called too many times') 把 worker 打死，
+            #   现在统一只在 finally 里调一次。
             queue.task_done()
 
 
@@ -141,10 +188,26 @@ async def submit_render(render_fn, *args, **kwargs):
 
 
 async def shutdown_queues():
-    """关闭所有队列和 worker"""
-    for task in list(_group_tasks.values()):
+    """关闭所有队列和 worker。
+
+    ★ v2.3.64 加固：py3.10 上实测**首次 cancel() 偶发未送达** —— 任务停在
+      `await queue.get()`，`task.cancelled()` 仍为 False，若只 `gather` 会永久卡住
+      （本地 py3.12 不复现）。这里等一轮后对仍未结束的任务**再取消一次**。
+      注：生产路径（`systemctl restart`）是靠进程退出收摊的，本函数目前无调用方，
+      但既然发现了就修掉，避免将来谁调用它踩坑。
+    """
+    workers = list(_group_tasks.values())
+    for task in workers:
+        task.cancel()
+    for task in list(_detached_tasks):
         task.cancel()
     if _render_task:
         _render_task.cancel()
-    await asyncio.gather(*_group_tasks.values(), return_exceptions=True)
+
+    _, pending = await asyncio.wait(workers, timeout=3)
+    if pending:
+        logger.warning("[队列] shutdown: %d 个 worker 首次取消未生效，重试取消", len(pending))
+        for task in pending:
+            task.cancel()
+        await asyncio.wait(list(pending), timeout=3)
     logger.info("[队列] 所有队列已关闭")

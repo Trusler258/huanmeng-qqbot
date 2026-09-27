@@ -4064,6 +4064,48 @@ COMMAND_MAP: dict[str, callable] = {
 }
 
 
+# ── 重命令（含网络请求 / 图片渲染，单条耗时数秒级）────────────────
+# ★ v2.3.64：这些命令会被 core/queues.py 以旁路并发方式执行，**不占用本群 worker**。
+#   起因：per-group worker 串行 + 命令内 API/渲染全程 await → 同群多人同时查战绩要排队，
+#   且查询期间同群其他消息的回复被一起堵住（用户实测"卡回复"）。
+#   只列真正重的主命令；进程控制类（restart/reload/update）**故意不在列**，保持串行。
+HEAVY_COMMANDS: frozenset[str] = frozenset({
+    # 战绩 / 游戏数据
+    "wdsj", "steam", "在干嘛",
+    # 天气 / 地震 / NASA / PGR
+    "天气", "weather", "eq", "地震", "nasa", "pgr",
+    # 生成类（图/视频/语音）
+    "draw", "绘画", "video", "视频", "voice", "语音",
+    "img2video", "图生视频", "img",
+    # 谱面查询
+    "tuflevel", "tuf谱面", "tufsearch", "tufd", "tufpage",
+    # 抽卡 / 观战
+    "抽", "watch", "spec", "观战",
+    # 需要现拉数据的展示类
+    "power", "功耗", "电费",
+    "stats", "统计", "dbsearch", "回顾",
+    "reward", "赞赏", "赞助", "sponsor",
+    "sys", "pc", "phone",
+})
+
+
+def is_heavy_command(text: str) -> bool:
+    """判断指令文本是否属于重命令（→ core/queues.py 旁路并发执行）。"""
+    t = (text or "").strip()
+    if t.startswith("/~"):
+        t = t[2:]
+    elif t.startswith("/#"):
+        t = t[2:]
+    elif t.startswith("/") and len(t) > 1 and t[1] not in "~#/ ":
+        t = t[1:]
+    else:
+        return False
+    t = t.strip()
+    if not t:
+        return False
+    return t.split()[0].lower() in HEAVY_COMMANDS
+
+
 async def handle_command(
     text: str,
     user_id: int,

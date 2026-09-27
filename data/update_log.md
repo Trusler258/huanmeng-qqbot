@@ -11,6 +11,60 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.64 — 重命令并发化 + 日报并发 + skill 按需加载(2026.9.28)
+一句话总结：同群多人同时查战绩不再排队、查询也不再堵住同群其他回复；日报从"一个个群串行发"
+改成并发下发；skill 检索从「章节名碰运气」改为「声明关键词 + 模型用 load_skill 主动拉取」。
+
+### 一、重命令并发：`core/queues.py` + `core/dispatcher.py` + `modules/commands.py`
+**问题**：per-group worker 是**串行**的，而命令里的 API 请求 + Playwright 渲染全程 `await` 占着
+该群 worker → ① 同群多人同时发 `/~wdsj` 要一个个排队；② 查询期间同群其他消息的回复被一起堵住
+（用户实测"查询的时候会卡回复"）。跨群本来就是并发的（每群独立 worker），问题只在同群。
+**改法**：
+- `modules/commands.HEAVY_COMMANDS` 声明重命令白名单（wdsj / steam / 天气 / 地震 / 画图 /
+  tuf / 抽 / power / stats / 回顾 / sys …），`is_heavy_command()` 供分发器判定。
+- `dispatcher` 给这类消息打 `_detached=True`；`_group_worker` 见标记就 `_spawn_detached()`
+  **立刻腾出 worker** 处理下一条，命令本体在旁路任务里并发跑。
+- 并发量双重限流：`_detached_semaphore(6)`（队列层）+ `changelog._render_semaphore(2)`（渲染层）。
+- 进程控制类（`restart` / `reload` / `update`）**故意不入白名单**，保持串行。
+- 顺带修掉一个老 bug：原 `CancelledError` 分支里也调了一次 `queue.task_done()`，与 `finally`
+  里那次叠加 → `task_done() called too many times` 会把 worker 打死（现统一只在 finally 调一次）。
+- 顺带加固 `shutdown_queues()`：py3.10 上实测**首次 `cancel()` 偶发送达不到**（worker 停在
+  `await queue.get()`、`task.cancelled()` 仍是 False，只 `gather` 会永久卡住；本地 py3.12 不复现），
+  改为等一轮后对未结束的任务再取消一次。生产靠进程退出收摊、该函数当前无调用方，
+  但既然发现了就修掉。
+安全性：命令不参与 LLM 对话上下文（pipeline 在指令分支直接 return，不写 group_context），
+所以打乱顺序不影响聊天记忆；普通消息仍严格串行（测试覆盖）。
+
+### 二、日报并发：`modules/stats.py`
+原来 `for 群 in 有消息的群: 渲染 → 发送 → sleep(2)` —— N 个群排 N 轮，全发完要几十秒。
+现在先收集任务，再用 `asyncio.gather` 并发下发（`_send_one_daily_report` + `_DAILY_CONCURRENCY=4`，
+渲染仍由渲染层信号量兜底），归档命名与原实现完全一致。
+
+### 三、skill 按需加载：`services/llm.py` + `core/tools.py` + `data/skills/*.md`
+**问题**：热加载规则是「**章节名**出现在用户消息里才注入」（`k.lower() in low`）。章节名是
+`writing_system` / `session_summary` 这类标识符，用户永远打不出来 → 命中率≈0（用户反馈
+"命中率超级烂"）；模型也没有任何主动取用 skill 的途径。
+**改法**：
+1. **声明式关键词**：章节正文首行可写 `@skill: 标题 | 关键词1,关键词2 | 什么时候用`，
+   解析后**该行从正文剔除**（不会泄漏给模型），只用于索引与匹配。已给 command_table /
+   play_mode / face_lib / deep_explain 四份加上，触发表从"章节名"换成真实用户会说的人话。
+2. **`load_skill` FC 工具**：可用技能清单**动态拼进工具描述**（`get_skill_index()`），
+   模型需要时自己 `load_skill(name)` 拉正文 —— 这是"精简提示词"的正路：常驻只留核心，
+   参考资料由模型按需取。取值容错：忽略大小写、支持中文标题。
+3. **归类修正**：`writing_system` / `writing_followup` / `session_summary` /
+   `reply_reminder_core` 都是**内部管道专用**（写作管道 / 会话压缩 / system 拼接显式读取），
+   新增 `_INTERNAL_SECTIONS` 明确排除：不进 system、不参与关键词匹配、不出现在技能索引里
+   （此前它们落在兜底分支，既有被误注入闲聊的风险，也是"命中率≈0"的典型）。
+4. 注入去重：`needs` 通道与关键词通道命中同一章节时只注入一次（`_added` 集合）。
+
+### 四、测试
+- `tests/_test_v2364_concurrency.py`：22 passed（重命令并发/普通消息仍串行/跨群并发/
+  `_detached` 不泄漏/日报已 gather）。
+- `tests/_test_v2364_skill.py`：40 passed（元数据解析与剔除/索引边界/取值容错/
+  关键词命中/去重/内部章节不泄漏/工具注册与描述/execute_tool 两条路径）。
+
+---
+
 ## v2.3.63 — 堵掉 run_code 的敏感路径逃逸（改成内核级 namespace 隔离）(2026.9.27)
 一句话总结：v2.3.62 的"敏感路径正则"能被运行期拼出来的路径绕过，实测可读到整份 .env；
 本次改成 `unshare` 独立 mount/network namespace —— `/root` 被 tmpfs 盖住、外网被断，

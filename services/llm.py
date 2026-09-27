@@ -158,6 +158,46 @@ def _load_skill_sections() -> dict[str, str]:
 
 _SKILLS_DIR = Path(__file__).resolve().parent.parent / "data" / "skills"
 
+# ── 技能元数据（v2.3.64）───────────────────────────────────────
+# 背景：老实现的热加载规则是「章节名出现在用户消息里才加载」（`k.lower() in low`），
+#   而章节名是 writing_system / session_summary 这种标识符，用户永远不可能打出来
+#   → 这些 skill 事实上**永远加载不到**（命中率≈0，用户反馈"命中率超级烂"）。
+# 方案：章节正文首行可声明元数据行，解析后**从正文里剔除**，只用于索引与匹配：
+#     ## writing_system
+#     @skill: 作文与长文 | 作文,写一篇,写个故事,小说,议论文,记叙文,散文,诗歌 | 用户要求写作文/长文时用
+#     <正文...>
+# 有了关键词后：① 命中关键词自动注入（不需要多一轮工具调用）；② 索引写进
+#   load_skill 工具描述，模型也能主动按需拉取（真正精简常驻提示词）。
+_skill_meta: dict[str, dict] = {}
+
+_SKILL_META_RE = re.compile(r'^@skill:\s*(?P<title>[^|]*?)\s*\|\s*(?P<kw>[^|]*?)\s*(?:\|\s*(?P<desc>.*))?$')
+_SKILL_KW_SPLIT_RE = re.compile(r'[,，、;；/]+')
+
+
+def _extract_skill_meta(body: str) -> tuple[str, dict | None]:
+    """剥离章节正文首行的 @skill: 元数据行。返回 (正文, 元数据或 None)。"""
+    lines = body.split("\n")
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not s:
+            continue
+        m = _SKILL_META_RE.match(s)
+        if not m:
+            return body, None      # 首个非空行不是元数据 → 本章节没有元数据
+        kws = tuple(
+            w.strip().lower()
+            for w in _SKILL_KW_SPLIT_RE.split(m.group("kw") or "")
+            if w.strip()
+        )
+        meta = {
+            "title": (m.group("title") or "").strip(),
+            "keywords": kws,
+            "desc": (m.group("desc") or "").strip(),
+        }
+        del lines[i]
+        return "\n".join(lines).strip(), meta
+    return body, None
+
 
 def _parse_md_sections(text: str) -> dict[str, str]:
     """按 ## 节名切割 markdown，返回 {节名: 内容}（与 main_skill.md 同解析规则）。"""
@@ -205,20 +245,69 @@ def _merge_skills_dir(sections: dict[str, str]) -> None:
             continue
         parsed = _parse_md_sections(text)
         if parsed:
-            # 文件内含 ## 分节：逐节并入
+            # 文件内含 ## 分节：逐节并入（同时剥离 @skill: 元数据行，登记索引）
             for k, v in parsed.items():
-                sections[k] = v
+                body, meta = _extract_skill_meta(v)
+                sections[k] = body
+                if meta and (meta.get("title") or meta.get("keywords")):
+                    _skill_meta[k] = meta
         else:
             # 整个文件作为一个章节，key 为文件名（去扩展名）
-            sections[f.stem] = text.strip()
+            body, meta = _extract_skill_meta(text.strip())
+            sections[f.stem] = body
+            if meta and (meta.get("title") or meta.get("keywords")):
+                _skill_meta[f.stem] = meta
         logger.info("已叠加 skill 文件: %s", f.name)
 
 
 def reload_skill_cache():
     """清除技能文件缓存（reload 时调用）"""
-    global _skill_sections, _skill_loaded
+    global _skill_sections, _skill_loaded, _skill_meta
     _skill_sections = {}
     _skill_loaded = False
+    _skill_meta = {}
+
+
+def get_skill_index() -> str:
+    """紧凑技能索引（供 load_skill 工具描述注入，让模型知道有哪些可按需加载的 skill）。
+
+    只列「可按需加载」的章节 —— 常驻 system 与显式专用章节不出现在这里。
+    """
+    sec = _load_skill_sections()
+    lines: list[str] = []
+    for k in sorted(sec.keys()):
+        # 常驻 system 的不必再列（本来就在提示词里）；黑话词典走词表命中；
+        # 内部管道章节（写作/会话压缩/系统提醒）绝不给模型看
+        if k in _SYSTEM_SECTIONS or k in _INTERNAL_SECTIONS or k == "slang_dict" or not sec.get(k):
+            continue
+        meta = _skill_meta.get(k)
+        if not meta:
+            continue
+        label = meta.get("title") or k
+        desc = meta.get("desc") or ""
+        lines.append(f"- {k}（{label}）" + (f"：{desc}" if desc else ""))
+    return "\n".join(lines)
+
+
+def get_skill_content(name: str) -> str | None:
+    """按名取 skill 正文（供 load_skill 工具调用）。
+
+    容错：忽略大小写、可用中文标题匹配。
+    """
+    sec = _load_skill_sections()
+    n = (name or "").strip()
+    if not n:
+        return None
+    if n in sec:
+        return sec[n]
+    low = n.lower()
+    for k, v in sec.items():
+        if k.lower() == low:
+            return v
+    for k, m in _skill_meta.items():
+        if (m.get("title") or "").strip() == n:
+            return sec.get(k)
+    return None
 
 
 def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_persona: dict | None = None) -> str:
@@ -341,6 +430,17 @@ _OPTIONAL_SECTIONS = frozenset((
     "private_face_inline",
     # v2.1.20: 贴贴风格规则：由测试项 sweet_style 控制注入（同上，不走关键词热加载）
     "private_sweet_style",
+))
+
+# ★ v2.3.64: 内部管道专用章节 —— 由代码显式读取，绝不能靠关键词热加载进聊天，
+#   也不出现在 load_skill 索引里：
+#     writing_system / writing_followup → utils/writing.py 写作管道
+#     session_summary                   → context_manager.maybe_compress()
+#     reply_reminder_core               → scripts/_patch_reminder_sys.py 拼进 system
+#   历史上它们落在「章节名出现在消息里才加载」的兜底分支 —— 既有被误注入的风险，
+#   也正是"命中率≈0"的典型（章节名是标识符，用户根本打不出来）。
+_INTERNAL_SECTIONS = frozenset((
+    "writing_system", "writing_followup", "session_summary", "reply_reminder_core",
 ))
 
 # 工具/指令意图触发词（宽松匹配：宁可多带，漏带会导致不会调指令）
@@ -495,37 +595,45 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
     """组装按需参考资料（注入 user 消息，不污染 system 缓存）
 
     v2.1.9：system 保持稳定，把"参考资料"类内容（指令表/指令列表/表情库/玩梗）
-    挪到这里按需注入。data/skills/*.md 的自定义章节按章节名热匹配才加载。
+    挪到这里按需注入。
+    v2.3.64：章节热加载规则由「章节名出现在消息里」改为「章节声明的 @skill: 关键词命中」，
+    并支持模型经 load_skill 工具主动拉取（索引见 services.llm.get_skill_index）。
     """
     sec = _load_skill_sections()
     parts: list[str] = []
+    added: set[str] = set()   # 已注入的章节名（防 needs 与关键词两条路径重复注入）
+
+    def _add(key: str) -> None:
+        if key in added:
+            return
+        v = sec.get(key, "")
+        if v:
+            parts.append(v)
+            added.add(key)
 
     if "tools" in needs:
-        t = sec.get("command_table", "")
-        if t:
-            parts.append(t)
+        _add("command_table")
         cl = _build_dynamic_command_list()
         if cl:
             parts.append(cl)
     if "face" in needs:
         # v2.3.9: 群聊私聊都注入表情库章节（用户要求"表情包要常发"）。
         # v2.3.6 曾因误判只对私聊注入（理由是"跟群聊硬规则打架"），该硬规则已废除。
-        f = sec.get("face_lib", "")
-        if f:
-            parts.append(f)
+        _add("face_lib")
     if "play" in needs:
-        pm = sec.get("play_mode", "")
-        if pm:
-            parts.append(pm)
+        _add("play_mode")
     if "deep" in needs:
-        de = sec.get("deep_explain", "")
-        if de:
-            parts.append(de)
+        _add("deep_explain")
 
-    # skills/*.md 拖进来的自定义章节：章节名出现在消息里才热加载
+    # skills/*.md 拖进来的章节：命中关键词才热加载（v2.3.64 改造）
+    #   老规则 =「章节名出现在消息里」（writing_system / session_summary 这类
+    #   标识符用户永远打不出来 → 命中率≈0，用户反馈"命中率超级烂"）。
+    #   新规则 = 用章节声明的 @skill: 关键词匹配，不再碰章节名；
+    #   没写元数据的章节：专用章节（_OPTIONAL_SECTIONS）只走 needs/调用路径不瞎匹配，
+    #   其余仍按旧规则兜底。命中结果与 needs 路径去重（_add）。
     low = (msg or "").lower()
     for k, v in sec.items():
-        if k in _SYSTEM_SECTIONS or k in _OPTIONAL_SECTIONS or not v:
+        if k in _SYSTEM_SECTIONS or k in _INTERNAL_SECTIONS or not v:
             continue
         # ★ v2.3.23: 网络黑话词典（15_slang.md）——按词表命中才注入。
         #   整个文件作为一章 key='slang_dict'，消息里出现任一黑话词时把词典喂给 LLM，
@@ -533,10 +641,17 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
         #   体积可接受；命中一次后 LLM 整轮参考，不重复注入）。
         if k == "slang_dict":
             if _slang_hit(v, low):
-                parts.append(v)
+                _add(k)
             continue
-        if k.lower() in low:
-            parts.append(v)
+        _meta = _skill_meta.get(k) or {}
+        _kws = _meta.get("keywords") or ()
+        if _kws:
+            if any(w in low for w in _kws):
+                _add(k)          # 声明了关键词 → 按关键词命中（含 _OPTIONAL_SECTIONS）
+        elif k in _OPTIONAL_SECTIONS:
+            continue             # 无声明关键词的专用章节：不参与兜底匹配
+        elif k.lower() in low:
+            _add(k)              # 其他章节：保持旧行为兜底
 
     if not parts:
         return ""
@@ -786,6 +901,7 @@ _CMD_DESC = {
     "tuf谱面":  "同 tufsearch",
     "analyze": "分析谱面数据",
     "run_code": "沙箱里真实运行代码（Python / C++）并把运行结果拿回来，用于数学题/方程/算法验证",
+    "load_skill": "按需加载内部技能手册正文（写作文/长文/会话总结等专门任务的完整规范）",
     # 系统
     "help":    "显示帮助信息",
     "ping":    "检查机器人是否在线",
@@ -1615,7 +1731,7 @@ async def generate_multi_reply_with_tools(
 
             if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text:
                 errors.append(tool_text)
-            elif tc["name"] in ("run_code", "wdsj_query", "weather", "search_web", "earthquake", "sys", "pc"):
+            elif tc["name"] in ("run_code", "wdsj_query", "weather", "search_web", "earthquake", "sys", "pc", "load_skill"):
                 data_results.append(tool_text)
             elif tool_text:
                 action_results.append(tool_text)

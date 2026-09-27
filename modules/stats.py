@@ -321,6 +321,43 @@ async def generate_daily_report_image(stats: dict, group_id: int, date_str: str,
 
 
 
+# ★ v2.3.64: 日报并发上限（渲染层另有 changelog._render_semaphore(2) 兜底）
+_DAILY_CONCURRENCY = 4
+_daily_semaphore: asyncio.Semaphore | None = None
+
+
+async def _send_one_daily_report(f: Path, group_id: int, stats: dict, date_str: str) -> None:
+    """渲染 + 归档 + 发送单个群的日报（v2.3.64，供并发调用）。
+
+    归档路径与原串行实现一致：stats_<群号>_<昨日>.json → data/stats_archive/ 同名文件。
+    """
+    global _daily_semaphore
+    if _daily_semaphore is None:
+        _daily_semaphore = asyncio.Semaphore(_DAILY_CONCURRENCY)
+    from services.sender import send_group_msg
+
+    async with _daily_semaphore:
+        try:
+            card_path = await generate_daily_report_image(
+                stats, group_id, date_str, group_name=f"群{group_id}"
+            )
+
+            # 归档（f.name 即 stats_<群号>_<昨日>.json，与归档名一致）
+            archive_path = _archive_dir() / f.name
+            archive_path.write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+            f.unlink(missing_ok=True)
+
+            if card_path:
+                normalized = card_path.replace("\\", "/")
+                await send_group_msg(f"[CQ:image,file=file:///{normalized}]", group_id)
+                logger.info("日报卡片已发送: 群=%d 昨日%d条消息",
+                            group_id, stats.get("_meta", {}).get("total", 0))
+            else:
+                logger.warning("日报卡片生成失败: 群=%d", group_id)
+        except Exception as e:
+            logger.error("日报发送失败 (群=%d): %s", group_id, e)
+
+
 async def midnight_report_loop(cfg):
     """
     后台任务：每日 0 点自动发送群聊日报。
@@ -354,6 +391,8 @@ async def midnight_report_loop(cfg):
             yesterday_str = yesterday.strftime("%Y%m%d")
 
             # 扫描所有 stats 文件，找到昨天的统计
+            date_str = yesterday.strftime("%Y.%m.%d")
+            jobs: list[tuple[Path, int, dict]] = []
             for f in _DATA_DIR.glob(f"{_TODAY_FILE_PREFIX}*_{yesterday_str}.json"):
                 try:
                     # 从文件名提取群号: stats_1234567_20260601.json → 1234567
@@ -362,37 +401,20 @@ async def midnight_report_loop(cfg):
                     group_id = int(group_id_str)
 
                     stats = json.loads(f.read_text(encoding="utf-8"))
-                    meta = stats.get("_meta", {})
-                    if meta.get("total", 0) == 0:
+                    if stats.get("_meta", {}).get("total", 0) == 0:
                         continue
-
-                    date_str = f"{yesterday.strftime('%Y.%m.%d')}"
-
-                    # ★ 生成 HTML 日报卡片
-                    card_path = await generate_daily_report_image(
-                        stats, group_id, date_str,
-                        group_name=f"群{group_id}"
-                    )
-
-                    # 归档
-                    archive_path = _archive_dir() / f"{_TODAY_FILE_PREFIX}{group_id}_{yesterday_str}.json"
-                    archive_path.write_text(f.read_text(encoding="utf-8"))
-                    f.unlink(missing_ok=True)
-
-                    if card_path:
-                        from services.sender import send_group_msg
-                        normalized = card_path.replace("\\", "/")
-                        cq = f"[CQ:image,file=file:///{normalized}]"
-                        await send_group_msg(cq, group_id)
-                        logger.info("日报卡片已发送: 群=%d 昨日%d条消息", group_id, meta["total"])
-                    else:
-                        logger.warning("日报卡片生成失败: 群=%d", group_id)
-
-                    # 避免瞬间大量发送
-                    await asyncio.sleep(2)
-
+                    jobs.append((f, group_id, stats))
                 except Exception as e:
-                    logger.error("日报发送失败 (文件=%s): %s", f.name, e)
+                    logger.error("日报读取失败 (文件=%s): %s", f.name, e)
+
+            # ★ v2.3.64: 原来是一个个群串行「渲染→发送→sleep(2)」，N 个群就排 N 轮，
+            #   全部发完要几十秒。现在并发下发（渲染由 changelog._render_semaphore(2)
+            #   兜底限流，这里再用 _DAILY_CONCURRENCY 限制整体并发）。
+            if jobs:
+                logger.info("🌅 开始并发发送 %d 个群的日报", len(jobs))
+                await asyncio.gather(*[
+                    _send_one_daily_report(f, gid, st, date_str) for f, gid, st in jobs
+                ], return_exceptions=True)
 
             last_date = today_str
 

@@ -542,6 +542,16 @@ class EventDispatcher:
             except Exception as _e:
                 logger.debug("私聊消息索引入库失败(忽略): %s", _e)
 
+        # ★ v2.3.64: 重命令标记 → 队列层走旁路并发，不占用本群 worker
+        #   （同群多人同时查战绩不再排队，查询期间也不堵同群其他回复）
+        _detached = False
+        if is_command:
+            try:
+                from modules.commands import is_heavy_command
+                _detached = is_heavy_command(msg_content)
+            except Exception as _e:
+                logger.debug("重命令判定失败(忽略): %s", _e)
+
         # 调用消息处理管道（通过队列，不阻塞当前消息接收）
         # ★ v2.0.4r: 传 is_command → 队列层给指令最高优先级，不被普通消息堵住
         from core.queues import enqueue_message
@@ -558,6 +568,7 @@ class EventDispatcher:
             quoted_msg=quoted_text,   # ★ 引用消息原文
             error_report=error_report_content,  # ★ 错误报告内容
             is_command=is_command,    # ★ v2.0.4r 指令插队标记
+            _detached=_detached,      # ★ v2.3.64 重命令旁路并发标记
         )
 
     async def _process_image(self, image_url_or_path: str, cfg, chat_id: int, is_group: bool, user_id: int, sender_name: str, is_mentioned: bool = False) -> str:
