@@ -23,6 +23,7 @@ logger = get_logger("capability.registry")
 # 核心常驻能力：普通聊天也保留，避免完全空上下文
 CORE_ALWAYS_ON: frozenset[str] = frozenset({
     "help", "ping", "weather", "search_web", "search", "read_url", "run_code",
+    "load_skill",   # ★ v2.3.64: 按需拉取技能手册正文
 })
 
 

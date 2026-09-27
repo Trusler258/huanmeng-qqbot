@@ -34,7 +34,7 @@ _EXCLUDE = {
     "testsys", "testok", "jsonraw", "md",
     "add_relation",   # 内部入口
     "friend_add", "friend_reject", "friend_list",  # 别名合并到「添加/拒绝/好友列表」
-    "roll_dice", "run_code", "write_code",  # FC 工具别名（已注册但仅内部用）
+    "roll_dice", "run_code", "write_code", "load_skill",  # FC 工具别名（已注册但仅内部用）
     "get_time",
     "s", "search_web",  # 纯别名 → 归并显示主名 search
 }
@@ -109,7 +109,7 @@ _CATEGORY = {
 
 # 纯 FC 工具（已注册 command 能力但实为工具别名，不展示在指令卡）
 _TOOL_ONLY = {
-    "roll_dice", "run_code", "write_code", "search_web", "get_time",
+    "roll_dice", "run_code", "write_code", "search_web", "get_time", "load_skill",
 }
 
 # 插件指令（运行时经 plugin.register_command 动态挂进 COMMAND_MAP，静态 import 不可见）

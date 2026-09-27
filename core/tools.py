@@ -256,6 +256,29 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            # ★ v2.3.64: 描述里的「可用技能」清单由 get_tool_schemas() 动态拼入
+            #   （见 services.llm.get_skill_index），技能文件改了即时反映。
+            "name": "load_skill",
+            "description": (
+                "加载一份内部技能手册的正文。当任务需要专门的规范/流程/方法"
+                "（例如写作文、长文、会话总结等）时，先调用本工具拿到完整规范再动手，"
+                "比凭印象直接写更准。一次只加载当前真正需要的那一份，不要一次拉多份。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "技能名，取自下方「可用技能」列表里的英文名，如 writing_system",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 # ── 工具名 → 命令名 映射 ──────────────────────────────────
@@ -276,6 +299,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "whois":       "whois",  # ★ 域名查询
     "pgr":         "pgr",
     "run_code":    "",  # 自有实现（沙箱执行 Python / C++）
+    "load_skill":  "",  # 自有实现（按需拉取技能手册正文）
 }
 
 
@@ -286,6 +310,25 @@ def get_tool_schemas() -> list[dict]:
     让 LLM 在普通聊天中也能发现并调用插件能力（always_on 常驻）。
     """
     schemas = list(TOOLS)
+
+    # ★ v2.3.64: 把技能索引动态拼进 load_skill 的描述，让模型知道有哪些 skill 可按需拉取。
+    #   深拷贝后再改——schemas 是 list(TOOLS) 浅拷贝，直接改会污染模块级 TOOLS。
+    try:
+        from services.llm import get_skill_index
+        _idx = get_skill_index()
+        if _idx:
+            for _i, _t in enumerate(schemas):
+                _fn = (_t or {}).get("function", {})
+                if _fn.get("name") == "load_skill":
+                    _t = json.loads(json.dumps(_t, ensure_ascii=False))
+                    _t["function"]["description"] = (
+                        _t["function"].get("description", "") + "\n可用技能：\n" + _idx
+                    )
+                    schemas[_i] = _t
+                    break
+    except Exception as _e:
+        logger.debug("注入技能索引失败(忽略): %s", _e)
+
     try:
         from core.capability import get_capability_registry, CATEGORY_TOOL
         registry = get_capability_registry()
@@ -904,6 +947,19 @@ async def execute_tool(
             arguments.get("files") or {},
             arguments.get("stdin", "") or "",
         )
+    if tool_name == "load_skill":
+        # ★ v2.3.64: 按需拉取技能手册正文（data/skills/*.md 的章节）
+        from services.llm import get_skill_content, get_skill_index
+        _name = (arguments.get("name") or "").strip()
+        _content = get_skill_content(_name)
+        if _content:
+            logger.info("load_skill 命中: %s (%d字)", _name, len(_content))
+            return f"【技能 {_name}】\n{_content}"
+        logger.info("load_skill 未命中: %r", _name)
+        _idx = get_skill_index()
+        if _idx:
+            return f"没有名为「{_name}」的技能。可用技能：\n{_idx}"
+        return f"没有名为「{_name}」的技能。"
 
     if not cmd_name:
         # 插件动态注册的工具：LLM 对话自动发现并调用，回退到插件 handler
