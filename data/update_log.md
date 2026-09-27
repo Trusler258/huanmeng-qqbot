@@ -11,6 +11,49 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.62 — calc 升级为真沙箱工具 run_code（支持 Python + C++）(2026.9.27)
+一句话总结：FC 工具 `calc`（只在正则黑名单下跑 Python 算数）改名 `run_code`，
+底层接到 `core/sandbox` 真实沙箱，语言扩到 Python + C++14，并把子进程环境变量清洗掉
+（today 之前一句 `os.environ` 就能把 `.env` 里的 API Key 打进群）。
+
+### 一、为什么换
+旧 `calc`（`core/tools.py::_python_eval`）的两个问题：
+1. **安全靠猜**：用 `_FORBIDDEN_RE` 正则封 `import os/sys/subprocess/...`，
+   拼接字符串、`getattr(__builtins__)` 之类一条就能绕；而且为了"安全"把 `import os`
+   整类封死，正常代码也跑不了。
+2. **能力太窄**：只能跑 Python，且是 `sys.executable -c` 直跑，没目录隔离、没资源上限。
+
+`core/sandbox.py` 早就有真沙箱（独立临时目录 + 超时强杀 + `setrlimit` 限内存/CPU +
+输出截断 + 产物收集），但只挂在插件能力 `ctx.sandbox` 上，LLM 的 FC 工具没用上。
+
+### 二、改了什么
+- **改名 + 扩语言**：`TOOLS` 里 `calc` → `run_code`；参数从单一 `code`
+  变成 `language`(python|cpp) / `code` / `files`(C++ 多文件) / `stdin`。
+- **换后端**：`_run_code()` 走 `sandbox.run_python` / `sandbox.compile_and_run_cpp`
+  （C++14 g++ -O2）。Python 时限 8s、C++ 16s（留编译时间），工具级超时 25s。
+- **保留一层防手滑**：`_SANDBOX_BLOCK_RE` 挡三类最直白的越权——联网
+  （socket/urllib/requests/httpx...）、起进程（subprocess/os.system/os.popen/ctypes...）、
+  读敏感路径（`/root/`、`/etc/`、`.env`、`.ssh`、`id_rsa`、`passwd`...）。
+  同样从"猜"降级为兜底，真隔离靠 sandbox 本身。
+- **env 清洗（新增，影响所有沙箱调用方）**：`core/sandbox._run_proc` 原样继承父进程
+  env，被测代码 `print(os.environ)` 即可泄漏 `DEEPSEEK_KEY` / `STEAM_PROXY_TOKEN`。
+  新增 `_safe_env()` 只放行 PATH/HOME/LANG/LC_ALL/PYTHONIOENCODING 等必需项
+  （Windows 另加 SystemRoot 一类系统必需项）。插件侧的 `ctx.sandbox` 一并受益。
+- **同步改名**：`services/llm.py`（`_CMD_DESC` + FC 结果分类）、
+  `core/capability/registry.py::CORE_ALWAYS_ON`、`modules/help_card.py` 两处工具名单、
+  `data/skills/40_reminders.md`（工具路由提示改指向 run_code，并强调不跑就报数=编）。
+
+### 三、没做的
+- **没加用户指令**：run_code 保持 LLM-only（和原 calc 一致）。用户侧要"写代码"仍走
+  `write_code`（产文件），跑代码由 LLM 自己决定调不调，避免多开一个群内可触发的执行入口。
+- **删了 `_python_eval` / `_FORBIDDEN_RE` / `_fold_truncate`**：被 `_run_code` 完全取代，
+  留着是误导（两套沙箱观感）。`_fold_truncate` 的"保头尾"策略已在 sandbox 内实现。
+
+### 四、验证
+- 本地 `tests/_test_run_code_tool.py`：**27/27 通过**（含死循环超时强杀、7 类危险代码拦截、
+  `os.environ` 拿不到注入的密钥、产物列出、临时目录无残留）。
+- 服务器：C++ 真编译执行 + 线上 FC 端到端（见 v2.3.62 部署记录）。
+
 ## v2.3.61 — 修「正在查 你的 的 Steam…」语病 + 提示改为延迟出现 (2026.9.25)
 一句话总结：/~steam 的进度提示拼出了「正在查 你的 的 Steam…」；顺带把这条提示
 改成延迟 2 秒才发 —— SWR 命中时 0.5 秒内就出图，提示根本不该出现。
