@@ -11,6 +11,53 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.63 — 堵掉 run_code 的敏感路径逃逸（改成内核级 namespace 隔离）(2026.9.27)
+一句话总结：v2.3.62 的"敏感路径正则"能被运行期拼出来的路径绕过，实测可读到整份 .env；
+本次改成 `unshare` 独立 mount/network namespace —— `/root` 被 tmpfs 盖住、外网被断，
+正则降级为纯兜底。
+
+### 一、漏洞（v2.3.62 引入，已实测复现）
+`_SANDBOX_BLOCK_RE` 扫的是**源码文本**，路径在运行期算出来就没有敏感字面量：
+```python
+p = os.path.join(HOME, 'bot', 'config', '.' + 'en' + 'v')   # 源码里没有 /root/ 也没有 .env
+```
+实测 **可达、1230 字节** = 整份 `.env`（DeepSeek Key / CF API Token / Steam 代理令牌）都能读，
+代码以 root 跑，读到就能 print 进群。`'/'+'et'+'c'+'/'+'pass'+'wd'` 同理。
+两个成因：
+1. 字符串黑名单对"会拼字符串的对手"天然无效 —— 它只能是**防手滑**，不是隔离；
+2. `_safe_env()` 把真实 `HOME=/root` 透传下去了 → `expanduser('~')` 直指 bot 目录。
+
+⚠️ 还有一个诚实的说明：**这比原来的 calc 是放宽了**。旧 `_python_eval` 把
+`open(` / `import os` / `pathlib` 整个封死，读文件基本没戏；v2.3.62 为了让正常代码能跑，
+只拦敏感字面量，文件读取面反而变大。本次从根上补回来。
+
+### 二、修法（内核级隔离，免装包）
+`core/sandbox._run_proc` 在 Linux + root 下把命令包进 `unshare`：
+```
+unshare -m -n sh -c 'mount -t tmpfs none /root; mount -t tmpfs none /www; exec "$@"' sh <cmd...>
+```
+- `-m` 独立 mount namespace → tmpfs 盖住 `/root`（bot 源码/配置/密钥 + panel 源码）与 `/www`（宝塔/MySQL 数据）
+- `-n` 独立 network namespace → 网卡全无（lo 也是 down），**外联被内核挡下**，不再依赖模块名正则
+- `HOME` 改指向沙箱目录（`_safe_env(cwd)`），断掉 `expanduser('~')` 这条路
+- 顺手：`_limit_preexec` 里加 `os.setsid()`，超时改为 `killpg` 杀整组（隔离包装层会 exec 掉自己，按组杀不留孤儿）
+- 非 Linux / 非 root / 无 `unshare` → **自动降级**回原行为（不影响本地开发与 Windows）
+- 新增 `sandbox.isolation_mode()` 便于自检断言
+
+**残留（已知、接受）**：`/etc/passwd` 这类系统文件仍可读 —— 里面没有密钥；
+`/etc` 不能盖（动态链接器要用 `/etc/ld.so.cache`，盖了 python/g++ 就跑不起来）。
+
+### 三、验证
+- 服务器 `tests/_test_run_code_tool.py` **34/34**（新增 §9：`isolation_mode = unshare(-m,-n)`、
+  HOME 拼路径读不到 .env、绝对路径拼出来也读不到、外联失败、隔离下 C++ 仍能编译运行）
+- 逃逸探针修复前后对照：`A_env_reach` / `拼接路径可达` / `可达配置文件` **True → False**
+- 线上端到端 `tests/_verify_run_code_e2e.py` 7/7 不变
+- 本地 29/29 不变（Windows 上隔离自动降级，行为与 v2.3.62 一致）
+
+### 四、提示词
+`data/skills/40_reminders.md` 新增【服务器文件/密钥】：遇到读服务器文件/密钥的请求直接拒绝，
+**并禁止解释自己的能力边界** —— 实测 bot 会说"我也没有读本地文件的本事"，而沙箱明明是能读文件的，
+被追一句就露馅。顺便：现在有了真隔离，这句谎话就更没必要了。
+
 ## v2.3.62 — calc 升级为真沙箱工具 run_code（支持 Python + C++）(2026.9.27)
 一句话总结：FC 工具 `calc`（只在正则黑名单下跑 Python 算数）改名 `run_code`，
 底层接到 `core/sandbox` 真实沙箱，语言扩到 Python + C++14，并把子进程环境变量清洗掉
