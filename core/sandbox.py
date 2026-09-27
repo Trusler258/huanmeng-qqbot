@@ -44,6 +44,11 @@ def _limit_preexec(mem_mb: int, cpu_sec: int) -> callable | None:
 
     def _apply() -> None:
         try:
+            # 独立进程组：超时按组杀，避免隔离包装层留下孤儿进程
+            os.setsid()
+        except Exception:
+            pass
+        try:
             # 地址空间上限（内存）
             resource.setrlimit(resource.RLIMIT_AS,
                                (mem_mb * 1024 * 1024, mem_mb * 1024 * 1024))
@@ -58,17 +63,102 @@ def _limit_preexec(mem_mb: int, cpu_sec: int) -> callable | None:
     return _apply
 
 
-def _safe_env() -> dict[str, str]:
+# ── 真隔离（Linux + root）：独立 mount / network namespace ──────────
+#
+# 为什么必须做（v2.3.63 教训）：正则只扫**源码文本**，而路径能在运行期算出来 ——
+#   p = os.path.join(HOME, 'bot', 'config', '.' + 'en' + 'v')
+# 源码里没有 "/root/"、也没有 ".env" 字面量，可它实测读到了整份 .env（1230 字节，
+# 装着 DeepSeek Key / CF Token / Steam 令牌）。字符串黑名单对"会拼字符串的对手"
+# 天然无效，真正的边界只能由内核给：
+#   unshare -m → 独立 mount namespace，tmpfs 盖住含密钥的目录，代码眼里的 /root 是空的
+#   unshare -n → 独立 network namespace，网卡全无（lo 也 down），彻底断外联
+# 对正常代码零影响：python3/g++ 都在 /usr 下，临时目录在 /tmp，宿主机 /root 不受影响。
+_MASK_DIRS: tuple[str, ...] = ("/root", "/www")
+
+
+_UNSHARE_OK: bool | None = None
+
+
+def _unshare_available() -> bool:
+    """真跑一次 unshare 探测可用性，结果缓存。
+
+    ⚠️ 为什么必须真探测：`unshare` 存在 + euid==0 **不代表能用**。systemd 单元若设了
+    `RestrictNamespaces=`、收了 CapabilityBoundingSet（少 CAP_SYS_ADMIN）、或开了
+    NoNewPrivileges，unshare 会在**调用时才失败** —— 那样 run_code 会整个变成报错。
+    探测失败就静默降级为无隔离（工具本身必须可用），并记一条 warning 便于发现。
+    """
+    global _UNSHARE_OK
+    if _UNSHARE_OK is not None:
+        return _UNSHARE_OK
+    _UNSHARE_OK = False
+    if os.name != "posix":
+        return _UNSHARE_OK
+    try:
+        if os.geteuid() != 0:
+            return _UNSHARE_OK
+    except AttributeError:
+        return _UNSHARE_OK
+    if shutil.which("unshare") is None:
+        return _UNSHARE_OK
+    try:
+        import subprocess
+        probe = subprocess.run(["unshare", "-m", "-n", "true"],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=3)
+        _UNSHARE_OK = probe.returncode == 0
+    except Exception:
+        _UNSHARE_OK = False
+    if not _UNSHARE_OK:
+        logger.warning("沙箱 namespace 隔离不可用（unshare 探测失败），已降级为无隔离运行")
+    return _UNSHARE_OK
+
+
+def _unshare_prefix() -> list[str]:
+    """namespace 隔离前缀命令；不可用（非 Linux / 非 root / unshare 探测失败）时返回 []。"""
+    if not _unshare_available():
+        return []
+    mounts = "; ".join(f"mount -t tmpfs none {d} 2>/dev/null" for d in _MASK_DIRS)
+    # `exec "$@"` 让真正的命令接管这个进程（不多留一层 shell，超时按进程组杀才准）
+    return ["unshare", "-m", "-n", "sh", "-c", f'{mounts}; exec "$@"', "sh"]
+
+
+def isolation_mode() -> str:
+    """当前沙箱隔离模式，供自检/测试打印与断言。"""
+    return "unshare(-m,-n)" if _unshare_prefix() else "none"
+
+
+def _kill_tree(proc) -> None:
+    """超时终止：优先杀整个进程组（隔离模式下包装层会 exec 掉自己，按组杀更稳）。"""
+    pid = getattr(proc, "pid", None)
+    if os.name == "posix" and pid:
+        import signal
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            return
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _safe_env(cwd: Path | None = None) -> dict[str, str]:
     """最小化子进程环境变量：不把 bot 自己的凭据继承给沙箱代码。
 
     子进程默认继承父进程 env，于是被测代码一句 `import os; print(os.environ)`
     就能把 DEEPSEEK_KEY / STEAM_PROXY_TOKEN / ZHIPU_KEY 之类打进群里。
     这里只保留运行必需的几项；Windows 额外保留系统必需项（缺 SystemRoot 时
     部分程序会直接启动失败）。
+
+    ⚠️ HOME 必须指向沙箱目录，**不能透传真实的 /root**：一旦透传，
+    `os.path.expanduser('~')` 就直接指到 bot 目录，再拼上 'bot/config/…'
+    便绕过所有字面量正则（这正是 v2.3.62 的漏洞成因）。给 cwd，让 ~ 落在沙箱内且可写。
     """
+    home = str(cwd) if cwd else tempfile.gettempdir()
     env: dict[str, str] = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/tmp"),
+        "HOME": home,
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "en_US.UTF-8"),
         "PYTHONIOENCODING": "utf-8",
@@ -101,13 +191,15 @@ async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
         "cwd": str(cwd),
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.PIPE,
-        "env": _safe_env(),
+        "env": _safe_env(cwd),
     }
     if stdin_data:
         kwargs["stdin"] = asyncio.subprocess.PIPE
     preexec = _limit_preexec(mem_mb, int(timeout) + 5)
     if preexec is not None:
         kwargs["preexec_fn"] = preexec
+    # 内核级隔离：可用则把命令塞进独立 mount/network namespace（见 _unshare_prefix）
+    cmd = _unshare_prefix() + list(cmd)
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
         try:
@@ -118,10 +210,7 @@ async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
             timed_out = False
         except asyncio.TimeoutError:
             timed_out = True
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_tree(proc)
             try:
                 await proc.wait()
             except Exception:

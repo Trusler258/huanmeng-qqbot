@@ -164,6 +164,44 @@ async def main() -> int:
     r = await _run_code("cpp", "")
     check("C++ 无源码给提示", "未提供" in r, repr(r))
 
+    print("=== 9. 内核隔离（仅 Linux + root 生效，本地跳过）===")
+    from core.sandbox import isolation_mode
+    mode = isolation_mode()
+    print(f"  isolation_mode = {mode}")
+    if mode == "none":
+        check("非 Linux/root：无 unshare，隔离自动降级（本地跳过）", True)
+    else:
+        # 路径全部在运行期拼出来，源码里没有敏感字面量 → 正则放行，只能靠内核挡住
+        code = (
+            "import os\n"
+            "h = os.environ.get('HOME', '/tmp')\n"
+            "p = os.path.join(h, 'bot', 'config', '.' + 'en' + 'v')\n"
+            "print('HOME_BASED=', os.path.exists(p))\n"
+            "q = '/' + 'r' + 'o' + 'ot' + '/bot/config/.' + 'en' + 'v'\n"
+            "print('ABS_ROOT=', os.path.exists(q))\n"
+        )
+        r = await _run_code("python", code)
+        check("HOME 已指向沙箱 → 读不到 .env", "HOME_BASED= False" in r, repr(r))
+        check("/root 被 tmpfs 盖住 → 绝对路径也读不到", "ABS_ROOT= False" in r, repr(r))
+
+        # 绕开正则模块名、直接尝试外联 → 应因 network namespace 而失败
+        net = (
+            "s = __import__('soc' + 'ket')\n"
+            "try:\n"
+            "    s.create_connection(('1.1.1.1', 80), timeout=3)\n"
+            "    print('NET=OK')\n"
+            "except Exception as e:\n"
+            "    print('NET=FAIL', type(e).__name__)\n"
+        )
+        r = await _run_code("python", net)
+        check("network namespace 生效（外联被内核挡下）", "NET=FAIL" in r, repr(r))
+
+        # 正常能力不能被隔离弄坏
+        r = await _run_code(
+            "cpp",
+            '#include <iostream>\nint main(){std::cout<<"ok"<<std::endl;return 0;}')
+        check("隔离下 C++ 仍能编译运行（输出 ok）", r.strip() == "ok", repr(r))
+
     print(f"\n=== 结果: {PASS} passed, {FAIL} failed ===")
     return 1 if FAIL else 0
 
