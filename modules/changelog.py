@@ -32,11 +32,19 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from core.logger import get_logger
+
+# ★ v2.3.67: 补上模块级 logger。
+#   本文件原先只在各函数内部各自 `logger = get_logger("changelog")`，模块级没有 logger；
+#   新增的回收逻辑（browser_idle_loop / reclaim_browser）是模块级函数，直接用 logger
+#   会 NameError —— 而且会连锁炸在 except 分支里（异常处理自己也抛），真出问题时连日志都留不下。
+#   这里统一定义一份；函数内的局部赋值仍可覆盖，不冲突。
+logger = get_logger("changelog")
 
 # 延迟导入（避免启动时加载重型依赖）
 _markdown_lib = None
@@ -91,7 +99,92 @@ async def _ensure_browser():
         ],
     )
     logger.info("[Playwright] Chromium 启动成功（极致加速已启用）")
+    touch_browser()
     return _browser
+
+
+# ── v2.3.67: Chromium 空闲自动回收 ────────────────────────────
+# 背景：_ensure_browser() 是全局单例，且启动时还会**预启动**，之后永不释放。
+#   服务器实测常驻 **19 个 chromium 进程 / 数百 MB**，而近 7 天实际只截图 40 次
+#   （全是每天 0 点那一次日报，棋类/谱面一次没渲染过）——等于为一天一次渲染全天养着浏览器。
+#   本机总 7.7G 内存，空闲常 <300M，这部分常驻是实打实的浪费。
+# 方案：记录最后一次渲染时间，后台每 60s 检查；空闲超过 _BROWSER_IDLE_SEC 就整体关闭
+#   （页面池 + browser + playwright instance 全清）。下次要渲染时 _ensure_browser()
+#   会懒加载重启（~1s，只在真需要时付一次）。
+# 注意：有渲染在飞时（_browser_busy > 0）不回收，避免把正在用的浏览器关掉。
+_BROWSER_IDLE_SEC = 600.0        # 空闲 10 分钟即回收
+_browser_busy = 0                # 正在渲染的请求数
+_last_render_ts: float = 0.0     # 最后一次"碰过浏览器"的时间
+
+
+def touch_browser() -> None:
+    """标记浏览器刚被使用过（回收定时器重置）"""
+    global _last_render_ts
+    _last_render_ts = time.time()
+
+
+def browser_idle_sec() -> float:
+    """距上次使用过去了多少秒（从未用过返回 0）"""
+    if not _last_render_ts:
+        return 0.0
+    return time.time() - _last_render_ts
+
+
+async def reclaim_browser(force: bool = False) -> bool:
+    """关闭空闲的 Chromium 并释放内存；返回是否真的回收了。
+
+    force=True 时跳过空闲/忙碌判断（供 /~reload、退出等场景显式调用）。
+    """
+    global _browser, _playwright_instance
+    if _browser is None:
+        return False
+    if not force:
+        if _browser_busy > 0:
+            return False
+        if browser_idle_sec() < _BROWSER_IDLE_SEC:
+            return False
+    idle = browser_idle_sec()
+    try:
+        async with _page_lock:
+            for _p in _page_pool:
+                try:
+                    await _p.close()
+                except Exception:
+                    pass
+            _page_pool.clear()
+        try:
+            await _browser.close()
+        except Exception as e:
+            logger.debug("[Playwright] browser.close 异常(忽略): %s", e)
+        _browser = None
+        if _playwright_instance is not None:
+            try:
+                await _playwright_instance.stop()
+            except Exception as e:
+                logger.debug("[Playwright] playwright.stop 异常(忽略): %s", e)
+            _playwright_instance = None
+        logger.info("[Playwright] 空闲 %.0fs → 已回收 Chromium，释放内存", idle)
+        return True
+    except Exception as e:
+        logger.warning("[Playwright] 回收 Chromium 失败: %s", e)
+        return False
+
+
+async def browser_idle_loop(check_sec: float = 60.0) -> None:
+    """后台任务：定期回收空闲浏览器（由 bot.py 启动）"""
+    logger.info("Chromium 空闲回收已启动（空闲 > %.0fs 即释放，每 %.0fs 检查一次）",
+                _BROWSER_IDLE_SEC, check_sec)
+    while True:
+        try:
+            await asyncio.sleep(check_sec)
+        except asyncio.CancelledError:
+            break
+        try:
+            await reclaim_browser()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug("空闲回收检查异常(忽略): %s", e)
 
 
 
@@ -483,6 +576,26 @@ async def _screenshot_html(
     width: int = 800,
     scale: float = 1.0,
 ) -> bool:
+    """截图入口：统计在飞渲染数 + 刷新"最后使用时间"，再交给实现。
+
+    ★ v2.3.67: 外壳只为配合空闲回收——渲染期间 _browser_busy > 0，回收器会让路；
+      渲染一结束就 touch，空闲计时从头开始。
+    """
+    global _browser_busy
+    _browser_busy += 1
+    try:
+        return await _screenshot_html_inner(html_content, output_path, width, scale)
+    finally:
+        _browser_busy -= 1
+        touch_browser()
+
+
+async def _screenshot_html_inner(
+    html_content: str,
+    output_path: Path,
+    width: int = 800,
+    scale: float = 1.0,
+) -> bool:
     """
     Playwright 截图（v0.9.6 极致加速版 + 页面池）
     """
@@ -680,8 +793,9 @@ async def send_changelog_card(
             return "❌ 卡片图片生成失败，且无法读取日志文件。请检查日志或安装依赖:\n```\npip install markdown playwright\nplaywright install chromium\n```"
     
     # 构造 CQ 图片消息
-    normalized = img_path.replace("\\", "/")
-    cq_msg = f"[CQ:image,file=file:///{normalized}]"
+    # ★ 从服务器热修并入（原本手工拼 file:/// 会变 4 斜杠 → NapCat ENOENT）
+    from services.sender import build_local_image_cq
+    cq_msg = build_local_image_cq(img_path)
     
     # 发送
     target_id = group_id if is_group else user_id
@@ -812,8 +926,9 @@ async def send_card_image(
     
     logger = get_logger("card")
     
-    normalized = img_path.replace("\\", "/")
-    cq_msg = f"[CQ:image,file=file:///{normalized}]"
+    # ★ 从服务器热修并入（原本手工拼 file:/// 会变 4 斜杠 → NapCat ENOENT）
+    from services.sender import build_local_image_cq
+    cq_msg = build_local_image_cq(img_path)
     
     target_id = group_id if is_group else user_id
     try:
