@@ -42,6 +42,32 @@
 而拿十进制 `1467315295` 去试会得到 Steam 的 Error 页。
 `/~steam bd` 现在也会显示自己的好友代码，方便直接分享加好友。
 
+**⚠️ 当天发现的 bug（已修）：上面这套「数字形式」当时其实查不了**
+说明写完后用户实测 `/~steam who 1467315295` 得到「还没绑定 Steam 喵~」。
+根因：`_do_who` 开头先跑了 `target = _qq_of(raw, group_id)`，而 `_parse_opponent`
+第一句就是 `re.search(r"(\d{4,12})", s)` —— **任何 4~12 位数字都被当成 QQ 号**：
+- `1467315295` → 当成 QQ `1467315295`
+- `76561199427581023` → 只抠出前 12 位 `765611994275` 当 QQ
+
+于是**所有数字形式的 Steam 标识全部失效**（`@` 与昵称不受影响，所以更容易漏掉）。
+我当时的「8 种输入全部通过」是**假阳性**：那个探针直接调 `resolve_steamid`，
+绕过了 `_do_who` 这道拦截，测的根本不是用户走的那条路。
+
+改法（用户要求）：**只有带 `@` 的才识别为 QQ**，其余一律按 Steam 标识解析。
+```
+/~steam who @某人          → 查绑定
+/~steam who 1467315295     → account_id 直查（不读绑定）
+/~steam who hkkhkghw       → 好友代码直查
+```
+顺带修两处：① `_do_bind` 判断「这是按自定义 URL 查到的账号」用的是 `extract_steamid`
+（只认 17 位 SteamID64 与链接），拿好友代码 / account_id 绑定时会**误报**，改用
+`extract_identity`；② 提示文案「好友代码…那串数字，如 1467315295」是错的
+（那是 account_id，好友代码是字母），已改正并补上 account_id / SteamID2/3 的说明。
+
+测试：`tests/_test_v2369_steam_who_dispatch.py` 26 passed —— 它**打桩 `_send_card` 后真调
+`_do_who`**，并专门断言「数字输入不得触发 `get_bind`」，把这个回归钉死。
+端到端探针 `scripts/_probe_steam_identity_e2e.py` 也改成走 `_do_who` 真实分派。
+
 ### 2. Steam 代理 Worker 加 `/steamcommunity/` 路径前缀
 用户要求。新增：
 ```

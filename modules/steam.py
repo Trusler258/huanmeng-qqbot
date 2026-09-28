@@ -30,6 +30,7 @@ HELP = "\n".join([
     "  price <游戏名|链接>  价格 · 折扣 · 地区对比（+史低）",
     "  px <游戏名>          快捷版，只给第一条匹配",
     "  who [@某人|SteamID|好友代码]  查 Steam 状态；不带参数=查自己",
+    "     （SteamID 支持 17 位 SteamID64 / account_id / STEAM_x:y:z / [U:1:x]）",
     "  bd <SteamID|好友代码|链接>    绑定；bd 查看；bd del 解绑；bd list 列表",
     "  help                 本帮助",
     "另一种写法：/~在干嘛 @某人",
@@ -186,22 +187,34 @@ async def _do_who(args, user_id, group_id, is_group, sender_name) -> str | None:
     from services import steam_card as SC
 
     raw = " ".join(args).strip() if args else ""
-    target = _qq_of(raw, group_id) if raw else 0
 
     if not S.has_key():
         return "还没配置 STEAM_KEY 喵~"
 
-    # ★ 参数不是 @某人时，当成 SteamID / 好友代码 / 资料链接**直接查**，不需要绑定。
-    #   用户要求：有 id 就直接查对应的，不必先 @ 一个已绑定的 QQ。
+    # ── 参数只有两路（v2.3.69）────────────────────────────────
+    #   ① 带 @       → 当 QQ 查绑定
+    #   ② 其余       → 当 Steam 标识**直接查**（SteamID64 / account_id / 好友代码 / ID2/3 / 链接）
+    #   ⚠️ 为什么不再"先看能不能抠出数字当 QQ"：_parse_opponent 第一句是
+    #      re.search(r"(\d{4,12})", s)，任何 4~12 位数字都会被当 QQ 号，于是
+    #      1467315295 被当成 QQ、76561199427581023 被抠出前 12 位当 QQ ——
+    #      **数字形式的 Steam 标识会全部失效**，用户只会看到「还没绑定」。
+    #      用户明确要求：带 @ 的才识别为 QQ。
     direct = ""
-    if raw and not target:
-        try:
-            direct, err = await S.resolve_steamid(raw)
-        except Exception as e:
-            logger.warning("解析 Steam 账号失败: %s", e)
-            return "解析失败（网络问题），稍后再试"
-        if not direct:
-            return err or "认不出这是账号喵~"
+    target = 0
+    if raw:
+        if "@" in raw or "[CQ:at" in raw:
+            target = _qq_of(raw, group_id)
+            if not target:
+                return ("没认出你 @ 的是谁喵~\n"
+                        "  （也可以直接给 SteamID / 好友代码 / 资料链接）")
+        else:
+            try:
+                direct, err = await S.resolve_steamid(raw)
+            except Exception as e:
+                logger.warning("解析 Steam 账号失败: %s", e)
+                return "解析失败（网络问题），稍后再试"
+            if not direct:
+                return err or "认不出这是账号喵~"
 
     if direct:
         steamid = direct
@@ -217,7 +230,8 @@ async def _do_who(args, user_id, group_id, is_group, sender_name) -> str | None:
             if target == user_id:
                 return ("你还没绑定 Steam 喵~\n"
                         "用 /~steam bd <SteamID64 / 好友代码 / 个人资料链接> 绑一下\n"
-                        "也可以不绑定直接查：/~steam who <SteamID 或 好友代码>")
+                        "也可以不绑定直接查：/~steam who <SteamID / 好友代码 / 资料链接>"
+                        "（不用加 @）")
             return "%s 还没绑定 Steam 喵~（让他用 /~steam bd 绑一下）" % who
 
     # ★ v2.3.61 文案修正：旧写法 `"正在查 %s 的 Steam…" % ("你的" if ...)` 拼出
@@ -250,8 +264,8 @@ async def _do_bind(args, user_id, group_id, is_group) -> str:
         sid = S.get_bind(user_id)
         if not sid:
             return ("你还没绑定 Steam 喵~\n"
-                    "  /~steam bd <SteamID64 或个人资料链接>\n"
-                    "SteamID64 = 个人资料页链接里那串 17 位数字\n"
+                    "  /~steam bd <SteamID64 / 好友代码 / account_id / 资料链接>\n"
+                    "  例：76561199427581023 · hkkhkghw · 1467315295\n"
                     "（不要用昵称，Steam 上重名的太多）")
         try:
             p = await S.player_summary(sid)
@@ -292,7 +306,7 @@ async def _do_bind(args, user_id, group_id, is_group) -> str:
     name = p.get("name") or "（昵称查不到，可能资料私密）"
     tip = ""
     # 按自定义 URL 解析的容易认错人（vanity 与昵称不是一回事，重名/抢注很常见）→ 提醒核对
-    if not S.extract_steamid(text):
+    if not S.extract_identity(text)[0]:   # 认得出本地标识就别误报警
         tip = ("\n（这是按自定义 URL 查到的账号，请核对上面的昵称是不是你）\n"
                "  对不上就用 SteamID64 重绑：个人资料页链接里那 17 位数字")
     code = S.account_id_to_friend_code(S.steamid64_to_account_id(sid))

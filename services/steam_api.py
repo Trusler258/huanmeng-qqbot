@@ -426,9 +426,14 @@ async def resolve_steamid(text: str) -> tuple:
             pass
         return "", (f"把「{t}」当成自定义 URL 查了，没找到对应账号\n"
                     "  也可以直接给 SteamID64 或好友代码")
+    # ⚠️ 旧文案把好友代码写成"那串数字，如 1467315295"——错的：
+    #   好友代码是**字母**（account_id 的十六进制 + 固定字符替换），
+    #   1467315295 是 account_id 本身。别再混为一谈。
     return "", ("认不出这是账号喵~ 可以给这几种：\n"
-                "  · 好友代码（Steam 客户端「好友代码」那串数字，如 1467315295）\n"
+                "  · 好友代码（Steam 好友列表里那串字母，如 hkkhkghw）\n"
+                "  · account_id（9~10 位数字，如 1467315295）\n"
                 "  · SteamID64（17 位数字，个人资料页链接里那串）\n"
+                "  · SteamID2/3（STEAM_1:1:733657647 · [U:1:1467315295]）\n"
                 "  · 个人资料链接（steamcommunity.com/profiles/... 或 /id/...）")
 
 
