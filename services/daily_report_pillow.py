@@ -132,6 +132,62 @@ def _tw(draw, s, font):
     return draw.textlength(s, font=font)
 
 
+def _mono_or_cjk(ch: str):
+    """按字符选字体：ASCII 走等宽，非 ASCII（中文等）走 CJK。
+
+    为什么必须做这一步（v2.3.68 的 bug）：
+      CSS 里 `.head-tag`/`.foot-l` 用 `--mono` 字体栈，而 DejaVu Sans Mono **没有中文字形**。
+      Chromium 会做 **per-glyph fallback**（中文自动落到 Noto CJK），Pillow 不会 ——
+      于是群名药丸整块空白、"幻梦 Bot / 每日 / 幻梦 Project" 里的中文全丢。
+      症状是"中文字体没了"，但查字体文件是查不出来的（字体都在，缺的是渲染端的回退）。
+    """
+    return _mono if ord(ch) < 0x2E80 else cjk
+
+
+def _mixed_runs(s: str):
+    """把字符串切成 [(文本, 字体工厂)]，字体内相邻同类合并"""
+    out = []
+    for ch in s:
+        fac = _mono_or_cjk(ch)
+        if out and out[-1][1] is fac:
+            out[-1][0] += ch
+        else:
+            out.append([ch, fac])
+    return [(t, f) for t, f in out]
+
+
+def _mixed_width(draw, s: str, mono_size: float, mono_bold: bool = False,
+                 cjk_size: float | None = None) -> float:
+    w = 0.0
+    for text, fac in _mixed_runs(s):
+        if fac is _mono:
+            f = _mono(mono_size, mono_bold)
+        else:
+            f = cjk(cjk_size if cjk_size else mono_size, False)
+        w += draw.textlength(text, font=f)
+    return w
+
+
+def _text_mixed(dst, xy, s: str, mono_size: float, mono_bold: bool,
+                color, alpha=1.0, anchor="lm", cjk_size: float | None = None):
+    """等宽栈 + 中文回退地画一行；anchor 支持 lm/mm/rm"""
+    d = ImageDraw.Draw(dst)
+    total = _mixed_width(d, s, mono_size, mono_bold, cjk_size)
+    x = xy[0]
+    if anchor[0] == "m":
+        x -= total / 2
+    elif anchor[0] == "r":
+        x -= total
+    if alpha < 1.0:
+        base = dst.getpixel((int(np.clip(x, 0, dst.width - 1)),
+                             int(np.clip(xy[1], 0, dst.height - 1))))
+        color = tuple(int(round(color[i] * alpha + base[i] * (1 - alpha))) for i in range(3))
+    for text, fac in _mixed_runs(s):
+        f = _mono(mono_size, mono_bold) if fac is _mono else cjk(cjk_size or mono_size, False)
+        _text(dst, (x, xy[1]), text, f, color, 1.0, anchor)
+        x += d.textlength(text, font=f)
+
+
 def _icon(key: str) -> Image.Image | None:
     if key not in _icon_cache:
         p = _ICON_DIR / f"{key}.png"
@@ -316,6 +372,9 @@ def _draw_content(im: Image.Image, p: dict, lay: dict, card_box) -> None:
 
     tx = logo[2] + 16
     title_cy = Y(WRAP_T + 24 + 16)
+    # CSS: .head-title .nm 带 filter:drop-shadow(0 0 12px rgba(236,72,153,.4))
+    #      漏了这个粉色辉光，"幻梦"的墨迹量只有金标的一半（0.048 vs 0.100）
+    _glow_text(im, (tx, title_cy), "幻梦", cjk(20, True), _PRIMARY, 0.40, 12, "lm")
     grad_text(im, (tx, title_cy), "幻梦", cjk(20, True), _PRIMARY_LIGHT, _ACCENT, 135, "lm")
     wn = _tw(d, "幻梦", cjk(20, True))
     _text(im, (tx + wn + 10, title_cy), "·", cjk(20, True), (255, 255, 255), 0.40, "lm")
@@ -326,8 +385,7 @@ def _draw_content(im: Image.Image, p: dict, lay: dict, card_box) -> None:
           (255, 255, 255), 0.40, "lm")
 
     # 右上角群名药丸
-    tagf = _mono(11)
-    tagw = _tw(d, p["group_name"], tagf) + 24
+    tagw = _mixed_width(d, p["group_name"], 11) + 24
     tagh = 17.6 + 10
     tx1 = X(inner_r)
     tag = (int(round(tx1 - tagw)), int(round(Y(WRAP_T + 24 + (46 - tagh) / 2))),
@@ -336,8 +394,8 @@ def _draw_content(im: Image.Image, p: dict, lay: dict, card_box) -> None:
     tm = ring_mask((tag[2] - tag[0], tag[3] - tag[1]), int(tagh / 2), 1)
     im.paste(Image.new("RGB", (tag[2] - tag[0], tag[3] - tag[1]), _PRIMARY),
              (tag[0], tag[1]), tm.point(lambda v: int(v * 0.45)))
-    _text(im, ((tag[0] + tag[2]) / 2, (tag[1] + tag[3]) / 2), p["group_name"], tagf,
-          (255, 255, 255), 1.0, "mm")
+    _text_mixed(im, ((tag[0] + tag[2]) / 2, (tag[1] + tag[3]) / 2), p["group_name"],
+                11, False, (255, 255, 255), 1.0, "mm")
 
     # ══ 摘要 ══
     sum_top, sum_bot = Y(A_HEAD_BOTTOM + 1), Y(A_SUM_BOTTOM)
@@ -464,8 +522,9 @@ def _draw_content(im: Image.Image, p: dict, lay: dict, card_box) -> None:
                              (f"每日 {p['report_time']}", 0.40, (255, 255, 255)),
                              ("·", 0.40, (255, 255, 255)),
                              (p["brand"], 0.40, (255, 255, 255))):
-        _text(im, (fx, cyd), txt, _mono(10), colr, alpha, "lm")
-        fx += _tw(d, txt, _mono(10)) + 8
+        # .foot-l 用 --mono，但内容含中文 → 必须逐字回退，否则中文整段丢失
+        _text_mixed(im, (fx, cyd), txt, 10, False, colr, alpha, "lm")
+        fx += _mixed_width(d, txt, 10) + 8
     grad_text(im, (X(inner_r), cyd), "HUANMENG", _mono(10, True), _PRIMARY, _ACCENT, 135, "rm")
 
 
@@ -475,3 +534,18 @@ def save_daily_report_card(payload: dict, out_path: str | Path) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     render_daily_report(payload).save(p, "JPEG", quality=95)
     return p
+
+
+def _glow_text(dst, xy, s, font, color, alpha=0.4, blur=12, anchor="lm"):
+    """CSS filter:drop-shadow(0 0 blur color) 的文字版：把字形遮罩模糊后铺色"""
+    d0 = ImageDraw.Draw(dst)
+    bbox = d0.textbbox((0, 0), s, font=font, anchor=anchor)
+    pad = int(blur * 2)
+    w = max(1, bbox[2] - bbox[0]) + pad * 2
+    h = max(1, bbox[3] - bbox[1]) + pad * 2
+    layer = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(layer).text((pad - bbox[0], pad - bbox[1]), s, font=font, fill=255)
+    layer = layer.filter(ImageFilter.GaussianBlur(blur / 2))
+    col = Image.new("RGB", (w, h), tuple(int(v) for v in color))
+    dst.paste(col, (int(xy[0] + bbox[0]) - pad, int(xy[1] + bbox[1]) - pad),
+              layer.point(lambda v: int(v * alpha)))
