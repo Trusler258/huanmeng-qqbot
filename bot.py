@@ -159,15 +159,19 @@ class HuanmengBot:
         except Exception as e:
             warning("插件系统启动失败(忽略): %s", e)
 
-        # ★ 预启动 Chromium 和渲染队列（不阻塞聊天）
+        # ★ v2.3.67: 不再预启动 Chromium —— 改「懒加载 + 空闲自动回收」。
+        #   实测：常驻 19 个 chromium 进程 / 数百 MB，而近 7 天只截图 40 次
+        #   （全是每天 0 点那一次日报，棋类/谱面一次都没渲染过）→
+        #   为"一天一次渲染"全天养着浏览器不划算。首次真要渲染时 _ensure_browser()
+        #   会自己启动（~1s），之后空闲 10 分钟由 browser_idle_loop() 自动释放。
         try:
             from core.queues import start_render_queue
             start_render_queue()
-            from modules.changelog import _ensure_browser
-            await _ensure_browser()
-            info("Chromium 已预启动 + 渲染队列就绪")
+            from modules.changelog import browser_idle_loop
+            asyncio.ensure_future(browser_idle_loop())
+            info("渲染队列就绪（Chromium 懒加载 + 空闲 10 分钟自动回收）")
         except Exception as e:
-            warning("Chromium 预启动失败: %s (将在首次使用时懒加载)", e)
+            warning("渲染队列启动失败: %s (仍会在首次使用时懒加载)", e)
 
         while self._running:
             try:
