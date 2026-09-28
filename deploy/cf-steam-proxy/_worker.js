@@ -15,6 +15,11 @@
  *
  *   k = "api"    → https://api.steampowered.com   （自动注入 STEAM_KEY）
  *   k = "store"  → https://store.steampowered.com （自动带 UA / cc=cn / l=schinese）
+ *   k = "community" → https://steamcommunity.com （返回文本，白名单见 ALLOW.community）
+ *
+ *   另有路径前缀形式（便于 curl / 浏览器直接试，令牌用 ?token= 或 X-Proxy-Token）：
+ *     GET /steamcommunity/<path>     如 /steamcommunity/user/1467315295
+ *                                     或 /steamcommunity/profiles/76561199...
  *
  * ── 设计要点（都是踩过的坑）────────────────────────────
  *   1. 一次请求带多个 op，Worker 内并发执行 —— 跨境每次往返 1~2s，
@@ -38,6 +43,9 @@
 
 const API_HOST = "https://api.steampowered.com";
 const STORE_HOST = "https://store.steampowered.com";
+// 用户要求：加 /steamcommunity/ 路径前缀，让国内服务器也能取社区页
+// （个人资料页 / 好友代码解析等）。社区站是公开站点，但仍要求带令牌，避免变成开放代理。
+const COMMUNITY_HOST = "https://steamcommunity.com";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -60,10 +68,21 @@ const ALLOW = {
     /^api\/storesearch$/,
     /^api\/featuredcategories$/,
   ],
+  // 社区站白名单：只放读页面用的路径。
+  // ⚠️ 故意**不**放行 actions/（那是加好友等有副作用的入口）。
+  community: [
+    /^profiles\//,
+    /^id\//,
+    /^user\//,
+    /^app\//,
+    /^market\//,
+    /^sharedfiles\//,
+  ],
 };
 
 const AD_BATCH = 15;      // appdetails 单批 appid 上限（再多 Steam 侧会超时）
 const MAX_OPS = 40;       // 单次请求最多 op 数（免费版每请求 50 个子请求）
+const COMMUNITY_TEXT_MAX = 200000;  // 社区页文本返回上限（约 200KB）
 const CACHE_TTL = 86400;  // store 响应的边缘缓存秒数
 
 function json(obj, status = 200) {
@@ -141,7 +160,8 @@ async function handleOp(op, env, ctx) {
     return { ok: false, error: "path not allowed: " + path };
   }
 
-  const host = kind === "store" ? STORE_HOST : API_HOST;
+  const host = kind === "store" ? STORE_HOST
+    : (kind === "community" ? COMMUNITY_HOST : API_HOST);
   const params = new URLSearchParams();
   for (const k of Object.keys(q)) {
     const v = q[k];
@@ -157,8 +177,10 @@ async function handleOp(op, env, ctx) {
     }
   } else {
     headers["User-Agent"] = UA;
-    if (!params.has("cc")) params.set("cc", "cn");
-    if (!params.has("l")) params.set("l", "schinese");
+    if (kind === "store") {
+      if (!params.has("cc")) params.set("cc", "cn");
+      if (!params.has("l")) params.set("l", "schinese");
+    }
   }
 
   // appdetails 大列表：内部分批并发再合并
@@ -203,6 +225,18 @@ async function handleOp(op, env, ctx) {
 
   const resp = await fetch(url, { headers });
   const text = await resp.text();
+
+  // 社区页是 HTML，不是 JSON：原样返回（截断上限防爆响应体）
+  if (kind === "community") {
+    return {
+      ok: resp.status === 200,
+      status: resp.status,
+      len: text.length,
+      text: text.slice(0, COMMUNITY_TEXT_MAX),
+      truncated: text.length > COMMUNITY_TEXT_MAX,
+    };
+  }
+
   const data = parseJson(text);
   return {
     ok: data !== null,
@@ -227,6 +261,87 @@ export default {
       });
     }
 
+    // ★ /steamcommunity/<path> —— 路径前缀直通社区站（用户要求的形式）
+    //   令牌：X-Proxy-Token 头，或 ?token= / ?t=（便于 curl / 浏览器直接试）
+    //   转发时会**剥掉** token/t 参数，不带给上游。
+    if (url.pathname === "/steamcommunity" || url.pathname.startsWith("/steamcommunity/")) {
+      const allowedP = allowedTokens(env);
+      if (allowedP.length) {
+        const got = (request.headers.get("x-proxy-token")
+          || url.searchParams.get("token")
+          || url.searchParams.get("t") || "").trim();
+        if (allowedP.indexOf(got) === -1) {
+          return json({ ok: false, error: "unauthorized" }, 401);
+        }
+      }
+      const rest = url.pathname.replace(/^\/steamcommunity\/?/, "");
+      if (!rest) {
+        return json({ ok: false, error: "用法：/steamcommunity/<path>，如 /steamcommunity/user/1467315295" }, 400);
+      }
+      if (!ALLOW.community.some((re) => re.test(rest))) {
+        return json({ ok: false, error: "path not allowed: " + rest }, 403);
+      }
+      const q2 = new URLSearchParams(url.searchParams);
+      q2.delete("token");
+      q2.delete("t");
+      const qs = q2.toString();
+      const target = COMMUNITY_HOST + "/" + rest + (qs ? "?" + qs : "");
+
+      // 诊断分支：?debug=1 时只回报 URL 与上游抓取结果，便于定位 500
+      if (url.searchParams.get("debug")) {
+        const info = { target: target, rest: rest, qs: qs };
+        try {
+          const r0 = await fetch(COMMUNITY_HOST + "/robots.txt",
+            { headers: { "User-Agent": UA } });
+          info.robots_status = r0.status;
+          info.robots_len = (await r0.text()).length;
+        } catch (e) {
+          info.robots_error = String((e && e.message) || e);
+          info.robots_name = String((e && e.name) || "");
+        }
+        try {
+          const r1 = await fetch(target, { headers: { "User-Agent": UA }, redirect: "follow" });
+          info.up_status = r1.status;
+          const t1 = await r1.text();
+          info.up_len = t1.length;
+          info.up_head = t1.slice(0, 200);
+        } catch (e) {
+          info.up_error = String((e && e.message) || e);
+          info.up_name = String((e && e.name) || "");
+        }
+        return json(info);
+      }
+
+      try {
+        const up = await fetch(target, {
+          headers: { "User-Agent": UA, Accept: "text/html,application/json;q=0.9,*/*;q=0.8" },
+          redirect: "follow",
+        });
+        const ct = up.headers.get("content-type") || "text/html; charset=utf-8";
+        // 读成文本再包一层：直接透传 up.body 时若上游是 3xx/304/204（无 body 状态），
+        // 用 new Response(body, {status}) 会抛 "Response with null body status cannot have body"。
+        const text = await up.text();
+        return new Response(text, {
+          status: up.status === 200 ? 200 : up.status,
+          headers: {
+            "content-type": ct,
+            "x-proxy-upstream-url": target,
+            "x-proxy-upstream-status": String(up.status),
+            "cache-control": "no-store",
+          },
+        });
+      } catch (e) {
+        // 把真实原因带出来（否则只剩一个 500，没法排查）
+        return json({
+          ok: false,
+          error: String((e && e.message) || e),
+          name: String((e && e.name) || ""),
+          stack: String((e && e.stack) || "").slice(0, 600),
+          target: target,
+        }, 502);
+      }
+    }
+
     if (request.method === "GET") {
       const cachedTest = url.searchParams.get("ping");
       return json({
@@ -238,6 +353,7 @@ export default {
         tokens: allowedTokens(env).length,
         ad_batch: AD_BATCH,
         max_ops: MAX_OPS,
+        community_prefix: "/steamcommunity/",
         ping: cachedTest || undefined,
       });
     }
