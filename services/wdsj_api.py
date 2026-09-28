@@ -70,19 +70,67 @@ _atexit.register(_close_shared_client)
 BASE_URL = "https://www.wdsj.net/nexus"
 HEADERS = {"Referer": "https://www.wdsj.net/nexus/stats"}
 
-# Cloudflare Worker 中转代理（服务器 IP 被 CrowdSec 封禁时启用）
-# 环境变量 WDSJ_PROXY=https://xxx.workers.dev/proxy?url=
+# ── v2.3.66: 直连优先 + 代理兜底 ───────────────────────────────
+# 旧逻辑是「配了 WDSJ_PROXY 就**永远**走代理」——等于默认每次请求都多绕一跳，
+# 而代理的本意只是「服务器 IP 被 CrowdSec 风控时」的备胎，不该是常态路径。
+# 现在：先直连 wdsj.net；只有直连真的不行（网络异常 / HTTP 403 风控 / 5xx）
+# 才走代理兜底。404 属业务结果（玩家/资源不存在），不算"直连不可用"，不回退。
+# 环境变量 WDSJ_PROXY=https://xxx.workers.dev/proxy?url=  （不配 = 没有兜底，纯直连）
 import os as _os
 PROXY_BASE = _os.environ.get("WDSJ_PROXY", "").strip().rstrip("/")
 
 
+def _direct_url(path: str) -> str:
+    """直连 URL。path 可以是 '/api/...'，也可以已是完整 http(s) URL。"""
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return f"{BASE_URL}{path}"
+
+
+def _proxy_url(full: str) -> Optional[str]:
+    """把完整 URL 包进代理；未配置代理时返回 None"""
+    if not PROXY_BASE:
+        return None
+    return f"{PROXY_BASE}?url={urllib.parse.quote(full, safe='')}"
+
+
 def _api_url(path: str) -> str:
-    """构造请求 URL：有代理走代理，否则直连"""
-    full = f"{BASE_URL}{path}"
-    if PROXY_BASE:
-        import urllib.parse as _up
-        return f"{PROXY_BASE}?url={_up.quote(full, safe='')}"
-    return full
+    """构造**直连** URL（保留旧名，兼容探针/外部调用）。
+
+    ⚠️ v2.3.66 起语义有变：以前"配了代理就返回代理 URL"，现在恒返回直连 URL。
+    需要自动兜底的请求请用 _request()。
+    """
+    return _direct_url(path)
+
+
+async def _request(path: str, *, timeout: float = 15.0) -> Optional[httpx.Response]:
+    """请求 wdsj：**优先直连，失败兜底代理**。
+
+    回退条件：网络异常（超时/连不上）、HTTP 403（CrowdSec 风控）、HTTP 5xx。
+    不回退：404 及其他 4xx（业务结果，直连是好的）。
+    两边都失败时返回直连的响应（或 None）。
+    """
+    full = _direct_url(path)
+    client = await _get_client(timeout)
+    resp: Optional[httpx.Response] = None
+    try:
+        resp = await client.get(full, timeout=timeout)
+        if resp.status_code != 403 and resp.status_code < 500:
+            return resp                     # 200 / 404 / 其他 4xx → 直连可用
+        logger.info("wdsj 直连 HTTP %s，尝试代理兜底: %s", resp.status_code, full)
+    except Exception as e:
+        logger.info("wdsj 直连失败(%s)，尝试代理兜底: %s", type(e).__name__, full)
+
+    purl = _proxy_url(full)
+    if not purl:
+        return resp                          # 没配代理 → 直连结果（可能 None）就是结果
+    try:
+        presp = await client.get(purl, timeout=timeout)
+        logger.info("wdsj 代理兜底成功 (HTTP %s): %s", presp.status_code, full)
+        return presp
+    except Exception as e:
+        logger.warning("wdsj 代理兜底也失败(%s): %s", type(e).__name__, full)
+        return resp
 
 # v2: 16 个模板（新增 villagedefense/naturaldisasters/csgo）
 TEMPLATES = {
@@ -225,18 +273,20 @@ async def query_player_stats(player: str, template_id: str,
             last_error = ""
             return _hit[1]
     encoded = build_identity(player, id_type)
-    url = _api_url(f"/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}")
+    path = f"/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}"
     try:
-        client = await _get_client(timeout=timeout)
-        resp = await client.get(url)
+        resp = await _request(path, timeout=timeout)
+        if resp is None:
+            last_error = "直连与代理均不可用"
+            return None
         if resp.status_code != 200:
             last_error = f"HTTP {resp.status_code}"
             if resp.status_code == 403:
-                logger.warning("wdsj API 被风控/拒绝 (HTTP 403): %s", url)
+                logger.warning("wdsj API 被风控/拒绝 (HTTP 403): %s", path)
             elif resp.status_code == 404:
-                logger.info("wdsj 玩家不存在 (HTTP 404): %s", url)
+                logger.info("wdsj 玩家不存在 (HTTP 404): %s", path)
             else:
-                logger.warning("wdsj API HTTP %s: %s", resp.status_code, url)
+                logger.warning("wdsj API HTTP %s: %s", resp.status_code, path)
             return None
         data = resp.json()
         if data.get("code") != 0:
@@ -253,16 +303,17 @@ async def query_player_stats(player: str, template_id: str,
         return data["data"]
     except Exception as e:
         last_error = f"{type(e).__name__}: {e}"
-        logger.error("wdsj 查询异常: player=%r template=%s err=%s:%r url=%s",
-                     player, template_id, type(e).__name__, e, url)
+        logger.error("wdsj 查询异常: player=%r template=%s err=%s:%r path=%s",
+                     player, template_id, type(e).__name__, e, path)
         return None
 
 
 async def download_stats_image(image_url: str, save_path: str, timeout: float = 15.0) -> bool:
-    full_url = _api_url(image_url) if image_url.startswith("/") else image_url
     try:
-        client = await _get_client(timeout=timeout)
-        resp = await client.get(full_url)
+        resp = await _request(image_url, timeout=timeout)   # image_url 可 "/..." 也可完整 URL
+        if resp is None:
+            logger.error("下载战绩图片失败: 直连与代理均不可用 %s", image_url)
+            return False
         resp.raise_for_status()
         with open(save_path, "wb") as f:
             f.write(resp.content)
@@ -274,10 +325,12 @@ async def download_stats_image(image_url: str, save_path: str, timeout: float = 
 
 async def download_player_head(name: str, save_path: str, timeout: float = 15.0) -> bool:
     """v2 新增: 玩家头像 /api/v1/player-heads/{name}/head.png"""
-    url = _api_url(f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png")
+    path = f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png"
     try:
-        client = await _get_client(timeout=timeout)
-        resp = await client.get(url)
+        resp = await _request(path, timeout=timeout)
+        if resp is None:
+            logger.error("下载玩家头像失败: 直连与代理均不可用 %s", path)
+            return False
         resp.raise_for_status()
         with open(save_path, "wb") as f:
             f.write(resp.content)
@@ -294,23 +347,24 @@ async def fetch_player_head_data_uri(name: str, timeout: float = 5.0) -> str:
     networkidle 会一直等，网络抖动时渲染从 3s 涨到 9s）。
     """
     import base64 as _b64
-    url = _api_url(f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png")
+    path = f"/api/v1/player-heads/{urllib.parse.quote(name)}/head.png"
     try:
-        client = await _get_client(timeout=timeout)
-        resp = await client.get(url)
-        if resp.status_code == 200 and resp.content:
+        resp = await _request(path, timeout=timeout)
+        if resp is not None and resp.status_code == 200 and resp.content:
             return "data:image/png;base64," + _b64.b64encode(resp.content).decode()
-        logger.info("头像下载异常状态: %s %s", resp.status_code, url)
+        logger.info("头像下载异常状态: %s %s",
+                    resp.status_code if resp is not None else "无响应", path)
     except Exception as e:
         logger.warning("头像下载失败: %s: %r", type(e).__name__, e)
     return ""
 
 
 async def query_leaderboards() -> Optional[list]:
-    url = f"{BASE_URL}/api/v1/leaderboards"
     try:
-        client = await _get_client(timeout=15)
-        resp = await client.get(url)
+        resp = await _request("/api/v1/leaderboards", timeout=15)
+        if resp is None:
+            last_error = "直连与代理均不可用"
+            return None
         if resp.status_code != 200:
             last_error = f"HTTP {resp.status_code}"
             return None
@@ -327,11 +381,9 @@ async def query_leaderboards() -> Optional[list]:
 
 async def query_leaderboard(board_id: str, period: str = "ALLTIME") -> Optional[dict]:
     encoded = urllib.parse.quote(board_id)
-    url = f"{BASE_URL}/api/v1/leaderboards/{encoded}?type={period}"
     try:
-        client = await _get_client(timeout=15)
-        resp = await client.get(url)
-        if resp.status_code != 200:
+        resp = await _request(f"/api/v1/leaderboards/{encoded}?type={period}", timeout=15)
+        if resp is None or resp.status_code != 200:
             return None
         data = resp.json()
         if data.get("code") != 0:
