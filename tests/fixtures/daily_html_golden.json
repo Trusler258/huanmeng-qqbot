@@ -1,0 +1,243 @@
+{
+ "night": {
+  "html": "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=720, initial-scale=1.0\">\n<title>Daily Report · 幻梦</title>\n<style>\n:root {\n  --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--accent-light:#a78bfa;--deepseek:#5686FE;--cyan:#22d3ee;\n  --bg-card:rgba(20,18,32,0.55);--bg-soft:rgba(255,255,255,0.04);\n  --text:#fff;--text-2:rgba(255,255,255,0.72);--text-3:rgba(255,255,255,0.40);\n  --success:#34d399;--warning:#fbbf24;--danger:#f87171;--info:#60a5fa;\n  --gold:#fbbf24;--silver:#cbd5e1;--bronze:#d97706;\n  --radius:16px;--radius-s:9px;\n  --mono:'Consolas','JetBrains Mono','Courier New',monospace;\n  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;\n  --border:rgba(255,255,255,0.10);\n}\n*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}\n@page{margin:0}\nhtml{width:720px;margin:0 auto;min-height:100vh}\nbody::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle at 25% 30%,rgba(255,255,255,0.025) 0%,transparent 2px),radial-gradient(circle at 75% 70%,rgba(255,255,255,0.02) 0%,transparent 2px),radial-gradient(circle at 50% 50%,rgba(255,255,255,0.015) 0%,transparent 1.5px);background-size:3px 3px,5px 5px,7px 7px;opacity:0.6}\nbody{width:720px;margin:0 auto;position:relative;z-index:1;background:radial-gradient(ellipse 80% 55% at 15% -10%,rgba(236,72,153,0.42) 0%,transparent 50%),radial-gradient(ellipse 70% 50% at 88% 110%,rgba(139,92,246,0.38) 0%,transparent 50%),radial-gradient(ellipse 65% 60% at 50% 50%,rgba(86,134,254,0.12) 0%,transparent 60%),radial-gradient(ellipse 50% 40% at 5% 80%,rgba(34,211,238,0.14) 0%,transparent 55%),conic-gradient(from 200deg at 30% 20%,transparent 0deg,rgba(236,72,153,0.08) 60deg,transparent 120deg,rgba(139,92,246,0.06) 200deg,transparent 280deg),linear-gradient(165deg,#07060f 0%,#0d0b1a 45%,#080a16 100%);font-family:var(--sans);color:var(--text);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}\n.wrap{padding:24px 20px 30px}\n.card{position:relative;background:var(--bg-card);border-radius:var(--radius);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,0.65),0 0 100px rgba(236,72,153,0.10),0 0 40px rgba(139,92,246,0.08),inset 0 1px 0 rgba(255,255,255,0.12),inset 0 -1px 0 rgba(0,0,0,0.3);overflow:hidden}\n.card::before{content:'';position:absolute;inset:0;border-radius:var(--radius);padding:1px;background:linear-gradient(135deg,rgba(236,72,153,0.55) 0%,rgba(139,92,246,0.40) 35%,rgba(86,134,254,0.30) 65%,rgba(34,211,238,0.35) 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2}\n.card::after{content:'';position:absolute;top:0;left:15%;right:15%;height:2px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.7),transparent);filter:blur(0.5px);z-index:3}\n.head{padding:24px 28px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;position:relative}\n.head::after{content:'';position:absolute;bottom:-1px;left:28px;right:28px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.5) 30%,rgba(139,92,246,0.4) 70%,transparent)}\n.logo{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;background:linear-gradient(135deg,rgba(236,72,153,0.35),rgba(139,92,246,0.20)),radial-gradient(circle at 30% 30%,rgba(255,255,255,0.15),transparent 60%);border:1px solid rgba(236,72,153,0.45);box-shadow:0 4px 20px rgba(236,72,153,0.35),inset 0 1px 0 rgba(255,255,255,0.2);flex-shrink:0}\n.head-text{flex:1;min-width:0}\n.head-title{font-size:20px;font-weight:800;letter-spacing:0.3px;display:flex;align-items:baseline;gap:10px}\n.head-title .nm{background:linear-gradient(135deg,#f472b6 0%,#ec4899 40%,#8b5cf6 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;filter:drop-shadow(0 0 12px rgba(236,72,153,0.4))}\n.head-title .sl{color:var(--text-3);font-weight:300;-webkit-text-fill-color:var(--text-3)}\n.head-title .tp{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text-2);letter-spacing:1.8px;text-transform:uppercase;-webkit-text-fill-color:var(--text-2)}\n.head-sub{font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:5px;letter-spacing:0.3px}\n.head-tag{font-family:var(--mono);font-size:11px;color:#fff;background:linear-gradient(135deg,rgba(236,72,153,0.25),rgba(139,92,246,0.20));border:1px solid rgba(236,72,153,0.45);padding:5px 12px;border-radius:20px;letter-spacing:0.3px;white-space:nowrap;box-shadow:0 4px 14px rgba(236,72,153,0.25),inset 0 1px 0 rgba(255,255,255,0.15)}\n.summary{display:flex;gap:1px;background:var(--border);border-bottom:1px solid var(--border)}\n.sum-item{flex:1;background:rgba(20,18,32,0.4);padding:16px 8px 12px;text-align:center}\n.sum-num{font-family:var(--mono);font-size:24px;font-weight:800;color:var(--text);letter-spacing:0.5px;line-height:1.1}\n.sum-num.c-pink{color:var(--primary-light);text-shadow:0 0 14px rgba(244,114,182,0.5)}\n.sum-num.c-purple{color:var(--accent-light);text-shadow:0 0 14px rgba(167,139,250,0.5)}\n.sum-num.c-amber{color:var(--warning);text-shadow:0 0 14px rgba(251,191,36,0.5)}\n.sum-num.c-green{color:var(--success);text-shadow:0 0 14px rgba(52,211,153,0.5)}\n.sum-lbl{font-family:var(--mono);font-size:9.5px;color:var(--text-3);margin-top:4px;letter-spacing:0.8px;text-transform:uppercase}\n.sec{padding:16px 28px 6px;font-family:var(--mono);font-size:11px;font-weight:600;color:var(--text-2);letter-spacing:1px;text-transform:uppercase;display:flex;align-items:center;gap:8px}\n.sec::before{content:'';width:3px;height:13px;background:linear-gradient(180deg,var(--primary),var(--accent));border-radius:2px;box-shadow:0 0 6px rgba(236,72,153,0.4)}\n.sec-cn{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text);letter-spacing:0.3px;text-transform:none}\n.rank-list{padding:4px 28px 8px}\n.rrow{display:flex;align-items:center;gap:10px;padding:7px 12px;margin-bottom:3px;border-radius:var(--radius-s);background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.04)}\n.rnum{width:24px;font-family:var(--mono);font-size:13px;font-weight:800;text-align:center;color:var(--text-3);flex-shrink:0}\n.rnum.r1{color:var(--gold);text-shadow:0 0 8px rgba(251,191,36,0.6)}\n.rnum.r2{color:var(--silver);text-shadow:0 0 6px rgba(203,213,225,0.4)}\n.rnum.r3{color:var(--bronze);text-shadow:0 0 6px rgba(217,119,6,0.4)}\n.rname{width:96px;font-size:13px;color:var(--text);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n.rbar-w{flex:1;height:16px;background:rgba(255,255,255,0.05);border-radius:8px;overflow:hidden;position:relative;border:1px solid rgba(255,255,255,0.03)}\n.rbar{height:100%;background:linear-gradient(90deg,var(--primary),var(--primary-light));border-radius:8px;box-shadow:0 0 8px rgba(236,72,153,0.4)}\n.rbar.rb1{background:linear-gradient(90deg,var(--gold),#fde68a);box-shadow:0 0 8px rgba(251,191,36,0.5)}\n.rbar.rb2{background:linear-gradient(90deg,var(--silver),#e2e8f0);box-shadow:0 0 6px rgba(203,213,225,0.3)}\n.rbar.rb3{background:linear-gradient(90deg,var(--bronze),var(--gold));box-shadow:0 0 6px rgba(217,119,6,0.4)}\n.rcnt{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text-2);width:40px;text-align:right;flex-shrink:0}\n.hours{display:flex;gap:2px;padding:4px 28px 12px;align-items:stretch}\n.hr-c{flex:1;height:24px;border-radius:3px;background:rgba(255,255,255,0.04);position:relative}\n.hr-c.l1{background:rgba(236,72,153,0.22)}\n.hr-c.l2{background:rgba(236,72,153,0.40)}\n.hr-c.l3{background:rgba(236,72,153,0.60)}\n.hr-c.l4{background:rgba(236,72,153,0.80)}\n.hr-c.l5{background:var(--primary);box-shadow:0 0 8px rgba(236,72,153,0.6)}\n.hours-labels{display:flex;padding:0 28px 12px;font-family:var(--mono);font-size:9px;color:var(--text-3);letter-spacing:0.3px}\n.hours-labels span{flex:1;text-align:center}\n.hours-labels span:first-child{text-align:left}\n.hours-labels span:last-child{text-align:right}\n.facts{padding:4px 28px 10px}\n.fn-it{font-size:12.5px;color:var(--text-2);line-height:1.6;padding:7px 14px;margin-bottom:3px;border-left:2px solid var(--border);background:rgba(255,255,255,0.02);border-radius:0 var(--radius-s) var(--radius-s) 0}\n.fn-it strong{color:var(--primary-light);font-weight:700}\n.foot{padding:14px 28px 18px;border-top:1px solid var(--border);background:linear-gradient(180deg,rgba(0,0,0,0.15),rgba(0,0,0,0.30));display:flex;align-items:center;justify-content:space-between;position:relative}\n.foot::before{content:'';position:absolute;top:0;left:28px;right:28px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.4) 30%,rgba(139,92,246,0.3) 70%,transparent)}\n.foot-l{font-family:var(--mono);font-size:10px;color:var(--text-3);display:flex;align-items:center;gap:8px}\n.foot-l .dot{width:7px;height:7px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 10px rgba(52,211,153,0.7),0 0 4px rgba(52,211,153,0.9)}\n.foot-l .pk{color:var(--primary-light)}\n.foot-r{font-family:var(--mono);font-size:10px;font-weight:700;background:linear-gradient(135deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:2px;text-transform:uppercase;opacity:0.7}\n</style>\n</head>\n<body>\n<div class=\"wrap\"><div class=\"card\">\n<div class=\"head\">\n<div class=\"logo\">📊</div>\n<div class=\"head-text\">\n<div class=\"head-title\"><span class=\"nm\">幻梦</span><span class=\"sl\">·</span><span class=\"tp\">DAILY REPORT</span></div>\n<div class=\"head-sub\">123456789 · 2026.09.27</div>\n</div>\n<div class=\"head-tag\">测试群名</div>\n</div>\n<div class=\"summary\">\n<div class=\"sum-item\"><div class=\"sum-num c-pink\">386</div><div class=\"sum-lbl\">Total</div></div>\n<div class=\"sum-item\"><div class=\"sum-num c-purple\">9</div><div class=\"sum-lbl\">Speakers</div></div>\n<div class=\"sum-item\"><div class=\"sum-num c-amber\">21:00</div><div class=\"sum-lbl\">Peak</div></div>\n<div class=\"sum-item\"><div class=\"sum-num c-green\">42.9</div><div class=\"sum-lbl\">Avg</div></div>\n</div>\n<div class=\"sec\"><span class=\"sec-cn\">发言排行</span></div>\n<div class=\"rank-list\"><div class=\"rrow\"><div class=\"rnum r1\">🥇</div><div class=\"rname\">话痨小王</div><div class=\"rbar-w\"><div class=\"rbar rb1\" style=\"width:100%\"></div></div><div class=\"rcnt\">120</div></div>\n<div class=\"rrow\"><div class=\"rnum r2\">🥈</div><div class=\"rname\">阿强</div><div class=\"rbar-w\"><div class=\"rbar rb2\" style=\"width:73%\"></div></div><div class=\"rcnt\">88</div></div>\n<div class=\"rrow\"><div class=\"rnum r3\">🥉</div><div class=\"rname\">喵喵</div><div class=\"rbar-w\"><div class=\"rbar rb3\" style=\"width:50%\"></div></div><div class=\"rcnt\">61</div></div>\n<div class=\"rrow\"><div class=\"rnum \">4</div><div class=\"rname\">小美</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:36%\"></div></div><div class=\"rcnt\">44</div></div>\n<div class=\"rrow\"><div class=\"rnum \">5</div><div class=\"rname\">老张</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:25%\"></div></div><div class=\"rcnt\">30</div></div>\n<div class=\"rrow\"><div class=\"rnum \">6</div><div class=\"rname\">阿飞</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:17%\"></div></div><div class=\"rcnt\">21</div></div>\n<div class=\"rrow\"><div class=\"rnum \">7</div><div class=\"rname\">小陈</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:10%\"></div></div><div class=\"rcnt\">13</div></div>\n<div class=\"rrow\"><div class=\"rnum \">8</div><div class=\"rname\">静静</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:5%\"></div></div><div class=\"rcnt\">7</div></div></div>\n<div class=\"sec\"><span class=\"sec-cn\">24h 活跃热力</span></div>\n<div class=\"hours\"><div class=\"hr-c l0\" title=\"0h:0条\"></div>\n<div class=\"hr-c l0\" title=\"1h:0条\"></div>\n<div class=\"hr-c l0\" title=\"2h:0条\"></div>\n<div class=\"hr-c l0\" title=\"3h:0条\"></div>\n<div class=\"hr-c l0\" title=\"4h:0条\"></div>\n<div class=\"hr-c l0\" title=\"5h:0条\"></div>\n<div class=\"hr-c l0\" title=\"6h:0条\"></div>\n<div class=\"hr-c l0\" title=\"7h:0条\"></div>\n<div class=\"hr-c l0\" title=\"8h:0条\"></div>\n<div class=\"hr-c l0\" title=\"9h:0条\"></div>\n<div class=\"hr-c l0\" title=\"10h:0条\"></div>\n<div class=\"hr-c l0\" title=\"11h:0条\"></div>\n<div class=\"hr-c l2\" title=\"12h:36条\"></div>\n<div class=\"hr-c l0\" title=\"13h:0条\"></div>\n<div class=\"hr-c l0\" title=\"14h:0条\"></div>\n<div class=\"hr-c l2\" title=\"15h:36条\"></div>\n<div class=\"hr-c l0\" title=\"16h:0条\"></div>\n<div class=\"hr-c l0\" title=\"17h:0条\"></div>\n<div class=\"hr-c l0\" title=\"18h:0条\"></div>\n<div class=\"hr-c l2\" title=\"19h:36条\"></div>\n<div class=\"hr-c l0\" title=\"20h:0条\"></div>\n<div class=\"hr-c l5\" title=\"21h:153条\"></div>\n<div class=\"hr-c l3\" title=\"22h:63条\"></div>\n<div class=\"hr-c l3\" title=\"23h:63条\"></div></div>\n<div class=\"hours-labels\"><span>00</span><span>03</span><span>06</span><span>09</span><span>12</span><span>15</span><span>18</span><span>21</span><span>23</span></div>\n<div class=\"sec\"><span class=\"sec-cn\">幻梦锐评</span></div>\n<div class=\"facts\"><div class=\"fn-it\">🗣️ 今日金话筒：<strong>话痨小王</strong>，贡献了 120 条消息，占全群 31%，话痨认证喵~</div>\n<div class=\"fn-it\">🤿 深海潜水员：<strong>深海咸鱼</strong>，仅冒泡 2 次，需要氧气瓶吗？</div>\n<div class=\"fn-it\">😴 全员休眠期：12点、15点，群聊变鬼城(。-ω-)zzz</div>\n<div class=\"fn-it\">🌙 夜猫子聚集地！晚上比早上活跃 279 倍，熬夜冠军预备中~</div></div>\n<div class=\"foot\">\n<div class=\"foot-l\"><span class=\"dot\"></span><span class=\"pk\">幻梦 Bot</span><span>·</span><span>每日 21:15</span><span>·</span><span>幻梦 Project</span></div>\n<div class=\"foot-r\">HUANMENG</div>\n</div>\n</div></div>\n</body></html>\n",
+  "filename": "daily_123456789_2026.09.27_20260928_211525.jpg",
+  "stats": {
+   "1001": {
+    "count": 120,
+    "hours": {
+     "21": 44,
+     "22": 20,
+     "23": 20,
+     "12": 12,
+     "15": 12,
+     "19": 12
+    },
+    "name": "话痨小王"
+   },
+   "1002": {
+    "count": 88,
+    "hours": {
+     "21": 36,
+     "22": 14,
+     "23": 14,
+     "12": 8,
+     "15": 8,
+     "19": 8
+    },
+    "name": "阿强"
+   },
+   "1003": {
+    "count": 61,
+    "hours": {
+     "21": 23,
+     "22": 10,
+     "23": 10,
+     "12": 6,
+     "15": 6,
+     "19": 6
+    },
+    "name": "喵喵"
+   },
+   "1004": {
+    "count": 44,
+    "hours": {
+     "21": 18,
+     "22": 7,
+     "23": 7,
+     "12": 4,
+     "15": 4,
+     "19": 4
+    },
+    "name": "小美"
+   },
+   "1005": {
+    "count": 30,
+    "hours": {
+     "21": 11,
+     "22": 5,
+     "23": 5,
+     "12": 3,
+     "15": 3,
+     "19": 3
+    },
+    "name": "老张"
+   },
+   "1006": {
+    "count": 21,
+    "hours": {
+     "21": 9,
+     "22": 3,
+     "23": 3,
+     "12": 2,
+     "15": 2,
+     "19": 2
+    },
+    "name": "阿飞"
+   },
+   "1007": {
+    "count": 13,
+    "hours": {
+     "21": 6,
+     "22": 2,
+     "23": 2,
+     "12": 1,
+     "15": 1,
+     "19": 1
+    },
+    "name": "小陈"
+   },
+   "1008": {
+    "count": 7,
+    "hours": {
+     "21": 5,
+     "22": 1,
+     "23": 1,
+     "12": 0,
+     "15": 0,
+     "19": 0
+    },
+    "name": "静静"
+   },
+   "1009": {
+    "count": 2,
+    "hours": {
+     "21": 1,
+     "22": 1,
+     "23": 1,
+     "12": 0,
+     "15": 0,
+     "19": 0
+    },
+    "name": "深海咸鱼"
+   },
+   "_meta": {
+    "total": 386
+   }
+  },
+  "group_id": 123456789,
+  "date_str": "2026.09.27",
+  "group_name": "测试群名"
+ },
+ "morning": {
+  "html": "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=720, initial-scale=1.0\">\n<title>Daily Report · 幻梦</title>\n<style>\n:root {\n  --primary:#ec4899;--primary-light:#f472b6;--accent:#8b5cf6;--accent-light:#a78bfa;--deepseek:#5686FE;--cyan:#22d3ee;\n  --bg-card:rgba(20,18,32,0.55);--bg-soft:rgba(255,255,255,0.04);\n  --text:#fff;--text-2:rgba(255,255,255,0.72);--text-3:rgba(255,255,255,0.40);\n  --success:#34d399;--warning:#fbbf24;--danger:#f87171;--info:#60a5fa;\n  --gold:#fbbf24;--silver:#cbd5e1;--bronze:#d97706;\n  --radius:16px;--radius-s:9px;\n  --mono:'Consolas','JetBrains Mono','Courier New',monospace;\n  --sans:'PingFang SC','Microsoft YaHei UI','Noto Sans CJK SC',sans-serif;\n  --border:rgba(255,255,255,0.10);\n}\n*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}\n@page{margin:0}\nhtml{width:720px;margin:0 auto;min-height:100vh}\nbody::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle at 25% 30%,rgba(255,255,255,0.025) 0%,transparent 2px),radial-gradient(circle at 75% 70%,rgba(255,255,255,0.02) 0%,transparent 2px),radial-gradient(circle at 50% 50%,rgba(255,255,255,0.015) 0%,transparent 1.5px);background-size:3px 3px,5px 5px,7px 7px;opacity:0.6}\nbody{width:720px;margin:0 auto;position:relative;z-index:1;background:radial-gradient(ellipse 80% 55% at 15% -10%,rgba(236,72,153,0.42) 0%,transparent 50%),radial-gradient(ellipse 70% 50% at 88% 110%,rgba(139,92,246,0.38) 0%,transparent 50%),radial-gradient(ellipse 65% 60% at 50% 50%,rgba(86,134,254,0.12) 0%,transparent 60%),radial-gradient(ellipse 50% 40% at 5% 80%,rgba(34,211,238,0.14) 0%,transparent 55%),conic-gradient(from 200deg at 30% 20%,transparent 0deg,rgba(236,72,153,0.08) 60deg,transparent 120deg,rgba(139,92,246,0.06) 200deg,transparent 280deg),linear-gradient(165deg,#07060f 0%,#0d0b1a 45%,#080a16 100%);font-family:var(--sans);color:var(--text);font-size:13px;line-height:1.6;-webkit-font-smoothing:antialiased}\n.wrap{padding:24px 20px 30px}\n.card{position:relative;background:var(--bg-card);border-radius:var(--radius);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);box-shadow:0 12px 48px rgba(0,0,0,0.65),0 0 100px rgba(236,72,153,0.10),0 0 40px rgba(139,92,246,0.08),inset 0 1px 0 rgba(255,255,255,0.12),inset 0 -1px 0 rgba(0,0,0,0.3);overflow:hidden}\n.card::before{content:'';position:absolute;inset:0;border-radius:var(--radius);padding:1px;background:linear-gradient(135deg,rgba(236,72,153,0.55) 0%,rgba(139,92,246,0.40) 35%,rgba(86,134,254,0.30) 65%,rgba(34,211,238,0.35) 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2}\n.card::after{content:'';position:absolute;top:0;left:15%;right:15%;height:2px;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.7),transparent);filter:blur(0.5px);z-index:3}\n.head{padding:24px 28px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;position:relative}\n.head::after{content:'';position:absolute;bottom:-1px;left:28px;right:28px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.5) 30%,rgba(139,92,246,0.4) 70%,transparent)}\n.logo{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;background:linear-gradient(135deg,rgba(236,72,153,0.35),rgba(139,92,246,0.20)),radial-gradient(circle at 30% 30%,rgba(255,255,255,0.15),transparent 60%);border:1px solid rgba(236,72,153,0.45);box-shadow:0 4px 20px rgba(236,72,153,0.35),inset 0 1px 0 rgba(255,255,255,0.2);flex-shrink:0}\n.head-text{flex:1;min-width:0}\n.head-title{font-size:20px;font-weight:800;letter-spacing:0.3px;display:flex;align-items:baseline;gap:10px}\n.head-title .nm{background:linear-gradient(135deg,#f472b6 0%,#ec4899 40%,#8b5cf6 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;filter:drop-shadow(0 0 12px rgba(236,72,153,0.4))}\n.head-title .sl{color:var(--text-3);font-weight:300;-webkit-text-fill-color:var(--text-3)}\n.head-title .tp{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--text-2);letter-spacing:1.8px;text-transform:uppercase;-webkit-text-fill-color:var(--text-2)}\n.head-sub{font-family:var(--mono);font-size:11px;color:var(--text-3);margin-top:5px;letter-spacing:0.3px}\n.head-tag{font-family:var(--mono);font-size:11px;color:#fff;background:linear-gradient(135deg,rgba(236,72,153,0.25),rgba(139,92,246,0.20));border:1px solid rgba(236,72,153,0.45);padding:5px 12px;border-radius:20px;letter-spacing:0.3px;white-space:nowrap;box-shadow:0 4px 14px rgba(236,72,153,0.25),inset 0 1px 0 rgba(255,255,255,0.15)}\n.summary{display:flex;gap:1px;background:var(--border);border-bottom:1px solid var(--border)}\n.sum-item{flex:1;background:rgba(20,18,32,0.4);padding:16px 8px 12px;text-align:center}\n.sum-num{font-family:var(--mono);font-size:24px;font-weight:800;color:var(--text);letter-spacing:0.5px;line-height:1.1}\n.sum-num.c-pink{color:var(--primary-light);text-shadow:0 0 14px rgba(244,114,182,0.5)}\n.sum-num.c-purple{color:var(--accent-light);text-shadow:0 0 14px rgba(167,139,250,0.5)}\n.sum-num.c-amber{color:var(--warning);text-shadow:0 0 14px rgba(251,191,36,0.5)}\n.sum-num.c-green{color:var(--success);text-shadow:0 0 14px rgba(52,211,153,0.5)}\n.sum-lbl{font-family:var(--mono);font-size:9.5px;color:var(--text-3);margin-top:4px;letter-spacing:0.8px;text-transform:uppercase}\n.sec{padding:16px 28px 6px;font-family:var(--mono);font-size:11px;font-weight:600;color:var(--text-2);letter-spacing:1px;text-transform:uppercase;display:flex;align-items:center;gap:8px}\n.sec::before{content:'';width:3px;height:13px;background:linear-gradient(180deg,var(--primary),var(--accent));border-radius:2px;box-shadow:0 0 6px rgba(236,72,153,0.4)}\n.sec-cn{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text);letter-spacing:0.3px;text-transform:none}\n.rank-list{padding:4px 28px 8px}\n.rrow{display:flex;align-items:center;gap:10px;padding:7px 12px;margin-bottom:3px;border-radius:var(--radius-s);background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.04)}\n.rnum{width:24px;font-family:var(--mono);font-size:13px;font-weight:800;text-align:center;color:var(--text-3);flex-shrink:0}\n.rnum.r1{color:var(--gold);text-shadow:0 0 8px rgba(251,191,36,0.6)}\n.rnum.r2{color:var(--silver);text-shadow:0 0 6px rgba(203,213,225,0.4)}\n.rnum.r3{color:var(--bronze);text-shadow:0 0 6px rgba(217,119,6,0.4)}\n.rname{width:96px;font-size:13px;color:var(--text);flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n.rbar-w{flex:1;height:16px;background:rgba(255,255,255,0.05);border-radius:8px;overflow:hidden;position:relative;border:1px solid rgba(255,255,255,0.03)}\n.rbar{height:100%;background:linear-gradient(90deg,var(--primary),var(--primary-light));border-radius:8px;box-shadow:0 0 8px rgba(236,72,153,0.4)}\n.rbar.rb1{background:linear-gradient(90deg,var(--gold),#fde68a);box-shadow:0 0 8px rgba(251,191,36,0.5)}\n.rbar.rb2{background:linear-gradient(90deg,var(--silver),#e2e8f0);box-shadow:0 0 6px rgba(203,213,225,0.3)}\n.rbar.rb3{background:linear-gradient(90deg,var(--bronze),var(--gold));box-shadow:0 0 6px rgba(217,119,6,0.4)}\n.rcnt{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text-2);width:40px;text-align:right;flex-shrink:0}\n.hours{display:flex;gap:2px;padding:4px 28px 12px;align-items:stretch}\n.hr-c{flex:1;height:24px;border-radius:3px;background:rgba(255,255,255,0.04);position:relative}\n.hr-c.l1{background:rgba(236,72,153,0.22)}\n.hr-c.l2{background:rgba(236,72,153,0.40)}\n.hr-c.l3{background:rgba(236,72,153,0.60)}\n.hr-c.l4{background:rgba(236,72,153,0.80)}\n.hr-c.l5{background:var(--primary);box-shadow:0 0 8px rgba(236,72,153,0.6)}\n.hours-labels{display:flex;padding:0 28px 12px;font-family:var(--mono);font-size:9px;color:var(--text-3);letter-spacing:0.3px}\n.hours-labels span{flex:1;text-align:center}\n.hours-labels span:first-child{text-align:left}\n.hours-labels span:last-child{text-align:right}\n.facts{padding:4px 28px 10px}\n.fn-it{font-size:12.5px;color:var(--text-2);line-height:1.6;padding:7px 14px;margin-bottom:3px;border-left:2px solid var(--border);background:rgba(255,255,255,0.02);border-radius:0 var(--radius-s) var(--radius-s) 0}\n.fn-it strong{color:var(--primary-light);font-weight:700}\n.foot{padding:14px 28px 18px;border-top:1px solid var(--border);background:linear-gradient(180deg,rgba(0,0,0,0.15),rgba(0,0,0,0.30));display:flex;align-items:center;justify-content:space-between;position:relative}\n.foot::before{content:'';position:absolute;top:0;left:28px;right:28px;height:1px;background:linear-gradient(90deg,transparent,rgba(236,72,153,0.4) 30%,rgba(139,92,246,0.3) 70%,transparent)}\n.foot-l{font-family:var(--mono);font-size:10px;color:var(--text-3);display:flex;align-items:center;gap:8px}\n.foot-l .dot{width:7px;height:7px;background:var(--success);border-radius:50%;display:inline-block;box-shadow:0 0 10px rgba(52,211,153,0.7),0 0 4px rgba(52,211,153,0.9)}\n.foot-l .pk{color:var(--primary-light)}\n.foot-r{font-family:var(--mono);font-size:10px;font-weight:700;background:linear-gradient(135deg,var(--primary),var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:2px;text-transform:uppercase;opacity:0.7}\n</style>\n</head>\n<body>\n<div class=\"wrap\"><div class=\"card\">\n<div class=\"head\">\n<div class=\"logo\">📊</div>\n<div class=\"head-text\">\n<div class=\"head-title\"><span class=\"nm\">幻梦</span><span class=\"sl\">·</span><span class=\"tp\">DAILY REPORT</span></div>\n<div class=\"head-sub\">123456789 · 2026.09.27</div>\n</div>\n<div class=\"head-tag\">测试群名</div>\n</div>\n<div class=\"summary\">\n<div class=\"sum-item\"><div class=\"sum-num c-pink\">386</div><div class=\"sum-lbl\">Total</div></div>\n<div class=\"sum-item\"><div class=\"sum-num c-purple\">9</div><div class=\"sum-lbl\">Speakers</div></div>\n<div class=\"sum-item\"><div class=\"sum-num c-amber\">9:00</div><div class=\"sum-lbl\">Peak</div></div>\n<div class=\"sum-item\"><div class=\"sum-num c-green\">42.9</div><div class=\"sum-lbl\">Avg</div></div>\n</div>\n<div class=\"sec\"><span class=\"sec-cn\">发言排行</span></div>\n<div class=\"rank-list\"><div class=\"rrow\"><div class=\"rnum r1\">🥇</div><div class=\"rname\">话痨小王</div><div class=\"rbar-w\"><div class=\"rbar rb1\" style=\"width:100%\"></div></div><div class=\"rcnt\">120</div></div>\n<div class=\"rrow\"><div class=\"rnum r2\">🥈</div><div class=\"rname\">阿强</div><div class=\"rbar-w\"><div class=\"rbar rb2\" style=\"width:73%\"></div></div><div class=\"rcnt\">88</div></div>\n<div class=\"rrow\"><div class=\"rnum r3\">🥉</div><div class=\"rname\">喵喵</div><div class=\"rbar-w\"><div class=\"rbar rb3\" style=\"width:50%\"></div></div><div class=\"rcnt\">61</div></div>\n<div class=\"rrow\"><div class=\"rnum \">4</div><div class=\"rname\">小美</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:36%\"></div></div><div class=\"rcnt\">44</div></div>\n<div class=\"rrow\"><div class=\"rnum \">5</div><div class=\"rname\">老张</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:25%\"></div></div><div class=\"rcnt\">30</div></div>\n<div class=\"rrow\"><div class=\"rnum \">6</div><div class=\"rname\">阿飞</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:17%\"></div></div><div class=\"rcnt\">21</div></div>\n<div class=\"rrow\"><div class=\"rnum \">7</div><div class=\"rname\">小陈</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:10%\"></div></div><div class=\"rcnt\">13</div></div>\n<div class=\"rrow\"><div class=\"rnum \">8</div><div class=\"rname\">静静</div><div class=\"rbar-w\"><div class=\"rbar \" style=\"width:5%\"></div></div><div class=\"rcnt\">7</div></div></div>\n<div class=\"sec\"><span class=\"sec-cn\">24h 活跃热力</span></div>\n<div class=\"hours\"><div class=\"hr-c l0\" title=\"0h:0条\"></div>\n<div class=\"hr-c l0\" title=\"1h:0条\"></div>\n<div class=\"hr-c l0\" title=\"2h:0条\"></div>\n<div class=\"hr-c l0\" title=\"3h:0条\"></div>\n<div class=\"hr-c l0\" title=\"4h:0条\"></div>\n<div class=\"hr-c l0\" title=\"5h:0条\"></div>\n<div class=\"hr-c l0\" title=\"6h:0条\"></div>\n<div class=\"hr-c l0\" title=\"7h:0条\"></div>\n<div class=\"hr-c l3\" title=\"8h:63条\"></div>\n<div class=\"hr-c l5\" title=\"9h:153条\"></div>\n<div class=\"hr-c l3\" title=\"10h:63条\"></div>\n<div class=\"hr-c l0\" title=\"11h:0条\"></div>\n<div class=\"hr-c l2\" title=\"12h:36条\"></div>\n<div class=\"hr-c l0\" title=\"13h:0条\"></div>\n<div class=\"hr-c l0\" title=\"14h:0条\"></div>\n<div class=\"hr-c l2\" title=\"15h:36条\"></div>\n<div class=\"hr-c l0\" title=\"16h:0条\"></div>\n<div class=\"hr-c l0\" title=\"17h:0条\"></div>\n<div class=\"hr-c l0\" title=\"18h:0条\"></div>\n<div class=\"hr-c l2\" title=\"19h:36条\"></div>\n<div class=\"hr-c l0\" title=\"20h:0条\"></div>\n<div class=\"hr-c l0\" title=\"21h:0条\"></div>\n<div class=\"hr-c l0\" title=\"22h:0条\"></div>\n<div class=\"hr-c l0\" title=\"23h:0条\"></div></div>\n<div class=\"hours-labels\"><span>00</span><span>03</span><span>06</span><span>09</span><span>12</span><span>15</span><span>18</span><span>21</span><span>23</span></div>\n<div class=\"sec\"><span class=\"sec-cn\">幻梦锐评</span></div>\n<div class=\"facts\"><div class=\"fn-it\">🗣️ 今日金话筒：<strong>话痨小王</strong>，贡献了 120 条消息，占全群 31%，话痨认证喵~</div>\n<div class=\"fn-it\">🤿 深海潜水员：<strong>深海咸鱼</strong>，仅冒泡 2 次，需要氧气瓶吗？</div>\n<div class=\"fn-it\">😴 全员休眠期：12点、15点，群聊变鬼城(。-ω-)zzz</div>\n<div class=\"fn-it\">☀️ 早鸟群！早上比晚上活跃 279 倍，打工人的觉悟喵~</div></div>\n<div class=\"foot\">\n<div class=\"foot-l\"><span class=\"dot\"></span><span class=\"pk\">幻梦 Bot</span><span>·</span><span>每日 21:15</span><span>·</span><span>幻梦 Project</span></div>\n<div class=\"foot-r\">HUANMENG</div>\n</div>\n</div></div>\n</body></html>\n",
+  "filename": "daily_123456789_2026.09.27_20260928_211525.jpg",
+  "stats": {
+   "1001": {
+    "count": 120,
+    "hours": {
+     "8": 20,
+     "9": 44,
+     "10": 20,
+     "12": 12,
+     "15": 12,
+     "19": 12
+    },
+    "name": "话痨小王"
+   },
+   "1002": {
+    "count": 88,
+    "hours": {
+     "8": 14,
+     "9": 36,
+     "10": 14,
+     "12": 8,
+     "15": 8,
+     "19": 8
+    },
+    "name": "阿强"
+   },
+   "1003": {
+    "count": 61,
+    "hours": {
+     "8": 10,
+     "9": 23,
+     "10": 10,
+     "12": 6,
+     "15": 6,
+     "19": 6
+    },
+    "name": "喵喵"
+   },
+   "1004": {
+    "count": 44,
+    "hours": {
+     "8": 7,
+     "9": 18,
+     "10": 7,
+     "12": 4,
+     "15": 4,
+     "19": 4
+    },
+    "name": "小美"
+   },
+   "1005": {
+    "count": 30,
+    "hours": {
+     "8": 5,
+     "9": 11,
+     "10": 5,
+     "12": 3,
+     "15": 3,
+     "19": 3
+    },
+    "name": "老张"
+   },
+   "1006": {
+    "count": 21,
+    "hours": {
+     "8": 3,
+     "9": 9,
+     "10": 3,
+     "12": 2,
+     "15": 2,
+     "19": 2
+    },
+    "name": "阿飞"
+   },
+   "1007": {
+    "count": 13,
+    "hours": {
+     "8": 2,
+     "9": 6,
+     "10": 2,
+     "12": 1,
+     "15": 1,
+     "19": 1
+    },
+    "name": "小陈"
+   },
+   "1008": {
+    "count": 7,
+    "hours": {
+     "8": 1,
+     "9": 5,
+     "10": 1,
+     "12": 0,
+     "15": 0,
+     "19": 0
+    },
+    "name": "静静"
+   },
+   "1009": {
+    "count": 2,
+    "hours": {
+     "8": 1,
+     "9": 1,
+     "10": 1,
+     "12": 0,
+     "15": 0,
+     "19": 0
+    },
+    "name": "深海咸鱼"
+   },
+   "_meta": {
+    "total": 386
+   }
+  },
+  "group_id": 123456789,
+  "date_str": "2026.09.27",
+  "group_name": "测试群名"
+ },
+ "_template_path": "/root/bot/data/templates/daily_report.html"
+}

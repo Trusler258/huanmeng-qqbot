@@ -57,6 +57,49 @@
 5. **改完必须实测**：`scripts/_probe_browser_lifecycle.py` 那类探针看进程/内存，
    加上真实触发一次命令看输出。
 
+## 三·五、M1 日报迁移：已完成的准备工作（2026-09-28）
+
+### 1. 数据与 HTML 解耦（已提交，已验证）
+新增 `services/daily_report_data.py`：`build_payload()` 只算数据，`payload_to_html()` 只填模板。
+`modules/stats.py` 原来的「算数据 + 拼 HTML」耦合被打散，**两条渲染路从此吃同一份载荷**——
+这是 1:1 对比的前提，否则像素差里会混进数据差异，根本没法定位。
+
+验证方式（`tests/_test_v2368_daily_payload.py`，13 passed）：
+在改 `stats.py` **之前**，用 `scripts/_capture_daily_html.py` 把 `render_card_to_image` 换成记录桩，
+直接调用**原** `generate_daily_report_image()` 抓下它真实产出的 HTML，连同输入 stats 一起存进
+`tests/fixtures/daily_html_golden.json`。新载荷层产出的 HTML 与之**逐字节一致**
+（night 13563 字符 / morning 13560 字符）——"原始算法"不用手抄，杜绝抄错。
+
+### 2. emoji 方案（已解决）
+- 实测：**Chromium 能把 📊🥇🥈🥉🗣️🤿😴🌙☀️ 全渲染成彩色**（它通过 snap 的 content snap
+  看得到 NotoColorEmoji）；但 Pillow 对 CBDT 位图字体**只接受 109px**，Apple 版字体这版
+  Pillow 完全打不开。
+- 又踩一个：想用 Chromium 抽图，但 `_screenshot_html` 存的是 **JPEG（无 alpha）**，
+  抽出来必然是白底（in bbox = 整张画布）。
+- 定案：用 **Pillow + NotoColorEmoji@109 → 裁包围盒 → LANCZOS 缩到目标字号**，
+  一次性生成 9 个 PNG 存 `data/web_assets/daily_icons/`（共 19KB），运行时走 `paste_icon` 贴图。
+  字型与 Chromium 同源（同一字体），且不必把 11MB 字体塞进仓库。
+  生成器：`scripts/_gen_daily_emoji_assets.py`（改字号重跑即可）。
+
+### 3. 金标与实测几何（对齐用）
+`scripts/_probe_daily_ab.py` 会把固定载荷同时喂给两条路并输出数值对比；
+`scripts/_probe_daily_anchors.py` 按**特征色**定位元素，产出渲染器要对齐的硬坐标。
+固定载荷（9 人 / 4 条锐评）下 Chromium 金标 **720×962**，实测锚点：
+
+| 元素 | 实测 |
+|------|------|
+| 卡片左/上 | x=20 / y=24（wrap padding 24px 20px 30px） |
+| 头部底边 | y=121（头部内容高 54.6 = 标题 20px×1.6 + 5 + 副标题 11px×1.6） |
+| 摘要区底边 | y=195 |
+| 区块竖条（3 个） | y 216..227 / 589..600 / 698..709 |
+| 排行条 | 首条 y254，**行距实测 ≈39.9**（非 CSS 推出的 37.8，以实测为准） |
+| 24h 热力格 | y 616..639（高 24） |
+| 锐评条目 | y 737 / 774 / 811 / 848，**行距 37** |
+| 页脚顶边 | y 883，内容末行 ≈931 |
+
+> ⚠️ CSS 盒模型推出的行距（37.8）与实测（39.9）不一致 —— 说明 mono 字体在无头 Chromium 里的
+> 行盒比 `font-size × line-height` 更高。**以实测锚点为准**，别硬套 CSS 算式。
+
 ## 四、里程碑
 
 - [ ] **M1 日报迁 Pillow**（P1，砍掉 77% 的 Chromium 用量）
