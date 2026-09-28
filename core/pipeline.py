@@ -209,12 +209,15 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
         pass
     extra_parts.append(fav_info)
 
-    poke_rules = [
-        "【戳一戳规则：只用 1 句简短回应，不要展开话题，不要超过 20 字】",
-        "【禁止重复：绝对不要说摸头很舒服、摸摸头、被摸了之类的前一次用过的句式，每次必须想全新的回应】",
-        "【随机语气：可以从疑惑、开心、害羞、吓一跳、嫌弃、淡定中随机选一种情绪回应】",
-        "【禁止调用任何工具/指令/搜索，只输出纯文本回复】",
-    ]
+    # ★ v2.3.65: 戳一戳规则从硬编码搬到 data/skills/40_reminders.md::poke_reminder
+    #   （原先写死在这里，违反"提示词唯一落点 = data/skills/*.md"的约定）。
+    #   旧规则的三处病：①「不要展开话题」直接禁止结合上下文；② 从固定 6 种情绪里
+    #   随机抽签；③ 把"别摸啦/再摸要炸毛了"这类自然短句全禁掉 → 结果必然是与正在
+    #   聊的内容脱节的罐头台词。新规则改为「反应必须长在上下文上」。
+    #   append_plain=False：后面 _build_messages 还会拼一次 reply_reminder（自带
+    #   plain_text_rule），这里再追加就重复了。
+    from services.llm import _build_reminder
+    poke_rules = [_build_reminder("poke_reminder", append_plain=False)]
 
     try:
         from modules.op import get_mode, get_sleep_prompt_rule, get_narrative_prompt_rule

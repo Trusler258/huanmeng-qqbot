@@ -724,12 +724,15 @@ def _recent_bot_snippets(history: list, bot_name: str, limit: int = 3) -> str:
     return f"你最近说过：{quoted} —— 这些话和用过的梗不要再重复，换个说法或换话题。"
 
 
-def _build_reminder(name: str, **vars) -> str:
+def _build_reminder(name: str, append_plain: bool = True, **vars) -> str:
     """按章节名取格式提醒模板并插值。
 
     - 模板位置：data/skills/40_reminders.md（经 _load_skill_sections 自动叠加）
     - ${xxx} 为变量占位符，由 vars 传入替换
     - plain_text_rule（禁用 Markdown）自动追加到末尾 —— 越靠近当前消息注意力越高
+    - ★ v2.3.65: `append_plain=False` 可关掉自动追加。用于**不是最后一道提醒**的场景
+      （如戳一戳规则塞在 extra_info 里、后面还会再拼一次 reply_reminder），否则
+      plain_text_rule 会在同一条消息里出现两遍，白烧 token。
     - 章节缺失 → 打 ERROR 日志 + 回退最小 JSON 兜底，保证回复链路不崩
     - v2.1.15: 未传值的占位符清空 + 告警，插值后变空的行删除 ——
       可选段落（如防复读）没内容时不会留"【防复读】"空壳行，也不会把 ${no_repeat}
@@ -748,7 +751,7 @@ def _build_reminder(name: str, **vars) -> str:
         logger.warning("提醒模板 %s 存在未赋值占位符: %s", name, _leftover)
         tpl = re.sub(r"\$\{\w+\}", "", tpl)
     plain = (sec.get("plain_text_rule") or "").strip()
-    if plain:
+    if append_plain and plain:
         tpl = tpl + "\n" + plain
     # 插值后变空的行（可选段落未启用）直接丢弃，别留空行/空壳标题
     tpl = "\n".join(ln for ln in tpl.split("\n") if ln.strip())
