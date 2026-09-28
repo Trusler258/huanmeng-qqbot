@@ -11,6 +11,74 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.68 — /steam who 支持直接给 SteamID/好友代码 + 代理加 /steamcommunity/ + 日报卡中文回退修复(2026.9.29)
+
+### 1. `/~steam who <SteamID 或 好友代码>` 可以直接查了
+原来 `_do_who` 只把参数当 **@某人** 解析（`_qq_of`），给了 SteamID 会被直接忽略；
+现在参数不是 @ 时，当成账号标识**直接查**，不需要先绑定：
+```
+/~steam who hkkhkghw              # 好友代码
+/~steam who 76561199427581023     # SteamID64
+/~steam who STEAM_1:1:733657647   # SteamID2
+/~steam who [U:1:1467315295]      # SteamID3
+/~steam who <个人资料链接>         # profiles / id 链接
+/~steam who                       # 不带参数 = 查自己（仍走绑定）
+```
+支持的形式（`extract_identity`，本地换算、不联网）：
+| 形式 | 例子 |
+|------|------|
+| 好友代码（字母） | `hkkhkghw` / `hkk-hkghw` / 大写都行 |
+| SteamID64 | `76561199427581023` |
+| account_id（数字） | `1467315295` |
+| SteamID2 | `STEAM_1:1:733657647`（acc = Z*2+Y） |
+| SteamID3 | `[U:1:1467315295]` |
+| 资料链接 | `steamcommunity.com/profiles/...` 或 `/id/...`（后者走 vanity API） |
+
+**⚠️ 好友代码不是 account_id 的十进制**（第一版就这么错的）：
+它是 account_id 的**十六进制**再按固定表替换字符
+（`0=b 1=c 2=d 3=f 4=g 5=h 6=j 7=k 8=m 9=n a=p b=q c=r d=t e=v f=w`）。
+实测验证：Trusler 的 account_id `1467315295` → hex `5775745f` → `hkkhkghw`，
+取 `steamcommunity.com/user/hkkhkghw` 返回 `<title>Steam Community :: Trusler</title>`；
+而拿十进制 `1467315295` 去试会得到 Steam 的 Error 页。
+`/~steam bd` 现在也会显示自己的好友代码，方便直接分享加好友。
+
+### 2. Steam 代理 Worker 加 `/steamcommunity/` 路径前缀
+用户要求。新增：
+```
+GET /steamcommunity/<path>          如 /steamcommunity/user/hkkhkghw
+    令牌：X-Proxy-Token 头，或 ?token= / ?t=（转发时会剥掉，不带给上游）
+    白名单：profiles/ id/ user/ app/ market/ sharedfiles/
+            （故意**不放行** actions/ —— 那是加好友等有副作用的入口）
+```
+同时给 op API 加了 `k="community"`（返回文本），健康检查多了 `community_prefix` 字段，
+并加了 `?debug=1` 诊断分支（只有带令牌才能用）。
+
+**部署方式**：服务器没装 wrangler，用 `scripts/_deploy_cf_worker.py` 走 CF API 直传
+（`PUT /accounts/{id}/workers/scripts/{name}/content`）。两个坑：
+- **必须把 3 个 secret 一起声明回传**，否则 PUT 可能把它们清掉 → 代理直接不可用。
+  脚本从 `.env` 读值；**binding 名与 .env 键名不一致**（worker 里叫 `PROXY_TOKEN(S)`，
+  .env 里叫 `STEAM_PROXY_TOKEN(S)`）—— 第一版只认出 1 个，靠 `--dry-run` 才发现，
+  真部署就会把两个令牌 secret 丢掉、鉴权失效变开放代理。现在找不到值会直接中止。
+- 部署前先做了漂移检查：线上是 esbuild 打包产物，无法文本 diff，
+  改为比对关键常量（API_HOST / STORE_HOST / AD_BATCH=15 / op 上限 40 全一致）。
+部署后已核对：bindings 3 个都在、健康检查 `has_steam_key:true tokens:2` 不变、新路由 401/403 行为正确。
+
+### 3. 日报卡（Pillow）逐字字体回退 —— 修掉"群名/页脚中文整段丢失"
+用户反馈"中文字体没了"。查下来**不是字体缺失**（fc-list 有 35 个 CJK 字体、服务器文件都在、
+Chromium 日报也正常），而是**渲染端缺 per-glyph fallback**：
+CSS 里 `.head-tag`（群名）与 `.foot-l` 用 `--mono` 字体栈，而 DejaVu Sans Mono **没有中文字形**。
+Chromium 会逐字回退到 Noto CJK，Pillow 不会 → 中文整块画不出来。
+新增 `_mixed_runs/_mixed_width/_text_mixed`（ASCII→等宽、非 ASCII→CJK，自己累加 advance）。
+实测：群名墨迹 0.031→0.060（金标 0.061）、页脚中文 0.062→0.070（金标 0.073）。
+顺带补了 `.head-title .nm` 的 `drop-shadow` 粉色辉光。
+
+### 测试
+- `tests/_test_v2369_steam_identity.py`：24 passed（编解码可逆、8 种形式同一结果、
+  非法输入不误判、SteamID2/3 公式、`_do_who` 直查不走绑定）
+- `scripts/_probe_landmark_ink.py`：逐地标墨迹量，18 个地标无缺失
+
+---
+
 ## v2.3.67 — Chromium 改成懒加载 + 空闲自动回收（不再全天常驻）(2026.9.28)
 一句话总结：Chromium 以前**启动时预启动、之后永不释放**，常驻 19 个进程吃几百 MB；
 但近 7 天其实只截图 40 次（全是每天一次的日报）。改成"要用才启、空闲 10 分钟自动关"。

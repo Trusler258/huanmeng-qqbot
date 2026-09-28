@@ -258,11 +258,129 @@ def extract_appid(text: str) -> str:
     return m.group(1) if m else ""
 
 
+# ── 账号标识换算 ───────────────────────────────────────────────
+# SteamID64 = 76561197960265728 + account_id，而 **好友代码就是 account_id**
+# （Steam 客户端「好友代码」显示的那串数字）。
+# ⚠️ 该公式在本机无法联网核实（服务器到 steamcommunity.com 不通，CF Worker 也只放行
+#    steamapi/store）。因此 resolve_steamid 会对换算结果**真的查一次**
+#    （GetPlayerSummaries），查不到就明确报错、绝不返回错数据。
+_STEAM64_BASE = 76561197960265728
+
+_RE_STEAM2 = re.compile(r"\bSTEAM_([0-5]):([01]):(\d+)\b", re.I)
+_RE_STEAM3 = re.compile(r"^\[?U:1:(\d+)\]?$", re.I)
+_RE_DIGITS = re.compile(r"^\d{1,10}$")
+
+# ── 好友代码（字母形式）────────────────────────────────────────
+# Steam 客户端「好友代码」/ `steamcommunity.com/user/<code>` 里那串**字母**，
+# 它**不是** account_id 的十进制，而是 account_id 的**十六进制**再按固定表替换字符：
+#   hex → letter: 0=b 1=c 2=d 3=f 4=g 5=h 6=j 7=k 8=m 9=n a=p b=q c=r d=t e=v f=w
+# 来源：Dr. McKay《Translate new /user/ links》；已实测验证：
+#   Trusler 的 account_id 1467315295 → hex 5775745f → hkkhkghw
+#   取 https://steamcommunity.com/user/hkkhkghw 返回 <title>Steam Community :: Trusler</title>
+# ⚠️ 第一版误以为好友代码就是 account_id 十进制，拿 /user/1467315295 去试 → Steam 返回 Error 页。
+_FC_ALPHABET = "bcdfghjkmnpqrtvw"                 # 下标 = hex 值 0..f
+_FC_LETTER2HEX = {ch: format(i, "x") for i, ch in enumerate(_FC_ALPHABET)}
+_FC_HEX2LETTER = {format(i, "x"): ch for i, ch in enumerate(_FC_ALPHABET)}
+_RE_FRIEND_CODE = re.compile(r"^[bcdfghjkmnpqrtvw\-]{4,12}$", re.I)
+
+
+def friend_code_to_account_id(code: str) -> str:
+    """字母好友代码 → account_id（十进制字符串）；非法返回 "" """
+    t = re.sub(r"[\s\-]", "", (code or "")).lower()
+    if not t or len(t) > 8:
+        return ""
+    hexs = ""
+    for ch in t:
+        if ch not in _FC_LETTER2HEX:
+            return ""
+        hexs += _FC_LETTER2HEX[ch]
+    try:
+        return str(int(hexs, 16))
+    except Exception:
+        return ""
+
+
+def account_id_to_friend_code(acc) -> str:
+    """account_id（十进制）→ 字母好友代码"""
+    try:
+        return "".join(_FC_HEX2LETTER[c] for c in format(int(acc), "x"))
+    except Exception:
+        return ""
+
+
+def steamid64_to_account_id(steamid) -> str:
+    try:
+        v = int(str(steamid)) - _STEAM64_BASE
+        return str(v) if v > 0 else ""
+    except Exception:
+        return ""
+
+
+def friend_code_to_steamid64(code) -> str:
+    """好友代码（= account_id）→ SteamID64"""
+    return str(_STEAM64_BASE + int(code))
+
+
+def steamid64_to_friend_code(steamid) -> str:
+    """SteamID64 → 好友代码（个人资料页/客户端能直接用的那串短数字）"""
+    try:
+        return str(int(str(steamid)) - _STEAM64_BASE)
+    except Exception:
+        return ""
+
+
 def extract_steamid(text: str) -> str:
-    """从输入里抠 SteamID64（支持纯 ID / profiles 链接 / STEAM_x:y:z 不算）"""
+    """从输入里抠 SteamID64（保留旧名）：profiles 链接 / 17 位 SteamID64"""
     t = (text or "").strip()
     m = _RE_PROFILES.search(t) or _RE_STEAMID64.search(t)
     return m.group(1) if m else ""
+
+
+def extract_identity(text: str) -> tuple:
+    """把输入解析成 (steamid64, 来源说明)；认不出返回 ("", "")。
+
+    支持（纯本地换算，不需要网络）：
+      · SteamID64            76561199427581023
+      · 好友代码（字母）     hkkhkghw / hkk-hkghw  ← 本次新增（Steam 客户端显示的那串）
+      · 数字部分             1467315295            ← account_id（SteamID3 的数字部分）
+      · SteamID2             STEAM_0:1:731657647
+      · SteamID3             [U:1:1467315295] / U:1:1467315295
+      · 资料链接             https://steamcommunity.com/profiles/76561199427581023
+    """
+    t = (text or "").strip()
+    if not t:
+        return "", ""
+
+    m = _RE_PROFILES.search(t)
+    if m:
+        return m.group(1), "资料链接"
+
+    m = _RE_STEAMID64.search(t)
+    if m:
+        return m.group(1), "SteamID64"
+
+    # SteamID2: STEAM_X:Y:Z → account_id = Z*2 + Y
+    m = _RE_STEAM2.search(t)
+    if m:
+        acc = int(m.group(3)) * 2 + int(m.group(2))
+        return str(_STEAM64_BASE + acc), "SteamID2"
+
+    # SteamID3: [U:1:account_id]
+    m = _RE_STEAM3.search(t)
+    if m:
+        return str(_STEAM64_BASE + int(m.group(1))), "SteamID3"
+
+    # 字母形式的好友代码（Steam 客户端显示的那串，如 hkkhkghw / hkk-hkghw）
+    if _RE_FRIEND_CODE.match(t):
+        acc = friend_code_to_account_id(t)
+        if acc:
+            return str(_STEAM64_BASE + int(acc)), "好友代码"
+
+    # 纯数字（≤10 位且不是 17 位 SteamID64）→ account_id（SteamID3 的数字部分）
+    if _RE_DIGITS.match(t):
+        return str(_STEAM64_BASE + int(t)), "SteamID 数字部分"
+
+    return "", ""
 
 
 def extract_vanity(text: str) -> str:
@@ -274,7 +392,8 @@ def extract_vanity(text: str) -> str:
 async def resolve_steamid(text: str) -> tuple:
     """把用户输入解析成 SteamID64
 
-    返回 (steamid, 错误提示)。支持：SteamID64 / profiles 链接 / id/xxx 链接。
+    返回 (steamid, 错误提示)。支持：好友代码 / SteamID64 / SteamID2 / SteamID3 /
+    profiles 链接 / id/xxx 自定义 URL。
     注意：不猜昵称 —— 那是踩过的坑。
     """
     if not steam_key():
@@ -282,7 +401,7 @@ async def resolve_steamid(text: str) -> tuple:
     t = (text or "").strip()
     if not t:
         return "", "没给账号"
-    sid = extract_steamid(t)
+    sid, _src = extract_identity(t)
     if sid:
         return sid, ""
     vanity = extract_vanity(t)
@@ -306,8 +425,11 @@ async def resolve_steamid(text: str) -> tuple:
         except Exception:
             pass
         return "", (f"把「{t}」当成自定义 URL 查了，没找到对应账号\n"
-                    "  请用 SteamID64（17 位数字，个人资料页链接里那串）")
-    return "", "认不出这是账号。请给 SteamID64 或个人资料链接"
+                    "  也可以直接给 SteamID64 或好友代码")
+    return "", ("认不出这是账号喵~ 可以给这几种：\n"
+                "  · 好友代码（Steam 客户端「好友代码」那串数字，如 1467315295）\n"
+                "  · SteamID64（17 位数字，个人资料页链接里那串）\n"
+                "  · 个人资料链接（steamcommunity.com/profiles/... 或 /id/...）")
 
 
 # ── 玩家数据 ──────────────────────────────────────────────────

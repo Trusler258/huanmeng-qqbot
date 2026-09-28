@@ -4,8 +4,9 @@
 【/~steam 系列】
     price <游戏名|商店链接>   当前价 + 折扣 + 地区对比（配了 ITAD key 还有史低）
     px <游戏名>               快捷版：只给第一条匹配
-    who [@某人|SteamID]       查 Steam 状态（发卡片图）
-    bd <SteamID|资料链接>     绑定；bd 看自己；bd del 解绑；bd list 列表
+    who [@某人|SteamID|好友代码|链接]  查 Steam 状态（发卡片图）
+                             不给参数=查自己；给 SteamID/好友代码可直接查别人
+    bd <SteamID|好友代码|链接> 绑定；bd 看自己；bd del 解绑；bd list 列表
     help                      帮助
 【独立入口】
     /~在干嘛 [@某人]          等同 who
@@ -28,8 +29,8 @@ HELP = "\n".join([
     "【Steam 指令 /~steam】",
     "  price <游戏名|链接>  价格 · 折扣 · 地区对比（+史低）",
     "  px <游戏名>          快捷版，只给第一条匹配",
-    "  who [@某人] / me     查 Steam 状态（发卡片图）",
-    "  bd <SteamID|链接>    绑定；bd 查看；bd del 解绑；bd list 列表",
+    "  who [@某人|SteamID|好友代码]  查 Steam 状态；不带参数=查自己",
+    "  bd <SteamID|好友代码|链接>    绑定；bd 查看；bd del 解绑；bd list 列表",
     "  help                 本帮助",
     "另一种写法：/~在干嘛 @某人",
 ])
@@ -184,30 +185,46 @@ async def _do_who(args, user_id, group_id, is_group, sender_name) -> str | None:
     from services import steam_api as S
     from services import steam_card as SC
 
-    target = 0
-    if args:
-        target = _qq_of(" ".join(args), group_id)
-    if not target:
-        target = user_id
-        who = "你"
-    else:
-        who = ("<@%d>" % target) if target != user_id else "你"
+    raw = " ".join(args).strip() if args else ""
+    target = _qq_of(raw, group_id) if raw else 0
 
     if not S.has_key():
         return "还没配置 STEAM_KEY 喵~"
 
-    steamid = S.get_bind(target)
-    if not steamid:
-        if target == user_id:
-            return ("你还没绑定 Steam 喵~\n"
-                    "用 /~steam bd <SteamID64 或个人资料链接> 绑一下\n"
-                    "（SteamID64 就是个人资料页链接里那串 17 位数字）")
-        return "%s 还没绑定 Steam 喵~（让他用 /~steam bd 绑一下）" % who
+    # ★ 参数不是 @某人时，当成 SteamID / 好友代码 / 资料链接**直接查**，不需要绑定。
+    #   用户要求：有 id 就直接查对应的，不必先 @ 一个已绑定的 QQ。
+    direct = ""
+    if raw and not target:
+        try:
+            direct, err = await S.resolve_steamid(raw)
+        except Exception as e:
+            logger.warning("解析 Steam 账号失败: %s", e)
+            return "解析失败（网络问题），稍后再试"
+        if not direct:
+            return err or "认不出这是账号喵~"
+
+    if direct:
+        steamid = direct
+        who = raw
+    else:
+        if not target:
+            target = user_id
+            who = "你"
+        else:
+            who = ("<@%d>" % target) if target != user_id else "你"
+        steamid = S.get_bind(target)
+        if not steamid:
+            if target == user_id:
+                return ("你还没绑定 Steam 喵~\n"
+                        "用 /~steam bd <SteamID64 / 好友代码 / 个人资料链接> 绑一下\n"
+                        "也可以不绑定直接查：/~steam who <SteamID 或 好友代码>")
+            return "%s 还没绑定 Steam 喵~（让他用 /~steam bd 绑一下）" % who
 
     # ★ v2.3.61 文案修正：旧写法 `"正在查 %s 的 Steam…" % ("你的" if ...)` 拼出
     #   「正在查 你的 的 Steam…」。上面 182 行的 who 本来就是现成称呼（"你"/<@QQ>）。
     #   同时改为延迟 2s 才发：SWR 命中时 0.5s 内就出图，提示会被 cancel 不发送。
-    tip = "正在查你的 Steam…" if target == user_id else "正在查 %s 的 Steam…" % who
+    tip = ("正在查你的 Steam…" if (not direct and target == user_id)
+           else "正在查 %s 的 Steam…" % who)
     tip_task = asyncio.ensure_future(
         _delayed_notify(tip, user_id, group_id, is_group, delay=2.0))
     try:
@@ -240,8 +257,11 @@ async def _do_bind(args, user_id, group_id, is_group) -> str:
             p = await S.player_summary(sid)
         except Exception:
             p = {}
-        return "你绑定的账号：%s\n  %s\n  换绑就再发一次 /~steam bd <新ID>\n  解绑：/~steam bd del" % (
-            p.get("name") or "（查不到）", sid)
+        code = S.account_id_to_friend_code(S.steamid64_to_account_id(sid))
+        extra = ("\n  好友代码：%s（可直接分享给别人加好友）" % code) if code else ""
+        return ("你绑定的账号：%s\n  %s%s\n"
+                "  换绑就再发一次 /~steam bd <新ID>\n  解绑：/~steam bd del"
+                % (p.get("name") or "（查不到）", sid, extra))
 
     sub = args[0].lower()
     if sub in ("del", "解绑", "取消", "unbind"):
@@ -275,6 +295,9 @@ async def _do_bind(args, user_id, group_id, is_group) -> str:
     if not S.extract_steamid(text):
         tip = ("\n（这是按自定义 URL 查到的账号，请核对上面的昵称是不是你）\n"
                "  对不上就用 SteamID64 重绑：个人资料页链接里那 17 位数字")
+    code = S.account_id_to_friend_code(S.steamid64_to_account_id(sid))
+    if code:
+        tip += "\n  你的好友代码：%s" % code
     return "绑定成功喵~\n  %s\n  %s%s" % (name, sid, tip)
 
 
