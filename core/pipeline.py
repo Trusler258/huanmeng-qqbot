@@ -808,6 +808,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     thought_ctx: dict = {"secs": None, "applied": False}
     # ★ v2.3.23: 记录已发出的先导语，用于主回复去重（防隔十几秒重复同一句）
     sent_lead: list[str] = []
+    # 报错上报用起点：失败时只认这之后产生的错误记录，
+    # 避免把上一轮/别的群遗留的旧错误当成这次的报错（全局只存最近一条）
+    _llm_err_since = _tm.time()
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=msg_history_for_llm, speaker_name=display_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
@@ -823,9 +826,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                  _tm.monotonic() - _t_pipe_start)
 
     if not sentences:
+        # ★ 2026-09-29 用户要求：报错要能说清"是什么问题"，并把整个报错栈发出来。
+        #   原先是写死的「错误: LLM返回空内容」—— 调用的真实失败原因被吞在 llm.py 里，
+        #   聊天里看到的永远是同一句，排查全靠登服务器翻日志。
+        #   format_llm_error(since=...) 只认本次调用之后产生的错误，避免旧错误串场。
+        from services.llm import format_llm_error
+        _err_detail = format_llm_error(since=_llm_err_since)
         error_lines = [
             "呜呜，回复生成失败了喵~",
-            f"错误: LLM返回空内容",
+            _err_detail or ("错误: 模型返回空内容（本次没捕获到异常 —— "
+                            "多为空返回/JSON 解析失败，服务器日志有原文）"),
             f"时间: {now.strftime('%H:%M:%S')}",
             f"对话者: {display_name}",
             f"上下文: {len(msg_history_for_llm)}轮",

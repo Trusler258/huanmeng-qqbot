@@ -11,7 +11,7 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
-## v2.3.68 — /steam who 支持直接给 SteamID/好友代码 + 代理加 /steamcommunity/ + 日报卡中文回退修复(2026.9.29)
+## v2.3.68 — steam who 直查 + 代理社区域 + 日报卡中文回退 + LLM 报错上报(2026.9.29)
 
 ### 1. `/~steam who <SteamID 或 好友代码>` 可以直接查了
 原来 `_do_who` 只把参数当 **@某人** 解析（`_qq_of`），给了 SteamID 会被直接忽略；
@@ -102,6 +102,37 @@ Chromium 会逐字回退到 Noto CJK，Pillow 不会 → 中文整块画不出�
 - `tests/_test_v2369_steam_identity.py`：24 passed（编解码可逆、8 种形式同一结果、
   非法输入不误判、SteamID2/3 公式、`_do_who` 直查不走绑定）
 - `scripts/_probe_landmark_ink.py`：逐地标墨迹量，18 个地标无缺失
+
+### 4. LLM 报错要说清「是什么问题」，并把完整报错栈发到聊天（用户要求）
+原来失败只会发一句**写死**的「错误: LLM返回空内容」—— 真实原因被 `call_llm` 吞在内部
+（`except` 里 `logger.error` 之后就 `return ""`），聊天里永远同一句话，排查只能登服务器翻日志。
+
+现在：
+- `services/llm.py` 新增错误诊断组件：
+  · `_DEEPSEEK_ERRORS` —— 官方 7 个错误码（400/401/402/422/429/500/503）→ 人话说明 + 处理建议
+  · `_classify_llm_error(e)` —— 取**真实 HTTP 状态码**和**响应体**（DeepSeek 会在响应体里
+    点名哪个字段不对，比 `str(e)` 那种 "Error code: 400" 有用得多）；网络类异常单独归类（超时 / 连不上）
+  · `last_llm_error()` / `clear_llm_error()` / `format_llm_error(since=…)` —— 留存最近一次错误
+    （含完整 traceback）并拼成可直接发进聊天的多行文本
+  · `_mask_secrets()` —— **发出去的文本先给密钥打码**（响应体可能回显 `sk-xxx`，
+    群里其他人也看得到，不能原样发）
+- `call_llm` / `call_llm_with_tools` 的 4 个 `except`（超时 ×2、异常 ×2）都落记录：
+  完整栈既进日志也留档；**返回值契约不变**（仍是空字符串 / 空 `ToolCallResult`）
+- `core/pipeline.py` 主回复失败分支改用 `format_llm_error(since=起点)`：只认**本次调用之后**
+  产生的错误，避免把上一轮 / 别的群遗留的旧错误误报出来
+- 空返回（没捕获到异常）单独说明，不再和真实报错混为一谈
+
+实测（`scripts/_probe_llm_error_report.py`，**真打 DeepSeek**，不是构造的假异常）：
+- 故意用错 key → `错误: HTTP 401 认证失败` + 处理建议 + DeepSeek 原始响应体 + 完整栈 ✓
+- `temperature=9.9` → `错误: HTTP 400 格式错误`，响应体里带出真实原因
+  （`Invalid temperature value, the valid range is [0, 2]`）✓
+- 正常调用 → 无错误记录（不会误报）✓
+
+测试：`tests/_test_v2369_llm_error_report.py` 42 passed（错误码表完整性、7 种码分类、
+真实 `call_llm`/`call_llm_with_tools` 失败留记录、`since` 过滤、密钥脱敏、pipeline 接线）
+
+⚠️ **范围说明**：只有**主回复路径**会上报。judge / 搜索判断 / 工具调用等内部调用的失败
+仍是静默降级（否则群里会被刷屏）—— 这些错误同样进了日志与错误记录。
 
 ---
 

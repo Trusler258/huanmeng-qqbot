@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time as _time
+import traceback
 from pathlib import Path
 
 # ── 回复 JSON schema ──────────────────────────────────────
@@ -1004,6 +1005,152 @@ def _hint_json_output(messages: list[dict]) -> list[dict]:
     return out
 
 
+# ══════════════════════════════════════════════════════════════
+#  LLM 报错诊断（2026-09-29 用户要求）
+# ══════════════════════════════════════════════════════════════
+# 用户要求：
+#   ① 调用出问题时要能说清「是什么问题」—— 不能只回一句写死的「LLM返回空内容」
+#   ② 报错时把**整个报错栈**发到聊天，不要只躺在服务器日志里
+# 注意：本组件只负责"把错误说清楚"，不做自动重试/降级（那是调用方的事）。
+#
+# 发到聊天前**先给密钥打码**。为什么必要：
+#   原文要发进群，响应体里可能出现 "Your api key: sk-xxxx is invalid" 这类内容
+#   （DeepSeek 自己会显示后 4 位，别的 OpenAI 兼容服务可能整串回显），
+#   群里其他人也看得到 —— 不能原样发出去。
+_MASK_PATTERNS = (
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"), "sk-***"),
+    (re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9_\-\.]{8,}"), r"\1 ***"),
+    (re.compile(r"(?i)\b(api[_-]?key|apikey|token|secret|password)\b(\"?\s*[:=]\s*\"?)([^\s\"',}]{6,})"),
+     r"\1\2***"),
+)
+
+
+def _mask_secrets(text: str) -> str:
+    """把疑似密钥替换成 ***（只用于"要发出去"的文本）"""
+    if not text:
+        return text
+    for _pat, _to in _MASK_PATTERNS:
+        text = _pat.sub(_to, text)
+    return text
+
+
+# DeepSeek 官方错误码：https://api-docs.deepseek.com/zh-cn/quick_start/error_codes
+_DEEPSEEK_ERRORS: dict = {
+    400: ("格式错误", "请求体格式错误 —— 检查消息结构 / max_tokens / temperature 等字段"),
+    401: ("认证失败", "API key 错误或已失效 —— 检查 config 里的 DEEPSEEK_KEY"),
+    402: ("余额不足", "账号余额不足 —— 需要去 DeepSeek 开放平台充值"),
+    422: ("参数错误", "请求体参数不合法 —— 检查 temperature / tools / response_format"),
+    429: ("请求速率达到上限", "TPM 或 RPM 达上限 —— 稍后重试，或降低并发/思考模式用量"),
+    500: ("服务器故障", "DeepSeek 服务端内部故障 —— 属临时问题，稍后重试"),
+    503: ("服务器繁忙", "DeepSeek 负载过高 —— 稍后重试"),
+}
+
+_LLM_LAST_ERROR: dict | None = None
+
+
+def _classify_llm_error(e: BaseException, timeout: float | None = None) -> dict:
+    """把异常翻译成 {kind, code, summary, hint, detail}
+
+    `detail` 优先取 **HTTP 响应体** —— DeepSeek 会在里面点名哪个字段不对，
+    比异常自带的 str(e)（常常只有一句 "Error code: 400"）有用得多。
+    """
+    import openai
+
+    kind = type(e).__name__
+    code = None
+    detail = ""
+
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        sc = getattr(resp, "status_code", None)
+        code = sc if isinstance(sc, int) else None
+        try:
+            detail = (resp.text or "")[:2000]
+        except Exception:
+            detail = ""
+    if code is None:
+        sc = getattr(e, "status_code", None)
+        code = sc if isinstance(sc, int) else None
+
+    if code is not None and code in _DEEPSEEK_ERRORS:
+        name, hint = _DEEPSEEK_ERRORS[code]
+        return {"kind": kind, "code": code,
+                "summary": "HTTP %d %s" % (code, name),
+                "hint": hint, "detail": detail}
+    if isinstance(e, openai.APITimeoutError):
+        return {"kind": kind, "code": code, "summary": "请求超时",
+                "hint": ("模型端 %.0fs 内没返回" % timeout) if timeout else "模型端没及时返回",
+                "detail": detail}
+    if isinstance(e, openai.APIConnectionError):
+        return {"kind": kind, "code": code, "summary": "连不上 API",
+                "hint": "检查 DEEPSEEK_URL / 网络 / 代理是否可用",
+                "detail": detail}
+    if code is not None:
+        return {"kind": kind, "code": code, "summary": "HTTP %d" % code,
+                "hint": "详见下面的响应体", "detail": detail}
+    return {"kind": kind, "code": None, "summary": "%s: %s" % (kind, e),
+            "hint": "未归类异常，看下面的报错栈", "detail": detail}
+
+
+def _record_llm_error(scene: str, model: str, err: dict, tb: str) -> None:
+    """留存最近一次调用错误（供上层拼进聊天消息）"""
+    global _LLM_LAST_ERROR
+    rec = dict(err)
+    rec["ts"] = _time.time()
+    rec["time"] = _time.strftime("%Y-%m-%d %H:%M:%S")
+    rec["scene"] = scene or _current_call_scene or ""
+    rec["model"] = model
+    rec["traceback"] = tb
+    _LLM_LAST_ERROR = rec
+
+
+def last_llm_error() -> dict | None:
+    """最近一次 LLM 调用错误（含完整 traceback）；没有则 None"""
+    return _LLM_LAST_ERROR
+
+
+def clear_llm_error() -> None:
+    global _LLM_LAST_ERROR
+    _LLM_LAST_ERROR = None
+
+
+def format_llm_error(err: dict | None = None, since: float | None = None,
+                     max_tb: int = 6000) -> str:
+    """拼成可直接发进聊天的多行文本（含完整报错栈）。
+
+    since: 只认**这个时间点之后**发生的错误（`time.time()` 口径）。
+           调用方在发起生成前取一次时间传进来，就不会把上一轮 /
+           别的群遗留的旧错误当成这次的报错发出来。
+    max_tb: 报错栈字符上限，仅防极端情况（超长时保留**尾部**，栈顶在最后）。
+    """
+    e = err or _LLM_LAST_ERROR
+    if not e:
+        return ""
+    if since is not None and (e.get("ts") or 0) < since:
+        return ""
+
+    parts = ["错误: %s" % (e.get("summary") or "未知")]
+    if e.get("hint"):
+        parts.append("提示: %s" % e["hint"])
+    meta = []
+    if e.get("scene"):
+        meta.append("场景 %s" % e["scene"])
+    if e.get("model"):
+        meta.append("模型 %s" % e["model"])
+    if e.get("time"):
+        meta.append("时间 %s" % e["time"])
+    if meta:
+        parts.append("  ".join(meta))
+    if e.get("detail"):
+        parts.append("响应体: %s" % _mask_secrets(str(e["detail"])[:2000]))
+    tb = e.get("traceback") or ""
+    if tb:
+        if len(tb) > max_tb:
+            tb = "…（前面 %d 字符略）…\n%s" % (len(tb) - max_tb, tb[-max_tb:])
+        parts.append("报错栈:\n" + _mask_secrets(tb))
+    return "\n".join(parts)
+
+
 async def call_llm(
     model_cfg: ModelConfig,
     messages: list[dict],
@@ -1115,12 +1262,24 @@ async def call_llm(
         return text
     except asyncio.TimeoutError:
         elapsed = loop.time() - start_time
-        logger.error("LLM [%s] 调用超时 (%.1fs/%.1fs)", model_cfg.name[:20], elapsed, timeout)
+        tb = traceback.format_exc()
+        logger.error("LLM [%s] 调用超时 (%.1fs/%.1fs)\n%s",
+                     model_cfg.name[:20], elapsed, timeout, tb)
+        _record_llm_error(scene, model_cfg.name, {
+            "kind": "TimeoutError", "code": None,
+            "summary": "请求超时（%.1fs / 上限 %.1fs）" % (elapsed, timeout),
+            "hint": "模型端没在超时时间内返回 —— 可能繁忙或网络抖动", "detail": "",
+        }, tb)
         _record_call_failure(model_cfg)
         return ""
     except Exception as e:
         elapsed = loop.time() - start_time
-        logger.error("LLM [%s] 调用失败 (%.1fs): %s", model_cfg.name[:20], elapsed, e)
+        err = _classify_llm_error(e, timeout)
+        tb = traceback.format_exc()
+        # 完整栈既进日志也留档（用户要求聊天里能看到整个栈）
+        logger.error("LLM [%s] 调用失败 (%.1fs): %s | %s\n%s",
+                     model_cfg.name[:20], elapsed, err["summary"], err["hint"], tb)
+        _record_llm_error(scene, model_cfg.name, err, tb)
         _record_call_failure(model_cfg)
         return ""
 
@@ -1231,11 +1390,22 @@ async def call_llm_with_tools(
         return ToolCallResult(content=content.strip(), tool_calls=tc_list, reasoning=reasoning, reasoning_duration=reasoning_duration)
 
     except asyncio.TimeoutError:
-        logger.error("LLM FC [%s] 超时", model_cfg.name[:20])
+        tb = traceback.format_exc()
+        logger.error("LLM FC [%s] 超时（%.1fs）\n%s",
+                     model_cfg.name[:20], timeout, tb)
+        _record_llm_error(scene, model_cfg.name, {
+            "kind": "TimeoutError", "code": None,
+            "summary": "FC 轮次请求超时（上限 %.1fs）" % timeout,
+            "hint": "模型端没在超时时间内返回 —— 可能繁忙或网络抖动", "detail": "",
+        }, tb)
         _record_call_failure(model_cfg)
         return ToolCallResult(content="", tool_calls=[])
     except Exception as e:
-        logger.error("LLM FC [%s] 失败: %s", model_cfg.name[:20], e)
+        err = _classify_llm_error(e, timeout)
+        tb = traceback.format_exc()
+        logger.error("LLM FC [%s] 失败: %s | %s\n%s",
+                     model_cfg.name[:20], err["summary"], err["hint"], tb)
+        _record_llm_error(scene, model_cfg.name, err, tb)
         _record_call_failure(model_cfg)
         return ToolCallResult(content="", tool_calls=[])
 
