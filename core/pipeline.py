@@ -149,12 +149,40 @@ def _clean_name(name):
 #   下面这个缓冲是**补充**：上下文里只有 "[系统] 某某摸了摸幻梦的头" 这样的动作记录，
 #   没有 bot 自己上次的回应，防复读规则（poke_rules 第 2 条）缺料，所以单独记一份。
 _POKE_KEEP = 5
+# ★ 2026-09-30：喂给 LLM 的上下文只取最近几条。
+#   实测（scripts/_probe_poke_habit.py，每变体 8 次采样、同一批上下文）：
+#     喂全量上下文 → 回应里出现上文话题词的比例 A 100% / B 88%
+#     只喂最近 2 条 → A 50% / B 0%，平均长度也从 19/18 字降到 12/15 字
+#   原因：戳一戳本身没有内容可回应，模型只能抓上下文里最显著的名词来"接话"——
+#   给的素材越多，能被复述的就越多，"复述+调侃"的公式感就是这么来的。
+#   要判断"现在是什么气氛"，最近 1~2 条足够。
+_POKE_CTX_TAIL = 2
 _poke_replies: dict[int, list[str]] = {}
 
 
-def _poke_history(chat_id: int, bot_name: str) -> list[str]:
-    """我自己最近几次的戳一戳回应，拼成对话历史的样子（补充给防复读用）"""
-    return [f"{bot_name}: {r}" for r in _poke_replies.get(chat_id, [])]
+def _poke_context_for_llm(chat_id: int) -> list:
+    """戳一戳喂给 LLM 的会话上下文：只取最近 _POKE_CTX_TAIL 条"""
+    try:
+        from core.context_manager import get_context_mgr
+        full = get_context_mgr().get_context(chat_id) or []
+    except Exception:
+        return []
+    return list(full[-_POKE_CTX_TAIL:]) if _POKE_CTX_TAIL else list(full)
+
+
+def _poke_said_note(chat_id: int) -> str:
+    """我自己最近几次的戳一戳回应 —— 作为清单提醒"别重复"。
+
+    ⚠️ 不要再拼进 msg_history：那等于发给模型一份"句式和口癖的模仿样本"
+    （实测 bot 全部发言里首字「诶」占 18.3%，自我模仿是主因之一：
+    上文里连续几条「诶，XXX」→ 它接着「诶，……」）。
+    改放 extra_info 并写明"这些不是聊天记录"，防复读的目的照样达到。
+    """
+    said = _poke_replies.get(chat_id) or []
+    if not said:
+        return ""
+    return ("你最近几次被戳时的回应（**这些不是聊天记录**，只是提醒你别再重复这些说法）：\n"
+            + "\n".join("  · " + x for x in said))
 
 
 def _remember_poke_reply(chat_id: int, text: str) -> None:
@@ -208,6 +236,10 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     except Exception:
         pass
     extra_parts.append(fav_info)
+    # ★ 2026-09-30: "自己上次怎么回的"从 msg_history 挪到这里，只当"别重复"的清单
+    _said_note = _poke_said_note(chat_id)
+    if _said_note:
+        extra_parts.append(_said_note)
 
     # ★ v2.3.65: 戳一戳规则从硬编码搬到 data/skills/40_reminders.md::poke_reminder
     #   （原先写死在这里，违反"提示词唯一落点 = data/skills/*.md"的约定）。
@@ -233,9 +265,10 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     buffer_snapshot = list(ctx.get_buffer(chat_id))
 
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
-        # v2.3.14: 读会话上下文（用户明确要求）+ 末尾附上自己最近的戳一戳回应，
-        #   后者是因为"自己说过什么"本来没写进上下文，防复读规则缺料
-        msg_history=ctx.get_context(chat_id) + _poke_history(chat_id, cfg.bot_name),
+        # ★ 戳一戳**必须读上下文**（用户 2026-09-14 明确要求，别改成不读）——
+        #   但只喂最近 _POKE_CTX_TAIL 条：全量喂会诱导模型复述上文话题（见该常量注释）。
+        #   自己上次怎么回的放在 extra_info 的清单里，不再混进对话历史（见 _poke_said_note）。
+        msg_history=_poke_context_for_llm(chat_id),
         speaker_name=speaker_label,
         current_msg=f"[系统] {system_msg}",
         bot_name=cfg.bot_name,
