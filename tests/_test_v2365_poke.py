@@ -1,12 +1,13 @@
 """v2.3.65 戳一戳（摸头）回应改造 回归测试
 
 验证：
-  1. poke_reminder 章节存在且内容完整（要求「结合上下文」，且不再随机抽情绪）
+  1. poke_reminder 章节存在且内容完整（要求读当下气氛、不复述上文专有词、不随机抽情绪）
+     ★ 2026-09-30 追加：规则里**不许出现具名字词**（列举即污染，实测会被照抄）
   2. 不再残留旧的「随机语气」抽签说明与「不要展开话题」的禁结合条款
   3. _build_reminder(..., append_plain=False) 不追加 plain_text_rule
   4. _build_reminder(...) 默认仍追加 plain_text_rule（防回归）
   5. core/pipeline.py 里已无硬编码的戳一戳规则（改走提示词文件）
-  6. 戳一戳请求真的能把上下文喂给 LLM（_build_messages 组装检查）
+  6. 戳一戳请求真的把上下文喂给 LLM，且**只喂最近 2 条**；自己上次的回应走 extra_info 清单
 
 用法（本地）:
   python tests/_test_v2365_poke.py
@@ -46,9 +47,18 @@ def main() -> None:
     else:
         bad("章节缺失 —— 戳一戳会走 _REMINDER_FALLBACK 兜底，规则全丢")
 
-    must = ["上下文", "1 句", "模板话"]
+    must = ["气氛", "1 句", "专有词"]
     for k in must:
         (ok if k in poke else bad)(f"含关键词 {k!r}")
+
+    # ★ 2026-09-30 实测教训：**规则里写具体字/句作例子，模型就会照抄**。
+    #   把「X 就 X」列为禁止句式 → 它反而复现 3 次；
+    #   10_format_group 里点名「唔/诶」是语气词 → 首字「诶」占 18.3%、短上下文时「唔」占 7/8。
+    for tainted in ("卷子", "披风", "摸头就摸头", "X 就 X", "唔", "诶"):
+        if tainted in poke:
+            bad(f"规则里出现具名字词 {tainted!r} —— 列举即污染，会被照抄")
+        else:
+            ok(f"规则里不含具名字词 {tainted!r}")
 
     print("\n=== 2. 旧病灶已移除 ===")
     bad_markers = [
@@ -110,10 +120,20 @@ def main() -> None:
         ok("msg_history 使用 ctx.get_context(chat_id)（会话上下文）")
     else:
         bad("msg_history 未使用会话上下文")
-    if "_poke_history(" in src:
-        ok("msg_history 末尾附带自己最近的戳一戳回应（防复读有料）")
+    # ★ 2026-09-30：自己上次的回应**不再拼进 msg_history**（那等于给模型一份句式模仿样本，
+    #   是首字「诶」占 18.3% 的成因之一），改为 extra_info 清单；上下文只喂最近 2 条。
+    if "msg_history=_poke_context_for_llm(chat_id)" in src:
+        ok("msg_history 走 _poke_context_for_llm（只喂最近几条）")
     else:
-        bad("未附带自身历史回应")
+        bad("msg_history 未走裁剪函数")
+    if "_POKE_CTX_TAIL" in src and "_poke_history(" not in src:
+        ok("裁剪参数存在，且旧的 _poke_history（拼进对话历史）已彻底移除")
+    else:
+        bad("裁剪参数缺失，或 _poke_history 仍残留")
+    if "_poke_said_note(chat_id)" in src and "extra_parts.append(_said_note)" in src:
+        ok("自己上次的回应改走 extra_info 清单（防复读保留、不当模仿样本）")
+    else:
+        bad("未找到 _poke_said_note 的注入")
 
     print(f"\n=== 结果: {PASS} passed, {FAIL} failed ===")
     sys.exit(1 if FAIL else 0)
