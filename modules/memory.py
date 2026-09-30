@@ -130,6 +130,65 @@ def save_memories_to_file(chat_id: int, memories: list[str]):
         logger.error("保存记忆文件失败 [%d]: %s", chat_id, e)
 
 
+# ════════════════════════════════════════════════════════════
+#  写 SQLite（DB = md 的实时镜像，面板「长期记忆」按它分块管理）
+# ════════════════════════════════════════════════════════════
+# 为什么不反过来让 bot 读 DB：记忆是 bot 的核心能力，改读取路径风险高（读错 = 失忆）。
+# 现在 md 仍是真相源、DB 是镜像；面板的写操作两边一起改（content 精确匹配）。
+_db_sync_tasks: set = set()      # 持引用，防 create_task 结果被 GC
+
+
+def _db_ready() -> bool:
+    try:
+        from db.database import db
+        return bool(db.initialized)
+    except Exception:
+        return False
+
+
+async def _db_add_memory(chat_id: int, line: str, source: str = "live") -> None:
+    from db.database import db
+    from db.repositories import MemoryRepository
+    if not db.initialized:
+        return
+    async with db.session()() as session:
+        repo = MemoryRepository(session)
+        await repo.add(
+            content=line,
+            conversation_id=int(chat_id),
+            memory_type="auto",
+            source=source,
+        )
+        await session.commit()
+
+
+def _sync_memory_to_db(chat_id: int, line: str, source: str = "live") -> None:
+    """把刚写进 md 的记忆同步进 SQLite。
+
+    · 有事件循环 → 起后台任务，不拖慢记忆写入
+    · 没有（启动期 / CLI / 插件线程）→ 直接 asyncio.run 跑完
+    · 失败只记 warning：下次启动的 backfill（幂等、按 content 去重）会补上
+    """
+    if not _db_ready():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            asyncio.run(_db_add_memory(chat_id, line, source))
+        except Exception as e:
+            logger.warning("记忆入库失败（下次启动回填会补齐）[%d]: %s", chat_id, e)
+        return
+    try:
+        task = loop.create_task(_db_add_memory(chat_id, line, source))
+        _db_sync_tasks.add(task)
+        task.add_done_callback(_db_sync_tasks.discard)
+    except Exception as e:
+        logger.warning("记忆入库任务创建失败 [%d]: %s", chat_id, e)
+
+
 def append_memory(chat_id: int, new_line: str):
     memories = load_memories(chat_id)
     if any(new_line.strip() == mem.strip() for mem in memories):
@@ -138,6 +197,10 @@ def append_memory(chat_id: int, new_line: str):
         memories.pop(0)
     memories.append(new_line)
     save_memories_to_file(chat_id, memories)
+    # ★ 2026-09-30: 同一行同步进 SQLite。
+    #   入库的 content 必须与 md 里那一行**完全一致**（回填时也是原样存的），
+    #   否则面板按 content 匹配就找不到对应行 —— 双写的正确性靠这一点。
+    _sync_memory_to_db(chat_id, new_line, source="live")
 
 
 # ════════════════════════════════════════════════════════════
@@ -497,6 +560,10 @@ async def backfill_memories_to_db() -> int:
                 for line in lines:
                     if line in existing:
                         continue
+                    # source 区分「历史回填」与「实时双写」：
+                    # backfill 的时间戳是**回填那一刻**（md 行只有 [HH:MM:SS]，没有日期，
+                    # 无法还原真实时间），面板要据此提示"时间仅供参考"；
+                    # 而 live 记录有准确时间。排序统一用自增 id（= md 行顺序）。
                     await repo.add(
                         content=line, conversation_id=conversation_id,
                         memory_type="auto", source="backfill",
