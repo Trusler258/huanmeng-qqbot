@@ -7,6 +7,23 @@ from pathlib import Path
 # ── 回复后处理：去重括号动作、修正语气分裂 ──
 _PARREN_ACTION = re.compile(r'[(（][^)）]*[)）]')
 
+def _pretty_call_args(args_str: str) -> str:
+    """工具调用提示参数美化（v2.3.75）：JSON/dict 形态转 k=v 短格式
+
+    旧行为把 LLM 输出的 args 原文拼进提示（如 {'player': '我', 'mode': 'daily'}），
+    裸 dict 直接进群很乱；转成 player=我, mode=daily。
+    """
+    import json as _json
+    _a = (args_str or "").strip()
+    if _a.startswith("{"):
+        try:
+            data = _json.loads(_a)
+            if isinstance(data, dict):
+                return ", ".join(f"{k}={v}" for k, v in data.items())
+        except Exception:
+            pass
+    return _a
+
 def _clean_reply(text: str) -> str:
     """修复语气分裂：连续多个括号动作描述只保留第一个"""
     # 找末尾连续括号动作
@@ -1235,7 +1252,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if executed_calls and not _interleaved:
         call_hints = []
         for name, args_str in executed_calls:
-            _a = (args_str or "").strip()
+            _a = _pretty_call_args(args_str)
             # args 为空时不留尾空格（原来会拼出 "[工具调用: reward ]"）
             call_hints.append(f"[工具调用: {name}{' ' + _a if _a else ''}]")
         sentences.append("\n".join(call_hints))
@@ -1264,7 +1281,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.info("JSON CALL(交错): %s (by=%s)", cmd_text, fc["caller_name"])
         # ★ v2.3.47: 工具调用提示与指令执行**同时**发出（原来统一堆在末尾，
         #   和指令输出脱节——用户 2026-09-18 12:35 明确要求同步）
-        _a = (fc["args"] or "").strip()
+        _a = _pretty_call_args(fc.get("args"))
         await send_by_chat_type(
             f"[工具调用: {fc['name']}{' ' + _a if _a else ''}]",
             chat_id, is_group=is_group,
