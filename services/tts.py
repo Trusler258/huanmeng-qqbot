@@ -1,14 +1,16 @@
 """
-Qwen3-TTS 节点管理 — 接收第二台电脑主动连接,提供单条合成接口
-- 节点(第二台电脑)主动连服务器 58891,保持长连接
-- 支持并发请求(节点串行合成,但 instruct 生成可并发)
-- 30s 心跳检测连接活性
+SenseAudio TTS 云端合成 — 替代原 Qwen3-TTS GPU 节点(v2.3.71)
+- POST https://api.senseaudio.cn/v1/t2a_v2, Bearer 鉴权
+- 坑1: HTTP 永远 200, 真实错误在 base_resp.status_code/status_msg
+- 坑2: data.audio 是十六进制编码不是 base64, binascii.unhexlify 解码
+- 坑3: get_voice 列出的音色 != 账号可用音色(实测 34 列出仅 4 可用, 其余全 403)
+- 保留 synthesize_voice/cleanup_wav 接口不变, voice.py 调用点无需大改
+- v2.3.73: 全局参数 speed=1.15/pitch=2(用户实测定档); instruct 参数移除(情绪走 voice_id 变体)
 """
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
+import binascii
 import os
 import uuid
 from pathlib import Path
@@ -17,162 +19,112 @@ from core.logger import get_logger
 
 logger = get_logger("tts")
 
-_NODE_PORT = int(os.environ.get("TTS_PORT", "58891"))
-_NODE_AUTH = os.environ.get("TTS_AUTH", "")
+_SA_URL = "https://api.senseaudio.cn/v1/t2a_v2"
+_SA_MODEL = "sensenova-tts-2.0"
 _WAV_DIR = Path(__file__).resolve().parent.parent / "data" / "tts_temp"
 
-_node_writer: asyncio.StreamWriter | None = None
-_node_lock = asyncio.Lock()
-_pending: dict[str, asyncio.Future] = {}
-_write_lock = asyncio.Lock()
+# 账号实测可用音色(2026-10-01): Free 普通 4 个 + 已购 羞涩甜妹(3 情绪变体)
+VOICE_IDS = {
+    "羞涩甜妹": "female_0023_a",      # 平稳
+    "羞涩甜妹开心": "female_0023_b",  # 开心
+    "羞涩甜妹傲娇": "female_0023_c",  # 傲娇
+    "沙哑青年": "male_0018_a",
+    "儒雅道长": "male_0004_a",
+    "萌娃A": "child_0001_a",
+    "萌娃B": "child_0001_b",
+}
+
+# 旧 GPU 节点音色名 -> 云端最接近音色(向后兼容, 女声优先映射羞涩甜妹)
+_LEGACY_MAP = {
+    "Vivian": "羞涩甜妹", "Serena": "羞涩甜妹", "Ono_Anna": "羞涩甜妹",
+    "Sohee": "羞涩甜妹", "Uncle_Fu": "儒雅道长",
+    "Dylan": "儒雅道长", "Eric": "沙哑青年", "Ryan": "沙哑青年",
+    "Aiden": "沙哑青年",
+}
 
 
-async def _handle_node(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    global _node_writer
-    peer = writer.get_extra_info("peername")
+def _resolve_voice_id(speaker: str) -> str:
+    name = _LEGACY_MAP.get(speaker, speaker)
+    return VOICE_IDS.get(name, VOICE_IDS["羞涩甜妹"])
 
-    try:
-        line = await asyncio.wait_for(reader.readline(), timeout=5)
-        if not line:
-            writer.close(); return
-        auth = line.decode().strip()
-        if _NODE_AUTH and (not auth.startswith("AUTH ") or auth[5:] != _NODE_AUTH):
-            logger.warning("TTS 节点 AUTH 失败: %s", peer)
-            writer.close(); return
-        writer.write(b"OK\n")
-        await writer.drain()
-    except Exception:
-        writer.close(); return
 
-    async with _node_lock:
-        if _node_writer is not None:
-            try:
-                _node_writer.close()
-            except Exception:
-                pass
-        _node_writer = writer
-
-    logger.info("TTS 节点已连接: %s", peer)
-
-    async def _heartbeat():
-        while True:
-            await asyncio.sleep(30)
-            try:
-                async with _write_lock:
-                    writer.write(b'{"ping":1}\n')
-                    await writer.drain()
-            except Exception:
-                return
-
-    hb_task = asyncio.create_task(_heartbeat())
-
-    try:
-        while True:
-            try:
-                # 合成期间不超时,给 5 分钟兜底
-                line = await asyncio.wait_for(reader.readline(), timeout=300)
-            except asyncio.TimeoutError:
-                logger.warning("TTS 节点 5 分钟无数据,断开重连")
-                break
-            if not line:
-                break
-            try:
-                resp = json.loads(line.decode().strip())
-            except json.JSONDecodeError:
-                continue
-
-            if resp.get("pong"):
-                continue
-
-            req_id = resp.get("id", "")
-            future = _pending.pop(req_id, None)
-            if future is None:
-                logger.warning("TTS 收到未知响应: id=%s", req_id)
-                continue
-
-            if resp.get("ok"):
-                future.set_result(resp)
-            else:
-                future.set_exception(Exception(resp.get("error", "未知错误")))
-    except Exception as e:
-        logger.warning("TTS 节点连接异常: %s", e)
-    finally:
-        hb_task.cancel()
-        async with _node_lock:
-            if _node_writer is writer:
-                _node_writer = None
-        for req_id, fut in list(_pending.items()):
-            if not fut.done():
-                fut.set_exception(Exception("TTS 节点断开"))
-        _pending.clear()
-        try:
-            writer.close()
-        except Exception:
-            pass
-        logger.info("TTS 节点断开: %s", peer)
+def _get_api_key() -> str:
+    return os.environ.get("SENSEAUDIO_API_KEY", "")
 
 
 async def synthesize_voice(
     text: str,
-    speaker: str = "Serena",
-    instruct: str = "",
-    timeout: float = 120.0,
+    speaker: str = "羞涩甜妹",
+    timeout: float = 30.0,
 ) -> tuple[Path | None, str]:
-    """调用 TTS 节点合成语音(支持并发请求,节点串行合成)"""
+    """调用 SenseAudio 云端 API 合成语音(无状态, 并发安全)
+
+    语音模式两层正交: 情绪在 voice_id(官方调参版), speed/pitch 为全局叠加参数。
+    全局参数为用户实测定档: speed=1.15, pitch=2(2026-10-01)。
+    """
     if not text.strip():
         return None, "文本为空"
 
-    async with _node_lock:
-        writer = _node_writer
+    api_key = _get_api_key()
+    if not api_key:
+        return None, "SENSEAUDIO_API_KEY 未配置(放 config/.env)"
 
-    if writer is None:
-        return None, "TTS 节点未连接(第二台电脑未启动?)"
-
-    req_id = uuid.uuid4().hex[:12]
-    future: asyncio.Future = asyncio.get_running_loop().create_future()
-    _pending[req_id] = future
-
-    req = json.dumps({
-        "id": req_id,
+    voice_id = _resolve_voice_id(speaker)
+    payload = {
+        "model": _SA_MODEL,
         "text": text,
-        "speaker": speaker,
-        "instruct": instruct,
-    }, ensure_ascii=False) + "\n"
+        "stream": False,
+        "voice_setting": {"voice_id": voice_id, "speed": 1.15, "vol": 1, "pitch": 2},
+        "audio_setting": {
+            "format": "mp3", "sample_rate": 32000,
+            "bitrate": 128000, "channel": 1,
+        },
+    }
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                _SA_URL,
+                json=payload,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    except Exception as e:
+        return None, f"请求失败: {e}"
+
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}"
 
     try:
-        async with _write_lock:
-            writer.write(req.encode("utf-8"))
-            await writer.drain()
+        data = resp.json()
     except Exception as e:
-        _pending.pop(req_id, None)
-        return None, f"发送失败: {e}"
+        return None, f"响应解析失败: {e}"
 
-    try:
-        resp = await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
-        _pending.pop(req_id, None)
-        return None, f"合成超时 ({timeout}s)"
-    except Exception as e:
-        _pending.pop(req_id, None)
-        return None, str(e)
+    # 坑1: HTTP 永远 200, 真实错误在 base_resp
+    base = data.get("base_resp", {})
+    code = base.get("status_code", -1)
+    if code != 0:
+        return None, f"SenseAudio 错误 {code}: {base.get('status_msg', '未知')}"
 
-    wav_b64 = resp.get("wav_b64", "")
-    duration = resp.get("duration", 0)
-    if not wav_b64:
+    audio_hex = data.get("data", {}).get("audio", "")
+    if not audio_hex:
         return None, "返回数据为空"
 
     try:
-        wav_bytes = base64.b64decode(wav_b64)
+        # 坑2: 十六进制编码, 不是 base64
+        mp3_bytes = binascii.unhexlify(audio_hex)
     except Exception as e:
-        return None, f"wav 解码失败: {e}"
+        return None, f"音频解码失败: {e}"
 
     _WAV_DIR.mkdir(parents=True, exist_ok=True)
-    wav_path = _WAV_DIR / f"voice_{uuid.uuid4().hex[:8]}.wav"
-    wav_path.write_bytes(wav_bytes)
+    mp3_path = _WAV_DIR / f"voice_{uuid.uuid4().hex[:8]}.mp3"
+    mp3_path.write_bytes(mp3_bytes)
 
-    logger.info("TTS 合成成功: %s (%.1fs 音频, %dKB)",
-                wav_path.name, duration, len(wav_bytes) // 1024)
-    return wav_path, ""
+    ei = data.get("extra_info", {})
+    logger.info("TTS 合成成功: %s (%s 字符, %dKB, 音色=%s)",
+                mp3_path.name, ei.get("usage_characters", "?"),
+                len(mp3_bytes) // 1024, voice_id)
+    return mp3_path, ""
 
 
 async def cleanup_wav(wav_path: Path, delay: float = 30):
@@ -182,13 +134,3 @@ async def cleanup_wav(wav_path: Path, delay: float = 30):
             wav_path.unlink()
     except Exception:
         pass
-
-
-def is_node_connected() -> bool:
-    return _node_writer is not None
-
-
-async def start_tts_server(port: int = _NODE_PORT):
-    server = await asyncio.start_server(_handle_node, "0.0.0.0", port, limit=4_194_304)
-    logger.info("TTS 节点接收端: 0.0.0.0:%d (等待第二台电脑连接...)", port)
-    return server

@@ -1985,6 +1985,13 @@ async def generate_multi_reply_with_tools(
         ]
         raw = await call_llm(reply_model, wrap_msgs, max_tokens=2000, temperature=0.4)
         if raw:
+            # ★ v2.3.74: wrap 路径 JSON 裸奔守卫（2026-10-02 09:29 真实事故：
+            #   wrap LLM 带习惯输出了 {"replies":[...],"fav":0}。 整帧（含尾缀句号），
+            #   旧代码直接把整段 JSON 当纯文本塞进 replies[0] 发进群——根本没先试解析。
+            #   修法：先走 _parse_reply（健壮，能吃围栏/尾缀杂字符/截断），解析出句子才发。
+            _wrapped = _parse_reply(raw, speaker_name, quiet=True)
+            if _wrapped[0]:
+                return _wrapped
             return _parse_reply(
                 json.dumps({"replies": [raw.strip()], "fav": 0, "calls": [], "face": None, "mood": "好奇", "action": "", "at": None, "mode": None, "origin": "user", "actor": {}}, ensure_ascii=False),
                 speaker_name,
@@ -2084,7 +2091,10 @@ def _parse_reply(
         end = raw.rfind("}")
         if start >= 0 and end > start:
             raw = raw[start:end + 1]
-        raw = re.sub(r'//[^\n]*', '', raw)
+        # ★ v2.3.74: 注释剥离只认行首 // —— 旧正则 r'//[^\n]*' 会把 JSON 字符串里的
+        #   URL（https://...）当注释从 // 处整行截断，带链接的回复 JSON 直接残废
+        #   （2026-10-02 modrinth 链接事故现场复现）。
+        raw = re.sub(r'(?m)^\s*//[^\n]*', '', raw)
         data = json.loads(raw)
         data = _normalize_reply_json(data)
         replies = data.get("replies", [])
@@ -2393,8 +2403,8 @@ async def generate_multi_reply(
         end = raw.rfind("}")
         if start >= 0 and end > start:
             raw = raw[start:end + 1]
-        # 3. 去掉行尾 // 注释
-        raw = re.sub(r'//[^\n]*', '', raw)
+        # 3. 去掉行首 // 注释（★ v2.3.74: 旧正则会吃掉 JSON 里 https:// URL，见 _parse_reply 同修）
+        raw = re.sub(r'(?m)^\s*//[^\n]*', '', raw)
         data = json.loads(raw)
         # ── schema 校验 + 自动补缺 ──
         data = _normalize_reply_json(data)

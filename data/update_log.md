@@ -11,6 +11,151 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.74 — 群里裸 JSON 泄漏修复 + Minecraft 错误诊断 skill + 文本文件直接读取 (2026.10.2)
+一句话总结：修掉群里两次裸 JSON 裸奔（`{"replies":[...]}。` 整帧发进群）与解析器把
+URL 当注释剥掉的深层 bug；新增 MC 错误诊断 skill（引用 .log/crash-report 完整三件套）
+与文本文件直接读取（log/txt/py/cpp/sh 等直接发/引用都能分析）；顺带修掉"直发错误报告
+从未被分析过"的老坑（结果变量被后续初始化冲掉）。
+
+### 1. JSON 泄漏双 bug（`services/llm.py`）
+- **wrap 路径裸奔**：`data_results` wrap LLM 是纯文本模式，但模型带习惯输出了
+  replies JSON 帧（含尾缀句号），旧代码直接把整段 JSON 当文本塞进 `replies[0]` 发进群
+  （2026-10-02 09:29 modrinth 链接事件两连发）。修法：wrap 后先走 `_parse_reply`
+  （能吃围栏/尾缀杂字符/截断修复），解析出句子才发
+- **解析器吃 URL**：`re.sub(r'//[^\n]*')` 把 JSON 字符串里的 `https://...` 当注释从
+  `//` 处整行截断，带链接的回复 JSON 直接残废（`_parse_reply` 与 2404 行另一处同款）。
+  修法：注释剥离只认行首 `//`（`(?m)^\s*//`），URL 完整保留
+
+### 2. MC 错误诊断 skill（`data/skills/35_mc_error.md`，新增）
+- 热匹配关键词（报错/崩溃/mod/fabric/latest.log 等）命中即整章注入
+- 分析流程：先分类（网络下载/模组冲突/Java内存/游戏崩溃）→ 完整诊断三件套
+  （logs/latest.log + crash-reports/crash-*.txt + hs_err_pid*）→ 片段不够时主动引导
+  补全文 → 方案按代价排序 → 结论先行
+
+### 3. 文本文件直接读取（`modules/error_report.py` + `core/dispatcher.py` + `core/pipeline.py`）
+- 新增扩展名白名单（txt/log/md/json/xml/yaml/toml/ini/cfg/csv/py/cpp/c/h/hpp/cs/java/
+  js/ts/html/css/sql/sh/bat/cmd/ps1/lua/rs/go/php/rb/gradle/kts/properties/mcmeta），
+  二进制（png/pdf/exe）一律不读
+- 直发文件与引用文件两条路径都接入：错误报告 zip 走原 MC 分析，其他文本文件
+  走新的通用分析提示词（`build_text_file_prompt`：先判类型→报错定位/代码讲解→结论先行）
+- pipeline 新增 `error_report_kind` 参数（mc/text），选对应提示词；上下文隔离照旧
+- **老坑修复**：直发文件的错误报告处理结果被引用消息段的 `error_report_content = None`
+  初始化冲掉——直发错误报告从未被分析过；初始化挪到文件分支之前
+
+## v2.3.73 — /~voice 情绪映射音色变体（instruct 链路删除，官方调参版优先）(2026.10.1)
+一句话总结：每句的 LLM 语气指令（instruct）链路整体删除——云端 API 不消费该字段，原来
+每句多花一次 cheap_model 调用纯浪费；情绪直接映射音色变体（开心→b、撒娇/傲娇→c、其余→a），
+官方情绪调参版优先于参数模拟；全局参数 speed=1.15/pitch=2 用户实测定档。
+
+- **两层正交设计**：情绪烧在 voice_id（官方分别训练的变体，同参数下情绪不同），
+  speed/pitch 为合成时叠加的全局参数，互不干扰
+- `services/tts.py`：voice_setting 固定 speed=1.15/pitch=2；synthesize_voice 移除 instruct 参数
+- `modules/voice.py`：
+  - `_generate_instruct` 删除，`_mood_to_speaker()` 情绪映射（开心/高兴/兴奋/愉快/欢喜→
+    羞涩甜妹开心，撒娇/傲娇→羞涩甜妹傲娇，失落/生气/委屈等无变体回落平稳）
+  - `/~voice <音色> <文本>` 显式指定音色则固定不随情绪切；不带音色则按句情绪自动切
+  - 语音模式提示词：删"尖细活泼"语气指令与 instructs 字段规则，新增 LaTeX 公式朗读规则
+    （官方文档：公式朗读需以 LaTeX 格式输入，如 $E=mc^2$）
+- 效果：每句省 1-2s 延迟 + 一次 LLM 调用；情绪表现更准（官方变体 > 降调模拟）
+
+## v2.3.72 — /~voice 默认音色切女声 羞涩甜妹（已购，3 情绪变体）(2026.10.1)
+一句话总结：羞涩甜妹 female_0023 已开通（挑选音色服务），实测 3 个情绪变体全部可用
+（a平稳/b开心/c傲娇），默认音色从沙哑青年切到羞涩甜妹；旧女声英文名（Serena/Vivian 等）
+映射到羞涩甜妹，男声映射不变。
+
+- `services/tts.py`：VOICE_IDS 加 3 个情绪变体（羞涩甜妹/羞涩甜妹开心/羞涩甜妹傲娇），
+  默认 speaker → 羞涩甜妹，未知音色回落羞涩甜妹
+- `modules/voice.py`：DEFAULT_SPEAKER=羞涩甜妹，SPEAKERS 7 个（3 情绪 + 男声 2 + 萌娃 2）
+- 套餐权限实测结论（官方音色目录）：Free 版仅普通音色 4 个；女声全在 SVIP 档（Pro ¥199/月起）；
+  羞涩甜妹不在任何套餐内，走"挑选音色服务"按音色单独购买，24h 内开通
+
+## v2.3.71 — /~voice 语音合成切换 SenseAudio 云端 API（完全替换 GPU 节点）(2026.10.1)
+一句话总结：`services/tts.py` 从第二台电脑 Qwen3-TTS TCP 节点(58891)整体切换为
+SenseAudio 云端合成 API，不再依赖第二台电脑在线；音色 9 个英文音色 → 4 个实测可用
+云端音色（沙哑青年/儒雅道长/萌娃A/B），旧音色名自动映射兼容。
+
+### 1. 合成后端 `services/tts.py`（重写）
+- 接口：`POST https://api.senseaudio.cn/v1/t2a_v2`，Bearer 鉴权，model=sensenova-tts-2.0
+- **坑1：HTTP 永远 200**，真实错误在 `base_resp.status_code/status_msg`（判这个，不能只看 HTTP 码）
+- **坑2：`data.audio` 是十六进制编码不是 base64**，`binascii.unhexlify` 解码
+- **坑3：`get_voice` 列出 34 个 system 音色，账号实际只有 4 个可用**，其余全 403
+  `no access to the specified voice`（免费档限制）
+- 实测延迟：25 字句子 ~1.5s（本地 GPU 节点串行合成通常更慢且需第二台电脑在线）
+- 计费按合成字符（`extra_info.usage_characters`）；输出 mp3（32kHz/128kbps/单声道）
+- API key：`SENSEAUDIO_API_KEY`（config/.env），缺失时报错提示不合成
+- 移除节点管理（`start_tts_server`/`is_node_connected`/TCP 长连接/心跳），保留
+  `synthesize_voice(text, speaker, instruct, timeout)` 与 `cleanup_wav` 接口不变
+
+### 2. 音色映射与指令入口 `modules/voice.py`
+- `SPEAKERS` → `["沙哑青年", "儒雅道长", "萌娃A", "萌娃B"]`，默认音色 Serena → 沙哑青年
+- 旧音色名向后兼容：Vivian/Serena/Eric/Ryan/Aiden/Ono_Anna/Sohee → 沙哑青年，
+  Uncle_Fu/Dylan → 儒雅道长；未知音色回落沙哑青年
+- 移除"节点未连接"检查（云端 API 无状态，第二台电脑不在线不再是故障点）
+- instruct 生成流程保留（云端 API 不消费该字段，LLM 语气指令暂不生效）
+
+### 3. 启动项 `bot.py`
+- `_bg_tts_server`（58891 节点接收端）不再启动（方法体保留），端口 58891 释放
+
+
+## v2.3.70 — 路由器影子判断实验上线（judge vs 规则双跑记录，零改动零影响）(2026.9.30)
+一句话总结：给判断管道加一个**影子记录器**——每条走到 judge 的群消息，额外用本地规则 gate
+再判一遍，两边结果写进 `data/router_shadow.jsonl`，**只记录不生效**，跑一周对比一致率与
+分歧样本，为路由器（ERNIE Nano 本地分类）积累标注原料；同时抽数脚本从 msglog 产出
+6238 条候选（Phase 0）。
+
+### 1. 背景：路由器 A/B 实验（与外部 AI 对齐的方案）
+本地决策模型全线实测不可用后（laya 50% / NLI 11-34s / qwen3-0.6B 50%+6s），定下
+ERNIE 3.0-Nano-zh 路由方案（HF 链路 + 三头 cheap/interest/tool + silver 三层标注）。
+开工第一步不是装模型，是**数据**：双跑实验 + msglog 抽候选。
+
+### 2. 影子记录器 `services/router_shadow.py`
+- **铁律：绝不影响性能**——零 LLM 调用、纯本地正则（微秒级）、文件写入走线程池、
+  fire-and-forget `create_task` 不占 per-group 串行队列；失败只 warning 绝不抛出
+- **生产行为零改动**：`modules/judge.py::should_respond` 只把"决策重构成 decision 变量"
+  （行为逐分支等值）+ 追加一条影子记录调用，判断管道本身一行没动
+- 样本群 = 走到 `call_judgment_pipeline` 的群消息（@bot/@他人/私聊/快速拒绝不经过，
+  正好是最有价值的模糊地带）
+- 线二规则 = 镜像现有规则链：@bot → 记忆指令 → 快速拒绝（过短/bot三连发/纯数字）→
+  熔断兜底规则（点名 bot → 回；提问正则 → 回；其余不回）
+- 每行记录：ts / group_id / sender / msg / meta（has_bot_name、msg_len、has_question、
+  has_url、has_cq_image）/ context_tail 最近 6 条 / judge（cheap+interest）/ rule
+  （cheap+interest+verdict+reason）/ production_reply / **path**
+  —— ⚠️ `path=circuit_fallback` 的行**剔除不算**：熔断期线一也是规则，没可比性
+- 20MB 轮转（`router_shadow.jsonl.1`）
+- **验证法**：一周后统计两线 cheap 一致率、按 rule.reason 分组的分歧分布；
+  一致率高 → 规则 gate 接管明显场景；分歧样本 = silver/uncertain 标注原料
+
+### 3. Phase 0 抽数 `scripts/extract_candidates.py`（只读，msglog 不动）
+- 从 `data/msglog/msglog_<群号>.jsonl` 抽带前后文的候选 → `data/router_candidates.jsonl`
+- 清洗规则（对齐三轮对话）：系统消息/recalled 删；CQ 码 → 语义 token
+  （at bot→`[AT_BOT]`、at 别人→`[AT_USER]`、图→`[IMAGE]`、回复→`[REPLY]`、
+  表情→`[FACE]`，参数全丢）；URL → `[URL:域名]`；指令消息不当 CURRENT、
+  CONTEXT 留 `[LOCAL_COMMAND]`；context 最近 8 条带说话人标记（bot 消息标 `[BOT]`）
+- 每条保留 message_id/group_id/timestamp + `label_source=unlabeled`（标签可按来源整体撤销）
+- 实测：读入 7520 条 → **6238 候选**（891 条带 `[BOT]` 上下文）；不足 1 万条的部分
+  由影子实验持续补充（每条 judged 消息可后续入库）
+- ⚠️ 新坑：`bot_config.toml` 的键是中文 **`bot的qq号 = xxx`**——正则 `qq\s*=` 匹配不上
+  （"号"字隔开），要用 `qq号\s*=\s*(\d{5,12})`；admin_qq 是注释行不能误匹配
+
+### 4. 其他
+- 备份：服务器 `modules/judge.py.bak_20260930`
+- 实验跑一周（10-07）看结果；DeepSeek 已充值 ¥14.55，线一 judge 正常工作
+
+
+### 4. 日志全文 + msglog 归档（用户拍板：'全保存,啥都不要限制'）
+用户翻数据源时想起日志的事，拍板两件都做：
+1. **控制台日志行去截断**（`core/dispatcher.py:391`）：`msg_content[:30]` → 全文
+   （换行拍平保行结构）。以前 📩 行只有 30 字壳子，"不能提供有用信息的日志还有啥用"——
+   现在日志行是第二份数据源，排障也能看全文
+2. **msglog 7 天清理改归档**（`modules/recall.py::flush_buffer`）：未撤回 >7 天的消息
+   不再删除，追加进 `data/msglog_archive/msglog_<群号>.jsonl`（**数据池永久累积**，
+   归档失败则原样保留宁不清理）；**已撤回 >14 天仍删除**（撤回=用户想删，留太久有隐私
+   风险，且撤回内容本不进样本）。归档在重启/退出时的 flush_buffer 触发，
+   下次重启（约 10-07 后）会把 9-24 的消息归进去
+- ⚠️ 归档文件与现窗口同名（`msglog_<群号>.jsonl`），抽数时用 `--src data/msglog_archive`
+  再跑一遍合并即可（按 group_id+message_id 去重）
+- 备份：`dispatcher.py.bak_20261001` / `recall.py.bak_20261001`
+
 ## v2.3.69 — 戳一戳去公式化 + 记忆双写入库（面板可按会话分块管理）(2026.9.30)
 一句话总结：两件事。① 用户反馈戳一戳回复"公式化尴尬"，实测定位到**病根是喂给模型的上下文太多**
 （每条都要把上文话题再复述一遍，复述率 100%/88%），改成只喂最近 2 条 + 规则零例句后降到 50%/0%。

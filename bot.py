@@ -147,7 +147,8 @@ class HuanmengBot:
         # _asyncio.ensure_future(self._bg_wdsj_collector())
         _asyncio.ensure_future(self._bg_pc_status_server())
         _asyncio.ensure_future(self._bg_phone_status_server())
-        _asyncio.ensure_future(self._bg_tts_server())
+        # v2.3.71: TTS 已切 SenseAudio 云端合成, GPU 节点接收端(58891)移除
+        # _asyncio.ensure_future(self._bg_tts_server())
         # _asyncio.ensure_future(self._bg_holiday())  # v2.0.4t: 已由 bg_tasks 插件负责
         info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890+手机状态:58892")
 

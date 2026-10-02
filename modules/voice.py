@@ -1,10 +1,12 @@
 """
-语音回复 /~voice <对话> — 调用主 LLM 管道 → 并发生成 per-sentence instruct → 串行 TTS 合成 → 顺序发语音
-- 基础音色 Serena(温柔清澈女声)
-- 每句独立 instruct(LLM 根据该句文本+情绪生成)
-- instruct 并发生成(1 次 LLM 延迟),GPU 合成串行(避免显存冲突)
+语音回复 /~voice <对话> — 调用主 LLM 管道 → 情绪映射音色变体 → 串行 TTS 合成 → 顺序发语音
+- v2.3.71: 合成后端切 SenseAudio 云端 API(https://api.senseaudio.cn), 不再依赖第二台电脑 GPU 节点
+- v2.3.72: 默认音色切女声 羞涩甜妹 female_0023(已购, 3 情绪变体: 平稳/开心/傲娇)
+- v2.3.73: instruct 链路删除(云端不消费, 纯浪费一次 LLM 调用/句) — 情绪直接映射
+  voice_id 变体(官方调参版), 全局参数 speed=1.15/pitch=2 用户实测定档
+- 两层正交: 情绪在 voice_id(官方层), speed/pitch 为全局叠加参数, 互不干扰
+- 可用音色: 羞涩甜妹×3 / 沙哑青年 / 儒雅道长 / 萌娃A/B
 - 私聊自动注入自定义人格
-- 模型常驻第二台电脑(P106-100),通过 TCP 调用
 """
 
 import asyncio
@@ -19,41 +21,24 @@ from core.logger import get_logger
 
 logger = get_logger("voice")
 
-DEFAULT_SPEAKER = "Serena"
-SPEAKERS = ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric",
-            "Ryan", "Aiden", "Ono_Anna", "Sohee"]
+DEFAULT_SPEAKER = "羞涩甜妹"
+SPEAKERS = ["羞涩甜妹", "羞涩甜妹开心", "羞涩甜妹傲娇", "沙哑青年", "儒雅道长", "萌娃A", "萌娃B"]
+
+# 情绪 -> 音色变体(官方调参版: 开心/傲娇有独立 voice_id, 其余用平稳变体)
+_MOOD_SPEAKER = {
+    "开心": "羞涩甜妹开心", "高兴": "羞涩甜妹开心", "兴奋": "羞涩甜妹开心",
+    "愉快": "羞涩甜妹开心", "欢喜": "羞涩甜妹开心",
+    "撒娇": "羞涩甜妹傲娇", "傲娇": "羞涩甜妹傲娇",
+}
 
 
-async def _generate_instruct(text: str, mood: str) -> str:
-    """调 cheap_model 生成单句 instruct(尖细活泼 + 情绪微调)"""
-    cfg = _get_cfg()
-    model = cfg.cheap_model or cfg.judge_model or cfg.reply_model
-    if not model or not model.name:
-        return "用尖细活泼的语气,语速快一点"
-
-    prompt = (
-        "根据文本内容生成一句 TTS 语气指令，必须包含语速/音调/情绪三要素，15-25字完整句。\n"
-        '正确: "用尖细上扬的语调快速读出，带点开心的味道"\n'
-        '错误: "平稳轻"、"轻快些"（太短无效）\n'
-        f"文本: {text[:100]}\n情绪: {mood}\n\n指令:"
-    )
-
-    messages = [{"role": "user", "content": prompt}]
-    try:
-        from services.llm import call_llm
-        result = await call_llm(
-            model_cfg=model,
-            messages=messages,
-            max_tokens=80,
-            temperature=0.5,
-            timeout=10.0,
-        )
-        result = result.strip().strip('"').strip("'").strip()
-        if result and len(result) >= 10:
-            return result
-        return ""
-    except Exception:
-        return "用尖细活泼的语气,语速快一点"
+def _mood_to_speaker(mood: str) -> str:
+    """句子情绪 -> 羞涩甜妹情绪变体(失落/生气等无变体, 回落平稳)"""
+    m = (mood or "").strip()
+    for key, spk in _MOOD_SPEAKER.items():
+        if key in m:
+            return spk
+    return DEFAULT_SPEAKER
 
 
 def _inject_persona(system_prompt: str, user_id: int, is_group: bool) -> str:
@@ -93,15 +78,11 @@ def _inject_voice_mode(system_prompt: str) -> str:
     voice_hint = (
         "\n\n【语音模式】"
         "当前回复将被转换为语音播放，请遵守以下规则：\n"
-        "1. 声音要尖细活泼，语速偏快\n"
-        "2. 禁用括号动作描写（如(摇了摇尾巴)）\n"
-        "3. 禁用颜文字符号（如~♬✨QAQ）\n"
-        "4. 不要在傍晚说\"还没睡\"\"熬夜\"——18:00-22:00 只是晚上，不是深夜\n"
-        "5. 只输出适合朗读的纯文本，简短自然\n"
-        "6. 在 JSON 中加入 instructs 字段，每句一个完整的语气描述句（15-30字）\n"
-        "   instructs 与 replies 一一对应，必须写完整不能缩写\n"
-        '   正确: "用开心上扬的语调快速读出，带点撒娇的味道"\n'
-        '   错误: "平稳轻"、"快"、"轻快"（太短无效）'
+        "1. 禁用括号动作描写（如(摇了摇尾巴)）\n"
+        "2. 禁用颜文字符号（如~♬✨QAQ）\n"
+        "3. 不要在傍晚说\"还没睡\"\"熬夜\"——18:00-22:00 只是晚上，不是深夜\n"
+        "4. 只输出适合朗读的纯文本，简短自然\n"
+        "5. 需要读公式时用 LaTeX 格式输出（如 $E=mc^2$），语音合成支持口语化朗读公式"
     )
     return system_prompt + voice_hint
 
@@ -116,29 +97,27 @@ def _clean_text_for_tts(text: str) -> str:
 
 
 async def _synth_one(text: str, mood: str, speaker: str) -> tuple[Path | None, str]:
-    """单句: 生成 instruct + 合成"""
+    """单句合成(情绪映射在调用方完成, speaker 为最终音色名)"""
     from services.tts import synthesize_voice
-    instruct = await _generate_instruct(text, mood)
-    logger.info("voice instruct: mood=%s → %s | text=%s...", mood, instruct, text[:30])
-    wav_path, err = await synthesize_voice(text, speaker=speaker, instruct=instruct)
+    wav_path, err = await synthesize_voice(text, speaker=speaker)
     return wav_path, err
 
 
 async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """ /~voice <对话内容> — LLM 回复 → 并发 instruct + 串行合成 → 顺序发语音 """
+    """ /~voice <对话内容> — LLM 回复 → 情绪映射变体 + 串行合成 → 顺序发语音 """
     if not args:
         return ("喵?你想让我说什么?用法:\n"
-                "  /~voice <文本>         自动情绪合成语音\n"
+                "  /~voice <文本>         自动情绪合成语音(按句情绪切音色变体)\n"
                 "  /~voice list           列出可选音色\n"
-                "  /~voice <音色> <文本>  指定音色")
+                "  /~voice <音色> <文本>  指定音色(固定, 不随情绪切)")
 
     if args[0].lower() in ("list", "列表", "音色"):
         return "可选音色:\n" + "\n".join(f"  {s}" for s in SPEAKERS)
 
-    # 解析参数
-    speaker = DEFAULT_SPEAKER
+    # 解析参数(显式指定音色则固定, 否则按句情绪自动切变体)
+    explicit_speaker = None
     if args[0] in SPEAKERS and len(args) >= 2:
-        speaker = args[0]
+        explicit_speaker = args[0]
         text = " ".join(args[1:])
     else:
         text = " ".join(args)
@@ -169,7 +148,7 @@ async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     # 3. 调用主 LLM 生成回复
     from services.llm import generate_multi_reply
-    replies, _, _, _, _, mood_detail, _, _, _, _, _, llm_instructs = await generate_multi_reply(
+    replies, _, _, _, _, mood_detail, _, _, _, _, _, _ = await generate_multi_reply(
         msg_history=history,
         speaker_name=f"{role_tag} {sender_name}",
         current_msg=text,
@@ -183,10 +162,9 @@ async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_qq):
     if not replies:
         return "没有生成回复喵~"
 
-    # 4. 逐句清理 + 收集情绪 + instruct
-    cleaned: list[tuple[str, str, str]] = []  # (clean_text, mood, instruct)
+    # 4. 逐句清理 + 收集情绪
+    cleaned: list[tuple[str, str]] = []  # (clean_text, mood)
     mood_list = mood_detail if isinstance(mood_detail, list) and mood_detail else []
-    has_llm_instruct = isinstance(llm_instructs, list) and llm_instructs
     for i, r in enumerate(replies):
         r = re.sub(r'\[CQ:[^\]]+\]', '', r)
         r = re.sub(r'\[(?:FACE|CALL|EQ_CARD|IMG)[^\]]*\]', '', r)
@@ -194,41 +172,24 @@ async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not r.strip():
             continue
         m = mood_list[i] if i < len(mood_list) and mood_list[i] else "平静"
-        ins = llm_instructs[i] if has_llm_instruct and i < len(llm_instructs) else ""
-        # 判别太短（<10字）当无效，交给 fallback
-        if ins and len(str(ins)) < 10:
-            ins = ""
-        cleaned.append((r, m, ins))
+        cleaned.append((r, m))
 
     if not cleaned:
         return "生成的回复不适合转语音喵~"
 
-    # 5. 检查节点连接
-    from services.tts import synthesize_voice, cleanup_wav, is_node_connected
+    # 5. 合成(云端 API 无状态, 无需检查节点连接)
+    from services.tts import synthesize_voice, cleanup_wav
 
-    if not is_node_connected():
-        full_text = "\n".join(c[0] for c in cleaned)
-        return f"TTS 语音节点未连接（端口 58891 无设备在线）\n请确认语音合成端是否启动并已重连\n\n文字版: {full_text}"
-
-    # 6. 补全 instruct（LLM 没给的用 cheap_model 并发生成）
-    missing_idx = [i for i, (t, m, ins) in enumerate(cleaned) if not ins]
-    if missing_idx:
-        tasks = [_generate_instruct(cleaned[i][0], cleaned[i][1]) for i in missing_idx]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for idx, res in zip(missing_idx, results):
-            ins = res if isinstance(res, str) else "用尖细活泼的语气,语速快一点"
-            cleaned[idx] = (cleaned[idx][0], cleaned[idx][1], ins)
-    for t, m, ins in cleaned:
-        logger.info("voice instruct: mood=%s → %s | text=%s...", m, ins, t[:30])
-
-    # 7. 串行合成 + 顺序发送（GPU 单线程，避免显存冲突）
+    # 6. 串行合成 + 顺序发送(按句情绪切变体; 显式指定音色则固定)
     from services.sender import send_group_msg, send_private_msg
     send = send_group_msg if is_group else send_private_msg
     to = group_id if is_group else user_id
 
     wav_paths = []
-    for text, mood, instruct in cleaned:
-        wav_path, err = await synthesize_voice(text, speaker=speaker, instruct=instruct)
+    for text, mood in cleaned:
+        spk = explicit_speaker or _mood_to_speaker(mood)
+        logger.info("voice 合成: mood=%s → %s | text=%s...", mood, spk, text[:30])
+        wav_path, err = await synthesize_voice(text, speaker=spk)
         if not wav_path:
             logger.warning("voice 合成失败: %s | text=%s", err, text[:30])
             continue
@@ -236,7 +197,7 @@ async def cmd_voice(args, user_id, group_id, sender_name, is_group, bot_qq):
         await send(cq, to)
         wav_paths.append(wav_path)
 
-    # 8. 延迟清理
+    # 7. 延迟清理
     for wav_path in wav_paths:
         asyncio.create_task(cleanup_wav(wav_path, delay=30))
 

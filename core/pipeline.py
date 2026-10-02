@@ -372,7 +372,7 @@ def extract_inline_face(text: str) -> tuple:
 
 async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
                           raw_event=None, raw_message="", quoted_msg="", error_report=None,
-                          **extra_kwargs):
+                          error_report_kind="mc", **extra_kwargs):
     """消息处理主管道。
     **extra_kwargs 用于前向兼容：避免未来 dispatcher/enqueue 新增参数时
     process_message 签名不匹配直接抛出 TypeError 导致全量消息静默（P0 事故）。
@@ -711,14 +711,22 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if extra_info:
         logger.info("额外信息: 记忆=%d字 搜索=%d字", len(related_memories), 0)
 
-    # ------错误报告处理------
+    # ------错误报告/文本文件处理------
     if error_report:
-        logger.info("🔧 检测到错误报告，临时隔离上下文...")
-        from modules.error_report import build_error_report_prompt
-        full_msg = build_error_report_prompt(sender_name=sender_name, log_content=error_report, original_msg=msg_content)
+        logger.info("🔧 检测到文件内容(类型=%s)，临时隔离上下文...", error_report_kind)
+        from modules.error_report import build_error_report_prompt, build_text_file_prompt
+        if error_report_kind == "text":
+            # v2.3.74: 通用文本文件（log/txt/py/cpp/sh 等），来源文件名已在内容首行
+            _src_line = error_report.split("\n", 1)[0]
+            _fname = _src_line.replace("[来源文件:", "").rstrip("]").strip() if _src_line.startswith("[来源文件:") else "文件"
+            _body = error_report.split("\n", 1)[1] if "\n" in error_report else error_report
+            full_msg = build_text_file_prompt(sender_name=sender_name, filename=_fname, content=_body, original_msg=msg_content)
+            ctx.append_to_context(chat_id, f"[文件分析] {sender_name} 上传了文本文件，请求分析")
+        else:
+            full_msg = build_error_report_prompt(sender_name=sender_name, log_content=error_report, original_msg=msg_content)
+            ctx.append_to_context(chat_id, f"[错误报告] {sender_name} 上传了 Minecraft 错误报告，请求分析")
         msg_history_for_llm = []
         extra_info_for_llm = ""
-        ctx.append_to_context(chat_id, f"[错误报告] {sender_name} 上传了 Minecraft 错误报告，请求分析")
         logger.info("🔧 上下文已隔离（旧上下文保留，LLM 调用暂不使用）")
     else:
         msg_history_for_llm = ctx.get_context(chat_id)
