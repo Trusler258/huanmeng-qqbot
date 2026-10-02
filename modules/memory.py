@@ -300,7 +300,7 @@ def extract_keywords(text: str) -> set[str]:
     return base
 
 
-def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = 5) -> str:
+def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, max_cnt: int = 3) -> str:
     all_memories = load_memories(chat_id)
     if not all_memories:
         return ""
@@ -313,7 +313,10 @@ def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, m
     for mem in all_memories:
         mem_keywords = extract_keywords(mem)
         score = len(keywords & mem_keywords) if keywords else 0
-        if score > 0:
+        # ★ v2.3.76: 门槛 0 → 2。2-gram 匹配下单个字组重合是纯噪声
+        #   （用户实测："昨天说的话今天还反复被提起"——单 gram 就把旧记忆捞进来，
+        #   LLM 又拿它翻旧账/炫记性）
+        if score >= 2:
             scored.append((score, mem))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -322,6 +325,8 @@ def get_top_memories(current_msg: str, context_lines: list[str], chat_id: int, m
         return ""
 
     result = format_lang("memory.recall_header") + "\n" + "\n".join(top)
+    # ★ v2.3.76: 注入侧加抽象提醒（旧记忆捞进来后 LLM 会主动翻旧账/炫记性）
+    result += "\n（这些只在用户问起或与当前话题强相关时才主动提起，别主动翻旧账）"
     if len(result) > 800:
         result = result[:800] + "\n..."  # 截断上限从 400 提升到 800
     return result
