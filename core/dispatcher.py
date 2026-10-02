@@ -388,9 +388,9 @@ class EventDispatcher:
             record_incoming_message(user_id, user_id, message_id, msg_type, msg_content, image_url)
 
         logger.info(
-            "📩 消息 #%d | type=%s | from=%s(%d) | chat=%d | group=%s | content='%s...'",
+            "📩 消息 #%d | type=%s | from=%s(%d) | chat=%d | group=%s | content='%s'",
             self._msg_count, msg_type, sender_name, user_id, chat_id, is_group,
-            msg_content[:30].replace("\n", " "),
+            msg_content.replace("\n", " "),  # v2.3.70: 全文不截断（换行拍平保行结构）
         )
 
         # ── 昵称解析：事件自带 card(分群正确) 优先，缺失时用映射补全 ──
@@ -426,6 +426,10 @@ class EventDispatcher:
             msg_type = "文字"  # 转为文字进入管道
 
         # ── 图片处理 ──
+        # ★ 错误报告/文本文件内容初始化（必须在文件分支之前：
+        #   旧代码在引用消息段才初始化并置 None，把直发文件分支的处理结果冲掉 → 直发错误报告从未被分析过）
+        error_report_content = None
+        error_report_kind = "mc"
         if msg_type == "图片":
             # ★ v2.0.4aa: raw_message 是 CQ 码形态 [CQ:at,qq=xxx]，原 @QQ 正则匹配不到；
             #   补 CQ 匹配修复"@bot 发图识别"静默失效
@@ -468,7 +472,22 @@ class EventDispatcher:
                 logger.info("检测到直接发送的错误报告文件: %s", filename)
                 from modules.error_report import process_error_report
                 error_report_content = await process_error_report(file_url, filename, sender_name)
+                error_report_kind = "mc"
                 msg_content = "[文件]"
+            elif file_url.startswith("http"):
+                # ★ v2.3.74: 文本文件直接读取（log/txt/py/cpp/sh 等白名单内可读）
+                from modules.error_report import is_text_file, process_text_file
+                if is_text_file(filename):
+                    logger.info("检测到直接发送的文本文件: %s", filename)
+                    content = await process_text_file(file_url, filename)
+                    if content:
+                        error_report_content = f"[来源文件: {filename}]\n{content}"
+                        error_report_kind = "text"
+                if not error_report_content:
+                    msg_content = "[文件]"
+                    logger.debug("文件消息: 已替换为占位符")
+                else:
+                    msg_content = "[文件]"
             else:
                 msg_content = "[文件]"
                 logger.debug("文件消息: 已替换为占位符")
@@ -485,8 +504,8 @@ class EventDispatcher:
 
         # ── 引用消息提取（reply）──
         quoted_text = ""
-        error_report_content = None  # ★ 错误报告内容
-        
+        # ★ v2.3.74: 这里不再置 None——初始化已挪到文件分支之前，
+        #   旧行为会把直发文件分支的处理结果冲掉（直发错误报告从未被分析过）
         if reply_id:
             logger.info("📎 检测到引用消息 (message_id=%s)，正在获取原文...", reply_id)
             quoted_text = await self._fetch_quoted_msg(reply_id)
@@ -505,19 +524,32 @@ class EventDispatcher:
                 
                 if file_info:
                     logger.info("📎 引用消息包含文件: %s", file_info["filename"])
-                    
-                    # 处理错误报告
-                    from modules.error_report import process_error_report
-                    error_report_content = await process_error_report(
-                        file_url=file_info["url"],
-                        filename=file_info["filename"],
-                        sender_name=sender_name,
+
+                    # 处理错误报告（zip）或文本文件（v2.3.74）
+                    from modules.error_report import (
+                        process_error_report, is_text_file, process_text_file,
                     )
-                    
+                    if "错误报告" in file_info["filename"]:
+                        error_report_content = await process_error_report(
+                            file_url=file_info["url"],
+                            filename=file_info["filename"],
+                            sender_name=sender_name,
+                        )
+                        error_report_kind = "mc"
+                    elif is_text_file(file_info["filename"]):
+                        content = await process_text_file(
+                            file_info["url"], file_info["filename"],
+                        )
+                        if content:
+                            error_report_content = (
+                                f"[来源文件: {file_info['filename']}]\n{content}"
+                            )
+                            error_report_kind = "text"
+
                     if error_report_content:
-                        logger.info("✅ 错误报告处理成功，%d 字符", len(error_report_content))
+                        logger.info("✅ 文件内容处理成功，%d 字符", len(error_report_content))
                     else:
-                        logger.warning("❌ 错误报告处理失败或文件名不包含关键词")
+                        logger.warning("❌ 文件内容处理失败或文件类型不支持")
                 
                 # ★ 检测引用消息中的图片（战绩截图等）
                 if not error_report_content:
@@ -566,7 +598,8 @@ class EventDispatcher:
             raw_event=event,
             raw_message=raw_message,
             quoted_msg=quoted_text,   # ★ 引用消息原文
-            error_report=error_report_content,  # ★ 错误报告内容
+            error_report=error_report_content,  # ★ 错误报告/文本文件内容
+            error_report_kind=error_report_kind,  # ★ v2.3.74 mc=错误报告zip / text=通用文本
             is_command=is_command,    # ★ v2.0.4r 指令插队标记
             _detached=_detached,      # ★ v2.3.64 重命令旁路并发标记
         )
