@@ -49,6 +49,16 @@ URL 当注释剥掉的深层 bug；新增 MC 错误诊断 skill（引用 .log/cr
 - `process_text_file` 按扩展名分流：文档走库解析（`_extract_document_text`，12000 字截断），
   其余纯文本读取；文件名照常注入提示词
 
+### 5. wdsj 工具调用修正 + 参数美化（同日追加）
+- **player='我' 幻觉根因**：工具描述写着「player='我'表示查发言人自己」，但 `execute_tool`
+  的 wdsj 分支**根本不理会 player 参数**（强制 `_resolve_player` 用绑定名）——LLM 被误导
+  传代词当玩家名
+- **daily 模式错位**：mode=daily 实际是**全群日报排行**（无需绑定），旧逻辑却先查绑定，
+  把没绑定的用户挡在日榜外。修正：daily 直接出全群日报卡；bw/sw 才查绑定
+- 工具描述重写：说明 player 参数无效不用传、daily 无需绑定、意图不明确先问一句
+- **参数美化**：`[工具调用: xxx]` 提示的 args 从裸 dict（`{'player': '我', ...}`）转成
+  `player=我, mode=daily`（pipeline.py `_pretty_call_args`，两条提示路径都接入）
+
 ## v2.3.73 — /~voice 情绪映射音色变体（instruct 链路删除，官方调参版优先）(2026.10.1)
 一句话总结：每句的 LLM 语气指令（instruct）链路整体删除——云端 API 不消费该字段，原来
 每句多花一次 cheap_model 调用纯浪费；情绪直接映射音色变体（开心→b、撒娇/傲娇→c、其余→a），

@@ -55,12 +55,12 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "wdsj",
-            "description": "生成战绩图片卡片。用户说'查战绩/看战绩/我的日报'时调用，返回图片。player='我'表示查发言人自己。",
+            "description": "生成战绩图片卡片。mode=bw/sw 是个人战绩（自动查发言人的绑定账号，player 参数无效不用传）；mode=daily 是全群日报（无需绑定）。用户意图不明确（查个人还是看全群日报）时先问一句再调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "player": {"type": "string", "description": "玩家游戏名，'我'表示查发言人自己"},
-                    "mode": {"type": "string", "enum": ["bw", "sw", "daily"], "description": "bw=起床战争, sw=空岛战争, daily=今日日报"},
+                    "player": {"type": "string", "description": "玩家游戏名（当前版本工具忽略此参数，一律用发言人绑定名）"},
+                    "mode": {"type": "string", "enum": ["bw", "sw", "daily"], "description": "bw=起床战争(个人), sw=空岛战争(个人), daily=全群日报"},
                 },
             },
         },
@@ -990,11 +990,19 @@ async def execute_tool(
     if tool_name == "weather":
         args = [arguments.get("city", "")]
     elif tool_name == "wdsj":
-        # WDSJ 发图：强制用绑定名
+        mode = arguments.get("mode", "bw")
+        if mode == "daily":
+            # ★ v2.3.75: daily 是全群日报，无需绑定（旧逻辑先查绑定，把没绑定的用户挡在日榜外）
+            from modules.commands import COMMAND_MAP as _CM
+            _h = _CM.get("wdsj")
+            if _h:
+                await _h(["daily", "img"], user_id, group_id, sender_name, is_group, bot_qq)
+                return "今日日报图片已生成 (全群)"
+            return "wdsj 指令未注册"
+        # bw/sw 个人战绩：强制用绑定名（player 参数无效，见工具描述）
         player = await _resolve_player(user_id, "wdsj")
         if not player:
             return "你还未绑定起床战绩账号。"
-        mode = arguments.get("mode", "bw")
         from modules.commands import COMMAND_MAP
         handler = COMMAND_MAP.get("wdsj")
         if handler:
