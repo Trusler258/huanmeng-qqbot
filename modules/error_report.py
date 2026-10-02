@@ -270,30 +270,114 @@ _TEXT_EXTS = (
 
 
 def is_text_file(filename: str) -> bool:
-    """按扩展名判断是否可读的文本文件（URL 编码自动解码，大小写不敏感）"""
+    """按扩展名判断是否可读的文本文件（URL 编码自动解码，大小写不敏感）
+
+    v2.3.75: Office/PDF 文档也算"可读"（走库解析，见 _extract_document_text）。
+    """
     from urllib.parse import unquote
     decoded = unquote(filename or "").lower().strip()
-    return any(decoded.endswith(ext) for ext in _TEXT_EXTS)
+    return any(decoded.endswith(e) for e in _TEXT_EXTS) or is_document_file(filename)
+
+
+# Office/PDF 文档扩展名（v2.3.75）：库 2026-10-02 已装服务器（python-docx/openpyxl/python-pptx/pypdf）
+# 注意旧格式 .doc/.xls/.ppt 二进制不支持，只有 OOXML 新格式
+_DOC_EXTS = (".docx", ".xlsx", ".xlsm", ".pptx", ".pdf")
+
+
+def is_document_file(filename: str) -> bool:
+    """按扩展名判断是否 Office/PDF 文档（URL 编码自动解码）"""
+    from urllib.parse import unquote
+    d = unquote(filename or "").lower().strip()
+    return any(d.endswith(e) for e in _DOC_EXTS)
+
+
+def _extract_document_text(path: str, filename: str, max_len: int = 12000) -> Optional[str]:
+    """从 Office/PDF 文档提取文本（按扩展名分流，库缺失/解析失败返回 None）"""
+    from urllib.parse import unquote
+    fname = unquote(filename or "").lower().strip()
+    parts = []
+    try:
+        if fname.endswith(".docx"):
+            import docx
+            doc = docx.Document(path)
+            for p in doc.paragraphs:
+                if p.text.strip():
+                    parts.append(p.text)
+            for t in doc.tables:
+                for row in t.rows:
+                    cells = [c.text.strip() for c in row.cells]
+                    if any(cells):
+                        parts.append(" | ".join(cells))
+        elif fname.endswith((".xlsx", ".xlsm")):
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            for ws in wb.worksheets:
+                parts.append(f"=== Sheet: {ws.title} ===")
+                for row in ws.iter_rows(values_only=True):
+                    vals = [str(v) for v in row if v is not None]
+                    if vals:
+                        parts.append(" | ".join(vals))
+            wb.close()
+        elif fname.endswith(".pptx"):
+            from pptx import Presentation
+            prs = Presentation(path)
+            for i, slide in enumerate(prs.slides, 1):
+                texts = []
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        t = shape.text_frame.text.strip()
+                        if t:
+                            texts.append(t)
+                if texts:
+                    parts.append(f"=== Slide {i} ===")
+                    parts.extend(texts)
+        elif fname.endswith(".pdf"):
+            import pypdf
+            reader = pypdf.PdfReader(path)
+            for i, page in enumerate(reader.pages, 1):
+                t = (page.extract_text() or "").strip()
+                if t:
+                    parts.append(f"=== Page {i} ===")
+                    parts.append(t)
+        else:
+            return None
+    except ImportError as e:
+        logger.warning("文档库缺失(%s): %s", fname, e)
+        return None
+    except Exception as e:
+        logger.warning("文档解析失败(%s): %s", fname, e)
+        return None
+    text = "\n".join(parts).strip()
+    if not text:
+        return None
+    if len(text) > max_len:
+        text = text[:max_len] + f"\n\n[已截断，原{len(text)}字符]"
+    return text
 
 
 async def process_text_file(file_url: str, filename: str, max_len: int = 12000) -> Optional[str]:
-    """下载并读取一个文本文件，返回内容（失败/不可读返回 None）
+    """下载并读取一个文本/文档文件，返回内容（失败/不可读返回 None）
 
     与 process_error_report 的区别：不要求"错误报告"关键词、不解压，
-    直接读单文件文本，供通用分析（日志/代码/配置等）。
+    直接读单文件，供通用分析（日志/代码/配置/Office 文档等）。
+    v2.3.75: Office/PDF（docx/xlsx/xlsm/pptx/pdf）走库解析，其余纯文本读取。
     """
-    if not is_text_file(filename):
+    if not (is_text_file(filename)):
         return None
-    logger.info("检测到文本文件: %s (url=%s...)", filename, file_url[:60])
+    logger.info("检测到可读文件: %s (url=%s...)", filename, file_url[:60])
     with tempfile.TemporaryDirectory() as tmp_dir:
-        fpath = os.path.join(tmp_dir, "input_" + os.path.basename(filename))
+        safe_name = os.path.basename(filename) or "input.bin"
+        fpath = os.path.join(tmp_dir, "input_" + safe_name)
         if not await download_file(file_url, fpath):
             return None
-        content = _read_text(fpath, max_len=max_len)
+        if is_document_file(filename):
+            content = _extract_document_text(fpath, filename, max_len=max_len)
+        else:
+            content = _read_text(fpath, max_len=max_len)
         if not content or not content.strip():
-            logger.warning("文本文件内容为空: %s", filename)
+            logger.warning("文件内容为空或提取失败: %s", filename)
             return None
-        logger.info("文本文件读取成功: %s → %d 字符", filename, len(content))
+        logger.info("文件读取成功: %s → %d 字符", filename, len(content))
         return content
 
 
