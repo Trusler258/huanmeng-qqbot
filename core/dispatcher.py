@@ -22,6 +22,19 @@ from core.pipeline import process_message, handle_poke_event
 
 logger = get_logger("dispatcher")
 
+# ── 最近图片缓存（v2.3.76：图片上下文关联）──────────────────────
+# 场景：用户先发图（无@，走后台识别）再发文字 @bot 让"分析这张图片"→
+# 旧逻辑报"图片没收到"（当前消息没图）。这里按会话缓存最近识别过的图，
+# @bot 且消息提到图时自动关联（5 分钟窗口）。
+_recent_images: dict[int, list[tuple[float, str, str, str]]] = {}
+_RECENT_IMG_WINDOW = 300  # 秒
+
+
+def _record_recent_image(chat_id: int, url: str, desc: str, sender: str) -> None:
+    lst = _recent_images.setdefault(chat_id, [])
+    lst.append((time.time(), url, (desc or "")[:200], sender or ""))
+    del lst[:-3]  # 只留最近 3 张
+
 
 class EventDispatcher:
     """
@@ -492,6 +505,37 @@ class EventDispatcher:
                 msg_content = "[文件]"
                 logger.debug("文件消息: 已替换为占位符")
 
+        # ── @bot 提到图但当前消息没图 → 关联 5 分钟内最近识别过的群图（v2.3.76）──
+        # 场景：用户先发图（无@，走后台识别）再发文字 @bot 让"分析这张图片"→
+        # 旧逻辑报"图片没收到"（当前消息没图，LLM 看不到关联）
+        if (
+            not is_command
+            and msg_type == "文字"
+            and not msg_content.startswith("[图片]")
+            and re.search(r"(?<!地)图|截图", msg_content)
+            and re.search(r"分析|看看|识别|描述|啥情况|什么情况|咋|怎么样|评价|讲讲|说说|帮忙", msg_content)
+        ):
+            _img_mentioned = (not is_group) or bool(
+                re.search(rf"\[CQ:at,qq={bot_qq}[,\]]", raw_message or "")
+                or re.search(rf"@{bot_qq}(?!\d)", msg_content)
+            )
+            _recent_imgs = [
+                (ts, url, desc, snd)
+                for ts, url, desc, snd in _recent_images.get(chat_id, [])
+                if time.time() - ts <= _RECENT_IMG_WINDOW
+            ]
+            if _img_mentioned and _recent_imgs:
+                _r_ts, _r_url, _r_desc, _r_snd = _recent_imgs[-1]
+                try:
+                    from services.image_api import recognize_image
+                    _desc_full = await recognize_image(_r_url, cfg.image_model, chat_id=chat_id)
+                    if _desc_full and _desc_full.strip():
+                        _short = _desc_full[:150].replace("\n", " ")
+                        msg_content = f'{msg_content}\n[图片]:描述"{_short}"（这是群里刚发过的图）'
+                        logger.info("[chat=%d] 图片上下文关联: 近期图(%s...) → %d字注入", chat_id, _r_url[:50], len(_desc_full))
+                except Exception as e:
+                    logger.warning("图片上下文关联失败: %s", e)
+
         # ── @ 替换（指令消息跳过：保留 QQ 号给指令/插件解析，如 /~摸头 @QQ）──
         if not is_command and re.search(r"@\d{5,12}", msg_content):
             logger.debug("检测到@，开始替换用户名...")
@@ -619,6 +663,7 @@ class EventDispatcher:
                 if description and description.strip():
                     short_desc = description[:80].replace("\n", " ")
                     logger.info("[chat=%d] 图片@同步识别完成: '%s...' (%d字)", chat_id, short_desc, len(description))
+                    _record_recent_image(chat_id, image_url_or_path, description, sender_name)
                     # 注入上下文
                     from core.context_manager import get_context_mgr
                     ctx = get_context_mgr()
@@ -639,6 +684,7 @@ class EventDispatcher:
                     return
                 short_desc = description[:80].replace("\n", " ")
                 logger.info("[chat=%d] 图片后台识别完成: '%s...' (%d字)", chat_id, short_desc, len(description))
+                _record_recent_image(chat_id, image_url_or_path, description, sender_name)
                 # 注入上下文
                 # ★ v2.1.12 fix: 后台识别是异步的，完成时可能已过了几条消息。
                 #   旧代码直接 append 到末尾 → LLM 把"几分钟前的图"当成"刚刚发的"（用户实测:
