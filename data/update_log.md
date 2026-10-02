@@ -42,6 +42,13 @@ URL 当注释剥掉的深层 bug；新增 MC 错误诊断 skill（引用 .log/cr
 - **老坑修复**：直发文件的错误报告处理结果被引用消息段的 `error_report_content = None`
   初始化冲掉——直发错误报告从未被分析过；初始化挪到文件分支之前
 
+### 4. Office/PDF 文档读取（v2.3.75，同日追加）
+- 服务器装库：python-docx 1.2.0 / openpyxl 3.1.5 / python-pptx 1.0.2 / pypdf 6.19.0（纯 Python，pip3 直装）
+- 支持扩展名：.docx（段落+表格）/ .xlsx .xlsm（分 Sheet 逐行）/ .pptx（分页文本框）/ .pdf（分页提取）
+- 旧二进制格式 .doc/.xls/.ppt 不支持（OOXML 新格式 + PDF only）
+- `process_text_file` 按扩展名分流：文档走库解析（`_extract_document_text`，12000 字截断），
+  其余纯文本读取；文件名照常注入提示词
+
 ## v2.3.73 — /~voice 情绪映射音色变体（instruct 链路删除，官方调参版优先）(2026.10.1)
 一句话总结：每句的 LLM 语气指令（instruct）链路整体删除——云端 API 不消费该字段，原来
 每句多花一次 cheap_model 调用纯浪费；情绪直接映射音色变体（开心→b、撒娇/傲娇→c、其余→a），
