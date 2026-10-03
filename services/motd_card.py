@@ -453,8 +453,47 @@ def _round_panel(base, box: tuple, radius: int, fill_alpha: int = 110, border_al
     base.alpha_composite(overlay)
 
 
+def _anchors_from_seg_lines(seg_lines: list, line_h: int, max_n: int = 5) -> list[tuple]:
+    """按颜色聚合 MOTD 段的质心 → [(hex, cx, cy, weight)]（权重=字符数）。
+
+    哪个颜色的字多，光晕就打在它所在位置的底下。
+    """
+    agg: dict[str, list] = {}
+    for row in seg_lines:
+        for (c, cx, y, _text, w, _bold) in row:
+            n = len(_text.strip())
+            if not n:
+                continue
+            e = agg.setdefault(c, [0, 0.0, 0.0])
+            e[0] += n
+            e[1] += (cx + w / 2) * n
+            e[2] += (y + line_h / 2) * n
+    out = []
+    for c, (wt, sx, sy) in sorted(agg.items(), key=lambda kv: -kv[1][0]):
+        out.append((c, int(sx / wt), int(sy / wt), wt))
+        if len(out) >= max_n:
+            break
+    return out
+
+
+def _draw_orbs_at(w: int, h: int, anchors: list[tuple]) -> "Image.Image":
+    """暗底 + 光晕打在指定位置（anchors: [(hex, cx, cy, weight)]，高斯糊成光晕）。"""
+    from PIL import Image, ImageDraw, ImageFilter
+    sizes = [(660, 500, 200), (560, 460, 160), (520, 430, 140), (460, 400, 120), (420, 380, 100)]
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    for (c, cx, cy, _wt), (rw, rh, alpha) in zip(anchors, sizes):
+        r, g, b = _hex_rgb(c)
+        ld.ellipse((cx - rw // 2, cy - rh // 2, cx + rw // 2, cy + rh // 2),
+                   fill=(r, g, b, alpha))
+    layer = layer.filter(ImageFilter.GaussianBlur(110))
+    base = Image.new("RGBA", (w, h), (11, 13, 16, 255))
+    base.alpha_composite(layer)
+    return base
+
+
 def _draw_orbs(w: int, h: int, colors: list[str]):
-    """暗底 + 鲜艳色球（高斯模糊）+ 暗角。colors 为空时用默认配色。"""
+    """暗底 + 默认角落色球（无 MOTD 颜色锚点时的回退）。"""
     from PIL import Image, ImageDraw, ImageFilter
     spots = [
         (660, 500, int(w * 0.86), int(h * 0.02), 200),
@@ -559,8 +598,31 @@ def render_card_png(status: dict, host: str, port: int, out_png: Path) -> Path:
     foot_y = tiles_y + tiles_h + GAP + 6
     H = foot_y + 30 + 20
 
-    # ---- 底图：色球（跟随 MOTD 颜色）----
-    img = _draw_orbs(W, H, motd_color_weights(status.get("description")))
+    # ---- MOTD 段位置预算（光晕画在同位置底下）----
+    tx0 = M + hero_pad + icon_sz + 24
+    ty0 = hero_y + hero_pad
+    motd_box = (tx0, ty0 + name_h + 6 + int(addr_fs * 1.5) + 16,
+                W - M - hero_pad - 8, ty0 + name_h + 6 + int(addr_fs * 1.5) + 16 + motd_box_h)
+    seg_lines = []
+    yy = motd_box[1] + (motd_box[3] - motd_box[1] - motd_lines_n * motd_line_h) // 2
+    for line in lines:
+        row = []
+        total_w = sum(_mixed_w(probe, s["text"], motd_fs) for s in line)
+        cx = motd_box[0] + max(12, (motd_box[2] - motd_box[0] - total_w) // 2)
+        for seg in line:
+            w = _mixed_w(probe, seg["text"], motd_fs)
+            row.append((str(seg.get("color") or "#FFFFFF").upper(), cx, yy, seg["text"], w,
+                        seg.get("bold", False)))
+            cx += w
+        seg_lines.append(row)
+        yy += motd_line_h
+    anchors = _anchors_from_seg_lines(seg_lines, motd_line_h)
+
+    # ---- 底图：光晕打在 MOTD 颜色的同位置底下（无颜色时回退角落色球）----
+    if anchors:
+        img = _draw_orbs_at(W, H, anchors)
+    else:
+        img = _draw_orbs(W, H, [])
 
     # ---- 玻璃面板 ----
     _round_panel(img, hero_box, radius=34)
@@ -623,21 +685,14 @@ def render_card_png(status: dict, host: str, port: int, out_png: Path) -> Path:
     # 地址
     _draw_mixed(draw, tx, ty + name_h + 6, f"{host}:{port}", addr_fs, (188, 196, 206))
 
-    # MOTD 深色内嵌盒（居中彩色文字）
-    motd_box = (tx, ty + name_h + 6 + int(addr_fs * 1.5) + 16,
-                W - M - hero_pad - 8, ty + name_h + 6 + int(addr_fs * 1.5) + 16 + motd_box_h)
+    # MOTD 深色内嵌盒（居中彩色文字，位置已在光晕阶段预算好）
     draw.rounded_rectangle(motd_box, radius=22, fill=(3, 6, 10, 158),
                            outline=(255, 255, 255, 40), width=1)
-    my = motd_box[1] + (motd_box[3] - motd_box[1] - motd_lines_n * motd_line_h) // 2
-    for line in lines:
-        if not line:
-            my += motd_line_h
+    for row in seg_lines:
+        if not row:
             continue
-        total_w = sum(_mixed_w(probe, s["text"], motd_fs) for s in line)
-        cx = motd_box[0] + max(12, (motd_box[2] - motd_box[0] - total_w) // 2)
-        for seg in line:
-            rgb = _hex_rgb(seg.get("color") or "#FFFFFF")
-            cx = _draw_mixed(draw, cx, my, seg["text"], motd_fs, rgb, bold=seg.get("bold", False))
+        for (c, cx, yy, text, w, bold) in row:
+            _draw_mixed(draw, cx, yy, text, motd_fs, _hex_rgb(c), bold=bold)
 
     # ---- 在线玩家面板 ----
     bx0, by0 = bar_box[0] + 24, bar_y + 20
