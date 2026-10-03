@@ -36,9 +36,11 @@ Chromium headless 渲染液态玻璃风状态卡（favicon/MOTD/在线人数/延
 - **obf 段改块字符**：§k 在游戏里是逐帧随机乱码，静态卡片用随机 ASCII 模拟会像漏打的
   字母（实测 wdsj.net 卡上 MC233 后出现灰色 9、总有你所爱后有 F）；改为等长块字符 ▓
 - **背景改纯色**（用户反馈蓝紫混乱渐变）：.bg 从线性渐变 + 噪点纹理层改为纯色
-  #0b0d10，噪点 .noise 层移除；**.motd-glow 模糊复制层也整个移除**（彩色文字 blur 后
-  在 MOTD 盒里糊成蓝紫混乱——那才是用户看到的"背景"）——现在无任何光晕层，
-  MOTD 就是纯深色盒 + 原色文字
+  #0b0d10，噪点 .noise 层移除
+- **MOTD 变小根因**：删 motd-glow CSS 时留了孤儿片段（justify-content...}}），CSS 解析
+  错误恢复吃掉了后面 .motd-line 的 font-size → MOTD 文字变小；已清掉
+- **最终形态**（用户拍板）：发光层（模糊复制层，覆盖所有字）加回，底下叠全屏纯色
+  背景（.bg #0b0d10 + .motd 盒纯色 #0a0e13，去掉半透明渐变和 backdrop-filter）
 - **渲染引擎走了两轮**：先 Chromium → PIL（example.com 曾挂 200s 无返回，PIL 快
   ~1-2s 但观感不佳），最终用户拍板**回退 Chromium HTML 渲染**，慢点没关系
 - **报错必须带完整详情**（用户规矩，已入项目记忆）：cmd_motd 失败回复带
