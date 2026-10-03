@@ -604,11 +604,10 @@ body{{
   letter-spacing:.06em;text-shadow:0 1px 3px rgba(0,0,0,.6)}}
 .motd{{position:relative;margin-top:16px;border-radius:22px;padding:15px 18px;min-height:104px;
   display:flex;flex-direction:column;justify-content:center;gap:6px;
-  background:linear-gradient(180deg,rgba(3,6,10,.62),rgba(3,6,10,.48));
-  backdrop-filter:blur(14px) saturate(140%);
-  -webkit-backdrop-filter:blur(14px) saturate(140%);
+  background:#0a0e13;
   border:1px solid rgba(255,255,255,.16);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.22),inset 0 -18px 34px rgba(0,0,0,.30);}}
+.motd-glow{{position:absolute;inset:15px 18px;display:flex;flex-direction:column;
   justify-content:center;gap:6px;filter:blur(9px);opacity:.9;pointer-events:none;}}
 .motd-line{{font-size:22px;line-height:1.45;white-space:pre;overflow:hidden;
   text-align:center;text-shadow:0 2px 7px rgba(0,0,0,.85);position:relative;}}
@@ -670,7 +669,7 @@ body{{
         </div>
       </div>
       <div class="srv-addr">{_html.escape(host)}:{port}</div>
-      <div class=motd>{motd_html}</div>
+      <div class=motd><div class=motd-glow aria-hidden=true>{motd_html}</div>{motd_html}</div>
     </div>
   </div>
   <div class="panel barbox">
