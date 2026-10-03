@@ -35,6 +35,8 @@ Chromium headless 渲染液态玻璃风状态卡（favicon/MOTD/在线人数/延
   .motd 加 position:relative
 - **obf 段改块字符**：§k 在游戏里是逐帧随机乱码，静态卡片用随机 ASCII 模拟会像漏打的
   字母（实测 wdsj.net 卡上 MC233 后出现灰色 9、总有你所爱后有 F）；改为等长块字符 ▓
+- **背景改纯色**（用户反馈蓝紫混乱渐变）：.bg 从线性渐变 + 噪点纹理层改为纯色
+  #0b0d10，噪点 .noise 层移除
 - **渲染引擎走了两轮**：先 Chromium → PIL（example.com 曾挂 200s 无返回，PIL 快
   ~1-2s 但观感不佳），最终用户拍板**回退 Chromium HTML 渲染**，慢点没关系
 - **报错必须带完整详情**（用户规矩，已入项目记忆）：cmd_motd 失败回复带

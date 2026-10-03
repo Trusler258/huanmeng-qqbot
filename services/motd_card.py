@@ -544,10 +544,7 @@ body{{
   font-family:"Monocraft","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;
   background:#0b0d10;color:#e8edf2;position:relative;
 }}
-.bg{{position:absolute;inset:0;
-  background:linear-gradient(160deg,#08150f 0%,#080d16 46%,#06070c 100%);
-  filter:saturate(120%);
-}}
+.bg{{position:absolute;inset:0;background:#0b0d10;}}
 
 .noise{{position:absolute;inset:0;opacity:.16;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='.55'/></svg>");}}
@@ -657,7 +654,7 @@ body{{
   box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 4px 14px rgba(0,0,0,.28);}}
 </style></head>
 <body>
-<div class="bg"></div><div class="noise"></div><div class="vign"></div>
+<div class="bg"></div><div class="vign"></div>
 <div class="stage">
   <div class="top">
     <div class="brand">MINECRAFT <i>SERVER STATUS</i></div>
