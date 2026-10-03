@@ -37,9 +37,9 @@ Chromium headless 渲染液态玻璃风状态卡（favicon/MOTD/在线人数/延
   ~1-2s 但观感不佳），最终用户拍板**回退 Chromium HTML 渲染**，慢点没关系
 - **报错必须带完整详情**（用户规矩，已入项目记忆）：cmd_motd 失败回复带
   `（错误类型: 详情）`，不再只说"出错了"
-- **超时最终定 75s**（外层 wait_for，必回不静默）；内层收紧（SRV 2s、ping 3s、
-  mcsrvstat 8s、favicon 8s、Chromium 35s）
-- 实测：hypixel 15.3s（19482/200000，604ms）、example.com 离线 53.5s（有回复有详情）
+- **超时最终定 30s**（用户明确，外层 wait_for 必回不静默）；内层收紧（SRV 2s、ping 3s、
+  mcsrvstat 8s、favicon 8s、Chromium 35s）——在线服 ~15s 出卡，无响应服 30s 必回超时提示
+- 实测：hypixel 15.3s（19482/200000，604ms）、example.com 离线 53.5s（30s 被掐回超时提示）
 
 ## v2.3.76 — 记忆召回降频 + 图片上下文关联（先发图再 @bot 分析不再失忆）(2026.10.2)
 一句话总结：记忆召回门槛 0 → 2（2-gram 下单字组重合算噪声，旧记忆不再天天被捞来翻旧账），
