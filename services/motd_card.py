@@ -319,6 +319,9 @@ def motd_html_lines(description) -> list[str]:
             style.append("text-decoration:" + " ".join(deco))
         if segment.get("obf"):
             style.append("opacity:.85")
+        # ★ 光晕贴字（v2.3.79）：同色 text-shadow，一个字周围几像素，不再用背景大色球
+        c = segment.get("color") or "#FFFFFF"
+        style.append(f"text-shadow:0 0 4px {c},0 0 9px {c}")
         return f'<span style="{";".join(style)}">{_html.escape(text)}</span>'
 
     segs = flatten_component(description) if not isinstance(description, str) else parse_legacy(description)
@@ -544,8 +547,7 @@ body{{
   background:#0b0d10;color:#e8edf2;position:relative;
 }}
 .bg{{position:absolute;inset:0;
-  background:
-    {bg_css};
+  background:linear-gradient(160deg,#08150f 0%,#080d16 46%,#06070c 100%);
   filter:saturate(120%);
 }}
 .noise{{position:absolute;inset:0;opacity:.16;mix-blend-mode:overlay;
