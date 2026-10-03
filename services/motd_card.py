@@ -609,9 +609,7 @@ body{{
   -webkit-backdrop-filter:blur(14px) saturate(140%);
   border:1px solid rgba(255,255,255,.16);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.22),inset 0 -18px 34px rgba(0,0,0,.30);}}
-.motd-glow{{position:absolute;inset:15px 18px;display:flex;flex-direction:column;
   justify-content:center;gap:6px;filter:blur(9px);opacity:.9;pointer-events:none;}}
-.motd-glow .motd-line{{font-size:22px;line-height:1.45;white-space:pre;text-align:center;}}
 .motd-line{{font-size:22px;line-height:1.45;white-space:pre;overflow:hidden;
   text-align:center;text-shadow:0 2px 7px rgba(0,0,0,.85);position:relative;}}
 .barhead{{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}}
@@ -672,7 +670,7 @@ body{{
         </div>
       </div>
       <div class="srv-addr">{_html.escape(host)}:{port}</div>
-      <div class=motd><div class=motd-glow aria-hidden=true>{motd_html}</div>{motd_html}</div>
+      <div class=motd>{motd_html}</div>
     </div>
   </div>
   <div class="panel barbox">
