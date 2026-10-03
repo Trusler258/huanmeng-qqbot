@@ -15,11 +15,13 @@ import base64
 import html as _html
 import json
 import mimetypes
+import random
 import re
 import shutil
 import socket
 import struct
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -784,7 +786,7 @@ async def make_card(address: str, port_arg: int | None = None) -> tuple[Path | N
             status = fetch_status(host, port, port_explicit=port_explicit)
         except Exception as exc:  # noqa: BLE001
             logger.warning("motd %s 查询失败: %s", host, exc)
-            return None, None, f"{type(exc).__name__}: {exc}"
+            return None, None, traceback.format_exc()
 
         slug = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{host}_{port}")
         # 先用 measure 模式量真实内容高度，再按实测高度重建（不靠猜）
