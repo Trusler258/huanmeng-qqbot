@@ -3954,13 +3954,17 @@ async def cmd_motd(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     from services.motd_card import make_card
     try:
-        png, status = await make_card(address, port_arg)
+        png, status, err = await asyncio.wait_for(make_card(address, port_arg), timeout=120)
+    except asyncio.TimeoutError:
+        return "查询超时了喵~（120s）服务器可能无响应，稍后再试试"
     except Exception as e:
         logger.warning("motd 卡生成异常: %s", e)
-        return "查询出错了喵~ 稍后再试试"
+        # ★ 报错必须带完整详情（用户 2026-10-03 明确），别只说"出错了"
+        return f"查询出错了喵~ {type(e).__name__}: {str(e)[:300]}"
 
     if not png:
-        return f"查询失败了喵~ {address} 可能离线或地址不对（Java 版服务器才能查）"
+        detail = f"（{err}）" if err else ""
+        return f"查询失败了喵~ {address} 可能离线或地址不对（Java 版服务器才能查）{detail}"
 
     cq = f"[CQ:image,file=file:///{png.as_posix()}]"
     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
