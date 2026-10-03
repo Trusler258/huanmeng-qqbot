@@ -544,7 +544,13 @@ body{{
   font-family:"Monocraft","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;
   background:#0b0d10;color:#e8edf2;position:relative;
 }}
-.bg{{position:absolute;inset:0;background:#0b0d10;}}
+.bg{{position:absolute;inset:0;
+  background:
+    radial-gradient(680px 540px at 14% 6%,  rgba(0,132,255,.60), transparent 62%),
+    radial-gradient(600px 500px at 88% 94%, rgba(140,84,255,.55), transparent 64%),
+    radial-gradient(520px 420px at 82% 16%, rgba(88,101,242,.42), transparent 64%),
+    radial-gradient(460px 400px at 8% 88%,  rgba(64,80,255,.40), transparent 66%),
+    linear-gradient(160deg,#0a1020 0%,#0d0a1c 50%,#08070f 100%);}}
 
 .noise{{position:absolute;inset:0;opacity:.16;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='.55'/></svg>");}}
