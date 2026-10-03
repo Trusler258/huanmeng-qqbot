@@ -34,9 +34,11 @@ Chromium headless 渲染液态玻璃风状态卡（favicon/MOTD/在线人数/延
 - **渲染引擎 Chromium → PIL**：example.com 查询曾挂 200s 无返回（Chromium 渲染 +
   离线服 ping 超时叠加超 _GROUP_MSG_TIMEOUT）。Pillow 直绘同款液态玻璃卡
   （色球高斯模糊模拟 backdrop-filter、圆角玻璃面板、Monocraft/CJK 混排、原版信号条），
-  渲染 ~1-2s 零浏览器依赖；超时收紧（ping 4s、mcsrvstat 12s、favicon 8s）
-- **报错必须带完整详情**：cmd_motd 失败回复带 `（错误类型: 详情）`，加 120s wait_for
-  超时兜底（超时也有回复，不再静默）
+  渲染 ~1-2s 零浏览器依赖
+- **报错必须带完整详情**：cmd_motd 失败回复带 `（错误类型: 详情）`
+- **超时 10 秒**（用户明确）：外层 wait_for 120→10s，内层超时同步收紧
+  （SRV 2s、ping 2s、mcsrvstat 8s、favicon 5s）——在线服 ~4-6s 出卡，
+  无响应服 10s 必回超时提示，不再干等
 
 ## v2.3.76 — 记忆召回降频 + 图片上下文关联（先发图再 @bot 分析不再失忆）(2026.10.2)
 一句话总结：记忆召回门槛 0 → 2（2-gram 下单字组重合算噪声，旧记忆不再天天被捞来翻旧账），
