@@ -319,9 +319,7 @@ def motd_html_lines(description) -> list[str]:
             style.append("text-decoration:" + " ".join(deco))
         if segment.get("obf"):
             style.append("opacity:.85")
-        # ★ 光晕贴字（v2.3.79）：同色 text-shadow，一个字周围几像素，不再用背景大色球
-        c = segment.get("color") or "#FFFFFF"
-        style.append(f"text-shadow:0 0 4px {c},0 0 9px {c}")
+
         return f'<span style="{";".join(style)}">{_html.escape(text)}</span>'
 
     segs = flatten_component(description) if not isinstance(description, str) else parse_legacy(description)
@@ -503,7 +501,39 @@ def build_html(status: dict, host: str, port: int, measure: bool = False) -> str
     motd_html = "".join(
         f'<div class="motd-line">{line or "&nbsp;"}</div>' for line in lines
     )
-    bg_css = build_bg_css(motd_anchor_colors(status.get("description")))
+    # 背景光斑层：所有的字在背景各有一个小光斑（贴字位置，玻璃后面）
+    glows = []
+    description = status.get("description")
+    _segs = flatten_component(description) if not isinstance(description, str) else parse_legacy(description)
+    _mlines: list[list[dict]] = [[]]
+    for seg in _segs:
+        parts = seg["text"].split("\n")
+        for idx, part in enumerate(parts):
+            if idx:
+                _mlines.append([])
+            if part.strip():
+                piece = dict(seg)
+                piece["text"] = part
+                _mlines[-1].append(piece)
+    for li, line in enumerate(_mlines[:2]):
+        total = sum(len(s["text"]) for s in line)
+        if not total:
+            continue
+        x0 = (186 + (CARD_W - 66)) / 2 - total * 14.0 / 2
+        gy = 214 + li * 32 + 16 - 17
+        cum = 0
+        for s in line:
+            c = str(s.get("color") or "#FFFFFF").upper()
+            if c == "#000000":
+                cum += len(s["text"])
+                continue
+            chunks = max(1, round(len(s["text"]) / 8))
+            cw = len(s["text"]) * 14.0 / chunks
+            for ci in range(chunks):
+                gx = x0 + (cum + cw * (ci + 0.5)) - 23
+                glows.append(f'<i class="glow" style="left:{gx:.0f}px;top:{gy}px;background:{c}"></i>')
+            cum += len(s["text"])
+    glows_html = "".join(glows[:60])
     icon = favicon_data_uri(status, host)
     icon_html = (
         f'<img class="favicon" src="{icon}" alt="icon">' if icon
@@ -550,6 +580,8 @@ body{{
   background:linear-gradient(160deg,#08150f 0%,#080d16 46%,#06070c 100%);
   filter:saturate(120%);
 }}
+.bg .glow{{position:absolute;width:46px;height:34px;border-radius:50%;
+  filter:blur(14px);opacity:.8;}}
 .noise{{position:absolute;inset:0;opacity:.16;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='.55'/></svg>");}}
 .vign{{position:absolute;inset:0;box-shadow:inset 0 0 210px rgba(0,0,0,.62);}}
@@ -655,7 +687,7 @@ body{{
   box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 4px 14px rgba(0,0,0,.28);}}
 </style></head>
 <body>
-<div class="bg"></div><div class="noise"></div><div class="vign"></div>
+<div class="bg">{glows_html}</div><div class="noise"></div><div class="vign"></div>
 <div class="stage">
   <div class="top">
     <div class="brand">MINECRAFT <i>SERVER STATUS</i></div>
