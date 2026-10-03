@@ -3936,6 +3936,47 @@ async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
     return f"不认识这个操作「{action}」喵~\n用法：/~key {code} ｜ /~key {code} off ｜ /~key {code} reset"
 
 
+async def cmd_motd(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~motd <服务器地址>[:端口] — Minecraft 服务器状态卡（原生协议 ping + HTML 渲染）"""
+    if not args:
+        return ("用法: /~motd <服务器地址>[:端口]\n"
+                "例: /~motd mc.hypixel.net\n"
+                "原生协议查询，出在线人数/延迟/MOTD 状态卡")
+
+    address = args[0].strip()
+    port_arg = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+    if len(address) > 100 or "/" in address or " " in address:
+        return "这地址看起来不太对喵~ 换个正常的域名试试"
+
+    from services.sender import send_group_msg, send_private_msg
+    await (send_group_msg(f"正在查询 {address} 的状态喵...", group_id) if is_group
+           else send_private_msg(f"正在查询 {address} 的状态喵...", user_id))
+
+    from services.motd_card import make_card
+    try:
+        png, status = await make_card(address, port_arg)
+    except Exception as e:
+        logger.warning("motd 卡生成异常: %s", e)
+        return "查询出错了喵~ 稍后再试试"
+
+    if not png:
+        return f"查询失败了喵~ {address} 可能离线或地址不对（Java 版服务器才能查）"
+
+    cq = f"[CQ:image,file=file:///{png.as_posix()}]"
+    await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
+
+    # 延迟清理临时图（发送端上传可能较慢，给足时间）
+    async def _clean():
+        await asyncio.sleep(120)
+        try:
+            if png.exists():
+                png.unlink()
+        except Exception:
+            pass
+    asyncio.create_task(_clean())
+    return None
+
+
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
     "ping":       cmd_ping,
@@ -4061,6 +4102,9 @@ COMMAND_MAP: dict[str, callable] = {
     # ── Steam 状态 / 价格 ──
     "steam":      cmd_steam,
     "在干嘛":     cmd_steam_doing,
+    # ── MC 服务器状态卡 ──
+    "motd":       cmd_motd,
+    "mc状态":     cmd_motd,
 }
 
 
@@ -4072,6 +4116,8 @@ COMMAND_MAP: dict[str, callable] = {
 HEAVY_COMMANDS: frozenset[str] = frozenset({
     # 战绩 / 游戏数据
     "wdsj", "steam", "在干嘛",
+    # MC 服务器状态卡（网络查询 + Chromium 渲染，数秒级）
+    "motd", "mc状态",
     # 天气 / 地震 / NASA / PGR
     "天气", "weather", "eq", "地震", "nasa", "pgr",
     # 生成类（图/视频/语音）
