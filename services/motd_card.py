@@ -87,7 +87,7 @@ def resolve_srv(host: str) -> tuple[str, int] | None:
         req = urllib.request.Request(
             f"https://dns.alidns.com/resolve?{query}",
             headers={"User-Agent": "bot-motd-card/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         for ans in data.get("Answer") or []:
             if ans.get("type") == 33:
@@ -107,8 +107,8 @@ def ping_once(host: str, port: int, handshake_host: str | None = None) -> tuple[
         + struct.pack(">H", port) + _varint(0x01)
     )
     t_conn = time.perf_counter()
-    with socket.create_connection((host, port), timeout=4) as sock:
-        sock.settimeout(4)
+    with socket.create_connection((host, port), timeout=2) as sock:
+        sock.settimeout(2)
         connect_ms = (time.perf_counter() - t_conn) * 1000.0
         t0 = time.perf_counter()
         sock.sendall(_varint(len(payload)) + payload)
@@ -149,7 +149,7 @@ def fetch_status(host: str, port: int, port_explicit: bool = False) -> dict:
         f"https://api.mcsrvstat.us/3/{host}",
         headers={"User-Agent": "bot-motd-card/1.0"},
     )
-    with urllib.request.urlopen(req, timeout=12) as resp:
+    with urllib.request.urlopen(req, timeout=8) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     data["_latency_ms"] = None
     data["_connect_ms"] = None
@@ -333,7 +333,7 @@ def favicon_image(status: dict, host: str):
     try:
         url = f"https://api.mcsrvstat.us/icon/{host}"
         req = urllib.request.Request(url, headers={"User-Agent": "bot-motd-card/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             raw = resp.read()
         return Image.open(io.BytesIO(raw)).convert("RGBA")
     except Exception as exc:  # noqa: BLE001
