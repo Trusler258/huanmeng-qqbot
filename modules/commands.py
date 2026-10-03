@@ -3954,9 +3954,9 @@ async def cmd_motd(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     from services.motd_card import make_card
     try:
-        png, status, err = await asyncio.wait_for(make_card(address, port_arg), timeout=10)
+        png, status, err = await asyncio.wait_for(make_card(address, port_arg), timeout=75)
     except asyncio.TimeoutError:
-        return "查询超时了喵~（10s）服务器可能无响应，稍后再试试"
+        return "查询超时了喵~（75s）服务器可能无响应，稍后再试试"
     except Exception as e:
         logger.warning("motd 卡生成异常: %s", e)
         # ★ 报错必须带完整详情（用户 2026-10-03 明确），别只说"出错了"
