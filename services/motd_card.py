@@ -655,6 +655,8 @@ body{{
   -webkit-backdrop-filter:blur(16px) saturate(160%);
   border:1px solid rgba(255,255,255,.26);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 4px 14px rgba(0,0,0,.28);}}
+.srv-name,.srv-addr,.online-txt,.brand,.upd,.tile-k,.tile-v,.tile-tag,.barhead .l,.barhead .r,.barhead .r em,.tile-v em,.pct,.foot,.motd-line{{
+  text-shadow:0 0 4px currentColor,0 0 9px currentColor,0 2px 7px rgba(0,0,0,.6);}}
 </style></head>
 <body>
 <div class="bg"></div><div class="vign"></div>
