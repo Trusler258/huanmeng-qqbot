@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
-"""Minecraft 服务器 MOTD 状态卡片（v2.3.77，移植自独立项目）。
+"""Minecraft 服务器 MOTD 状态卡片（v2.3.78，PIL 渲染版）。
 
 数据链路：
   1) 原生 MC Java 协议 Server List Ping（socket，零依赖）——首选，能拿到真实延迟
   2) 失败时回退 api.mcsrvstat.us v3
   3) SRV 跟随（阿里 DoH 查 _minecraft._tcp，很多服只在 SRV 端口监听）
 
-渲染：自包含 HTML（Monocraft base64 内联 + iOS 液态玻璃风）→ Chromium headless 截图 2x → 1x 导出。
+渲染：Pillow 直绘液态玻璃卡（色球高斯模糊模拟 backdrop-filter、圆角玻璃面板、
+Monocraft/CJK 混排、原版 ping 信号条）。渲染 ~1-2s，无浏览器依赖。
 """
 from __future__ import annotations
 
 import asyncio
 import base64
-import html as _html
+import io
 import json
-import mimetypes
+import random
 import re
-import shutil
 import socket
 import struct
 import time
@@ -34,36 +34,7 @@ PING_DIR = ASSETS / "ping"
 OUT = _ROOT / "data" / "img_temp"
 MONOCRAFT = ASSETS / "Monocraft.ttf"
 
-CARD_W, CARD_H = 1200, 762
-
-# Linux 服务器 + Windows 本地都能渲染
-BROWSER_CANDIDATES = [
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-    "/usr/bin/google-chrome",
-    shutil.which("chromium-browser") or "",
-    shutil.which("chromium") or "",
-    shutil.which("google-chrome") or "",
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-]
-
-
-def find_browser() -> str | None:
-    for p in BROWSER_CANDIDATES:
-        if p and os_path_exists(p):
-            return p
-    return None
-
-
-def os_path_exists(p: str) -> bool:
-    try:
-        import os
-        return os.path.exists(p)
-    except Exception:
-        return False
-
+CARD_W = 1200
 
 # --------------------------------------------------------------------------
 # 1. 原生协议 ping
@@ -110,16 +81,13 @@ def _read_exact(sock, n: int) -> bytes:
 
 
 def resolve_srv(host: str) -> tuple[str, int] | None:
-    """查 `_minecraft._tcp.<host>` SRV 记录（阿里 DoH，免依赖）。
-
-    很多服务器只在 SRV 指定端口监听，直连 25565 会漏判。
-    """
+    """查 `_minecraft._tcp.<host>` SRV 记录（阿里 DoH，免依赖）。"""
     try:
         query = urllib.parse.urlencode({"name": f"_minecraft._tcp.{host}", "type": "SRV"})
         req = urllib.request.Request(
             f"https://dns.alidns.com/resolve?{query}",
             headers={"User-Agent": "bot-motd-card/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         for ans in data.get("Answer") or []:
             if ans.get("type") == 33:
@@ -132,19 +100,15 @@ def resolve_srv(host: str) -> tuple[str, int] | None:
 
 
 def ping_once(host: str, port: int, handshake_host: str | None = None) -> tuple[dict, float, float]:
-    """返回 (status_json, 应用层往返 ms, TCP 建连 ms)。
-
-    延迟口径必须从 TCP 建连之后开始计时，否则读数偏高数百 ms。
-    handshake_host：跟随 SRV 时实际连代理节点，但握手地址仍填玩家输入的域名。
-    """
+    """返回 (status_json, 应用层往返 ms, TCP 建连 ms)。延迟口径：TCP 建连之后。"""
     addr = handshake_host or host
     payload = (
         _varint(0x00) + _varint(765) + _pack_str(addr)
         + struct.pack(">H", port) + _varint(0x01)
     )
     t_conn = time.perf_counter()
-    with socket.create_connection((host, port), timeout=10) as sock:
-        sock.settimeout(10)
+    with socket.create_connection((host, port), timeout=4) as sock:
+        sock.settimeout(4)
         connect_ms = (time.perf_counter() - t_conn) * 1000.0
         t0 = time.perf_counter()
         sock.sendall(_varint(len(payload)) + payload)
@@ -185,7 +149,7 @@ def fetch_status(host: str, port: int, port_explicit: bool = False) -> dict:
         f"https://api.mcsrvstat.us/3/{host}",
         headers={"User-Agent": "bot-motd-card/1.0"},
     )
-    with urllib.request.urlopen(req, timeout=25) as resp:
+    with urllib.request.urlopen(req, timeout=12) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     data["_latency_ms"] = None
     data["_connect_ms"] = None
@@ -263,7 +227,6 @@ def parse_legacy(text: str, state: dict | None = None) -> list[dict]:
 
 
 def flatten_component(node, inherited: dict | None = None) -> list[dict]:
-    """递归展开 JSON 组件格式（{text, color, bold, extra:[...]}）"""
     inherited = dict(inherited or DEFAULT_STATE)
     if isinstance(node, str):
         return parse_legacy(node, inherited)
@@ -298,27 +261,10 @@ def flatten_component(node, inherited: dict | None = None) -> list[dict]:
     return out
 
 
-def motd_html_lines(description) -> list[str]:
-    """MOTD → 每行 HTML（分段 span）。空行保留占位。"""
+def motd_segments(description) -> list[list[dict]]:
+    """MOTD → [[{text,color,bold,...}]] 按行分组（空行保留）。"""
     if description is None:
         return []
-
-    def render(segment: dict) -> str:
-        text = segment["text"]
-        if segment.get("obf"):
-            text = "".join(random.choice(_RAND) if c != " " else c for c in text)
-        style = [f"color:{segment['color']}"]
-        if segment.get("bold"):
-            style.append("font-weight:700")
-        if segment.get("italic"):
-            style.append("font-style:italic")
-        deco = [d for d, k in (("underline", "underline"), ("line-through", "strike")) if segment.get(k)]
-        if deco:
-            style.append("text-decoration:" + " ".join(deco))
-        if segment.get("obf"):
-            style.append("opacity:.85")
-        return f'<span style="{";".join(style)}">{_html.escape(text)}</span>'
-
     segs = flatten_component(description) if not isinstance(description, str) else parse_legacy(description)
     lines: list[list[dict]] = [[]]
     for seg in segs:
@@ -330,37 +276,34 @@ def motd_html_lines(description) -> list[str]:
                 piece = dict(seg)
                 piece["text"] = part
                 lines[-1].append(piece)
-    # 逐行剥首尾空白：老服靠塞空格手工居中，先剥再 CSS 居中最稳
     for line in lines:
         if line and not line[0]["text"].strip():
             line[0] = dict(line[0], text=line[0]["text"].lstrip())
         if line and not line[-1]["text"].strip():
             line[-1] = dict(line[-1], text=line[-1]["text"].rstrip())
-    lines = [[s for s in line if s["text"]] for line in lines]
-    return ["".join(render(s) for s in line) for line in lines]
+    return [[s for s in line if s["text"]] for line in lines]
 
 
-# --------------------------------------------------------------------------
-# 3. 资源 + HTML
-# --------------------------------------------------------------------------
-def b64_of(path: Path) -> str:
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
+def motd_color_weights(description) -> list[str]:
+    """MOTD 用到的颜色，按文本长度加权排序（去重，过滤纯黑）。"""
+    if description is None:
+        return []
+    weight: dict[str, int] = {}
+    for line in motd_segments(description):
+        for seg in line:
+            c = str(seg.get("color") or "#FFFFFF").upper()
+            n = len(seg.get("text", "").strip())
+            if n:
+                weight[c] = weight.get(c, 0) + n
+    return [c for c, _ in sorted(weight.items(), key=lambda kv: -kv[1]) if c != "#000000"]
 
 
-def favicon_data_uri(status: dict, host: str) -> str:
-    icon = status.get("favicon") or status.get("icon")
-    if isinstance(icon, str) and icon.startswith("data:image"):
-        return icon
+def _hex_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = (hex_color or "").lstrip("#")
     try:
-        url = f"https://api.mcsrvstat.us/icon/{host}"
-        req = urllib.request.Request(url, headers={"User-Agent": "bot-motd-card/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read()
-        return "data:image/png;base64," + base64.b64encode(raw).decode()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("motd favicon 获取失败: %s", exc)
-        return ""
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except Exception:
+        return 255, 255, 255
 
 
 def latency_label(ms):
@@ -377,320 +320,378 @@ def latency_label(ms):
     return "很差", "#FF5555", "1"
 
 
-def ping_icon(tier: str) -> str:
-    path = PING_DIR / f"ping_{tier}.png"
-    if path.exists():
-        return b64_of(path)
-    return ""
+def favicon_image(status: dict, host: str):
+    """服务器图标 → RGBA Image（失败返回 None）。"""
+    from PIL import Image
+    icon = status.get("favicon") or status.get("icon")
+    if isinstance(icon, str) and icon.startswith("data:image"):
+        try:
+            payload = icon.split(",", 1)[-1]
+            return Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGBA")
+        except Exception:
+            return None
+    try:
+        url = f"https://api.mcsrvstat.us/icon/{host}"
+        req = urllib.request.Request(url, headers={"User-Agent": "bot-motd-card/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read()
+        return Image.open(io.BytesIO(raw)).convert("RGBA")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("motd favicon 获取失败: %s", exc)
+        return None
 
 
-def display_name(host: str) -> str:
+# --------------------------------------------------------------------------
+# 3. PIL 渲染
+# --------------------------------------------------------------------------
+def _load_font(size: int, bold: bool = False, mono: bool = False):
+    from PIL import ImageFont
+    if mono:
+        try:
+            return ImageFont.truetype(str(MONOCRAFT), size)
+        except Exception:
+            pass
+    paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+    ]
+    for p in paths:
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+_FONTS: dict[tuple, object] = {}
+
+
+def _font(size: int, bold: bool = False, mono: bool = False):
+    key = (size, bold, mono)
+    if key not in _FONTS:
+        _FONTS[key] = _load_font(size, bold, mono)
+    return _FONTS[key]
+
+
+def _text_w(draw, text: str, font) -> int:
+    try:
+        return int(draw.textlength(text, font=font))
+    except Exception:
+        try:
+            return int(font.getlength(text))
+        except Exception:
+            return len(text) * int(getattr(font, "size", 12))
+
+
+def _has_glyph(ch: str) -> bool:
+    """Monocraft 只覆盖 ASCII 可打印区，非 ASCII 走 CJK 字体。"""
+    return 0x20 <= ord(ch) <= 0x7E
+
+
+def _split_runs(text: str) -> list[tuple[str, bool]]:
+    runs: list[tuple[str, bool]] = []
+    run, cur = "", None
+    for ch in text:
+        m = _has_glyph(ch)
+        if cur is not None and m != cur:
+            runs.append((run, cur))
+            run = ""
+        run += ch
+        cur = m
+    if run:
+        runs.append((run, cur))
+    return runs
+
+
+def _draw_mixed(draw, x: int, y: int, text: str, size: int, fill, bold: bool = False,
+                shadow: bool = True) -> int:
+    """Monocraft 画 ASCII、CJK 字体画非 ASCII（同 run 拆分混排）。返回结束 x。"""
+    f_mono = _font(size, bold, mono=True)
+    f_cjk = _font(size, bold)
+    cx = x
+    for seg_text, is_mono in _split_runs(text):
+        f = f_mono if is_mono else f_cjk
+        try:
+            w = int(draw.textlength(seg_text, font=f))
+        except Exception:
+            w = len(seg_text) * size
+        if shadow:
+            draw.text((cx + 1, y + 2), seg_text, font=f, fill=(8, 10, 14))
+        draw.text((cx, y), seg_text, font=f, fill=fill)
+        cx += w
+    return cx
+
+
+def _mixed_w(draw, text: str, size: int) -> int:
+    total = 0
+    for seg_text, is_mono in _split_runs(text):
+        f = _font(size, mono=is_mono)
+        try:
+            total += int(draw.textlength(seg_text, font=f))
+        except Exception:
+            total += len(seg_text) * size
+    return total
+
+
+def _round_panel(base, box: tuple, radius: int, fill_alpha: int = 110, border_alpha: int = 66):
+    """液态玻璃面板：抠出面板区域高斯模糊（模拟 backdrop-filter），
+    再叠半透明深色 + 白边 + 顶部镜面高光。原地修改 base。"""
+    from PIL import Image, ImageDraw, ImageFilter
+    x0, y0, x1, y1 = box
+    region = base.crop(box).filter(ImageFilter.GaussianBlur(14))
+    mask = Image.new("L", (x1 - x0, y1 - y0), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, x1 - x0 - 1, y1 - y0 - 1), radius=radius, fill=255)
+    base.paste(region, (x0, y0), mask)
+
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    od.rounded_rectangle(box, radius=radius, fill=(13, 17, 22, fill_alpha))
+    od.rounded_rectangle(box, radius=radius, outline=(255, 255, 255, border_alpha), width=1)
+    od.line((x0 + radius, y0 + 2, x1 - radius, y0 + 2), fill=(255, 255, 255, 150), width=1)
+    base.alpha_composite(overlay)
+
+
+def _draw_orbs(w: int, h: int, colors: list[str]):
+    """暗底 + 鲜艳色球（高斯模糊）+ 暗角。colors 为空时用默认配色。"""
+    from PIL import Image, ImageDraw, ImageFilter
+    spots = [
+        (660, 500, int(w * 0.86), int(h * 0.02), 200),
+        (620, 520, int(w * 0.02), int(h * 0.88), 168),
+        (560, 460, int(w * 0.42), int(h * 0.42), 128),
+        (520, 430, int(w * 0.99), int(h * 0.94), 133),
+        (420, 380, int(w * 0.18), int(h * 0.08), 87),
+    ]
+    default_palette = ["#4CFF88", "#00C6FF", "#A868FF", "#FF9642", "#FF5CBE"]
+    pool = (colors + default_palette)[: len(spots)] if colors else default_palette
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    for (rw, rh, cx, cy, alpha), c in zip(spots, pool):
+        r, g, b = _hex_rgb(c)
+        ld.ellipse((cx - rw // 2, cy - rh // 2, cx + rw // 2, cy + rh // 2),
+                   fill=(r, g, b, alpha))
+    layer = layer.filter(ImageFilter.GaussianBlur(110))
+    base = Image.new("RGBA", (w, h), (11, 13, 16, 255))
+    base.alpha_composite(layer)
+    return base
+
+
+def _seg_bar(draw, x: int, y: int, w: int, seg_h: int, pct: float, online: bool) -> int:
+    """40 段玩家占用条（在线>0 至少 1 格，离线全灰）。返回结束 y。"""
+    n = 40
+    gap = 4
+    seg_w = (w - (n - 1) * gap) // n
+    on = max(1, round(n * pct / 100)) if (online and pct > 0) else 0
+    for i in range(n):
+        sx = x + i * (seg_w + gap)
+        draw.rounded_rectangle((sx, y, sx + seg_w, y + seg_h), radius=max(2, seg_h // 2 - 1),
+                               fill=(0, 0, 0, 80), outline=(255, 255, 255, 33), width=1)
+        if i < on:
+            top = (157, 255, 157) if online else (139, 149, 161)
+            bot = (49, 201, 60) if online else (75, 85, 99)
+            for yy in range(seg_h):
+                t = yy / max(1, seg_h - 1)
+                c = tuple(int(top[k] + (bot[k] - top[k]) * t) for k in range(3)) + (255,)
+                draw.line((sx + 1, y + yy, sx + seg_w - 1, y + yy), fill=c)
+    return y + seg_h
+
+
+def _pill(draw, x: int, y: int, text: str, size: int = 11) -> int:
+    """胶囊标签，返回结束 x。"""
+    f = _font(size)
+    tw = _text_w(draw, text, f)
+    pad_x, pad_y = 14, 5
+    draw.rounded_rectangle((x, y, x + tw + pad_x * 2, y + size + pad_y * 2),
+                           radius=(size + pad_y * 2) // 2,
+                           fill=(255, 255, 255, 38), outline=(255, 255, 255, 66), width=1)
+    draw.text((x + pad_x, y + pad_y), text, font=f, fill=(235, 240, 246))
+    return x + tw + pad_x * 2
+
+
+def render_card_png(status: dict, host: str, port: int, out_png: Path) -> Path:
+    """PIL 直绘状态卡。纯 CPU ~1-2s，走线程调用。"""
+    from PIL import Image, ImageDraw
+
+    version = status.get("version")
+    version_name = version.get("name") if isinstance(version, dict) else version
+    protocol = str(version.get("protocol") if isinstance(version, dict) else (status.get("protocol") or "—"))
+    players = status.get("players") or {}
+    online_n = int(players.get("online") or 0)
+    maxp = int(players.get("max") or 0)
+    pct = (online_n / maxp * 100.0) if maxp else 0.0
+    ms = status.get("_latency_ms")
+    ms_txt = f"{ms:.0f}" if isinstance(ms, (int, float)) else "—"
+    is_online = bool(status.get("online", True))
+    lat_word, lat_hex, lat_tier = latency_label(ms) if is_online else ("离线", "#FF5555", "unknown")
+    lat_rgb = _hex_rgb(lat_hex)
+    state_txt = "ONLINE 在线" if is_online else "OFFLINE 离线"
+    state_rgb = (85, 255, 85) if is_online else (255, 85, 85)
+
+    W = CARD_W
+    M, GAP = 34, 16
+    inner_w = W - M * 2
+
+    lines = [l for l in motd_segments(status.get("description"))[:2]] or [[]]
+    motd_fs = 22
+    motd_line_h = int(motd_fs * 1.45)
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+    # ---- 布局计算（先算总高再画）----
+    hero_pad = 24
+    icon_sz = 104
+    name_fs, addr_fs = 38, 17
+    name_h = int(name_fs * 1.2)
+    motd_lines_n = max(1, len(lines))
+    motd_box_h = max(104, motd_lines_n * motd_line_h + 30)
+    hero_main_h = int(name_fs * 1.2) + 6 + int(addr_fs * 1.5) + 16 + motd_box_h
+    hero_h = max(icon_sz, hero_main_h) + hero_pad * 2
+    hero_y = 28 + 22 + GAP
+    hero_box = (M, hero_y, W - M, hero_y + hero_h)
+
+    bar_y = hero_y + hero_h + GAP
+    bar_box = (M, bar_y, W - M, bar_y + 150)
+
+    tiles_y = bar_y + 150 + GAP
+    tiles_h = 120
+    tiles_box = (M, tiles_y, W - M, tiles_y + tiles_h)
+
+    foot_y = tiles_y + tiles_h + GAP + 6
+    H = foot_y + 30 + 20
+
+    # ---- 底图：色球（跟随 MOTD 颜色）----
+    img = _draw_orbs(W, H, motd_color_weights(status.get("description")))
+
+    # ---- 玻璃面板 ----
+    _round_panel(img, hero_box, radius=34)
+    _round_panel(img, bar_box, radius=30)
+    _round_panel(img, tiles_box, radius=30)
+
+    draw = ImageDraw.Draw(img)
+
+    # ---- 品牌行 ----
+    draw.text((M, 28), "MINECRAFT SERVER STATUS", font=_font(15, mono=True), fill=(191, 245, 200))
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    _fs = _font(12)
+    draw.text((W - M - _text_w(draw, stamp, _fs), 30), stamp, font=_fs, fill=(158, 168, 178))
+
+    # ---- hero 面板内容 ----
+    hx = M + hero_pad
+    hy = hero_y + hero_pad
+    # 图标槽（玻璃圆角 + favicon）
+    slot_box = (hx, hy + (hero_h - hero_pad * 2 - icon_sz) // 2,
+                hx + icon_sz, hy + (hero_h - hero_pad * 2 - icon_sz) // 2 + icon_sz)
+    draw.rounded_rectangle(slot_box, radius=28, fill=(255, 255, 255, 30),
+                           outline=(255, 255, 255, 60), width=1)
+    icon = favicon_image(status, host)
+    if icon is not None:
+        icon = icon.resize((icon_sz - 24, icon_sz - 24), Image.LANCZOS)
+        mask = Image.new("L", icon.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, icon.size[0] - 1, icon.size[1] - 1), radius=20, fill=255)
+        img.paste(icon.convert("RGB"), (slot_box[0] + 12, slot_box[1] + 12), mask)
+    else:
+        d2 = ImageDraw.Draw(img)
+        for yy in range(0, icon_sz - 24, 16):
+            for xx in range(0, icon_sz - 24, 16):
+                c = (58, 107, 58) if (xx // 16 + yy // 16) % 2 == 0 else (44, 82, 48)
+                d2.rectangle((slot_box[0] + 12 + xx, slot_box[1] + 12 + yy,
+                              slot_box[0] + 12 + min(xx + 16, icon_sz - 24) - 1,
+                              slot_box[1] + 12 + min(yy + 16, icon_sz - 24) - 1), fill=c)
+
+    tx = slot_box[2] + 24
+    ty = hy
+    # 服务器名 + 状态胶囊
+    name = display_name_local(host)
+    _draw_mixed(draw, tx, ty, name, name_fs, (255, 255, 255), bold=True)
+    pill_w = 150
+    px1 = W - M - hero_pad - 8
+    p_y = ty + 4
+    draw.rounded_rectangle((px1 - pill_w, p_y, px1, p_y + 34), radius=17,
+                           fill=(255, 255, 255, 34), outline=(255, 255, 255, 66), width=1)
+    _draw_mixed(draw, px1 - pill_w + 16, p_y + 8, state_txt, 15, state_rgb, bold=True)
+    # ping 信号条（原版 icons.png 素材 10x8，x5 放大）
+    bars = PING_DIR / f"ping_{lat_tier}.png"
+    if bars.exists():
+        try:
+            from PIL import Image as _I
+            bimg = _I.open(bars).resize((50, 40), _I.NEAREST)
+            img.alpha_composite(bimg.convert("RGBA"), (px1 - pill_w + 16 + _mixed_w(probe, state_txt, 15) + 14,
+                                                       p_y - 2))
+        except Exception:
+            pass
+
+    # 地址
+    _draw_mixed(draw, tx, ty + name_h + 6, f"{host}:{port}", addr_fs, (188, 196, 206))
+
+    # MOTD 深色内嵌盒（居中彩色文字）
+    motd_box = (tx, ty + name_h + 6 + int(addr_fs * 1.5) + 16,
+                W - M - hero_pad - 8, ty + name_h + 6 + int(addr_fs * 1.5) + 16 + motd_box_h)
+    draw.rounded_rectangle(motd_box, radius=22, fill=(3, 6, 10, 158),
+                           outline=(255, 255, 255, 40), width=1)
+    my = motd_box[1] + (motd_box[3] - motd_box[1] - motd_lines_n * motd_line_h) // 2
+    for line in lines:
+        if not line:
+            my += motd_line_h
+            continue
+        total_w = sum(_mixed_w(probe, s["text"], motd_fs) for s in line)
+        cx = motd_box[0] + max(12, (motd_box[2] - motd_box[0] - total_w) // 2)
+        for seg in line:
+            rgb = _hex_rgb(seg.get("color") or "#FFFFFF")
+            cx = _draw_mixed(draw, cx, my, seg["text"], motd_fs, rgb, bold=seg.get("bold", False))
+
+    # ---- 在线玩家面板 ----
+    bx0, by0 = bar_box[0] + 24, bar_y + 20
+    _draw_mixed(draw, bx0, by0, "在线玩家 ONLINE PLAYERS", 13, (200, 208, 218))
+    cnt = f"{online_n:,} / {maxp:,}"
+    _draw_mixed(draw, W - M - 24 - _mixed_w(probe, cnt, 28), by0 - 8, cnt, 28, (141, 255, 146), bold=True)
+    bar_end = _seg_bar(draw, bx0, by0 + 34, inner_w - 48, 28, pct, is_online)
+    pct_txt = f"占用率 {pct:.2f}% · 延迟状态 "
+    _draw_mixed(draw, bx0, bar_end + 11, pct_txt, 12, (150, 160, 172))
+    _draw_mixed(draw, bx0 + _mixed_w(probe, pct_txt, 12), bar_end + 11, lat_word, 12, lat_rgb)
+
+    # ---- 四指标块 ----
+    _vparts = [p.strip() for p in (version_name or "").replace("Requires MC", "").split("/") if p.strip()]
+    version_short = " – ".join(_vparts) if len(_vparts) > 1 else (_vparts[0] if _vparts else "—")
+    tiles = [
+        ("服务器版本", version_short, "VERSION"),
+        ("在线玩家", f"{online_n:,} / {maxp:,}", "PLAYERS"),
+        ("网络延迟", f"{ms_txt} ms", "PING"),
+        ("协议版本", protocol or "—", "PROTOCOL"),
+    ]
+    col_w = inner_w // 4
+    for i, (k, v, tag) in enumerate(tiles):
+        cx = M + i * col_w + 20
+        if i:
+            draw.line((M + i * col_w, tiles_box[1] + 16, M + i * col_w, tiles_box[3] - 16),
+                      fill=(255, 255, 255, 36), width=1)
+        _draw_mixed(draw, cx, tiles_box[1] + 17, k, 12, (196, 204, 214))
+        vfs = 15 if len(v) > 20 else (19 if len(v) > 15 else 24)
+        _draw_mixed(draw, cx, tiles_box[1] + 40, v, vfs, (255, 255, 255), bold=True)
+        _draw_mixed(draw, cx, tiles_box[3] - 24, tag, 10, (120, 128, 138))
+
+    # ---- 页脚 ----
+    fx = _pill(draw, M, foot_y, "SRV" if status.get("_srv") else "直连")
+    fx += 12
+    _draw_mixed(draw, fx, foot_y + 5, f"{host}:{port}", 12, (188, 196, 206))
+    fx += _mixed_w(probe, f"{host}:{port}", 12) + 12
+    _draw_mixed(draw, fx, foot_y + 5, f"PING {ms_txt} ms", 12, lat_rgb)
+
+    img.convert("RGB").save(out_png, "PNG")
+    return out_png
+
+
+def display_name_local(host: str) -> str:
     labels = host.split(".")
     if len(labels) > 2 and labels[0].lower() in {"mc", "play", "srv", "game", "join", "cn"}:
         labels = labels[1:]
     return ".".join(labels).upper()
 
 
-def scale_class(text: str) -> str:
-    n = len(text)
-    if n > 20:
-        return " xs"
-    if n > 15:
-        return " sm"
-    return ""
-
-
-def build_html(status: dict, host: str, port: int, measure: bool = False) -> str:
-    version = status.get("version")
-    version_name = version.get("name") if isinstance(version, dict) else version
-    protocol = version.get("protocol") if isinstance(version, dict) else status.get("protocol")
-    players = status.get("players") or {}
-    online = int(players.get("online") or 0)
-    maxp = int(players.get("max") or 0)
-    pct = (online / maxp * 100.0) if maxp else 0.0
-    ms = status.get("_latency_ms")
-    ms_txt = f"{ms:.0f}" if isinstance(ms, (int, float)) else "—"
-    is_online = bool(status.get("online", True))
-    if is_online:
-        lat_word, lat_color, lat_tier = latency_label(ms)
-    else:
-        lat_word, lat_color, lat_tier = "离线", "#FF5555", "unknown"
-    ping_uri = ping_icon(lat_tier)
-    state_txt = "ONLINE 在线" if is_online else "OFFLINE 离线"
-    state_color = "#55FF55" if is_online else "#FF5555"
-
-    lines = motd_html_lines(status.get("description"))
-    motd_html = "".join(
-        f'<div class="motd-line">{line or "&nbsp;"}</div>' for line in lines
-    )
-    icon = favicon_data_uri(status, host)
-    icon_html = (
-        f'<img class="favicon" src="{icon}" alt="icon">' if icon
-        else '<div class="favicon favicon-fallback"></div>'
-    )
-    font_b64 = b64_of(MONOCRAFT) if MONOCRAFT.exists() else ""
-    font_css = (
-        '@font-face{font-family:"Monocraft";src:url(' + font_b64
-        + ') format("truetype");font-weight:400 700;font-display:block;}'
-    ) if font_b64 else ""
-
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    _vparts = [p.strip() for p in (version_name or "").replace("Requires MC", "").split("/") if p.strip()]
-    version_short = " – ".join(_vparts) if len(_vparts) > 1 else (_vparts[0] if _vparts else "—")
-
-    ping_img = f'<img class="pingbars" src="{ping_uri}" alt="ping {lat_tier}">' if ping_uri else ""
-    ping_img_small = f'<img class="tile-ping" src="{ping_uri}" alt="ping {lat_tier}">' if ping_uri else ""
-
-    tiles = [
-        ("服务器版本", version_short, version_short, "VERSION"),
-        ("在线玩家", f'{online:,} <em>/ {maxp:,}</em>', f"{online:,} / {maxp:,}", "PLAYERS"),
-        ("网络延迟", f'{ping_img_small}{ms_txt} <em>ms</em>', f"{ms_txt} ms", "PING"),
-        ("协议版本", _html.escape(str(protocol or "—")), str(protocol or "—"), "PROTOCOL"),
-    ]
-    tiles_html = "".join(
-        f'<div class="tile"><div class="tile-k">{k}</div>'
-        f'<div class="tile-v{scale_class(plain)}">{v}</div>'
-        f'<div class="tile-tag">{t}</div></div>'
-        for k, v, plain, t in tiles
-    )
-
-    return f"""<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<style>
-{font_css}
-*{{box-sizing:border-box;margin:0;padding:0}}
-html,body{{width:{CARD_W}px;{"height:auto" if measure else f"height:{CARD_H}px"};overflow:hidden;}}
-{"html,body{height:auto!important;overflow:visible!important}.stage{position:static!important}" if measure else ""}
-body{{
-  font-family:"Monocraft","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;
-  background:#0b0d10;color:#e8edf2;position:relative;
-}}
-.bg{{position:absolute;inset:0;
-  background:
-    radial-gradient(660px 500px at 86% 2%,  rgba(76,255,136,.78), transparent 62%),
-    radial-gradient(620px 520px at 2% 88%,  rgba(0,198,255,.66),  transparent 62%),
-    radial-gradient(560px 460px at 42% 42%, rgba(168,104,255,.50), transparent 64%),
-    radial-gradient(520px 430px at 99% 94%, rgba(255,150,66,.52),  transparent 64%),
-    radial-gradient(420px 380px at 18% 8%,  rgba(255,92,190,.34),  transparent 66%),
-    linear-gradient(160deg,#08150f 0%,#080d16 46%,#06070c 100%);
-  filter:saturate(120%);
-}}
-.noise{{position:absolute;inset:0;opacity:.16;mix-blend-mode:overlay;
-  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='.55'/></svg>");}}
-.vign{{position:absolute;inset:0;box-shadow:inset 0 0 210px rgba(0,0,0,.62);}}
-.stage{{position:absolute;inset:0;padding:28px 34px 22px;display:flex;flex-direction:column;gap:16px;}}
-.panel{{position:relative;border-radius:34px;overflow:hidden;
-  background:linear-gradient(180deg,rgba(16,22,28,.44),rgba(8,11,15,.34));
-  backdrop-filter:blur(34px) saturate(190%);
-  -webkit-backdrop-filter:blur(34px) saturate(190%);
-  border:1px solid rgba(255,255,255,.26);
-  box-shadow:
-    inset 0 1.5px 0 rgba(255,255,255,.66),
-    inset 0 -1px 0 rgba(255,255,255,.14),
-    inset 0 0 50px rgba(255,255,255,.06),
-    0 24px 52px rgba(0,0,0,.46),
-    0 2px 8px rgba(0,0,0,.32);
-}}
-.panel::before{{content:"";position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(115deg,
-    rgba(255,255,255,.32) 0%, rgba(255,255,255,.09) 24%,
-    rgba(255,255,255,0) 50%, rgba(255,255,255,.07) 100%);}}
-.panel > *{{position:relative;z-index:1}}
-.top{{display:flex;align-items:center;gap:12px;padding:0 6px;}}
-.brand{{font-size:15px;letter-spacing:.16em;color:#bff5c8;
-  text-shadow:0 1px 10px rgba(85,255,140,.5),0 1px 2px rgba(0,0,0,.6);}}
-.brand i{{font-style:normal;color:rgba(255,255,255,.42)}}
-.spacer{{flex:1}}
-.upd{{font-size:12px;color:rgba(255,255,255,.46);text-shadow:0 1px 2px rgba(0,0,0,.55)}}
-.pingbars{{width:50px;height:40px;image-rendering:pixelated;display:block;
-  filter:drop-shadow(0 2px 10px rgba(85,255,85,.30))}}
-.tile-ping{{width:30px;height:24px;image-rendering:pixelated;
-  vertical-align:-3px;margin-right:7px}}
-.hero{{display:flex;gap:24px;padding:24px;align-items:center}}
-.namerow{{display:flex;align-items:center;gap:18px}}
-.hero-side{{display:flex;align-items:center;gap:12px;margin-left:auto;flex:0 0 auto;
-  padding:6px 16px;border-radius:999px;
-  background:linear-gradient(180deg,rgba(255,255,255,.18),rgba(255,255,255,.06));
-  backdrop-filter:blur(18px) saturate(170%);
-  -webkit-backdrop-filter:blur(18px) saturate(170%);
-  border:1px solid rgba(255,255,255,.26);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 6px 18px rgba(0,0,0,.32);}}
-.online-txt{{font-size:15px;letter-spacing:.1em;white-space:nowrap;
-  text-shadow:0 1px 6px rgba(0,0,0,.5)}}
-.slot{{width:128px;height:128px;flex:0 0 128px;display:grid;place-items:center;
-  border-radius:28px;
-  background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.04));
-  border:1px solid rgba(255,255,255,.24);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.5),inset 0 -14px 30px rgba(0,0,0,.28),
-             0 10px 26px rgba(0,0,0,.34);}}
-.favicon{{width:104px;height:104px;image-rendering:pixelated;border-radius:20px;
-  filter:drop-shadow(0 4px 12px rgba(0,0,0,.45));}}
-.favicon-fallback{{background:repeating-conic-gradient(#3a6b3a 0 25%,#2c5230 0 50%) 0 0/16px 16px;}}
-.hero-main{{flex:1;min-width:0}}
-.srv-name{{font-size:38px;font-weight:700;letter-spacing:.01em;color:#fff;
-  line-height:1.12;text-shadow:0 2px 14px rgba(0,0,0,.55),0 1px 2px rgba(0,0,0,.7)}}
-.srv-addr{{margin-top:6px;font-size:17px;color:rgba(255,255,255,.62);
-  letter-spacing:.06em;text-shadow:0 1px 3px rgba(0,0,0,.6)}}
-.motd{{margin-top:16px;border-radius:22px;padding:15px 18px;min-height:104px;
-  display:flex;flex-direction:column;justify-content:center;gap:6px;
-  background:linear-gradient(180deg,rgba(3,6,10,.62),rgba(3,6,10,.48));
-  backdrop-filter:blur(14px) saturate(140%);
-  -webkit-backdrop-filter:blur(14px) saturate(140%);
-  border:1px solid rgba(255,255,255,.16);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.22),inset 0 -18px 34px rgba(0,0,0,.30);}}
-.motd-line{{font-size:22px;line-height:1.45;white-space:pre;overflow:hidden;
-  text-align:center;text-shadow:0 2px 7px rgba(0,0,0,.85)}}
-.barhead{{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}}
-.barhead .l{{font-size:13px;color:rgba(255,255,255,.68);letter-spacing:.14em;
-  text-shadow:0 1px 3px rgba(0,0,0,.6)}}
-.barhead .r{{font-size:28px;font-weight:700;color:#8dff92;
-  text-shadow:0 2px 12px rgba(85,255,85,.5),0 1px 3px rgba(0,0,0,.7)}}
-.barhead .r em{{font-style:normal;font-size:17px;color:rgba(255,255,255,.5)}}
-.seg{{display:flex;gap:4px;height:28px;padding:4px;border-radius:999px;
-  background:rgba(0,0,0,.30);border:1px solid rgba(255,255,255,.13);
-  box-shadow:inset 0 2px 6px rgba(0,0,0,.5)}}
-.seg i{{flex:1;border-radius:999px;background:rgba(255,255,255,.10);}}
-.seg i.on{{background:linear-gradient(180deg,#9dff9d,#31c93c);
-  box-shadow:0 0 12px rgba(85,255,85,.55),inset 0 1px 0 rgba(255,255,255,.65)}}
-.seg.off i.on{{background:linear-gradient(180deg,#8b95a1,#4b5563);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.3)}}
-.barbox{{padding:20px 24px}}
-.pct{{font-size:12px;color:rgba(255,255,255,.52);margin-top:11px;letter-spacing:.1em;
-  text-shadow:0 1px 3px rgba(0,0,0,.6)}}
-.tiles{{display:grid;grid-template-columns:repeat(4,1fr)}}
-.tile{{padding:17px 20px}}
-.tile + .tile{{border-left:1px solid rgba(255,255,255,.14)}}
-.tile-k{{font-size:12px;color:rgba(255,255,255,.66);letter-spacing:.1em;
-  text-shadow:0 1px 3px rgba(0,0,0,.6)}}
-.tile-v{{margin-top:9px;font-size:24px;font-weight:700;color:#fff;letter-spacing:.01em;
-  white-space:nowrap;text-shadow:0 1px 8px rgba(0,0,0,.5)}}
-.tile-v em{{font-style:normal;font-size:14px;color:rgba(255,255,255,.5)}}
-.tile-v.sm{{font-size:19px}}
-.tile-v.xs{{font-size:15px;letter-spacing:0}}
-.tile-v.sm em,.tile-v.xs em{{font-size:13px}}
-.tile-tag{{margin-top:7px;font-size:10px;color:rgba(255,255,255,.34);letter-spacing:.24em}}
-.foot{{margin-top:auto;display:flex;align-items:center;gap:12px;font-size:11.5px;
-  color:rgba(255,255,255,.56);padding:0 6px;text-shadow:0 1px 3px rgba(0,0,0,.6)}}
-.foot .dot{{width:4px;height:4px;border-radius:50%;background:rgba(255,255,255,.34)}}
-.pill{{padding:5px 14px;border-radius:999px;font-size:11px;color:rgba(255,255,255,.82);
-  background:linear-gradient(180deg,rgba(255,255,255,.20),rgba(255,255,255,.07));
-  backdrop-filter:blur(16px) saturate(160%);
-  -webkit-backdrop-filter:blur(16px) saturate(160%);
-  border:1px solid rgba(255,255,255,.26);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 4px 14px rgba(0,0,0,.28);}}
-</style></head>
-<body>
-<div class="bg"></div><div class="noise"></div><div class="vign"></div>
-<div class="stage">
-  <div class="top">
-    <div class="brand">MINECRAFT <i>SERVER STATUS</i></div>
-    <div class="spacer"></div>
-    <div class="upd">{stamp}</div>
-  </div>
-  <div class="panel hero">
-    <div class="slot">{icon_html}</div>
-    <div class="hero-main">
-      <div class="namerow">
-        <div class="srv-name">{_html.escape(display_name(host))}</div>
-        <div class="hero-side">
-          <div class="online-txt" style="color:{state_color}">{state_txt}</div>
-          {ping_img}
-        </div>
-      </div>
-      <div class="srv-addr">{_html.escape(host)}:{port}</div>
-      <div class="motd">{motd_html}</div>
-    </div>
-  </div>
-  <div class="panel barbox">
-    <div class="barhead">
-      <div class="l">在线玩家 ONLINE PLAYERS</div>
-      <div class="r">{online:,} <em>/ {maxp:,}</em></div>
-    </div>
-    <div class="seg{'' if is_online else ' off'}" id="seg"></div>
-    <div class="pct">占用率 {pct:.2f}% · 延迟状态 <span style="color:{lat_color}">{lat_word}</span></div>
-  </div>
-  <div class="panel tiles">{tiles_html}</div>
-  <div class="foot">
-    <span class="pill">{"SRV" if status.get("_srv") else "直连"}</span>
-    <span class="dot"></span>
-    <span>{_html.escape(host)}:{port}</span>
-    <span class="dot"></span>
-    <span style="color:{lat_color}">PING {ms_txt} ms</span>
-  </div>
-</div>
-<script>
-  var pct = {pct:.2f}, total = {online};
-  var seg = document.getElementById('seg'), n = 40;
-  var on = total > 0 ? Math.max(1, Math.round(n * pct / 100)) : 0;
-  for (var i = 0; i < n; i++) {{
-    var e = document.createElement('i');
-    if (i < on) e.className = 'on';
-    seg.appendChild(e);
-  }}
-  document.title = 'ready';
-  try {{ document.title = 'H' + Math.ceil(document.body.getBoundingClientRect().height); }} catch (e) {{}}
-</script>
-</body></html>"""
-
-
 # --------------------------------------------------------------------------
-# 4. 渲染（阻塞，走线程）
+# 4. 异步入口
 # --------------------------------------------------------------------------
-def _find_browser() -> str | None:
-    for p in BROWSER_CANDIDATES:
-        if p and os_path_exists(p):
-            return p
-    return None
-
-
-def _measure_height(html_path: Path) -> int | None:
-    exe = _find_browser()
-    if not exe:
-        return None
-    url = "file:///" + str(html_path).replace(chr(92), "/")
-    try:
-        import subprocess
-        proc = subprocess.run(
-            [exe, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
-             "--dump-dom", url],
-            capture_output=True, timeout=90)
-        dom = proc.stdout.decode("utf-8", "ignore")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("motd 高度测量失败: %s", exc)
-        return None
-    m = re.search(r"<title>H(\d+)</title>", dom)
-    return int(m.group(1)) if m else None
-
-
-def _render(html_path: Path, png_path: Path, w: int, h: int, scale: int = 2) -> bool:
-    exe = _find_browser()
-    if not exe:
-        logger.warning("motd 未找到 Chromium/Edge，跳过渲染")
-        return False
-    url = "file:///" + str(html_path).replace(chr(92), "/")
-    import subprocess
-    headless_tiers = [["--headless=new"], ["--headless"]]
-    for headless in headless_tiers:
-        base = [exe] + headless + ["--disable-gpu", "--hide-scrollbars",
-                "--no-first-run", "--disable-extensions", "--no-sandbox",
-                f"--force-device-scale-factor={scale}",
-                f"--window-size={w},{h}",
-                f"--screenshot={png_path}", url]
-        try:
-            proc = subprocess.run(base, capture_output=True, timeout=90)
-            if png_path.exists() and png_path.stat().st_size > 1000:
-                return True
-            logger.warning("motd 渲染无输出: %s", proc.stderr.decode("utf-8", "ignore")[-300:])
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("motd 渲染异常: %s", exc)
-    return False
-
-
-# --------------------------------------------------------------------------
-# 5. 异步入口
-# --------------------------------------------------------------------------
-async def make_card(address: str, port_arg: int | None = None) -> tuple[Path | None, dict | None]:
-    """查询 + 渲染，返回 (1x png 路径, status)；失败返回 (None, None)。"""
+async def make_card(address: str, port_arg: int | None = None) -> tuple[Path | None, dict | None, str]:
+    """查询 + 渲染，返回 (1x png 路径, status, 错误详情)；失败 png/status 为 None。"""
     address = (address or "").strip()
     port_explicit = False
     host, port = address, 25565
@@ -705,49 +706,22 @@ async def make_card(address: str, port_arg: int | None = None) -> tuple[Path | N
         port = port_arg
         port_explicit = True
     if not host:
-        return None, None
+        return None, None, "地址为空"
 
-    def _sync() -> tuple[Path | None, dict | None]:
+    def _sync() -> tuple[Path | None, dict | None, str]:
         OUT.mkdir(parents=True, exist_ok=True)
         try:
             status = fetch_status(host, port, port_explicit=port_explicit)
         except Exception as exc:  # noqa: BLE001
             logger.warning("motd %s 查询失败: %s", host, exc)
-            return None, None
-
-        slug = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{host}_{port}")
-        # 先用 measure 模式量真实内容高度，再按实测高度重建（不靠猜）
-        measure_path = OUT / f"motd_card_{slug}_measure.html"
-        measure_path.write_text(build_html(status, host, port, measure=True), encoding="utf-8")
-        measured = _measure_height(measure_path)
-        measure_path.unlink(missing_ok=True)
-        card_h = measured or CARD_H
-        html_path = OUT / f"motd_card_{slug}.html"
-        html_path.write_text(_build_html_with_h(status, host, port, card_h), encoding="utf-8")
-
-        png2x = OUT / f"mc_card_{slug}.png"
-        if not _render(html_path, png2x, CARD_W, card_h):
-            return None, None
-        png1x = OUT / f"mc_card_{slug}_1x.png"
+            return None, None, f"{type(exc).__name__}: {exc}"
         try:
-            from PIL import Image
-            with Image.open(png2x) as im:
-                w, h = im.size
-                im.resize((w // 2, h // 2), Image.LANCZOS).save(png1x, optimize=True)
+            slug = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{host}_{port}")
+            png = OUT / f"mc_card_{slug}_1x.png"
+            render_card_png(status, host, port, png)
+            return png, status, ""
         except Exception as exc:  # noqa: BLE001
-            logger.warning("motd 1x 导出失败: %s", exc)
-            return png2x, status
-        return png1x, status
+            logger.warning("motd %s 渲染失败: %s", host, exc)
+            return None, None, f"{type(exc).__name__}: {exc}"
 
     return await asyncio.to_thread(_sync)
-
-
-def _build_html_with_h(status: dict, host: str, port: int, h: int) -> str:
-    """build_html 但画布高度用实测值（模块级替换 CARD_H）。"""
-    global CARD_H
-    old = CARD_H
-    CARD_H = h
-    try:
-        return build_html(status, host, port)
-    finally:
-        CARD_H = old
