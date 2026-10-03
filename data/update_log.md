@@ -52,6 +52,7 @@ Chromium headless 渲染液态玻璃风状态卡（favicon/MOTD/在线人数/延
 - **所有文字同色光晕**（用户强调所有字都要）：一条 currentColor 规则全覆盖
   （服务器名/指标块/人数/页脚/MOTD——text-shadow 光晕自动跟随各自文字颜色）；
   MOTD 另有模糊复制层加强。⚠️ f-string 里插 CSS 规则的 {} 必须转义成 {{}}
+  → 后续用户反馈太重，全文字 currentColor 规则已撤，回到 MOTD 模糊复制层光晕 + 原有暗投影
 - 实测：hypixel 15.3s（19482/200000，604ms）、example.com 离线 53.5s（30s 被掐回超时提示）
 
 ## v2.3.76 — 记忆召回降频 + 图片上下文关联（先发图再 @bot 分析不再失忆）(2026.10.2)
