@@ -11,6 +11,23 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.77 — /~motd 服务器状态卡（原生协议 ping + 液态玻璃卡片）(2026.10.3)
+一句话总结：把独立项目的 MC 服务器状态卡移植成 `/~motd <host>[:port]` 指令——原生
+Server List Ping（socket 手写，SRV 跟随，3 次取均值）拿真实延迟，失败回退 mcsrvstat.us；
+Chromium headless 渲染液态玻璃风状态卡（favicon/MOTD/在线人数/延迟信号条/四指标块）。
+
+### 1. `services/motd_card.py`（新增，移植自 WorkBuddy 会话项目）
+- 原生协议：Handshake + Status Request 手写，延迟从 TCP 建连后计时（口径实测校准过）
+- SRV 跟随（阿里 DoH 查 `_minecraft._tcp`）——很多服只在 SRV 端口监听，直连 25565 会漏判
+- MOTD 解析：§ 颜色码 + JSON 组件数组两种格式，颜色名映射表，obfuscated 随机字符
+- 渲染：measure 模式自量高度（--dump-dom 读 scrollHeight）→ 2x 截图 → 1x 导出（~600KB）
+- 服务器适配：Chromium headless（--headless=new 失败回退 --headless，--no-sandbox），
+  资产在 `data/motd_assets/`（Monocraft.ttf + ping 信号条 6 图），阻塞全走 to_thread
+
+### 2. `/~motd` 指令（`modules/commands.py`）
+- 用法：`/~motd <host>[:端口]`，别名「mc状态」；加入 HEAVY_COMMANDS 旁路并发
+- 查询前先发回执；图片延迟 120s 清理
+
 ## v2.3.76 — 记忆召回降频 + 图片上下文关联（先发图再 @bot 分析不再失忆）(2026.10.2)
 一句话总结：记忆召回门槛 0 → 2（2-gram 下单字组重合算噪声，旧记忆不再天天被捞来翻旧账），
 注入侧加"别主动翻旧账"提醒；@bot 提到图但当前消息没图时自动关联 5 分钟内群里最近
