@@ -124,7 +124,59 @@ def _unshare_prefix() -> list[str]:
 
 def isolation_mode() -> str:
     """当前沙箱隔离模式，供自检/测试打印与断言。"""
+    if _chroot_available():
+        return "unshare(-m,-n)+chroot"
     return "unshare(-m,-n)" if _unshare_prefix() else "none"
+
+
+# ── chroot 根隔离（v2.3.81）：rm -rf /* 只砸沙箱，砸不到真实系统 ──
+#
+# 原理：unshare -m 的 mount namespace 只隔离挂载点，不隔离文件内容——
+# 沙箱里 `rm -rf /*` 会真删盘（实测沙箱内能 touch 真实 /）。
+# chroot 后进程的 / 就是沙箱目录：rm -rf /* 只删沙箱里的临时文件，
+# 真实系统靠 /usr 只读绑定保护（ro bind 砸不动）。
+
+_CHROOT_OK: bool | None = None
+
+_CHROOT_SCRIPT = (
+    'SB="$1"; shift\n'
+    'mkdir -p "$SB/usr" "$SB/dev" "$SB/proc" "$SB/work" "$SB/tmp" "$SB/etc"\n'
+    'ln -sfn usr/bin "$SB/bin"; ln -sfn usr/lib "$SB/lib"; ln -sfn usr/lib64 "$SB/lib64"\n'
+    'export PATH=/usr/sbin:/usr/bin:/sbin:/bin; CHROOT_BIN=$(command -v chroot || echo /usr/sbin/chroot)\n'
+    'mount --rbind /usr "$SB/usr" 2>/dev/null || true\n'
+    'mount -o remount,bind,ro "$SB/usr" 2>/dev/null || true\n'
+    # ⚠️ /dev 绝不能 rbind（rw 绑定会让 rm -rf /* 删掉宿主 /dev 内容，2026-10-04 实测）：
+    # mknod 只在沙箱里建设备节点，宿主 /dev 完全不接触
+    'mknod -m 666 "$SB/dev/null" c 1 3 2>/dev/null; mknod -m 666 "$SB/dev/zero" c 1 5 2>/dev/null\n'
+    'mknod -m 666 "$SB/dev/urandom" c 1 9 2>/dev/null; mknod -m 666 "$SB/dev/random" c 1 8 2>/dev/null\n'
+    'mknod -m 666 "$SB/dev/tty" c 5 0 2>/dev/null\n'
+    'mount -t proc none "$SB/proc" 2>/dev/null || true\n'
+    'if [ -x "$SB/usr/bin/python3" ] || [ -x "$SB/usr/bin/g++" ]; then\n'
+    '  "$CHROOT_BIN" "$SB" /bin/sh -c \'cd /work && exec "$@"\' sh "$@"\n'
+    'else\n'
+    '  cd "$SB/work" 2>/dev/null || true\n'
+    '  exec "$@"\n'
+    'fi\n'
+)
+
+
+def _chroot_available() -> bool:
+    """chroot 根隔离可用性：unshare 可用 + chroot 存在（root）。结果缓存。"""
+    global _CHROOT_OK
+    if _CHROOT_OK is not None:
+        return _CHROOT_OK
+    _CHROOT_OK = False
+    if not _unshare_available():
+        return _CHROOT_OK
+    if shutil.which("chroot") is None:
+        return _CHROOT_OK
+    _CHROOT_OK = True
+    return _CHROOT_OK
+
+
+def _chroot_wrap(root: Path, argv: list[str]) -> list[str]:
+    """把命令包进 chroot 沙箱：/ 是沙箱目录，/usr 只读绑定，/work 是工作区。"""
+    return ["unshare", "-m", "-n", "sh", "-c", _CHROOT_SCRIPT, "sh", str(root), *argv]
 
 
 def _kill_tree(proc) -> None:
@@ -180,13 +232,20 @@ def _safe_env(cwd: Path | None = None) -> dict[str, str]:
 
 
 async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
-                    stdin_data: str = "", max_output: int = MAX_OUTPUT) -> dict:
+                    stdin_data: str = "", max_output: int = MAX_OUTPUT,
+                    chroot_root: Path | None = None,
+                    workdir: Path | None = None) -> dict:
     """通用子进程执行：限时、限资源、清洗 env、截断输出。返回 dict。
 
-    max_output: 单路输出截断长度（默认 MAX_OUTPUT=1500）。调用方（如沙箱插件）
-    可传更大值让 LLM 看到更完整输出（"输出全丢给 LLM"），仅调整截断上限，
-    不改变"保留头尾、中间折叠"的截断策略。
+    chroot_root/workdir（v2.3.81）：给出时命令包进 chroot 沙箱——进程的 / 是
+    沙箱目录，/usr 只读绑定，/work 为工作区，`rm -rf /*` 只砸沙箱。workdir 是
+    chroot 内工作区的 host 侧路径（无 chroot 时作为 cwd 回退）。
     """
+    if chroot_root is not None and _chroot_available():
+        cmd = _chroot_wrap(chroot_root, list(cmd))
+        cwd = Path("/")
+    elif workdir is not None:
+        cwd = workdir
     kwargs: dict = {
         "cwd": str(cwd),
         "stdout": asyncio.subprocess.PIPE,
@@ -198,8 +257,10 @@ async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
     preexec = _limit_preexec(mem_mb, int(timeout) + 5)
     if preexec is not None:
         kwargs["preexec_fn"] = preexec
-    # 内核级隔离：可用则把命令塞进独立 mount/network namespace（见 _unshare_prefix）
-    cmd = _unshare_prefix() + list(cmd)
+    # 内核级隔离：chroot 路径的 wrapper 自带 unshare（见 _chroot_wrap），
+    # 不再叠加旧的 namespace 前缀（避免双重包装）
+    if chroot_root is None or not _chroot_available():
+        cmd = _unshare_prefix() + list(cmd)
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
         try:
@@ -260,12 +321,15 @@ async def run_python(code: str, timeout: float = DEFAULT_TIMEOUT,
                      stdin_data: str = "", cwd: Path | None = None,
                      max_output: int = MAX_OUTPUT) -> dict:
     """在沙箱目录执行 Python 代码，返回运行结果。"""
-    tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
-    script = tmp / "main.py"
+    root = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    script = work / "main.py"
     script.write_text(code or "", encoding="utf-8")
-    cmd = [_pick_python(), str(script)]
-    result = await _run_proc(cmd, tmp, timeout, mem_mb, stdin_data, max_output)
-    result["tmp_dir"] = str(tmp)
+    cmd = [_pick_python(), "main.py"]
+    result = await _run_proc(cmd, root, timeout, mem_mb, stdin_data, max_output,
+                             chroot_root=root, workdir=work)
+    result["tmp_dir"] = str(root)
     return result
 
 
@@ -274,24 +338,28 @@ async def compile_and_run_cpp(files: dict[str, str], timeout: float = DEFAULT_TI
                               stdin_data: str = "", cwd: Path | None = None,
                               max_output: int = MAX_OUTPUT) -> dict:
     """在沙箱目录编译并运行 C++（g++）。files: {文件名: 内容}。"""
-    tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    root = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
     for fname, content in files.items():
-        (tmp / fname).write_text(content or "", encoding="utf-8")
+        out = work / fname
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(content or "", encoding="utf-8")
     if shutil.which("g++") is None:
         return {"returncode": -1, "stdout": "",
                 "stderr": "服务器未安装 g++，无法编译 C++", "timed_out": False,
-                "tmp_dir": str(tmp)}
-    exe = tmp / "a.out"
-    srcs = [str(tmp / f) for f in files]
+                "tmp_dir": str(root)}
     comp = await _run_proc(
-        ["g++", "-std=c++14", "-O2", "-o", str(exe)] + srcs,
-        tmp, timeout, mem_mb, max_output=max_output)
+        ["g++", "-std=c++14", "-O2", "-o", "a.out"] + [f for f in files],
+        root, timeout, mem_mb, max_output=max_output,
+        chroot_root=root, workdir=work)
     if comp["returncode"] != 0:
-        comp["tmp_dir"] = str(tmp)
+        comp["tmp_dir"] = str(root)
         comp["stdout"] = "[编译失败]\n" + (comp["stderr"] or "")
         return comp
-    run = await _run_proc([str(exe)], tmp, timeout, mem_mb, stdin_data, max_output)
-    run["tmp_dir"] = str(tmp)
+    run = await _run_proc(["./a.out"], root, timeout, mem_mb, stdin_data, max_output,
+                          chroot_root=root, workdir=work)
+    run["tmp_dir"] = str(root)
     return run
 
 
@@ -300,13 +368,16 @@ async def run_shell(command: str, timeout: float = DEFAULT_TIMEOUT,
                     cwd: Path | None = None,
                     max_output: int = MAX_OUTPUT) -> dict:
     """执行 shell 命令（终端模拟，如 `cd / && ls -l`）。仅管理员/审批后调用。"""
-    tmp = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    root = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
     if os.name == "posix":
         cmd = ["bash", "-c", command]
     else:
         cmd = ["cmd", "/c", command]
-    result = await _run_proc(cmd, tmp, timeout, mem_mb, max_output=max_output)
-    result["tmp_dir"] = str(tmp)
+    result = await _run_proc(cmd, root, timeout, mem_mb, max_output=max_output,
+                             chroot_root=root, workdir=work)
+    result["tmp_dir"] = str(root)
     return result
 
 
@@ -314,6 +385,8 @@ async def run_shell(command: str, timeout: float = DEFAULT_TIMEOUT,
 
 _SKIP_NAMES = {"main.py", "main.cpp", "a.out"}
 _SKIP_EXTS = {".pyc", ".o", ".obj"}
+# chroot 脚手架顶层目录（usr 为只读绑定，不算产物）
+_SCAFFOLD_TOP = {"usr", "dev", "proc", "bin", "lib", "lib64", "etc", "tmp"}
 
 
 def collect_artifacts(tmp_dir: str | Path) -> list[Path]:
@@ -327,6 +400,9 @@ def collect_artifacts(tmp_dir: str | Path) -> list[Path]:
             continue
         rel = p.relative_to(root)
         if p.name in _SKIP_NAMES or p.suffix in _SKIP_EXTS:
+            continue
+        # chroot 脚手架目录（usr 绑定/dev/proc 等）不算产物
+        if rel.parts and rel.parts[0] in _SCAFFOLD_TOP:
             continue
         if "__pycache__" in rel.parts or rel.name.startswith("."):
             continue
