@@ -523,7 +523,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         cmd_match = _re.match(r'(/(?:~|#|(?=[a-zA-Z])))(\S[\s\S]*)', msg_content)
     if cmd_match:
         full_cmd = cmd_match.group(0)
-        logger.info("指令拦截: '%s' from=%s", full_cmd, sender_name)
+        # ★ /~run 支持多行代码（v2.3.80）：命令名是 run 时捕获整条消息（含换行，
+        #   代码保真）——旧正则在第一个换行截断，多行代码只剩第一行
+        if _re.match(r'/~\s*run\b', full_cmd):
+            full_cmd = msg_content
+        logger.info("指令拦截: '%s' from=%s", full_cmd[:80].replace("\n", " | "), sender_name)
         await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message)
         return
 
