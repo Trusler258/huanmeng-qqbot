@@ -2722,17 +2722,16 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     from services.sender import send_group_msg, send_private_msg
 
     if not args or args[0].lower() == "help":
-        # 渲染 MD 帮助卡片图片
+        # v2.3.81: 渲染新版液态玻璃帮助卡（覆盖全部子指令，替换旧 MD 渲染版）
         try:
-            md_path = str(Path(__file__).resolve().parent.parent / "data" / "wdsj_help.md")
             cfg = get_config()
-            html = api.build_help_card_html(md_path, cfg.bot_name)
+            html = api.build_wdsj_help_card_html(cfg.bot_name)
             from modules.changelog import _ensure_browser
             browser = await _ensure_browser()
-            page = await browser.new_page(viewport={"width": 520, "height": 100})
+            page = await browser.new_page(viewport={"width": 560, "height": 100})
             await page.set_content(html)
             await page.wait_for_timeout(500)
-            await page.set_viewport_size({"width": 520, "height": 100})
+            await page.set_viewport_size({"width": 560, "height": 100})
             out = str(Path(__file__).resolve().parent.parent / "data" / "img_temp" / f"wdsj_help_{int(time.time())}.png")
             await page.screenshot(path=out, full_page=True)
             await page.close()
