@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>洛花星雨 · /~wdsj 指令生成器</title>
+<style>
+:root{--red-hue:8;--blue-hue:222;--accent:#f0875c;--ink:#3a332c;--muted:#8a7f76;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased;min-height:100vh;color:var(--ink);
+  background:
+    radial-gradient(900px 460px at 10% -6%, rgba(255,183,154,.4), transparent 60%),
+    radial-gradient(900px 460px at 92% -6%, rgba(158,188,255,.42), transparent 60%),
+    linear-gradient(160deg,#fbf6f0 0%,#f4f0ec 42%,#eef1f6 100%);
+  background-attachment:fixed;}
+.wrap{max-width:760px;margin:0 auto;padding:26px 18px 60px;}
+header{display:flex;align-items:center;gap:12px;margin-bottom:18px;}
+header .logo{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;
+  background:linear-gradient(135deg,#ff9e7a,#ee5a3a);box-shadow:0 8px 18px rgba(230,90,58,.3);}
+header h1{font-size:20px;font-weight:800;letter-spacing:.02em;}
+header p{font-size:12.5px;color:var(--muted);}
+.tabs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px;}
+.tab{padding:8px 16px;border-radius:999px;cursor:pointer;font-size:13.5px;font-weight:700;
+  background:rgba(255,255,255,.6);border:1px solid rgba(255,255,255,.9);color:var(--muted);
+  box-shadow:0 4px 12px rgba(120,80,60,.06);transition:.15s;}
+.tab.on{color:#fff;background:linear-gradient(135deg,#ff9e7a,#ee5a3a);
+  border-color:transparent;box-shadow:0 6px 14px rgba(230,90,58,.28);}
+.panel{display:none;background:rgba(255,255,255,.66);backdrop-filter:blur(16px);
+  border:1px solid rgba(255,255,255,.9);border-radius:24px;padding:20px 22px;
+  box-shadow:0 14px 34px rgba(120,80,60,.08), inset 0 1px 0 rgba(255,255,255,.9);}
+.panel.on{display:block;}
+.sect{margin-bottom:16px;}
+.sect .k{font-size:12px;letter-spacing:.14em;color:var(--muted);margin-bottom:8px;}
+.opt{display:inline-block;padding:7px 14px;margin:0 6px 7px 0;border-radius:12px;cursor:pointer;
+  font-size:13px;background:rgba(255,255,255,.8);border:1px solid rgba(150,130,110,.25);
+  transition:.12s;user-select:none;}
+.opt:hover{border-color:var(--accent);}
+.opt.on{color:#fff;background:linear-gradient(135deg,#ff9e7a,#ee5a3a);
+  border-color:transparent;box-shadow:0 4px 10px rgba(230,90,58,.25);}
+input[type=text]{width:100%;padding:11px 15px;border-radius:12px;font-size:14.5px;color:var(--ink);
+  border:1px solid rgba(150,130,110,.25);background:rgba(255,255,255,.9);outline:none;}
+input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(240,135,92,.15);}
+.out{margin-top:6px;display:flex;gap:10px;align-items:stretch;}
+.out code{flex:1;padding:14px 16px;border-radius:14px;font-family:Consolas,monospace;font-size:14.5px;
+  background:rgba(58,51,44,.92);color:#ffe3b0;word-break:break-all;line-height:1.5;}
+.copy{padding:0 22px;border:none;border-radius:14px;cursor:pointer;font-size:14px;font-weight:700;color:#fff;
+  background:linear-gradient(135deg,#ff9e7a,#ee5a3a);box-shadow:0 6px 14px rgba(230,90,58,.28);}
+.copy:active{filter:brightness(.95);}
+.hint{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.7;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media(max-width:560px){.grid2{grid-template-columns:1fr}}
+.quick{display:flex;flex-wrap:wrap;gap:7px;}
+.qbtn{padding:9px 14px;border-radius:12px;cursor:pointer;font-size:13px;font-family:Consolas,monospace;
+  background:rgba(255,255,255,.85);border:1px solid rgba(150,130,110,.25);transition:.12s;}
+.qbtn:hover{border-color:var(--accent);color:var(--accent);}
+footer{text-align:center;font-size:11.5px;color:var(--muted);margin-top:26px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">⚔</div>
+    <div><h1>洛花星雨 · /~wdsj 指令生成器</h1><p>点选参数 → 复制指令 → 发到群里给幻梦bot</p></div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab on" data-t="stats">战绩查询</div>
+    <div class="tab" data-t="lb">排行榜</div>
+    <div class="tab" data-t="daily">日榜</div>
+    <div class="tab" data-t="me">双模式卡</div>
+    <div class="tab" data-t="trend">趋势图</div>
+    <div class="tab" data-t="misc">其他</div>
+  </div>
+
+  <!-- 战绩查询 -->
+  <div class="panel on" id="p-stats">
+    <div class="sect"><div class="k">游戏模式</div><div class="quick" id="mode-opts"></div></div>
+    <div class="sect"><div class="k">玩家名（留空用绑定名，需先 bd 绑定）</div>
+      <input type="text" id="stats-player" placeholder="dongtians"></div>
+    <div class="sect"><div class="k">输出</div>
+      <div class="quick" id="stats-out"></div></div>
+    <div class="out"><code id="stats-cmd">/~wdsj bw dongtians</code><button class="copy" data-c="stats-cmd">复制</button></div>
+    <div class="hint">默认发官方图片卡片；text = 文字版完整数据。识别仅支持 name/nick（服务端已禁用 uid）。</div>
+  </div>
+
+  <!-- 排行榜 -->
+  <div class="panel" id="p-lb">
+    <div class="sect"><div class="k">游戏</div><div class="quick" id="lb-game"></div></div>
+    <div class="sect"><div class="k">指标</div><div class="quick" id="lb-board"></div></div>
+    <div class="sect"><div class="k">周期</div><div class="quick" id="lb-period"></div></div>
+    <div class="sect"><div class="k">输出</div><div class="quick" id="lb-out"></div></div>
+    <div class="out"><code id="lb-cmd">/~wdsj lb bw win alltime</code><button class="copy" data-c="lb-cmd">复制</button></div>
+    <div class="hint">榜单只支持部分周期时自动降级，避免报错。img = 发卡片图（Pillow 直绘）。</div>
+  </div>
+
+  <!-- 日榜 -->
+  <div class="panel" id="p-daily">
+    <div class="sect"><div class="k">游戏</div><div class="quick" id="daily-mode"></div></div>
+    <div class="sect"><div class="k">日期（留空 = 今天；过去日期自动跨天统计）</div>
+      <input type="text" id="daily-date" placeholder="7-20 或 2026-07-20 或 0720"></div>
+    <div class="sect"><div class="k">发送方式</div><div class="quick" id="daily-out"></div></div>
+    <div class="out"><code id="daily-cmd">/~wdsj daily</code><button class="copy" data-c="daily-cmd">复制</button></div>
+    <div class="hint">榜单每天 0:01 / 4:01 / 8:01 / 12:01 / 16:01 / 20:01 产出。send = 推送到当前群（仅群聊）。</div>
+  </div>
+
+  <!-- 双模式卡 -->
+  <div class="panel" id="p-me">
+    <div class="sect"><div class="k">玩家名（留空用绑定名）</div>
+      <input type="text" id="me-player" placeholder="dongtians"></div>
+    <div class="out"><code id="me-cmd">/~wdsj me</code><button class="copy" data-c="me-cmd">复制</button></div>
+    <div class="hint">一张横屏图同时展示起床战争（33 项）+ 竞技场（17 项）+ 18 项衍生比率，每字段配 MC 原版图标。</div>
+  </div>
+
+  <!-- 趋势图 -->
+  <div class="panel" id="p-trend">
+    <div class="sect"><div class="k">玩家名（留空用绑定名）</div>
+      <input type="text" id="trend-player" placeholder="dongtians"></div>
+    <div class="sect"><div class="k">指标</div><div class="quick" id="trend-metric"></div></div>
+    <div class="out"><code id="trend-cmd">/~wdsj trend dongtians</code><button class="copy" data-c="trend-cmd">复制</button></div>
+    <div class="hint">需要至少 2 天的采集记录。</div>
+  </div>
+
+  <!-- 其他 -->
+  <div class="panel" id="p-misc">
+    <div class="sect"><div class="k">快捷指令（点击复制）</div><div class="quick" id="misc-list"></div></div>
+  </div>
+
+  <footer>洛花星雨 Nexus · 幻梦 Bot · 完整参数见 data/wdsj_完整指令文档.md</footer>
+</div>
+
+<script>
+const MODES = [
+  ["bw","起床战争"],["kbw","击退战场"],["sw","空岛战争"],["kp","职业战争"],
+  ["are","竞技场"],["pit","天坑乱斗"],["cw","色盲战争"],["dg","你画我猜"],
+  ["has","躲猫猫"],["mm","神秘谋杀"],["uhc","极限生存"],["wc","星跃水立方"],
+  ["bb","建筑战争"],["vd","村庄保卫战"],["nd","天灾逃生"],["cs","反恐精英"],
+  ["am","高版本竞技场"],["lp","幸运之柱"],
+];
+const LB = {
+  "bw": [["win","胜利"],["kill","击杀"],["beds","摧床"],["fk","最终击杀"],["1k","首杀"],
+         ["void","自走虚空"],["egg","鸡蛋击杀"],["fb","火球击杀"],["de","死亡"],
+         ["score","总分"],["ns","普通连胜"],["ms","起床连胜"],["os","单方块连胜"],["ss","单挑连胜"]],
+  "kbw": [["kill","击杀"],["dead","死亡"],["tnt","TNT击杀"],["arrow","弓箭击杀"],["rod","鱼竿击杀"],["jp","跳板击杀"]],
+  "sw": [["kill","击杀"],["win","胜利"],["dead","死亡"],["1k","首杀"],["s","最佳连胜"],["l","最高连败"]],
+  "are": [["kill","击杀"],["win","胜利"],["elo","ELO"]],
+  "kp": [["kill","击杀"],["xp","经验"],["dead","死亡"]],
+  "pit": [["k","击杀"]],
+  "bb": [["w","获胜"]],
+  "mm": [["k","击杀"]],
+  "am": [["w","胜利"],["k","击杀"],["s","最佳连胜"],["elo","全服ELO"]],
+  "lp": [["w","胜利"],["k","击杀"],["t","总存活秒数"]],
+};
+const SOLO_BOARDS = [
+  ["pt","在线时长"],["cp","情侣亲密值"],["title","全服称号"],["guild","公会贡献"],
+  ["coins","金币"],["sheep","绵羊战争击杀"],["sbw","极速建筑师获胜"],
+];
+const PERIODS = [["alltime","总榜"],["month","月榜"],["week","周榜"],["day","日榜"]];
+const TRENDS = [["bw_kills","击杀"],["bw_wins","胜场"],["bw_finals","最终击杀"],["bw_deaths","死亡"],["arena_kills","竞技场击杀"]];
+const MISC = [
+  "/~wdsj me","/~wdsj boards","/~wdsj list","/~wdsj rank","/~wdsj bd list",
+  "/~wdsj daily are","/~wdsj daily send","/~wdsj collect",
+];
+const state = {
+  mode: "bw", statsOut: "",
+  lbGame: "bw", lbBoard: "win", lbPeriod: "alltime", lbOut: "",
+  dailyMode: "bw", dailyOut: "",
+  trendMetric: "bw_kills",
+};
+const $ = id => document.getElementById(id);
+
+function opts(el, items, cur, cb, two) {
+  el.innerHTML = "";
+  items.forEach(([v, label]) => {
+    const d = document.createElement("span");
+    d.className = "opt" + (v === cur ? " on" : "");
+    d.textContent = two ? (v + " " + label) : label;
+    d.onclick = () => { cb(v); };
+    el.appendChild(d);
+  });
+}
+function render() {
+  // 战绩
+  opts($("mode-opts"), MODES, state.mode, v => { state.mode = v; render(); });
+  opts($("stats-out"), [["", "官方图片"],["text","文字版"]], state.statsOut,
+    v => { state.statsOut = v; render(); });
+  const p1 = $("stats-player").value.trim();
+  $("stats-cmd").textContent = "/~wdsj " + state.mode + (p1 ? " " + p1 : "") + (state.statsOut ? " " + state.statsOut : "");
+  // 排行榜
+  opts($("lb-game"), MODES.filter(m => LB[m[0]]).concat(SOLO_BOARDS.map(b => [b[0], b[1]])),
+    state.lbGame, v => { state.lbGame = v; state.lbBoard = (LB[v] || [[v[0], ""]])[0][0]; render(); }, true);
+  const boards = LB[state.lbGame] || [];
+  if (boards.length) {
+    $("lb-board").parentElement.style.display = "";
+    opts($("lb-board"), boards, state.lbBoard, v => { state.lbBoard = v; render(); }, true);
+  } else {
+    $("lb-board").parentElement.style.display = "none";
+    state.lbBoard = "";
+  }
+  opts($("lb-period"), PERIODS, state.lbPeriod, v => { state.lbPeriod = v; render(); }, true);
+  opts($("lb-out"), [["", "文字版"],["img","图片卡"]], state.lbOut, v => { state.lbOut = v; render(); }, true);
+  const gameLabel = (MODES.find(m => m[0] === state.lbGame) || SOLO_BOARDS.find(b => b[0] === state.lbGame) || [state.lbGame])[1];
+  let lbCmd = "/~wdsj lb";
+  if (boards.length) lbCmd += " " + state.lbGame + " " + state.lbBoard;
+  else lbCmd += " " + state.lbGame;
+  lbCmd += (state.lbPeriod !== "alltime" ? " " + state.lbPeriod : "");
+  lbCmd += (state.lbOut ? " " + state.lbOut : "");
+  $("lb-cmd").textContent = lbCmd;
+  // 日榜
+  opts($("daily-mode"), [["bw","起床战争"],["are","竞技场"]], state.dailyMode,
+    v => { state.dailyMode = v; render(); }, true);
+  opts($("daily-out"), [["", "只发给自己"],["send","推送到当前群"]], state.dailyOut,
+    v => { state.dailyOut = v; render(); }, true);
+  const dd = $("daily-date").value.trim();
+  $("daily-cmd").textContent = "/~wdsj daily" + (state.dailyMode === "are" ? " are" : "")
+    + (dd ? " " + dd : "") + (state.dailyOut ? " " + state.dailyOut : "");
+  // 双模式 / 趋势
+  $("me-cmd").textContent = "/~wdsj " + ($("me-player").value.trim() || "me");
+  opts($("trend-metric"), TRENDS, state.trendMetric, v => { state.trendMetric = v; render(); }, true);
+  const tp = $("trend-player").value.trim();
+  $("trend-cmd").textContent = "/~wdsj trend" + (tp ? " " + tp : "") + (state.trendMetric !== "bw_kills" ? " " + state.trendMetric : "");
+}
+// tabs
+document.querySelectorAll(".tab").forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("on"));
+    document.querySelectorAll(".panel").forEach(x => x.classList.remove("on"));
+    t.classList.add("on"); $("p-" + t.dataset.t).classList.add("on");
+  };
+});
+// copy
+document.addEventListener("click", e => {
+  if (e.target.classList.contains("copy")) {
+    const code = document.getElementById(e.target.dataset.c).textContent;
+    navigator.clipboard.writeText(code).then(() => {
+      e.target.textContent = "已复制"; setTimeout(() => e.target.textContent = "复制", 1200);
+    });
+  }
+});
+["stats-player","me-player","trend-player","daily-date"].forEach(id => {
+  $(id).addEventListener("input", render);
+});
+// misc
+$("misc-list").innerHTML = "";
+MISC.forEach(c => {
+  const d = document.createElement("span");
+  d.className = "qbtn"; d.textContent = c;
+  d.onclick = () => navigator.clipboard.writeText(c);
+  $("misc-list").appendChild(d);
+});
+render();
+</script>
+</body>
+</html>
