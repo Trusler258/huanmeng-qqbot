@@ -11,6 +11,21 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.80 — /~run 沙箱执行指令（移植自 KOOK .run）(2026.10.4)
+一句话总结：把 KOOK bot 的 .run 移植成 /~run——沙箱真实执行代码并返回运行输出，
+四种模式：py（运行 Python）/ cpp（g++ 编译运行）/ sh（终端命令，仅管理员）/
+描述（LLM 生成代码再运行）；产物文件经 CQ file 发送。
+
+### 1. `cmd_run`（`modules/commands.py`，新增）
+- 多行代码保真：从 raw_message 剥 CQ 码 + /~run 前缀还原完整文本（args 空格分词会
+  把多行代码拆碎）；⚠️ 正则 (?:/~/#) 是字面量不是 alternation，应为 (?:/~|/#)
+- 权限：sh 仅管理员；py/cpp/描述全员可用（与 run_code FC 工具一致）
+- 描述模式：call_llm 生成 Python 脚本（剥代码围栏）→ 沙箱执行
+- 执行：core.sandbox（v2.3.63 移植的内核隔离沙箱，限资源/限超时/输出保留头尾）
+- 产物：collect_artifacts 收集，多产物打包 zip，CQ file 发送（上限 5 个）
+- 已入 HEAVY_COMMANDS 旁路并发
+- 实测：py 单行/多行保真、cpp 编译运行（产物 a.out 发送）、sh 非管理员拒绝，全过
+
 ## v2.3.77 — /~motd 服务器状态卡（原生协议 ping + 液态玻璃卡片）(2026.10.3)
 一句话总结：把独立项目的 MC 服务器状态卡移植成 `/~motd <host>[:port]` 指令——原生
 Server List Ping（socket 手写，SRV 跟随，3 次取均值）拿真实延迟，失败回退 mcsrvstat.us；

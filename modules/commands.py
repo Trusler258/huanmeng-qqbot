@@ -3981,6 +3981,115 @@ async def cmd_motd(args, user_id, group_id, sender_name, is_group, bot_qq):
     return None
 
 
+async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message: str = ""):
+    """/~run <py|cpp|sh|描述> — 沙箱真实执行代码并返回运行输出（移植自 KOOK .run）"""
+    import re as _re
+    import tempfile as _tf
+    import zipfile as _zip
+    from pathlib import Path as _Path
+    from core.config import get_config
+    cfg = get_config()
+
+    # 还原完整原始文本（多行代码保真）：剥 CQ 码 + 行首 /~run 前缀
+    raw = _re.sub(r"\[CQ:[^\]]*\]", "", raw_message or "").strip()
+    m = _re.match(r"^(?:/~|/#)?run(?:\s+|$)", raw)
+    rest = raw[m.end():].strip() if m else " ".join(args)
+
+    m2 = _re.match(r"^(py|python|cpp|c\+\+|sh|shell|bash)(?:\s+|$)", rest, _re.I)
+    lang = m2.group(1).lower() if m2 else None
+    if lang in ("python",):
+        lang = "py"
+    elif lang in ("c++",):
+        lang = "cpp"
+    elif lang in ("shell", "bash"):
+        lang = "sh"
+    if m2:
+        rest = rest[m2.end():].strip()
+
+    if not rest:
+        return ("用法: /~run py <代码> 运行Python\n"
+                "/~run cpp <代码> 编译运行C++\n"
+                "/~run sh <命令> 终端命令(仅管理员，如 /~run sh cd / && ls -l)\n"
+                "/~run <描述> 自动生成代码并运行(如 /~run 创建10个md文件打包zip)")
+
+    # sh 终端命令仅管理员（与 KOOK 一致）
+    if lang == "sh" and not cfg.is_admin(user_id, group_id):
+        return "sh 终端命令仅管理员可用喵~"
+
+    # ── 无语言前缀 → 按描述生成代码再运行 ──
+    if lang is None:
+        from services.llm import call_llm
+        gen = await call_llm(
+            model_cfg=cfg.reply_model,
+            messages=[
+                {"role": "system", "content": "写一段可独立运行的 Python 脚本，关键结果用 print() 输出，UTF-8，只输出代码不写注释。"},
+                {"role": "user", "content": rest[:3000]},
+            ],
+            max_tokens=2000, temperature=0.3, timeout=60.0,
+        )
+        if not gen or not gen.strip():
+            return "代码生成失败，请稍后重试"
+        code = _re.sub(r"^```\w*\n?", "", gen.strip())
+        code = _re.sub(r"\n?```$", "", code).strip()
+        lang, rest = "py", code
+
+    from core.sandbox import run_python, compile_and_run_cpp, run_shell, collect_artifacts, cleanup
+    from services.sender import send_group_msg, send_private_msg
+
+    tmp = _Path(_tf.mkdtemp(prefix="bot_run_"))
+    try:
+        if lang == "py":
+            res = await run_python(rest, cwd=tmp, max_output=4000, timeout=15)
+        elif lang == "cpp":
+            res = await compile_and_run_cpp({"main.cpp": rest}, cwd=tmp, max_output=4000, timeout=15)
+        else:
+            res = await run_shell(rest, cwd=tmp, max_output=4000, timeout=15)
+    except Exception as e:
+        logger.warning("/~run 执行异常: %s", e)
+        cleanup(tmp)
+        return f"沙箱执行失败喵~ {type(e).__name__}: {str(e)[:200]}"
+
+    out_parts = []
+    if res.get("stdout"):
+        out_parts.append(res["stdout"].strip())
+    if res.get("stderr"):
+        out_parts.append(f"[stderr]\n{res['stderr'].strip()}")
+    text = "\n\n".join(out_parts) or "[无输出]"
+    if res.get("timed_out"):
+        text += "\n[提示] 运行超时已强制终止"
+    if res.get("returncode") not in (0, None):
+        text += f"\n[退出码] {res['returncode']}"
+
+    # ── 产物收集与发送（CQ file）──
+    send_msgs = []
+    artifacts = collect_artifacts(tmp)
+    _archives = [a for a in artifacts if a.suffix.lower() in (".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2")]
+    if _archives:
+        artifacts = _archives
+    if artifacts:
+        try:
+            files_to_send = artifacts[:5]
+            if len(artifacts) > 1:
+                zip_path = tmp / "artifacts.zip"
+                with _zip.ZipFile(str(zip_path), "w", _zip.ZIP_DEFLATED) as zf:
+                    for f in artifacts:
+                        zf.write(str(f), f.name)
+                files_to_send = [zip_path]
+            for f in files_to_send:
+                cq = f"[CQ:file,file=file:///{f.as_posix()},name={f.name}]"
+                await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
+            send_msgs.append(f"已发送 {len(files_to_send)} 个产物文件")
+        except Exception as e:
+            send_msgs.append(f"产物发送异常: {e}")
+    cleanup(tmp)
+
+    result = f"[运行输出]\n{text}"
+    if send_msgs:
+        result += "\n\n" + "\n".join(send_msgs)
+    logger.info("/~run 完成: lang=%s rc=%s", lang, res.get("returncode"))
+    return result
+
+
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
     "ping":       cmd_ping,
@@ -4109,6 +4218,8 @@ COMMAND_MAP: dict[str, callable] = {
     # ── MC 服务器状态卡 ──
     "motd":       cmd_motd,
     "mc状态":     cmd_motd,
+    # ── 沙箱真实执行（移植自 KOOK .run）──
+    "run":        cmd_run,
 }
 
 
@@ -4122,6 +4233,8 @@ HEAVY_COMMANDS: frozenset[str] = frozenset({
     "wdsj", "steam", "在干嘛",
     # MC 服务器状态卡（网络查询 + Chromium 渲染，数秒级）
     "motd", "mc状态",
+    # 沙箱执行（编译/运行，数秒级）
+    "run",
     # 天气 / 地震 / NASA / PGR
     "天气", "weather", "eq", "地震", "nasa", "pgr",
     # 生成类（图/视频/语音）
