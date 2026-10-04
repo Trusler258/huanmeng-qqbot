@@ -312,7 +312,7 @@ async def run_shell(command: str, timeout: float = DEFAULT_TIMEOUT,
 
 # ── 产物收集 ──────────────────────────────────────────────
 
-_SKIP_NAMES = {"main.py", "a.out"}
+_SKIP_NAMES = {"main.py", "main.cpp", "a.out"}
 _SKIP_EXTS = {".pyc", ".o", ".obj"}
 
 
