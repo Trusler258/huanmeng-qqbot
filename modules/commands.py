@@ -3981,7 +3981,8 @@ async def cmd_motd(args, user_id, group_id, sender_name, is_group, bot_qq):
     return None
 
 
-async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message: str = ""):
+async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
+                  raw_message: str = "", cmd_text: str = ""):
     """/~run <py|cpp|sh|描述> — 沙箱真实执行代码并返回运行输出（移植自 KOOK .run）"""
     import re as _re
     import tempfile as _tf
@@ -3990,9 +3991,13 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq, raw_me
     from core.config import get_config
     cfg = get_config()
 
-    # 还原完整原始文本（多行代码保真）：剥 CQ 码 + 行首 /~run 前缀
-    raw = _re.sub(r"\[CQ:[^\]]*\]", "", raw_message or "").strip()
+    # 还原完整原始文本（多行代码保真）：优先 cmd_text（管道路由的完整指令文本，
+    # 实测带换行）；raw_message（NapCat CQ 串）生产环境可能丢换行，只作回退
+    raw = _re.sub(r"\[CQ:[^\]]*\]", "", cmd_text or "").strip()
     m = _re.match(r"^(?:/~|/#)?run(?:\s+|$)", raw)
+    if not m:
+        raw = _re.sub(r"\[CQ:[^\]]*\]", "", raw_message or "").strip()
+        m = _re.match(r"^(?:/~|/#)?run(?:\s+|$)", raw)
     rest = raw[m.end():].strip() if m else " ".join(args)
 
     m2 = _re.match(r"^(py|python|cpp|c\+\+|sh|shell|bash)(?:\s+|$)", rest, _re.I)
@@ -4060,9 +4065,10 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq, raw_me
     if res.get("returncode") not in (0, None):
         text += f"\n[退出码] {res['returncode']}"
 
-    # ── 产物收集与发送（CQ file）──
+    # ── 产物收集与发送（CQ file）——失败/超时不发产物（编译失败的残留文件没有意义）──
     send_msgs = []
-    artifacts = collect_artifacts(tmp)
+    failed = bool(res.get("timed_out")) or (res.get("returncode") not in (0, None))
+    artifacts = [] if failed else collect_artifacts(tmp)
     _archives = [a for a in artifacts if a.suffix.lower() in (".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2")]
     if _archives:
         artifacts = _archives
@@ -4334,10 +4340,12 @@ async def handle_command(
         # 尝试传入 raw_message（img2video 等需要）
         import inspect
         sig = inspect.signature(handler)
+        kwargs = {}
         if "raw_message" in sig.parameters:
-            result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message=raw_message)
-        else:
-            result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq)
+            kwargs["raw_message"] = raw_message
+        if "cmd_text" in sig.parameters:
+            kwargs["cmd_text"] = text
+        result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq, **kwargs)
         # 来源标注：插件注册的指令（bridge 带 __plugin__ 属性）
         src = ""
         if getattr(handler, "__plugin__", None):
