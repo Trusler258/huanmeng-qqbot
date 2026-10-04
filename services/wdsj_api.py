@@ -246,8 +246,14 @@ def resolve_board_shorthand(game: str, metric: str = "") -> str | None:
 
 
 def build_identity(player: str, id_type: str = "name") -> str:
-    """构造带类型前缀的玩家标识，自动检测已带前缀的情况"""
+    """构造带类型前缀的玩家标识，自动检测已带前缀的情况。
+
+    ★ `#前缀` 语法（2026-10-05）：`#天在水丶枕月` = 该名字是游戏内昵称（nick），
+    不带 # 按常规类型（默认 name）查。
+    """
     p = player.strip()
+    if p.startswith("#"):
+        return "nick:" + urllib.parse.quote(p[1:].strip())
     if ":" in p and p.split(":", 1)[0].lower() in IDENTITY_TYPES:
         return urllib.parse.quote(p, safe=":")
     if id_type not in IDENTITY_TYPES:
@@ -272,40 +278,50 @@ async def query_player_stats(player: str, template_id: str,
             logger.info("wdsj 命中查询缓存: player=%s template=%s", player, template_id)
             last_error = ""
             return _hit[1]
-    encoded = build_identity(player, id_type)
-    path = f"/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}"
-    try:
-        resp = await _request(path, timeout=timeout)
-        if resp is None:
-            last_error = "直连与代理均不可用"
-            return None
-        if resp.status_code != 200:
-            last_error = f"HTTP {resp.status_code}"
-            if resp.status_code == 403:
-                logger.warning("wdsj API 被风控/拒绝 (HTTP 403): %s", path)
-            elif resp.status_code == 404:
-                logger.info("wdsj 玩家不存在 (HTTP 404): %s", path)
-            else:
-                logger.warning("wdsj API HTTP %s: %s", resp.status_code, path)
-            return None
-        data = resp.json()
-        if data.get("code") != 0:
-            last_error = f"API error {data.get('code')}: {data.get('message')}"
-            logger.warning("wdsj API 业务错误: %s", last_error)
-            return None
-        last_error = ""
-        if use_cache:
-            _stats_cache[_ck] = (_time_mod.time(), data["data"])
-            if len(_stats_cache) > _STATS_CACHE_MAX:
-                # 简单清理：丢掉最旧的一半，防无限增长
-                for _k in sorted(_stats_cache, key=lambda k: _stats_cache[k][0])[: len(_stats_cache) // 2]:
-                    _stats_cache.pop(_k, None)
-        return data["data"]
-    except Exception as e:
-        last_error = f"{type(e).__name__}: {e}"
-        logger.error("wdsj 查询异常: player=%r template=%s err=%s:%r path=%s",
-                     player, template_id, type(e).__name__, e, path)
+
+    async def _query_once(id_t: str):
+        """单次查询：返回 (data, err)。err 只在网络/HTTP 层面给出。"""
+        encoded = build_identity(player, id_t)
+        path = f"/api/v1/players/{encoded}/templates/{urllib.parse.quote(template_id)}"
+        try:
+            resp = await _request(path, timeout=timeout)
+            if resp is None:
+                return None, "直连与代理均不可用", path
+            if resp.status_code != 200:
+                if resp.status_code == 403:
+                    logger.warning("wdsj API 被风控/拒绝 (HTTP 403): %s", path)
+                elif resp.status_code in (404, 400):
+                    logger.info("wdsj %s 标识查无此人 (HTTP %s): %s", id_t, resp.status_code, path)
+                else:
+                    logger.warning("wdsj API HTTP %s: %s", resp.status_code, path)
+                return None, f"HTTP {resp.status_code}", path
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning("wdsj API 业务错误: %s", data.get("message"))
+                return None, f"API error {data.get('code')}", path
+            return data["data"], "", path
+        except Exception as e:
+            logger.error("wdsj 查询异常: player=%r id=%s err=%s:%r", player, id_t, type(e).__name__, e)
+            return None, f"{type(e).__name__}: {e}", ""
+
+    data, err, path = await _query_once(id_type)
+    # ★ name 查无此人 → 自动回退 nick（游戏内昵称，2026-10-05 实测：
+    #   "天在水丶枕月" name 400 / nick 200——很多玩家只有昵称没有注册名）
+    if data is None and err.startswith("HTTP 4") and id_type == "name":
+        data, err, path = await _query_once("nick")
+        if data is not None:
+            logger.info("wdsj name 查无此人，nick 命中: %s", player)
+    if data is None:
+        last_error = err
         return None
+    last_error = ""
+    if use_cache:
+        _stats_cache[_ck] = (_time_mod.time(), data)
+        if len(_stats_cache) > _STATS_CACHE_MAX:
+            # 简单清理：丢掉最旧的一半，防无限增长
+            for _k in sorted(_stats_cache, key=lambda k: _stats_cache[k][0])[: len(_stats_cache) // 2]:
+                _stats_cache.pop(_k, None)
+    return data
 
 
 async def download_stats_image(image_url: str, save_path: str, timeout: float = 15.0) -> bool:
