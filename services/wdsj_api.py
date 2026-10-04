@@ -506,9 +506,10 @@ def build_dual_card_html(bw_data: Optional[dict], ar_data: Optional[dict],
 
 
 def build_wdsj_help_card_html(bot_name: str) -> str:
-    """构建 /~wdsj help 卡片（v2.3.81 液态玻璃风，覆盖全部子指令）。
+    """构建 /~wdsj help 卡片（v2.3.81 双模式卡主题：浅底暖色玻璃，内容加详）。
 
-    替换旧的 MD 渲染版：一张卡列全所有子指令/模式简写/周期/示例。
+    主题与 data/templates/wdsj_dual_card.html 一致：米白底 + 橙/蓝双光晕 +
+    白色半透明面板 + 橙色点缀。一张卡列全子指令/模式/排行榜/周期/示例。
     """
     modes = [
         ("bw", "起床战争"), ("kbw", "击退战场"), ("sw", "空岛战争"),
@@ -522,91 +523,111 @@ def build_wdsj_help_card_html(bot_name: str) -> str:
         f'<span class="chip"><b>{a}</b> {n}</span>' for a, n in modes
     )
     subcmds = [
-        ("me", "双模式横屏卡（起床+竞技场全字段）", "/~wdsj me ｜ /~wdsj <玩家> me"),
-        ("bd", "绑定玩家名（之后可省略名字）", "/~wdsj bd <玩家名> ｜ bd list"),
-        ("lb", "排行榜（双词/单词榜单，周期可省）", "/~wdsj lb <榜> [周期] [img]"),
-        ("daily", "日榜（每天 0:01-20:01 六轮产出）", "/~wdsj daily [are] [日期] [send]"),
-        ("rank", "群内绑定玩家排行", "/~wdsj rank [指标]"),
-        ("trend", "趋势折线图（≥2 天记录）", "/~wdsj trend <玩家> [指标]"),
-        ("boards", "排行榜简写速查", "/~wdsj boards"),
-        ("list", "模式与榜单别名全表", "/~wdsj list"),
-        ("collect", "手动采集（仅管理员）", "/~wdsj collect"),
+        ("me", "双模式横屏卡", "起床+竞技场全字段+18 项比率", "/~wdsj me ｜ /~wdsj <玩家> me"),
+        ("bd", "绑定玩家名", "绑定后可省略名字；bd list 列全部", "/~wdsj bd <玩家名>"),
+        ("lb", "排行榜", "双词/单词榜单，周期可省，末尾 img 发图卡", "/~wdsj lb <榜> [周期] [img]"),
+        ("daily", "日榜", "每天 0:01-20:01 六轮产出；are=竞技场", "/~wdsj daily [are] [日期] [send]"),
+        ("rank", "群内排行", "统计群内已绑定玩家", "/~wdsj rank [指标]"),
+        ("trend", "趋势图", "折线图，需 ≥2 天采集记录", "/~wdsj trend <玩家> [指标]"),
+        ("boards", "榜单速查", "可带游戏过滤（boards bw 只看起床）", "/~wdsj boards [游戏]"),
+        ("list", "别名全表", "模式与榜单别名", "/~wdsj list"),
+        ("collect", "手动采集", "仅管理员；返回失败名单", "/~wdsj collect"),
     ]
     sub_rows = "".join(
         f'<div class="row"><code>/{a}</code><span class="d">{d}</span>'
-        f'<span class="u">{u}</span></div>' for a, d, u in subcmds
+        f'<span class="u">{u}</span></div>' for a, _n, d, u in subcmds
+    )
+    lb_rows = "".join(
+        f'<div class="lb-row"><b>{w}</b><span>{n}</span></div>'
+        for w, n in [
+            ("bw win", "胜利"), ("bw kill", "击杀"), ("bw beds", "摧床"),
+            ("bw fk", "最终击杀"), ("bw 1k", "首杀"), ("kbw kill", "击杀"),
+            ("kbw tnt", "TNT 击杀"), ("sw kill", "击杀"), ("sw win", "胜利"),
+            ("am elo", "全服 ELO"), ("lp w", "幸运之柱胜利"),
+            ("pt / cp / title / guild", "在线 / 情侣 / 称号 / 公会"),
+        ]
     )
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
-html,body{{width:560px;background:#0b0d12;color:#e8edf2;
-  font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;}}
-.bg{{position:fixed;inset:0;
+html,body{{width:640px;
+  font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased;}}
+.card{{width:640px;padding:34px 38px 30px;
   background:
-    radial-gradient(420px 340px at 12% 4%,  rgba(0,132,255,.45), transparent 62%),
-    radial-gradient(400px 360px at 90% 96%, rgba(140,84,255,.42), transparent 64%),
-    linear-gradient(160deg,#0a1020 0%,#0d0a1c 50%,#08070f 100%);}}
-.wrap{{position:relative;padding:20px 20px 14px;display:flex;flex-direction:column;gap:12px;}}
-.panel{{position:relative;border-radius:22px;overflow:hidden;
-  background:linear-gradient(180deg,rgba(16,22,28,.55),rgba(8,11,15,.45));
-  backdrop-filter:blur(24px) saturate(170%);-webkit-backdrop-filter:blur(24px) saturate(170%);
-  border:1px solid rgba(255,255,255,.22);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 16px 36px rgba(0,0,0,.4);}}
-.panel::before{{content:"";position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(115deg,rgba(255,255,255,.22) 0%,rgba(255,255,255,0) 45%,rgba(255,255,255,.05) 100%);}}
-.panel > *{{position:relative;z-index:1}}
-.top{{display:flex;align-items:center;gap:10px;padding:16px 18px 0;}}
-.brand{{font-size:15px;font-weight:700;letter-spacing:.1em;color:#bff5c8;
-  text-shadow:0 0 12px rgba(85,255,140,.4),0 1px 2px rgba(0,0,0,.6);}}
-.brand i{{font-style:normal;color:rgba(255,255,255,.45);font-weight:400;letter-spacing:.02em}}
-.spacer{{flex:1}}
-.main{{margin:12px 18px 0;padding:13px 16px;border-radius:16px;background:rgba(3,6,10,.55);
-  border:1px solid rgba(255,255,255,.14);}}
-.main code{{font-size:15.5px;color:#ffd76a;font-weight:700;
-  text-shadow:0 0 8px rgba(255,215,106,.35);}}
-.main .n{{font-size:12.5px;color:rgba(255,255,255,.72);margin-top:6px;}}
-.sect{{padding:13px 18px 15px;}}
-.k{{font-size:11.5px;letter-spacing:.18em;color:rgba(255,255,255,.62);margin-bottom:9px;}}
+    radial-gradient(620px 300px at 10% -6%, rgba(255,183,154,.34), transparent 60%),
+    radial-gradient(620px 300px at 92% -6%, rgba(158,188,255,.36), transparent 60%),
+    linear-gradient(160deg,#fbf6f0 0%,#f4f0ec 42%,#eef1f6 100%);
+  border-radius:30px;position:relative;overflow:hidden;color:var(--ink);}}
+.card::before{{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140"><circle cx="8" cy="8" r="1" fill="white" opacity="0.5"/></svg>');
+  opacity:.5;}}
+.wrap{{position:relative;z-index:2;display:flex;flex-direction:column;gap:14px;}}
+:root{{--ink:#3a332c;--muted:#8a7f76;--accent:#f0875c;}}
+.top{{display:flex;align-items:baseline;gap:12px;}}
+.brand{{font-size:21px;font-weight:800;color:var(--ink);letter-spacing:.02em;}}
+.brand i{{font-style:normal;font-size:12.5px;color:var(--muted);font-weight:400;margin-left:8px;}}
+.main{{background:rgba(255,255,255,.62);backdrop-filter:blur(14px);
+  border:1px solid rgba(255,255,255,.9);border-radius:18px;padding:14px 18px;
+  box-shadow:0 8px 20px rgba(120,80,60,.08);}}
+.main code{{font-size:16px;font-weight:800;color:var(--accent);}}
+.main .n{{font-size:12.5px;color:var(--muted);margin-top:6px;}}
+.panel{{background:rgba(255,255,255,.55);backdrop-filter:blur(18px);
+  border:1px solid rgba(255,255,255,.85);border-radius:20px;padding:15px 18px;
+  box-shadow:0 10px 24px rgba(120,80,60,.07), inset 0 1px 0 rgba(255,255,255,.9);}}
+.k{{font-size:11.5px;letter-spacing:.2em;color:var(--muted);margin-bottom:9px;font-weight:700;}}
 .chips{{display:flex;flex-wrap:wrap;gap:5px 6px;}}
-.chip{{font-size:12px;padding:4px 9px;border-radius:999px;
-  background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.14);color:#dfe8f2;}}
-.chip b{{color:#8dd6ff;margin-right:3px;font-weight:700;}}
-.row{{display:flex;align-items:baseline;gap:9px;padding:4.5px 0;}}
-.row + .row{{border-top:1px solid rgba(255,255,255,.07);}}
-.row code{{font-size:13px;font-weight:700;color:#8dd6ff;flex:0 0 58px;
-  text-shadow:0 0 7px rgba(141,214,255,.3);}}
-.row .d{{font-size:12.5px;color:#eef3f8;flex:0 0 218px;}}
-.row .u{{font-size:11px;color:rgba(255,255,255,.5);font-family:Consolas,monospace;}}
-.foot{{display:flex;align-items:center;gap:8px;font-size:10.5px;color:rgba(255,255,255,.5);padding:0 6px;}}
-.pill{{padding:3px 11px;border-radius:999px;background:rgba(255,255,255,.14);
-  border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.8);}}
+.chip{{font-size:12px;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.7);
+  border:1px solid rgba(150,130,110,.2);color:var(--ink);}}
+.chip b{{color:var(--accent);margin-right:4px;font-weight:800;}}
+.row{{display:flex;align-items:baseline;gap:10px;padding:5px 0;}}
+.row + .row{{border-top:1px solid rgba(150,130,110,.12);}}
+.row code{{font-size:13.5px;font-weight:800;color:var(--accent);flex:0 0 66px;}}
+.row .d{{font-size:12.5px;color:var(--ink);flex:0 0 210px;}}
+.row .u{{font-size:11px;color:var(--muted);font-family:Consolas,monospace;}}
+.lb-grid{{display:grid;grid-template-columns:1fr 1fr;gap:0 22px;}}
+.lb-row{{display:flex;gap:8px;padding:3.5px 0;font-size:12px;align-items:baseline;}}
+.lb-row b{{font-family:Consolas,monospace;color:#c96a42;flex:0 0 128px;font-size:11.5px;}}
+.lb-row span{{color:var(--ink);}}
+.foot{{display:flex;align-items:center;gap:9px;font-size:10.5px;color:var(--muted);padding:0 4px;}}
+.pill{{padding:3px 12px;border-radius:999px;background:rgba(255,255,255,.75);
+  border:1px solid rgba(255,255,255,.9);color:var(--muted);font-weight:700;}}
 </style></head>
 <body>
-<div class="bg"></div>
-<div class="wrap">
-  <div class="panel">
-    <div class="top"><div class="brand">洛花星雨 <i>NEXUS 战绩查询</i></div><div class="spacer"></div></div>
+<div class="card">
+  <div class="wrap">
+    <div class="top"><div class="brand">洛花星雨战绩查询<span class="brand-i" style="font-style:normal;font-size:12.5px;color:#8a7f76;margin-left:10px;">/～wdsj 全指令</span></div></div>
+
     <div class="main">
       <code>/~wdsj &lt;模式&gt; &lt;玩家&gt; [text]</code>
-      <div class="n">默认发官方图片卡片，结尾加 text 看文字版；玩家名留空用绑定的名字</div>
+      <div class="n">默认发官方图片卡片；结尾加 text 看文字版；玩家名留空用绑定的名字（先 bd 绑定）</div>
     </div>
-    <div class="sect"><div class="k">模式简写 MODES</div><div class="chips">{mode_chips}</div></div>
-  </div>
 
-  <div class="panel"><div class="sect"><div class="k">子指令 SUBCOMMANDS</div>{sub_rows}</div></div>
+    <div class="panel"><div class="k">游戏模式 MODES（18 种，支持中文名直查）</div><div class="chips">{mode_chips}</div></div>
 
-  <div class="panel"><div class="sect">
-    <div class="k">排行榜示例 LEADERBOARD</div>
-    <div class="row"><code>lb</code><span class="d">双词榜单 + 周期</span><span class="u">/~wdsj lb bw win month</span></div>
-    <div class="row"><code>lb</code><span class="d">单词榜单 + 图片卡</span><span class="u">/~wdsj lb beds all img</span></div>
-    <div class="row"><code>daily</code><span class="d">竞技场日榜（日期 7-20 / 2026-07-20）</span><span class="u">/~wdsj daily are</span></div>
-    <div class="row"><code>周期</code><span class="d">alltime(all) / month(ly) / week(ly) / day(ily)</span><span class="u">默认 alltime</span></div>
-  </div></div>
+    <div class="panel"><div class="k">子指令 SUBCOMMANDS</div>{sub_rows}</div>
 
-  <div class="foot">
-    <span class="pill">详细文档</span><span>完整版：data/wdsj_完整指令文档.md</span>
-    <span class="spacer"></span><span>Generated by {bot_name}</span>
+    <div class="panel"><div class="k">排行榜 LEADERBOARD（lb &lt;双词榜单&gt; [周期] [img]，周期默认总榜）</div>
+      <div class="lb-grid">{lb_rows}</div>
+    </div>
+
+    <div class="panel"><div class="k">日榜 DAILY（每天 0:01-20:01 六轮产出）</div>
+      <div class="row"><code>daily</code><span class="d">起床战争日榜（默认）</span><span class="u">/~wdsj daily</span></div>
+      <div class="row"><code>daily are</code><span class="d">竞技场日榜（冷蓝模板）</span><span class="u">/~wdsj daily are</span></div>
+      <div class="row"><code>daily 7-20</code><span class="d">查过去日期（自动跨天统计）</span><span class="u">/~wdsj daily 7-20</span></div>
+      <div class="row"><code>daily send</code><span class="d">推送到当前群（仅群聊）</span><span class="u">/~wdsj daily send</span></div>
+    </div>
+
+    <div class="panel"><div class="k">趋势 TREND（折线图，需 ≥2 天采集记录）</div>
+      <div class="row"><code>trend</code><span class="d">指标：bw_kills / bw_wins / bw_finals / bw_deaths / arena_kills</span><span class="u">/~wdsj trend &lt;玩家&gt; bw_wins</span></div>
+    </div>
+
+    <div class="foot">
+      <span class="pill">仅管理员</span><span>collect = 手动采集 ｜ /~owner wdsj groups = 推送群管理</span>
+      <span style="flex:1"></span><span>Generated by {bot_name}</span>
+    </div>
   </div>
 </div>
 </body></html>"""
+

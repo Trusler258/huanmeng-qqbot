@@ -2790,6 +2790,20 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         return await _handle_wdsj_lb(args[1:], is_group, group_id, user_id)
 
     if action in ("boards", "榜单", "榜"):
+        # ★ 带游戏过滤：/~wdsj boards bw → 只看起床战争的榜单（v2.3.81，用户反馈原表没看懂）
+        game_raw = (args[1] if len(args) > 1 else "").strip()
+        if game_raw and game_raw.lower() not in ("all", "全部"):
+            tid = api.resolve_template(game_raw) or ""
+            prefix = tid.replace("-stats", "") if tid else ""
+            cn = api.TEMPLATES.get(tid, game_raw)
+            rows = [(a, bid) for a, bid in api.BOARD_ALIASES.items()
+                    if bid.startswith(prefix) or bid.startswith(cn)]
+            if rows:
+                lines = [f"{cn} 排行榜 (用法: /~wdsj lb <简写> [周期] [img])", ""]
+                lines += [f"  {a:<8s} = {bid}" for a, bid in sorted(rows, key=lambda x: x[1])]
+                lines += ["", "周期: alltime(all) / month(ly) / week(ly) / day(ily)，默认总榜",
+                          "末尾加 img = 发卡片图片"]
+                return "\n".join(lines)
         lines = ["洛花星雨排行榜 简写速查 (用法: /~wdsj lb <简写> [周期] [img])"]
         lines.append("")
         # 按游戏分组的简写
