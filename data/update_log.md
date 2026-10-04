@@ -11,6 +11,26 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.81 — 沙箱 chroot 根隔离：rm -rf /* 只砸沙箱 (2026.10.4)
+一句话总结：旧隔离（unshare -m -n）只隔离挂载点不隔离文件内容，沙箱里 rm -rf /* 会真删盘
+（实测沙箱内能 touch 真实 /）。现在 /~run 的 py/cpp/sh 在 chroot 里执行：进程的 / 是沙箱
+目录，rm -rf /* 只删沙箱临时文件，真实系统靠 /usr 只读绑定保护。
+
+### 1. `core/sandbox.py` chroot 根隔离
+- unshare -m -n 内做 chroot：沙箱目录 /usr 只读绑定（python3/g++/stdlib 都在），
+  bin/lib/lib64 符号链接，/dev 用 mknod 建设备节点，/proc proc 挂载
+- 工作区移到 `<沙箱>/work`（代码文件在 chroot 的 /work，产物收集 host 侧 rglob 兼容）
+- collect_artifacts 排除脚手架顶层目录（usr/dev/proc 等绑定不算产物）
+- 挂载全部发生在 unshare namespace 内 → 进程退出自动清干净，不污染宿主挂载表
+- setup 失败自动回退无隔离执行（工具必须可用），isolation_mode() 报告当前模式
+
+### 2. 实测（关键）
+- 沙箱内 `rm -rf /*`：真实系统 /etc/passwd、/usr/bin、/root/bot 全部存活 ✓
+- 沙箱砸完后再跑新沙箱正常 ✓；py/cpp/sh 三模式在 chroot 内全部正常 ✓
+- ⚠️ 事故记录：开发过程中 /dev 曾用 rw rbind，rm 测试把宿主 /dev 内容删了
+  （urandom/zero 丢失），已用 mknod 重建并改为 mknod 方式（宿主 /dev 完全不接触）；
+  重启后 udev 会重新填充 /dev
+
 ## v2.3.80 — /~run 沙箱执行指令（移植自 KOOK .run）(2026.10.4)
 一句话总结：把 KOOK bot 的 .run 移植成 /~run——沙箱真实执行代码并返回运行输出，
 四种模式：py（运行 Python）/ cpp（g++ 编译运行）/ sh（终端命令，仅管理员）/
