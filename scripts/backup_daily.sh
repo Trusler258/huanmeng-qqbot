@@ -18,6 +18,10 @@ if [ ! -d "$WORK/.git" ]; then
 fi
 cd "$WORK" || exit 1
 
+# ── git 身份自愈（服务器重装后不再踩 Author identity unknown）──
+git config user.email "backup@bot.local" 2>/dev/null || true
+git config user.name "qqbot-backup" 2>/dev/null || true
+
 # ── 1. SQLite 一致性快照（直接 cp 可能拿到写一半的库）──
 SNAP="/tmp/huanmeng_backup_$DATE.db"
 python3 - <<PYEOF >> "$LOG" 2>&1
