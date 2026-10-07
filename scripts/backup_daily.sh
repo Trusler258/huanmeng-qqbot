@@ -43,9 +43,19 @@ rm -rf "$STAGE" "$SNAP"
 SIZE=$(du -h "$WORK/$TARBALL" | cut -f1)
 log "打包完成: $TARBALL ($SIZE)"
 
+# ── 2b. KOOK bot 全量（同项目衍生，数据/配置/skills 共用）──
+K_ROOT="/root/kook_bot"
+if [ -d "$K_ROOT" ]; then
+    KTARBALL="kook-full-$DATE.tar.gz"
+    tar czf "$WORK/$KTARBALL"         --exclude="data/img_temp"         --exclude="data/tts_temp"         --exclude="data/tmp"         --exclude="data/__pycache__"         --exclude="*.bak*"         --exclude="logs"         --exclude="server_config_backup"         -C "$K_ROOT" data config skills db plugins >> "$LOG" 2>&1 || true
+    log "KOOK 打包: $KTARBALL ($(du -h "$WORK/$KTARBALL" | cut -f1))"
+fi
+
 # ── 3. TTL 30 天：删旧包 ──
 find "$WORK" -name "qqbot-full-*.tar.gz" -mtime +30 -delete
+find "$WORK" -name "kook-full-*.tar.gz" -mtime +30 -delete
 find "$WORK" -name "qqbot-full-*.tar.gz" | sort | head -n -35 | xargs -r rm -f
+find "$WORK" -name "kook-full-*.tar.gz" | sort | head -n -35 | xargs -r rm -f
 
 # ── 4. 提交推送 ──
 git add -A
