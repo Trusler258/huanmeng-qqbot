@@ -230,6 +230,41 @@ def search_bing_cn(query: str, limit: int = 5, timeout: float = 5.0) -> list[dic
         return []
 
 
+def search_anysearch(query: str, limit: int = 5, timeout: float = 10.0) -> list[dict]:
+    """AnySearch 统一搜索 API（v2.3.81）— Bearer 认证，未配 ANYSEARCH_KEY 时静默返回空。
+
+    POST https://api.anysearch.com/v1/search {query, count}
+    响应: {code:0, data:{results:[{title,url,snippet,content}]}}
+    """
+    import os as _os
+    key = _os.getenv("ANYSEARCH_KEY", "")
+    if not key:
+        return []
+    try:
+        resp = requests.post(
+            "https://api.anysearch.com/v1/search",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={"query": query, "count": limit},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            logger.warning("AnySearch HTTP %s", resp.status_code)
+            return []
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning("AnySearch 业务错误: %s", data.get("message"))
+            return []
+        out = []
+        for item in (data.get("data") or {}).get("results") or []:
+            out.append(_format_entry(0, item.get("title", ""),
+                                     item.get("snippet", ""), item.get("url", ""), "anysearch"))
+        logger.debug("AnySearch 返回 %d 条", len(out))
+        return out
+    except Exception as e:
+        logger.debug("AnySearch 搜索失败: %s", e)
+        return []
+
+
 def search_baike(query: str, main_query: str = "", timeout: float = 5.0) -> list[dict]:
     """百度百科 — 直接尝试访问词条页面"""
     candidates = []
@@ -320,8 +355,17 @@ class AgentSearch:
         self.fetch_max_chars = fetch_max_chars
 
     def _search_all_sources(self, optimized: str, main: str, limit: int) -> list[dict]:
-        """百度优先串行（避免并行反爬），Bing+百科并行兜底"""
+        """AnySearch 优先（正规 API，v2.3.81），百度+百科+Bing 爬虫兜底"""
         all_results = []
+
+        # Step 0: AnySearch 统一搜索（正规 API，质量最好，ANYSEARCH_KEY 配置才启用）
+        try:
+            as_results = search_anysearch(optimized, limit, 10.0)
+            if as_results:
+                all_results.extend(as_results)
+                logger.debug("AnySearch 返回 %d 条", len(as_results))
+        except Exception as e:
+            logger.debug("AnySearch 搜索失败: %s", e)
 
         # Step 1: 百度优先（主源，给 10s）
         baidu_timeout = 8.0

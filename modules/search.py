@@ -80,6 +80,15 @@ async def perform_search(
     except Exception as e:
         logger.warning("DeepSeek 原生搜索异常: %s，回退 Agent 搜索", e)
 
+    # ── Step 2b: AnySearch 统一搜索（回退，v2.3.81）──
+    if result_text is None:
+        try:
+            from modules.web_search import agent_search
+            logger.info("DeepSeek 原生无结果，AnySearch 回退: '%s...'", query[:40])
+            result_text = await asyncio.to_thread(agent_search, query, limit)
+        except Exception as e:
+            logger.warning("AnySearch 搜索异常: %s", e)
+
     # ── Step 3: Agent 搜索（回退）──
     if result_text is None:
         set_search_cache(query, result_text)
