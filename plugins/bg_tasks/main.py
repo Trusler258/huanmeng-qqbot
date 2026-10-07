@@ -195,6 +195,19 @@ class Plugin:
                             _ap = await _render_html_to_png(a_html, "wdsj_arena")
                         if _ap:
                             _daily_pngs.append(_ap)
+                    # ★ v2.3.81: 数据缺失（停机导致基线快照缺失）→ 补位公告卡替代日报
+                    _is_outage = False
+                    if not rows and not arena_rows:
+                        try:
+                            from modules.commands import _render_html_to_png, _build_outage_notice_html
+                            _out_html = _build_outage_notice_html()
+                            _np = await _render_html_to_png(_out_html, "wdsj_outage")
+                            if _np:
+                                _daily_pngs.append(_np)
+                                _is_outage = True
+                                logger.info("日榜数据缺失，已生成补位公告卡")
+                        except Exception as _e3:
+                            logger.warning("补位公告卡渲染失败: %s", _e3)
                     if _daily_pngs:
                         # 读 target_groups（直接读 toml，不依赖 cfg.config）
                         _cfg_data = toml.load(Path(__file__).resolve().parent.parent.parent / "config" / "bot_config.toml")
@@ -213,7 +226,10 @@ class Plugin:
                             from services.sender import get_ws_manager as _get_ws
                             _mgr = _get_ws()
                             # v2.0.4an: 失败说明并入日报说说文字(非0点不单独发文字说说)
-                            _content = f"{today} 战绩日报（wdsj 绑定玩家）"
+                            if _is_outage:
+                                _content = f"{today} 战绩日报未产出（服务器异常停机维护），明日恢复正常"
+                            else:
+                                _content = f"{today} 战绩日报（wdsj 绑定玩家）"
                             _fail_mark = Path("data") / "wdsj_qzone_fail_notify.json"
                             _today = datetime.now().strftime("%Y-%m-%d")
                             _notified_today = False
