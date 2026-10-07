@@ -34,27 +34,10 @@ print("sqlite backup ok")
 PYEOF
 [ -f "$SNAP" ] || { log "sqlite 快照失败"; exit 1; }
 
-# ── 2. 打包全量 ──
-STAGE="/tmp/qqbot_backup_stage"
-rm -rf "$STAGE"; mkdir -p "$STAGE/config" "$STAGE/plugins"
-B="/root/bot"
-cp "$SNAP" "$STAGE/huanmeng.db"
-cp "$B/config/bot_config.toml" "$STAGE/config/" 2>/dev/null
-cp "$B"/config/*.toml "$STAGE/config/" 2>/dev/null
-cp "$B/config/.env" "$STAGE/config/" 2>/dev/null
-cp "$B/config/roles.toml" "$STAGE/config/" 2>/dev/null
-cp "$B/data/wdsj_player_name.json" "$STAGE/" 2>/dev/null
-cp "$B/data/wdsj_collect_status.json" "$STAGE/" 2>/dev/null
-cp "$B/data/user_profiles.json" "$STAGE/" 2>/dev/null
-cp -r "$B/data/msglog" "$STAGE/" 2>/dev/null
-cp -r "$B/data/stats_archive" "$STAGE/" 2>/dev/null
-cp "$B"/data/memory_*.md "$STAGE/" 2>/dev/null
-cp "$B/plugins/bg_tasks/main.py" "$STAGE/plugins/bg_tasks_main.py" 2>/dev/null
-mkdir -p "$STAGE/plugins" 2>/dev/null
-cp "$B/plugins/bg_tasks/main.py" "$STAGE/plugins/bg_tasks_main.py" 2>/dev/null
-
+# ── 2. 打包全量：/root/bot/data 全目录（排除临时/缓存/.bak）+ config + bg_tasks 补丁 ──
 TARBALL="qqbot-full-$DATE.tar.gz"
-tar czf "$WORK/$TARBALL" -C "$STAGE" . >> "$LOG" 2>&1
+STAGE="/tmp/qqbot_backup_stage"
+tar czf "$WORK/$TARBALL"     --exclude="data/img_temp"     --exclude="data/tts_temp"     --exclude="data/tmp"     --exclude="data/__pycache__"     --exclude="*.bak*"     --exclude="data/backup_daily.log"     -C /root/bot data config plugins/bg_tasks/main.py >> "$LOG" 2>&1
 rm -rf "$STAGE" "$SNAP"
 [ -f "$WORK/$TARBALL" ] || { log "打包失败"; exit 1; }
 SIZE=$(du -h "$WORK/$TARBALL" | cut -f1)
