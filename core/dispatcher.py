@@ -740,16 +740,43 @@ class EventDispatcher:
                 logger.warning("[chat=%d] 合并转发无 messages 字段 id=%s", chat_id, forward_id)
                 return "[合并转发]"
             
-            lines = [f"[合并转发 · {len(messages)} 条消息]"]
+            # ★ v2.3.81b: 说话人图例 + 稳定标签 + 重名消歧
+            #   旧版只在每行前写昵称，长转发里 LLM 会把两个人混成一个（实测张冠李戴）。
+            #   现在先给一份「说话人N=昵称」图例，每行都带稳定编号，重名按 QQ 号后 4 位区分。
+            uid_order: list[str] = []
+            nick_of: dict[str, str] = {}
+            for node in messages:
+                ns = node.get("sender", {}) or {}
+                uid = str(ns.get("user_id", "") or "")
+                nick = (ns.get("nickname") or "").strip() or uid or "未知"
+                key = uid if uid else f"noname:{nick}"
+                if key not in uid_order:
+                    uid_order.append(key)
+                    nick_of[key] = nick
+            from collections import Counter
+            _dup = Counter(nick_of.values())
+            for k, v in list(nick_of.items()):
+                if _dup[v] > 1:
+                    nick_of[k] = f"{v}#{k[-4:]}" if k[:1].isdigit() else v
+
+            legend = ", ".join(
+                f"说话人{i + 1}={nick_of[u]}" for i, u in enumerate(uid_order))
+            lines = [f"[合并转发 · {len(messages)} 条消息 · 说话人: {legend}]"]
+            lines.append("[每条格式为「说话人N(昵称): 内容」，请严格按编号区分谁说的]")
             truncated = False
-            total_chars = len(lines[0])  # 实时统计总字符数（含前缀和换行）
+            total_chars = sum(len(x) + 1 for x in lines)  # 实时统计总字符数（含前缀和换行）
             max_total_chars = 6000  # 总字符上限，保证 LLM 有足够上下文
             max_line_chars = 120   # 单条上限
             
             for i, node in enumerate(messages):
                 # 提取节点信息
-                node_sender = node.get("sender", {})
-                nick = node_sender.get("nickname", str(node_sender.get("user_id", "未知")))
+                node_sender = node.get("sender", {}) or {}
+                _uid = str(node_sender.get("user_id", "") or "")
+                _nick = (node_sender.get("nickname") or "").strip()
+                _key = _uid if _uid else f"noname:{_nick or '未知'}"
+                _idx = uid_order.index(_key) + 1 if _key in uid_order else 0
+                nick = (f"说话人{_idx}({nick_of.get(_key, _nick or '未知')})"
+                        if _idx else f"未知({_nick or '未知'})")
                 msg_content = ""
                 
                 # content 可能是 string 或 list of segments
