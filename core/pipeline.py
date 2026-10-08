@@ -1488,7 +1488,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                         max_t = None  # 不限 token
                     else:
                         prompt = (
-                            "上面是调用结果。简单数据一两句自然回应即可；如果结果含知识/原理/步骤/对比类内容，就展开讲清楚，不限句数。纯文本，不要JSON。\n"
+                            "上面是调用结果。简单数据一两句自然回应即可；如果结果含知识/原理/步骤/对比类内容，就展开讲清楚，不限句数。"
+                            "内容适合表格呈现（对比/多项并列/参数清单）时，整理成一条消息内的 markdown 表格（| 分列对齐）。"
+                            "无论内容多长都只输出一条消息的内容，不要拆成多条；纯文本，不要 JSON，禁止输出 {\"replies\": ...}。\n"
                             f"结果: {effective_result[:2000]}"
                         )
                         max_t = 1500
@@ -1504,8 +1506,22 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                                 import json
                                 parsed = json.loads(f_text)
                                 if isinstance(parsed, dict) and "replies" in parsed:
-                                    for sentence in parsed["replies"]:
-                                        sentence = sentence[:3000].strip()
+                                    _replies = [s[:3000].strip() for s in parsed["replies"] if s and s.strip()]
+                                    if len(_replies) > 4:
+                                        # ★ v2.3.81b: 工具结果的追加回复不该拆条刷屏 → 合并一条发送
+                                        f_text = re.sub(r'[\[［]fav:\s*[+-]?\d+[\]］]', '', "\n".join(_replies)).strip()[:3000]
+                                        f_text, _fcq2 = extract_inline_face(f_text)
+                                        if f_text:
+                                            ctx.append_to_context(chat_id, _ctx_safe(f"{cfg.bot_name}: {f_text}", 200))
+                                            await send_by_chat_type(f_text, chat_id if is_group else chat_id,
+                                                                   is_group=True if is_group else False,
+                                                                   user_id=user_id if not is_group else None)
+                                        if _fcq2:
+                                            await send_by_chat_type(_fcq2, chat_id if is_group else chat_id,
+                                                                   is_group=True if is_group else False,
+                                                                   user_id=user_id if not is_group else None)
+                                        return
+                                    for sentence in _replies:
                                         # ★ v2.3.27: 剥掉 [FACE:关键词] 并改发真表情
                                         #   （此前直接发原文 → "[FACE:疲惫]" 泄漏给用户）
                                         sentence, _fcq = extract_inline_face(sentence)
