@@ -15,6 +15,63 @@ from typing import Any
 
 RDAP_BASE = "https://rdap.org/domain/"
 
+# ★ v2.3.81b: 没有 RDAP 服务的 TLD（.cn 等）走传统 port-43 WHOIS
+#   （CNNIC 不提供 RDAP，rdap.org 对 .cn 一律 404 → 会误报"未注册"）
+_CUSTOM_WHOIS = {
+    "cn": "whois.cnnic.cn", "com.cn": "whois.cnnic.cn", "net.cn": "whois.cnnic.cn",
+    "org.cn": "whois.cnnic.cn", "edu.cn": "whois.cnnic.cn", "gov.cn": "whois.cnnic.cn",
+    "top": "whois.nic.top", "xyz": "whois.nic.xyz", "vip": "whois.nic.vip",
+    "club": "whois.nic.club", "shop": "whois.nic.shop", "online": "whois.nic.online",
+    "site": "whois.nic.site", "work": "whois.nic.work", "icu": "whois.nic.icu",
+    "cc": "cc.whois-servers.net", "tv": "tv.whois-servers.net",
+}
+
+
+def _raw_whois(domain: str, server: str, timeout: float = 15.0) -> str:
+    """传统 WHOIS（port 43），用于没有 RDAP 的 TLD。返回原始文本，失败返回空串。"""
+    import socket
+    try:
+        with socket.create_connection((server, 43), timeout=timeout) as s:
+            s.sendall((domain + "\r\n").encode("ascii"))
+            buf = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+    except Exception:
+        return ""
+    # CNNIC 等中文注册局可能返回 GBK
+    for enc in ("utf-8", "gbk", "latin-1"):
+        try:
+            return buf.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return buf.decode("utf-8", "replace")
+
+
+def _format_raw_whois(domain: str, raw: str) -> str:
+    """从 port-43 原始文本里挑关键字段（注册商/时间/NS/状态）。"""
+    if not raw.strip():
+        return ""
+    fields = [
+        ("注册商", r"(?:Registrar|Sponsoring Registrar|Registrar Name)\s*[::]\s*(.+)"),
+        ("注册时间", r"(?:Registration Time|Creation Date|Created Date|Registered on)\s*[::]\s*(.+)"),
+        ("到期时间", r"(?:Expiration Time|Expiry Date|Registry Expiry Date|Expires on)\s*[::]\s*(.+)"),
+        ("更新时间", r"(?:Updated Date|Last Modified|Changed)\s*[::]\s*(.+)"),
+        ("域名状态", r"(?:Domain Status|Status)\s*[::]\s*(.+)"),
+    ]
+    lines = [f"域名: {domain}"]
+    for label, pat in fields:
+        m = re.search(pat, raw, re.I)
+        if m:
+            lines.append(f"{label}: {m.group(1).strip()[:80]}")
+    ns = re.findall(r"(?:Name Server|Nameserver|nserver)\s*[::]\s*(\S+)", raw, re.I)
+    if ns:
+        lines.append(f"NS: {', '.join(dict.fromkeys(ns))[:120]}")
+    lines.append("(数据源: port-43 WHOIS，该后缀无 RDAP 服务)")
+    return "\n".join(lines)
+
 
 def _extract_domain(raw: str) -> str:
     """从 URL/带协议输入中提取裸域名"""
@@ -72,10 +129,26 @@ def lookup_domain(domain: str) -> str:
         with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
             data = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
+        # ★ v2.3.81b: RDAP 404/失败 → 该后缀没有 RDAP 时走 port-43 WHOIS 兜底，
+        #   否则 .cn 这类会一律误报"未注册"（实测 updream.cn 已注册但 rdap.org 404）
+        tld = domain.rsplit(".", 1)[-1] if "." in domain else ""
+        server = _CUSTOM_WHOIS.get(tld) or _CUSTOM_WHOIS.get(
+            ".".join(domain.rsplit(".", 2)[-2:]) if domain.count(".") >= 2 else "")
+        if server:
+            raw = _raw_whois(domain, server)
+            if raw.strip():
+                return _format_raw_whois(domain, raw)
+            return f"域名 {domain} 的 WHOIS 服务器 {server} 无响应"
         if e.code == 404:
             return f"域名 {domain} 未注册或 RDAP 无数据"
         return f"查询失败: HTTP {e.code}"
     except Exception as e:
+        tld = domain.rsplit(".", 1)[-1] if "." in domain else ""
+        server = _CUSTOM_WHOIS.get(tld)
+        if server:
+            raw = _raw_whois(domain, server)
+            if raw.strip():
+                return _format_raw_whois(domain, raw)
         return f"查询失败: {e}"
 
     lines = [f"域名: {domain}"]

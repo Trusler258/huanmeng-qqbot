@@ -865,6 +865,46 @@ async def _ws_files(action: str, name: str = "", content: str = "") -> str:
     return f"未知 action: {action}"
 
 
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+
+def _decode_js_challenge(url: str, timeout: float = 15.0) -> str:
+    """反爬挑战页解码：JS 变量里 URL 编码的真 HTML → 正文（纯 Python，零额外开销）。
+
+    常见于国内站点的 JS 挑战（如 updream.cn：真 HTML 以 %3C!doctype 形式塞进
+    _AbConf 变量），requests/readability 只能看到空壳。这里解码后直接提正文，
+    不用拉起 Chromium（常驻 858MB）。
+    """
+    import re, urllib.request, urllib.parse
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            html = r.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+    m = re.search(r"%3C(?:!doctype|html)", html, re.I)
+    if not m:
+        return ""
+    seg = html[m.start(): m.start() + 600000]
+    end = seg.find('"')
+    if end > 0:
+        seg = seg[:end]
+    decoded = urllib.parse.unquote(seg.replace("\\u0026", "&"))
+    if len(decoded) < 500:
+        return ""
+    try:
+        from readability import Document
+        body = Document(decoded).summary()
+    except Exception:
+        body = decoded
+    text = re.sub(r"<script[\s\S]*?</script>", " ", body or decoded, flags=re.I)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:6000]
+
+
 def _github_rewrite(url: str) -> str:
     """github.com 链接改写为可达形式（主站被墙，raw/api 可达）：
     - .../blob/<branch>/<path> → raw.githubusercontent.com/<branch>/<path>
@@ -893,9 +933,36 @@ async def _read_url(url: str) -> str | None:
         loop = asyncio.get_running_loop()
         raw_text = await loop.run_in_executor(None, lambda: scraper.scrape(url, max_chars=6000))
     except Exception as e:
-        return f"抓取失败: {e}"
+        raw_text = ""
 
-    if not raw_text:
+    # ★ v2.3.81b: 反爬挑战页（真 HTML 被 URL 编码塞进 JS 变量）→ 纯 Python 解码，
+    #   比 Chromium 轻得多（零额外开销）；解码失败才用 Chromium 真渲染兜底
+    if not raw_text or len(raw_text.strip()) < 200:
+        decoded = _decode_js_challenge(url)
+        if decoded:
+            logger.info("JS 挑战页解码成功: %s (%d字)", url[:40], len(decoded))
+            raw_text = decoded
+
+    if not raw_text or len(raw_text.strip()) < 200:
+        try:
+            from modules.changelog import _ensure_browser
+            browser = await _ensure_browser()
+            page = await browser.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=6000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(1200)
+            rendered = await page.evaluate("() => document.body ? document.body.innerText : ''")
+            await page.close()
+            if rendered and len(rendered.strip()) > len(raw_text or ""):
+                logger.info("Chromium 渲染兜底成功: %s (%d字)", url[:40], len(rendered))
+                raw_text = rendered.strip()[:6000]
+        except Exception as e:
+            logger.warning("Chromium 渲染兜底失败: %s", e)
+
+    if not raw_text or not raw_text.strip():
         return f"无法读取该页面: {url}"
 
     # LLM 摘要：把 6000 字压缩成 800 字核心信息
@@ -910,6 +977,7 @@ async def _read_url(url: str) -> str | None:
 3. 保持原文的客观性，不要添加自己的理解
 4. 如果是技术文章，保留代码示例和关键参数
 5. 如果是新闻，保留时间、地点、人物、事件
+6. 用纯文本输出，禁止 markdown 语法（# 标题、** 加粗、| 表格在 QQ 里原样显示），对比内容用「名称：值」逐行
 
 网页内容：
 {raw_text}
@@ -1167,9 +1235,36 @@ async def execute_tool(
         loop = asyncio.get_running_loop()
         raw_text = await loop.run_in_executor(None, lambda: scraper.scrape(url, max_chars=6000))
     except Exception as e:
-        return f"抓取失败: {e}"
+        raw_text = ""
 
-    if not raw_text:
+    # ★ v2.3.81b: 反爬挑战页（真 HTML 被 URL 编码塞进 JS 变量）→ 纯 Python 解码，
+    #   比 Chromium 轻得多（零额外开销）；解码失败才用 Chromium 真渲染兜底
+    if not raw_text or len(raw_text.strip()) < 200:
+        decoded = _decode_js_challenge(url)
+        if decoded:
+            logger.info("JS 挑战页解码成功: %s (%d字)", url[:40], len(decoded))
+            raw_text = decoded
+
+    if not raw_text or len(raw_text.strip()) < 200:
+        try:
+            from modules.changelog import _ensure_browser
+            browser = await _ensure_browser()
+            page = await browser.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=6000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(1200)
+            rendered = await page.evaluate("() => document.body ? document.body.innerText : ''")
+            await page.close()
+            if rendered and len(rendered.strip()) > len(raw_text or ""):
+                logger.info("Chromium 渲染兜底成功: %s (%d字)", url[:40], len(rendered))
+                raw_text = rendered.strip()[:6000]
+        except Exception as e:
+            logger.warning("Chromium 渲染兜底失败: %s", e)
+
+    if not raw_text or not raw_text.strip():
         return f"无法读取该页面: {url}"
 
     # LLM 摘要：把 6000 字压缩成 800 字核心信息
@@ -1184,6 +1279,7 @@ async def execute_tool(
 3. 保持原文的客观性，不要添加自己的理解
 4. 如果是技术文章，保留代码示例和关键参数
 5. 如果是新闻，保留时间、地点、人物、事件
+6. 用纯文本输出，禁止 markdown 语法（# 标题、** 加粗、| 表格在 QQ 里原样显示），对比内容用「名称：值」逐行
 
 网页内容：
 {raw_text}
