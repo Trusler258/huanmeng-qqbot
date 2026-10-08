@@ -729,8 +729,10 @@ async def _system_status() -> str:
 # 但沙箱不是容器——本身仍能读服务器文件，故保留一层"防手滑"正则，
 # 挡掉联网 / 起子进程 / 读敏感路径这三类高危动作（见 _SANDBOX_BLOCK_RE）。
 
-# 单次运行时限（秒）：Python 纯计算很快；C++ 要留出 g++ 编译时间
+# 单次运行时限（秒）：Python 纯计算很快；C++ 要留出 g++ 编译时间；
+# net 模式要留出外网往返（github 主站被墙，api/raw 可达但要超时兜底）
 _CODE_TIMEOUT_PY: float = 8.0
+_CODE_TIMEOUT_NET: float = 40.0
 _CODE_TIMEOUT_CPP: float = 16.0
 # 代码体积上限（防把整本小说塞进来）
 _MAX_CODE_CHARS: int = 8000
@@ -812,7 +814,7 @@ async def _run_code(language: str, code: str, files: dict | None = None,
             return f"[执行失败] 代码过长，最大 {_MAX_CODE_CHARS} 字符"
         # v2.3.81b: 黑名单正则已撤——chroot 根隔离是真防线（正则可被绕过，且拦掉 net 模式需要的 requests）
         result = await _sb.run_python(
-            code, timeout=_CODE_TIMEOUT_PY, stdin_data=stdin_data,
+            code, timeout=(_CODE_TIMEOUT_NET if net else _CODE_TIMEOUT_PY), stdin_data=stdin_data,
             max_output=_CODE_MAX_OUTPUT, net=net, workspace=True)
         label = "Python"
 
@@ -863,7 +865,297 @@ async def _ws_files(action: str, name: str = "", content: str = "") -> str:
     return f"未知 action: {action}"
 
 
+def _github_rewrite(url: str) -> str:
+    """github.com 链接改写为可达形式（主站被墙，raw/api 可达）：
+    - .../blob/<branch>/<path> → raw.githubusercontent.com/<branch>/<path>
+    - 仓库主页 → raw README（HEAD/README.md）
+    """
+    import re as _re
+    m = _re.match(r"https?://github\.com/([\w.-]+)/([\w.-]+)/blob/([^/]+)/(.+)", url)
+    if m:
+        return f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
+    m = _re.match(r"https?://github\.com/([\w.-]+)/([\w.-]+)/?", url)
+    if m:
+        return f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/HEAD/README.md"
+    return url
+
+
 async def _read_url(url: str) -> str | None:
+    url = _github_rewrite(url)
+    """抓取网页正文，提取纯文本内容（统一用 PageScraper + LLM 摘要）"""
+    if not url.startswith("http"):
+        return "请提供完整链接（http/https）"
+
+    # 用统一的 PageScraper 提取正文（readability + 智能截断）
+    try:
+        from modules.local_search import get_scraper
+        scraper = get_scraper()
+        loop = asyncio.get_running_loop()
+        raw_text = await loop.run_in_executor(None, lambda: scraper.scrape(url, max_chars=6000))
+    except Exception as e:
+        return f"抓取失败: {e}"
+
+    if not raw_text:
+        return f"无法读取该页面: {url}"
+
+    # LLM 摘要：把 6000 字压缩成 800 字核心信息
+    from services.llm import call_llm
+    from core.config import get_config
+    cfg = get_config()
+
+    summary_prompt = f"""提取以下网页正文的核心信息（800字以内）。
+规则：
+1. 保留关键事实、数据、步骤、结论
+2. 去掉广告、导航、重复内容
+3. 保持原文的客观性，不要添加自己的理解
+4. 如果是技术文章，保留代码示例和关键参数
+5. 如果是新闻，保留时间、地点、人物、事件
+
+网页内容：
+{raw_text}
+
+核心信息："""
+
+    try:
+        summary = await call_llm(
+            cfg.reply_model,
+            [{"role": "user", "content": summary_prompt}],
+            max_tokens=1200,
+            temperature=0.2,
+            timeout=20.0,
+        )
+        if summary and summary.strip():
+            logger.info("网页摘要完成: %s (%d→%d字)", url[:50], len(raw_text), len(summary))
+            return summary.strip()
+    except Exception as e:
+        logger.warning("LLM 摘要失败，返回原文: %s", e)
+
+    # LLM 摘要失败 → 返回原文（已截断）
+    return raw_text
+
+
+async def _resolve_player(user_id: int, game: str) -> str | None:
+    """从玩家绑定数据中查找用户对应游戏ID"""
+    import json
+    from pathlib import Path
+    bind_file = Path(__file__).resolve().parent.parent / "data" / "player_bindings.json"
+    if bind_file.exists():
+        data = json.loads(bind_file.read_text(encoding="utf-8"))
+        uid = str(user_id)
+        return data.get(uid, {}).get(game)
+    return None
+
+
+def _save_binding(user_id: int, game: str, player_name: str):
+    import json
+    from pathlib import Path
+    bind_file = Path(__file__).resolve().parent.parent / "data" / "player_bindings.json"
+    data = {}
+    if bind_file.exists():
+        data = json.loads(bind_file.read_text(encoding="utf-8"))
+    uid = str(user_id)
+    data.setdefault(uid, {})[game] = player_name
+    bind_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _extract_stats(player: str, stat: str, raw: str) -> str:
+    """从全量数据提取，返回精简键值对"""
+    import re
+    key_map = {
+        "kill": "击杀", "kills": "击杀",
+        "death": "死亡", "deaths": "死亡",
+        "kd": "KD",
+        "win": "胜利", "wins": "胜利",
+        "loss": "失败", "losses": "失败",
+        "score": "积分",
+    }
+    keyword = key_map.get(stat.lower(), "")
+    if keyword:
+        m = re.search(rf'(?:^|\n)\s*{re.escape(keyword)}[：:]\s*([\d.]+)', raw)
+        if m:
+            return f"{keyword}: {m.group(1)}"
+        return f"{keyword}: 无数据"
+    lines = []
+    for k in ["击杀", "死亡", "KD"]:
+        m = re.search(rf'(?:^|\n)\s*{k}[：:]\s*([\d.]+)', raw)
+        if m:
+            lines.append(f"{k} {m.group(1)}")
+    return " | ".join(lines) if lines else "无数据"
+
+
+async def execute_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    user_id: int,
+    group_id: int,
+    sender_name: str,
+    is_group: bool,
+    bot_qq: int,
+    original_msg: str = "",  # 用户原始消息，用于 write_code 不受 FC 截断
+) -> str | None:
+    """
+    执行单个工具调用，返回自然语言结果文本。
+    返回 None 表示没有数据。
+    """
+    cmd_name = _TOOL_CMD_MAP.get(tool_name)
+
+    # 自有实现（不走 COMMAND_MAP）
+    if tool_name == "learn_slang":
+        # v2.3.24: 让 bot 把新学到的网络黑话记进 data/skills/15_slang.md，
+        # 追加后立即成为词典触发词（词表按文件 mtime 自动失效重算）
+        from services.llm import append_slang_term
+        ok, msg = append_slang_term(
+            arguments.get("term", ""),
+            arguments.get("meaning", ""),
+            arguments.get("category", "LLM 自学") or "LLM 自学",
+        )
+        return msg
+    if tool_name == "read_url":
+        return await _read_url(arguments.get("url", ""))
+    if tool_name == "write_code":
+        desc = original_msg or arguments.get("description", "")
+        return await _write_code(
+            arguments.get("language", "python"),
+            desc,
+            user_id, group_id, sender_name, is_group, bot_qq,
+        )
+    if tool_name == "agent_think":
+        return await _agent_think(arguments.get("question", ""), group_id if is_group else user_id, is_group)
+    if tool_name == "system_status":
+        return await _system_status()
+    if tool_name == "run_code":
+        return await _run_code(
+            arguments.get("language", "python") or "python",
+            arguments.get("code", "") or "",
+            arguments.get("files") or {},
+            arguments.get("stdin", "") or "",
+            net=bool(arguments.get("net", False)),
+        )
+    if tool_name == "ws_files":
+        return await _ws_files(
+            arguments.get("action", "list"),
+            arguments.get("name", "") or "",
+            arguments.get("content", "") or "",
+        )
+    if tool_name == "load_skill":
+        # ★ v2.3.64: 按需拉取技能手册正文（data/skills/*.md 的章节）
+        from services.llm import get_skill_content, get_skill_index
+        _name = (arguments.get("name") or "").strip()
+        _content = get_skill_content(_name)
+        if _content:
+            logger.info("load_skill 命中: %s (%d字)", _name, len(_content))
+            return f"【技能 {_name}】\n{_content}"
+        logger.info("load_skill 未命中: %r", _name)
+        _idx = get_skill_index()
+        if _idx:
+            return f"没有名为「{_name}」的技能。可用技能：\n{_idx}"
+        return f"没有名为「{_name}」的技能。"
+
+    if not cmd_name:
+        # 插件动态注册的工具：LLM 对话自动发现并调用，回退到插件 handler
+        plugin_handler = _find_plugin_tool_handler(tool_name)
+        if plugin_handler:
+            try:
+                result = await plugin_handler(
+                    arguments, user_id, group_id, sender_name, is_group, bot_qq)
+                if isinstance(result, str):
+                    from core.plugin.kook_compat import strip_kook_text
+                    return strip_kook_text(result)
+                return result
+            except Exception as e:
+                logger.error("插件工具 %s 执行失败: %s", tool_name, e)
+                return f"插件工具 {tool_name} 执行出错: {e}"
+        logger.warning("未知工具调用: %s args=%s", tool_name, arguments)
+        return None
+
+    # 从 commands 模块获取 handler
+    from modules.commands import COMMAND_MAP
+    handler = COMMAND_MAP.get(cmd_name)
+    if not handler:
+        logger.warning("工具命令未注册: %s → %s", tool_name, cmd_name)
+        return None
+
+    # 构建参数列表
+    args = []
+    if tool_name == "weather":
+        args = [arguments.get("city", "")]
+    elif tool_name == "wdsj":
+        mode = arguments.get("mode", "bw")
+        if mode == "daily":
+            # ★ v2.3.75: daily 是全群日报，无需绑定（旧逻辑先查绑定，把没绑定的用户挡在日榜外）
+            from modules.commands import COMMAND_MAP as _CM
+            _h = _CM.get("wdsj")
+            if _h:
+                await _h(["daily", "img"], user_id, group_id, sender_name, is_group, bot_qq)
+                return "今日日报图片已生成 (全群)"
+            return "wdsj 指令未注册"
+        # bw/sw 个人战绩：强制用绑定名（player 参数无效，见工具描述）
+        player = await _resolve_player(user_id, "wdsj")
+        if not player:
+            return "你还未绑定起床战绩账号。"
+        from modules.commands import COMMAND_MAP
+        handler = COMMAND_MAP.get("wdsj")
+        if handler:
+            await handler([mode, player, "img"], user_id, group_id, sender_name, is_group, bot_qq)
+            return f"起床战绩图片已生成 (玩家: {player}, 模式: {mode})"
+        return "wdsj 指令未注册"
+    elif tool_name == "wdsj_query":
+        # WDSJ 文字数据：提取指定项
+        player = await _resolve_player(user_id, "wdsj")
+        if not player:
+            return "你还未绑定起床战绩账号。"
+        mode = arguments.get("mode", "bw")
+        stat = arguments.get("stat", "")
+        from modules.commands import COMMAND_MAP
+        handler = COMMAND_MAP.get("wdsj")
+        if handler:
+            result = await handler([mode, player], user_id, group_id, sender_name, is_group, bot_qq)
+            if not result:
+                return f"未找到玩家 {player} 的数据"
+            # 从全量数据中提取相关行
+            return _extract_stats(player, stat, result)
+        return "wdsj 指令未注册"
+    elif tool_name == "search_web":
+        # ★ FC 路径搜索词优化：LLM 传来的 query 可能是完整句子，先优化成关键词
+        raw_query = arguments.get("query", "")
+        if raw_query:
+            optimized = await _optimize_search_keywords(raw_query)
+            args = [optimized]
+        else:
+            args = [""]
+    elif tool_name == "earthquake":
+        prov = arguments.get("province", "")
+        if prov:
+            args = ["sub"] + ([prov] if prov else [])
+        else:
+            args = []
+    elif tool_name == "draw_card":
+        args = []
+    elif tool_name == "chess":
+        action = arguments.get("action", "show")
+        if action == "join":
+            args = ["join"]
+        elif action == "move":
+            frm = arguments.get("from_pos", "")
+            to = arguments.get("to_pos", "")
+            args = ["move", frm, to]
+        elif action == "quit":
+            args = ["quit"]
+        else:
+            args = []
+    elif tool_name == "whois":
+        domain = arguments.get("domain", "")
+        args = [domain] if domain else []
+
+    # 调用 handler
+    try:
+        result = await handler(args, user_id, group_id, sender_name, is_group, bot_qq)
+        if result is None:
+            return None
+        return str(result)
+    except Exception as e:
+        logger.error("工具执行失败 %s(%s): %s", tool_name, arguments, e)
+        return f"工具执行出错: {e}"
     """抓取网页正文，提取纯文本内容（统一用 PageScraper + LLM 摘要）"""
     if not url.startswith("http"):
         return "请提供完整链接（http/https）"
