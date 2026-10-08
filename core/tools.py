@@ -225,7 +225,9 @@ TOOLS: list[dict] = [
                 "或需要实跑一段代码验证算法、逻辑、边界情况时，必须调用此工具，"
                 "不要心算，也不要只写代码却声称已经跑出结果。"
                 "支持 python（默认）与 cpp 两种语言。"
-                "Python 只有标准库（math/fractions/decimal/statistics/itertools 等，无第三方库、无法联网）；"
+                "Python 预装 requests/pillow/openpyxl/pandas/numpy/matplotlib/beautifulsoup4/lxml，"
+                "标准库也可用；工作区文件跨对话持久保留（代码里写文件后，下次 run_code 或 ws_files 都能读到）。"
+                "需要抓网页/调用外部 API 时设 net=true（联网模式）。"
                 "C++ 按 C++14 用 g++ 编译执行。"
                 "代码必须把最终结果打印出来（Python 用 print()，C++ 用 std::cout），否则拿不到答案。"
                 "解方程组时要判断是无解还是无穷多解，并把结论打印出来。"
@@ -251,8 +253,44 @@ TOOLS: list[dict] = [
                         "type": "string",
                         "description": "可选，程序的标准输入内容（需要输入数据时用）",
                     },
+                    "net": {
+                        "type": "boolean",
+                        "description": "联网模式：需要抓网页/调用外部 API 时设 true（默认隔离不联网，仅 python）",
+                    },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ws_files",
+            "description": (
+                "管理沙箱持久工作区文件（跨对话保留）。"
+                "action=list 列出工作区全部文件；action=read 读取一份文件内容；"
+                "action=write 写入/覆盖一份文件。"
+                "配合 run_code 使用：先用 write 放数据文件，再用 run_code 处理它，"
+                "产出的文件也能用 read 读回或下次继续处理。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "read", "write"],
+                        "description": "list=列文件, read=读文件, write=写文件",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "文件名（read/write 必填），如 data.csv、result.json",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "write 时的文件内容",
+                    },
+                },
+                "required": ["action"],
             },
         },
     },
@@ -299,6 +337,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "whois":       "whois",  # ★ 域名查询
     "pgr":         "pgr",
     "run_code":    "",  # 自有实现（沙箱执行 Python / C++）
+    "ws_files":    "",  # 自有实现（沙箱持久工作区文件管理）
     "load_skill":  "",  # 自有实现（按需拉取技能手册正文）
 }
 
@@ -739,7 +778,7 @@ def _fmt_sandbox_result(result: dict, label: str) -> str:
 
 
 async def _run_code(language: str, code: str, files: dict | None = None,
-                    stdin_data: str = "") -> str:
+                    stdin_data: str = "", net: bool = False) -> str:
     """沙箱执行 LLM 生成的代码（Python / C++），返回真实运行输出。
 
     与 write_code（只生成代码文件发群）不同：这里是真的跑一遍并把运行结果拿回来，
@@ -760,9 +799,7 @@ async def _run_code(language: str, code: str, files: dict | None = None,
         joined = "\n".join(src.values())
         if len(joined) > _MAX_CODE_CHARS:
             return f"[执行失败] C++ 代码过长，最大 {_MAX_CODE_CHARS} 字符"
-        hit = _SANDBOX_BLOCK_RE.search(joined)
-        if hit:
-            return f"[执行失败] 代码包含被沙箱禁止的操作（{hit.group(0)}）"
+        # v2.3.81b: 黑名单正则已撤——chroot 根隔离是真防线（正则可被绕过，且拦掉 net 模式需要的 requests）
         input_names = set(src)
         result = await _sb.compile_and_run_cpp(
             src, timeout=_CODE_TIMEOUT_CPP, stdin_data=stdin_data,
@@ -773,12 +810,10 @@ async def _run_code(language: str, code: str, files: dict | None = None,
             return "[执行失败] 未提供代码"
         if len(code) > _MAX_CODE_CHARS:
             return f"[执行失败] 代码过长，最大 {_MAX_CODE_CHARS} 字符"
-        hit = _SANDBOX_BLOCK_RE.search(code)
-        if hit:
-            return f"[执行失败] 代码包含被沙箱禁止的操作（{hit.group(0)}）"
+        # v2.3.81b: 黑名单正则已撤——chroot 根隔离是真防线（正则可被绕过，且拦掉 net 模式需要的 requests）
         result = await _sb.run_python(
             code, timeout=_CODE_TIMEOUT_PY, stdin_data=stdin_data,
-            max_output=_CODE_MAX_OUTPUT)
+            max_output=_CODE_MAX_OUTPUT, net=net, workspace=True)
         label = "Python"
 
     text = _fmt_sandbox_result(result, label)
@@ -796,6 +831,36 @@ async def _run_code(language: str, code: str, files: dict | None = None,
     except Exception:
         pass
     return text
+
+
+
+
+async def _ws_files(action: str, name: str = "", content: str = "") -> str:
+    """沙箱持久工作区文件管理：list / read / write（跨对话保留，路径穿越已防）。"""
+    import os
+    from pathlib import Path as _P
+    _WS_DIR = _P(__file__).resolve().parent.parent / "data" / "sandbox_ws"
+    _WS_DIR.mkdir(parents=True, exist_ok=True)
+    action = (action or "list").strip().lower()
+    if action == "list":
+        entries = [p for p in _WS_DIR.rglob("*") if p.is_file()]
+        entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        if not entries:
+            return "工作区为空（可用 ws_files write 或 run_code 写入文件）"
+        lines = [f"  {p.relative_to(_WS_DIR)}  ({p.stat().st_size}B)" for p in entries[:50]]
+        return "工作区文件（新→旧）:" + chr(10) + chr(10).join(lines)
+    name = os.path.basename((name or "").strip())
+    if not name:
+        return "缺少文件名"
+    target = _WS_DIR / name
+    if action == "read":
+        if not target.exists():
+            return f"{name} 不存在（用 ws_files list 查看工作区文件）"
+        return f"=== {name} ===" + chr(10) + target.read_text(encoding="utf-8", errors="replace")[:4000]
+    if action == "write":
+        target.write_text(content or "", encoding="utf-8")
+        return f"已写入 {name}（{len(content or '')} 字符），可用 run_code 处理它"
+    return f"未知 action: {action}"
 
 
 async def _read_url(url: str) -> str | None:
@@ -946,6 +1011,13 @@ async def execute_tool(
             arguments.get("code", "") or "",
             arguments.get("files") or {},
             arguments.get("stdin", "") or "",
+            net=bool(arguments.get("net", False)),
+        )
+    if tool_name == "ws_files":
+        return await _ws_files(
+            arguments.get("action", "list"),
+            arguments.get("name", "") or "",
+            arguments.get("content", "") or "",
         )
     if tool_name == "load_skill":
         # ★ v2.3.64: 按需拉取技能手册正文（data/skills/*.md 的章节）

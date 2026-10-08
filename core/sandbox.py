@@ -139,7 +139,7 @@ def isolation_mode() -> str:
 _CHROOT_OK: bool | None = None
 
 _CHROOT_SCRIPT = (
-    'SB="$1"; shift\n'
+    'SB="$1"; WS="$2"; shift 2\n'
     'mkdir -p "$SB/usr" "$SB/dev" "$SB/proc" "$SB/work" "$SB/tmp" "$SB/etc"\n'
     'ln -sfn usr/bin "$SB/bin"; ln -sfn usr/lib "$SB/lib"; ln -sfn usr/lib64 "$SB/lib64"\n'
     'export PATH=/usr/sbin:/usr/bin:/sbin:/bin; CHROOT_BIN=$(command -v chroot || echo /usr/sbin/chroot)\n'
@@ -151,6 +151,11 @@ _CHROOT_SCRIPT = (
     'mknod -m 666 "$SB/dev/urandom" c 1 9 2>/dev/null; mknod -m 666 "$SB/dev/random" c 1 8 2>/dev/null\n'
     'mknod -m 666 "$SB/dev/tty" c 5 0 2>/dev/null\n'
     'mount -t proc none "$SB/proc" 2>/dev/null || true\n'
+    # 持久工作区：WS 给出时 rw 绑定到 /work（文件跨对话保留）
+    'if [ -n "$WS" ]; then mkdir -p "$WS" 2>/dev/null; mount --bind "$WS" "$SB/work" 2>/dev/null || true; fi\n'
+    # net 模式必需：chroot 里没有 /etc，DNS 解析会失败——拷 resolv.conf/hosts
+    'cp /etc/resolv.conf "$SB/etc/resolv.conf" 2>/dev/null || true\n'
+    'cp /etc/hosts "$SB/etc/hosts" 2>/dev/null || true\n'
     'if [ -x "$SB/usr/bin/python3" ] || [ -x "$SB/usr/bin/g++" ]; then\n'
     '  "$CHROOT_BIN" "$SB" /bin/sh -c \'cd /work && exec "$@"\' sh "$@"\n'
     'else\n'
@@ -174,9 +179,16 @@ def _chroot_available() -> bool:
     return _CHROOT_OK
 
 
-def _chroot_wrap(root: Path, argv: list[str]) -> list[str]:
-    """把命令包进 chroot 沙箱：/ 是沙箱目录，/usr 只读绑定，/work 是工作区。"""
-    return ["unshare", "-m", "-n", "sh", "-c", _CHROOT_SCRIPT, "sh", str(root), *argv]
+def _chroot_wrap(root: Path, argv: list[str],
+                 ws_host: Path | None = None, net: bool = False) -> list[str]:
+    """把命令包进 chroot 沙箱：/ 是沙箱目录，/usr 只读绑定，/work 是工作区。
+
+    net=True 时不加 -n（保留 mount namespace + chroot 根隔离 + 凭证隔离，放开网络）；
+    ws_host 给出时把它 rw 绑定到 /work（持久工作区，文件跨对话保留）。
+    """
+    flags = ["-m"] if net else ["-m", "-n"]
+    return ["unshare", *flags, "sh", "-c", _CHROOT_SCRIPT, "sh", str(root),
+            str(ws_host or ""), *argv]
 
 
 def _kill_tree(proc) -> None:
@@ -234,15 +246,19 @@ def _safe_env(cwd: Path | None = None) -> dict[str, str]:
 async def _run_proc(cmd: list[str], cwd: Path, timeout: float, mem_mb: int,
                     stdin_data: str = "", max_output: int = MAX_OUTPUT,
                     chroot_root: Path | None = None,
-                    workdir: Path | None = None) -> dict:
+                    workdir: Path | None = None,
+                    chroot_ws: Path | None = None,
+                    chroot_net: bool = False) -> dict:
     """通用子进程执行：限时、限资源、清洗 env、截断输出。返回 dict。
 
     chroot_root/workdir（v2.3.81）：给出时命令包进 chroot 沙箱——进程的 / 是
     沙箱目录，/usr 只读绑定，/work 为工作区，`rm -rf /*` 只砸沙箱。workdir 是
     chroot 内工作区的 host 侧路径（无 chroot 时作为 cwd 回退）。
+    chroot_ws（v2.3.81b）：持久工作区 host 路径，rw 绑定到 /work。
+    chroot_net（v2.3.81b）：True 时不加 -n，放开网络（保留 chroot 根隔离 + 凭证隔离）。
     """
     if chroot_root is not None and _chroot_available():
-        cmd = _chroot_wrap(chroot_root, list(cmd))
+        cmd = _chroot_wrap(chroot_root, list(cmd), ws_host=chroot_ws, net=chroot_net)
         cwd = Path("/")
     elif workdir is not None:
         cwd = workdir
@@ -319,17 +335,31 @@ def _pick_python() -> str:
 async def run_python(code: str, timeout: float = DEFAULT_TIMEOUT,
                      mem_mb: int = DEFAULT_MEM_MB,
                      stdin_data: str = "", cwd: Path | None = None,
-                     max_output: int = MAX_OUTPUT) -> dict:
-    """在沙箱目录执行 Python 代码，返回运行结果。"""
+                     max_output: int = MAX_OUTPUT,
+                     net: bool = False, workspace: bool = False) -> dict:
+    """在沙箱目录执行 Python 代码，返回运行结果。
+
+    net=True：放开网络（保留 chroot 根隔离 + 凭证隔离）。
+    workspace=True：用持久工作区 data/sandbox_ws（文件跨对话保留，rw 绑定到 /work）。
+    """
     root = cwd or Path(tempfile.mkdtemp(prefix="bot_sandbox_"))
-    work = root / "work"
-    work.mkdir(parents=True, exist_ok=True)
+    if workspace:
+        ws = Path(__file__).resolve().parent.parent / "data" / "sandbox_ws"
+        ws.mkdir(parents=True, exist_ok=True)
+        work = ws
+        ws_host = ws
+    else:
+        work = root / "work"
+        work.mkdir(parents=True, exist_ok=True)
+        ws_host = None
     script = work / "main.py"
     script.write_text(code or "", encoding="utf-8")
     cmd = [_pick_python(), "main.py"]
     result = await _run_proc(cmd, root, timeout, mem_mb, stdin_data, max_output,
-                             chroot_root=root, workdir=work)
+                             chroot_root=root, workdir=work,
+                             chroot_ws=ws_host, chroot_net=net)
     result["tmp_dir"] = str(root)
+    result["workdir"] = str(work)
     return result
 
 
