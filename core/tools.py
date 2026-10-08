@@ -147,7 +147,13 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "web_fetch",
-            "description": "抓取并总结网页内容。用户发送链接时调用。",
+            "description": (
+                "抓取并总结网页内容。用户发送链接、让你看某个网页/查某个站点时，"
+                "优先调用本工具，不要用 run_code 自己写爬虫脚本——"
+                "本工具已内置反爬处理：URL 编码的 JS 挑战页会自动解码，纯前端（Vue/React）"
+                "客户端渲染的页面会用浏览器真渲染兜底，能拿到 run_code 拿不到的正文。"
+                "github.com 链接会自动改走 raw（主站被墙）。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
