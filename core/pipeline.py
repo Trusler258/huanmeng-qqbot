@@ -993,13 +993,6 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             cmd_args = str(call.get("args", "")).strip()
             if not cmd_name:
                 continue
-            from modules.commands import COMMAND_MAP
-            if cmd_name not in COMMAND_MAP:
-                err_msg = f"指令 /~{cmd_name} 不存在喵~\n请联系管理员 @{cfg.admin_qq}"
-                await send_by_chat_type(err_msg, chat_id if is_group else chat_id,
-                                       is_group=True, user_id=None)
-                logger.warning("JSON CALL 无效: %s", cmd_name)
-                continue
             # 追踪：有人叫bot执行 → 用actor的QQ；bot自己执行 → 用bot_qq
             caller_id = user_id
             caller_name = display_name
@@ -1009,6 +1002,33 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             elif origin == "bot":
                 caller_id = bot_qq
                 caller_name = cfg.bot_name
+            # ★ v2.3.81b: 自有实现工具（read_url/run_code/ws_files/...，_TOOL_CMD_MAP 值为空）
+            #   走 tools.execute_tool 派发——之前这条路径把它们当指令派发，误报
+            #   "指令 /~read_url 不存在" 且直接跳过（args 字符串按该工具的首参名包装）
+            from core.tools import _TOOL_CMD_MAP as _TCM
+            if cmd_name in _TCM and not _TCM[cmd_name]:
+                from core.tools import execute_tool
+                _raw_args = call.get("args", "")
+                _first = {"web_fetch": "url", "write_code": "description",
+                          "run_code": "code", "whois": "domain"}
+                _args_dict = _raw_args if isinstance(_raw_args, dict) else {
+                    _first.get(cmd_name, "args"): str(_raw_args)}
+                try:
+                    result = await execute_tool(cmd_name, _args_dict, caller_id, chat_id,
+                                               caller_name, is_group, bot_qq, raw_message)
+                    call_results.append(result)
+                except Exception as e:
+                    logger.warning("自有工具 %s 执行失败: %s", cmd_name, e)
+                    call_results.append(f"[CALL错误] {e}")
+                executed_calls.append((cmd_name, str(_raw_args)))
+                continue
+            from modules.commands import COMMAND_MAP
+            if cmd_name not in COMMAND_MAP:
+                err_msg = f"指令 /~{cmd_name} 不存在喵~\n请联系管理员 @{cfg.admin_qq}"
+                await send_by_chat_type(err_msg, chat_id if is_group else chat_id,
+                                       is_group=True, user_id=None)
+                logger.warning("JSON CALL 无效: %s", cmd_name)
+                continue
 
             call_text = f"/~{cmd_name} {cmd_args}".strip()
             logger.info("JSON CALL: %s (by=%s origin=%s)", call_text, caller_name, origin)

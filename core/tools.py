@@ -146,7 +146,7 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "read_url",
+            "name": "web_fetch",
             "description": "抓取并总结网页内容。用户发送链接时调用。",
             "parameters": {
                 "type": "object",
@@ -330,7 +330,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "earthquake":  "eq",
     "draw_card":   "抽",
     "chess":       "xq",
-    "read_url":    "",  # 自有实现
+    "web_fetch":    "",  # 自有实现
     "write_code":  "",  # 自有实现
     "agent_think": "",  # 自有实现
     "system_status": "",  # 自有实现
@@ -415,7 +415,7 @@ def get_tool_schemas() -> list[dict]:
 DEFAULT_TOOL_TIMEOUT: float = 60.0
 TOOL_TIMEOUTS: dict[str, float] = {
     "search_web":  30.0,
-    "read_url":    30.0,
+    "web_fetch":    30.0,
     "write_code":  120.0,
     "agent_think": 90.0,
     "weather":     15.0,
@@ -1010,7 +1010,7 @@ async def execute_tool(
             arguments.get("category", "LLM 自学") or "LLM 自学",
         )
         return msg
-    if tool_name == "read_url":
+    if tool_name == "web_fetch":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
         desc = original_msg or arguments.get("description", "")
@@ -1284,7 +1284,7 @@ async def execute_tool(
             arguments.get("category", "LLM 自学") or "LLM 自学",
         )
         return msg
-    if tool_name == "read_url":
+    if tool_name == "web_fetch":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
         desc = original_msg or arguments.get("description", "")
