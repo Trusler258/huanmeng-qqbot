@@ -479,22 +479,32 @@ async def _write_code(
     from core.config import get_config
     from services.sender import send_group_msg, send_private_msg
     cfg = get_config()
+    _desc_cap = 8000 if is_doc else 4000
     if is_doc:
         # ★ v2.3.81c: 文档模式——产出的是文档正文，不是代码。
         #   明确禁止开场白/围栏，避免文件名被 "```markdown" 污染，也避免正文里塞"好的以下是"。
+        #   v2.3.81d: 加"逐条覆盖 / 每条带来源 / 禁空话 / 过滤无关素材"四条硬规则——
+        #   实测素材 1635 字，模型只挑 2 条写，还塞了一堆没有来源的行业大势空话。
         msgs = [
             {"role": "system", "content": (
-                "你是资料整理助手。把用户给的材料写成一份完整、可直接阅读的文档正文，"
-                "直接输出文档本身：不要代码围栏（```），不要「好的/以下是/希望对你有帮助」这类话，"
-                "不要单独输出文件名行。需要标题就用 # 号，需要列表就用 - 号。"
-                "材料里没有的信息一律不写，不许编造数字、时间、人名或出处。"
+                "你是资料整理助手。输入里包含【整理要求】和【已检索到的原始素材】，"
+                "请把素材整理成一份完整、可直接阅读的文档正文。硬规则：\n"
+                "1. 直接输出文档本身：不要代码围栏，不要「好的/以下是/希望对你有帮助」这类话，"
+                "不要单独输出文件名行；需要标题用 #，分节用 ##，条目用 -。\n"
+                "2. 【素材里有多少条就写多少条】，逐条覆盖，禁止只挑其中几条，"
+                "禁止把多条合并成一句空泛的概括。\n"
+                "3. 每条事实后面附上素材里给出的来源链接，写成 Markdown 链接。\n"
+                "4. 只能写素材里有的内容。素材里没有的数字、时间、人名、出处一律不写；"
+                "也不要写「行业大势」「竞争焦点转向」这类没有具体事实的空话。\n"
+                "5. 明显与主题无关的素材（天气预报、政府宪报公告、体育赛程、股价行情页）直接略过。\n"
+                "6. 素材本身信息很薄时就诚实写薄，不要靠自己的常识补齐来显得丰满。"
             )},
-            {"role": "user", "content": description[:4000]},
+            {"role": "user", "content": description[:_desc_cap]},
         ]
     else:
         msgs = [
             {"role": "system", "content": f"你是{language}程序员。下面是程序设计题，写出完整解法代码。只输出代码不写注释，多文件用 //FILE:name.{ext} 和 //END 分隔。"},
-            {"role": "user", "content": description[:4000]},
+            {"role": "user", "content": description[:_desc_cap]},
         ]
     code = await call_llm(cfg.reply_model, msgs, temperature=0.3, timeout=120.0)
     if not code:

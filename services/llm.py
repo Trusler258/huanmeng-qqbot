@@ -124,6 +124,96 @@ def _needs_deliverable_file(msg: str) -> bool:
     """用户是不是要"把资料整理成文档/报告并发出来"？"""
     return bool(_DELIVERABLE_FILE_RE.search(msg or ""))
 
+
+# string 形态的 legacy 调用参数 → 首参名（与 pipeline.py 的 _first 约定保持一致）
+_LEGACY_FIRST_ARG = {
+    "search_web": "query", "web_fetch": "url", "run_code": "code", "whois": "domain",
+}
+
+
+def _legacy_calls_to_tool_calls(raw: str) -> tuple[list, str]:
+    """★ v2.3.81e：把 content 里的 legacy 调用协议转成原生 tool_calls。
+
+    背景：模型按 reply_schema 可输出 {"replies":[...],"calls":[...]}。有时它**不用原生
+    function-calling**，而是把调用写进 content 走 legacy 协议（tool_calls=0）。此时 FC
+    循环的"先找后写"机制（素材累积 / 多轮 / 交付兜底）全部失效——实测"整理近期AI新闻，
+    并总结成md文档发出来"会随机走进这条路，只回一句"我这就整理成md发出来"，没有任何文件。
+
+    只转换【全部调用名都在原生工具集里】的情况；一旦混进 note 等指令类 legacy 调用就
+    整体放弃（返回 ([], raw)），交回原 pipeline 按指令时间线处理，避免破坏其语义。
+
+    返回 (tool_calls, stripped_content)：
+      - 放弃时为 ([], raw)
+      - 成功时 stripped_content 已剥掉 calls / 内联指令，只留纯文本 replies
+        （关键：不剥掉的话下游 pipeline 会**重复执行**这些调用）
+    """
+    if not raw or "{" not in raw:
+        return [], raw
+    txt = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    txt = re.sub(r"\s*```$", "", txt)
+    start, end = txt.find("{"), txt.rfind("}")
+    if start < 0 or end <= start:
+        return [], raw
+    try:
+        data = json.loads(txt[start:end + 1])
+    except Exception:
+        return [], raw
+    if not isinstance(data, dict):
+        return [], raw
+
+    try:
+        from core.tools import TOOLS as _TOOLS
+        _native = {
+            ((t or {}).get("function") or {}).get("name", "") for t in _TOOLS
+        }
+    except Exception:
+        return [], raw
+
+    raw_calls: list = []
+    _c = data.get("calls")
+    if isinstance(_c, list):
+        raw_calls.extend(_c)
+    _rep = data.get("replies")
+    _texts: list[str] = []
+    if isinstance(_rep, list):
+        for r in _rep:
+            if isinstance(r, dict):
+                _n = str(r.get("cmd") or r.get("name") or "").strip().lstrip("~")
+                if _n:
+                    raw_calls.append({"name": _n, "args": r.get("args", "")})
+            elif isinstance(r, str) and r.strip():
+                _texts.append(r)
+    if not raw_calls:
+        return [], raw
+
+    tcs: list = []
+    for i, c in enumerate(raw_calls):
+        if not isinstance(c, dict):
+            return [], raw
+        name = str(c.get("name") or c.get("tool") or "").strip().lstrip("~")
+        if not name or name not in _native:
+            return [], raw  # 混入非原生工具 → 整体放弃，交回 pipeline
+        a = c.get("args", c.get("arguments", {}))
+        if name == "write_code" and isinstance(a, str):
+            # 文档整理场景：字符串参数即正文要求，语言默认 markdown
+            a = {"language": "markdown", "description": a}
+        elif isinstance(a, str):
+            try:
+                a = json.loads(a)
+            except Exception:
+                a = {_LEGACY_FIRST_ARG.get(name, "args"): a}
+        if not isinstance(a, dict):
+            a = {"args": a}
+        tcs.append({"id": f"legacy_{i}", "name": name, "arguments": a})
+
+    data["calls"] = []
+    if _texts:
+        data["replies"] = _texts
+    else:
+        data.pop("replies", None)
+    return tcs, json.dumps(data, ensure_ascii=False)
+
+
 # ── 多句回复提示词（从 main_skill.md 加载）──────────────────
 # 设计原则：system 消息只放不随对话变化的内容（人设+格式规则），
 # 动态内容（历史/记忆/搜索）放在 user/assistant 多轮消息中。
@@ -1705,6 +1795,11 @@ async def generate_multi_reply_with_tools(
     data_results = []
     action_results = []
     _prev_call_set: frozenset[str] | None = None  # 防死循环：连续两轮相同调用集则停
+    # ★ v2.3.81d：检索素材累积。文档类 write_code 由代码把素材直接注入 description——
+    #   靠模型"复述"素材必然丢料（实测 1635 字素材写进文档只剩 2 条）。
+    _gathered: list[str] = []
+    _gathered_seen: set[str] = set()
+    _wrote_file = False
 
     for round_idx in range(MAX_ROUNDS):
         # ★ v2.3.23 实测结论（勿再"优化"）：max_tokens 是上限，模型遇 EOS 即停，
@@ -1719,6 +1814,19 @@ async def generate_multi_reply_with_tools(
         # v2.1.12: 记录"最后一条有思考"的轮次耗时（轮1先导语分支在下方就近回调）
         if result.reasoning and result.reasoning_duration > 0:
             _last_reasoning_dur = result.reasoning_duration
+
+        # ★ v2.3.81e: 模型偶尔不用原生 FC，而把调用写进 content 的 legacy 协议。
+        #   "要文件"请求若走进这条路，先找后写机制会整个失效 → 这里把它转成原生
+        #   tool_calls 在循环内执行（素材照常累积、多轮照常跑），协议无关。
+        if not result.tool_calls and _needs_deliverable_file(current_msg):
+            _tcs, _stripped = _legacy_calls_to_tool_calls(result.content or "")
+            if _tcs:
+                result.tool_calls = _tcs
+                result.content = _stripped
+                logger.info(
+                    "FC: legacy calls→原生 tool_calls %d 个: %s",
+                    len(_tcs), [t["name"] for t in _tcs],
+                )
 
         if not result.tool_calls:
             if not (result.content or "").strip():
@@ -1860,8 +1968,12 @@ async def generate_multi_reply_with_tools(
         msgs.append({
             "role": "assistant",
             "content": keep_msg,
-            # v2.1.10: 思考模式启用时，带 tools 请求必须回传 reasoning_content（否则 400）
-            "reasoning_content": result.reasoning or None,
+            # v2.1.10: 思考模式启用时，带 tools 请求必须回传 reasoning_content（否则 400）。
+            #   ★ v2.3.81e: 模型走 legacy 协议（或本流程自己构造）时 reasoning 可能为空，
+            #   空值被 DeepSeek 判 400「格式错误」，整轮直接被浪费（实测复现）→ 给个占位串。
+            "reasoning_content": (
+                result.reasoning or ("（本轮直接给出工具调用）" if result.tool_calls else None)
+            ),
             "tool_calls": [
                 {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"], ensure_ascii=False)}}
                 for tc in result.tool_calls
@@ -1890,6 +2002,7 @@ async def generate_multi_reply_with_tools(
                 await _hint(tc)
 
         async def run_one(tc):
+            nonlocal _wrote_file
             # 单工具超时（移植 kook 67dd501：工具级超时表，防止慢工具拖死整轮）
             try:
                 from core.tools import get_tool_timeout
@@ -1897,6 +2010,18 @@ async def generate_multi_reply_with_tools(
             except Exception:
                 timeout = 60.0
             try:
+                # ★ v2.3.81d: 文档类 write_code —— 把已检索到的原始素材由代码直接注入
+                #   description（模型只需给文档要求），素材 100% 进得去，不会被复述丢料。
+                if tc["name"] == "write_code" and _gathered:
+                    _a = tc.setdefault("arguments", {})
+                    if str(_a.get("language", "")).lower() in ("markdown", "md", "text", "txt"):
+                        _src = "\n\n".join(_gathered)[:7000]
+                        _a["description"] = (
+                            f"{_a.get('description', '')}\n\n"
+                            "【已检索到的原始素材（来自上面工具的真实返回），必须逐条覆盖，不许删减】\n"
+                            f"{_src}"
+                        )
+                        logger.info("FC: 已向 write_code 注入素材 %d 字符", len(_src))
                 r = await asyncio.wait_for(
                     execute_tool(
                         tc["name"], tc["arguments"],
@@ -1906,6 +2031,8 @@ async def generate_multi_reply_with_tools(
                     ),
                     timeout=timeout,
                 )
+                if tc["name"] == "write_code":
+                    _wrote_file = True
             except asyncio.TimeoutError:
                 logger.warning("FC: 工具 %s 执行超时(%.0fs)", tc["name"], timeout)
                 r = f"[超时] 工具 {tc['name']} 执行超过 {timeout:.0f} 秒"
@@ -1918,6 +2045,12 @@ async def generate_multi_reply_with_tools(
             # 工具返回长内容时扩大 max_tokens
             if len(tool_text) > 500:
                 max_tokens = max(max_tokens or 0, 8000)
+
+            # ★ v2.3.81d: 累积检索素材（去重），供后续文档类 write_code 注入
+            if tc["name"] in ("search_web", "web_fetch", "read") and tool_text:
+                if tool_text not in _gathered_seen:
+                    _gathered_seen.add(tool_text)
+                    _gathered.append(tool_text)
 
             if "未绑定" in tool_text or "失败" in tool_text or "出错" in tool_text:
                 errors.append(tool_text)
@@ -1936,25 +2069,41 @@ async def generate_multi_reply_with_tools(
             _names = {tc["name"] for tc in result.tool_calls}
             if (
                 _needs_deliverable_file(current_msg)
-                and round_idx < 2
+                and round_idx < 3
                 and not (_names & set(_WRITE_TOOL_NAMES))
             ):
+                _mat_len = sum(len(g) for g in _gathered)
                 logger.info(
-                    "FC: '先找后写'请求，轮%d 工具=%s → 继续一轮以便生成文件",
-                    round_idx + 1, ",".join(sorted(_names)),
+                    "FC: '先找后写'请求，轮%d 工具=%s 素材=%d字 → 继续一轮",
+                    round_idx + 1, ",".join(sorted(_names)), _mat_len,
                 )
                 # ★ 光靠常驻提醒管不住模型"口头答应不执行"（实测它回"我这就整理成md发出来"
-                #   却不肯调工具）。这里在循环内补一条定向指令，明确要求这一轮必须出文件。
-                msgs.append({
-                    "role": "system",
-                    "content": (
-                        "用户要的是【文件】，不是聊天文字。此刻立刻调用 write_code："
-                        "language=markdown（要纯文本填 text），description 写【完整文档正文】"
-                        "——把上面工具查到/换算出的内容整理成一份结构清晰的文档"
-                        "（一级标题、分节、要点条目），直接给正文。"
-                        "禁止只说「我这就整理成md发出来」，禁止在聊天里重复粘贴正文。"
-                    ),
-                })
+                #   却不肯调工具）。这里在循环内补一条定向指令，把下一步动作说死。
+                if _mat_len < 1200:
+                    # 素材太薄 → 让它自己优化关键词、多轮再搜（别拿用户原话硬搜）
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            f"现在检索到的素材只有 {_mat_len} 字，太少，不足以成文。"
+                            "先自己提炼/优化关键词，再并发发 2~3 条【不同角度】的 search_web，"
+                            "例如换成「今日要闻」「今天国内新闻」「今天国际新闻」「今天财经新闻」"
+                            "「今天科技新闻」这类聚合型查询。"
+                            "⚠️ 查询里**不要带具体日期**——带日期只会召回天气公报、宪报公告之类的"
+                            "无关页面。拿到足够结果后再进入下一步。"
+                        ),
+                    })
+                else:
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "用户要的是【文件】，不是聊天文字。此刻立刻调用 write_code："
+                            "language=markdown（要纯文本填 text）。"
+                            "description 只写【文档要求】即可——标题、怎么分节、每条是否附来源链接；"
+                            "上面检索到的原始素材会由系统自动附进这次调用，"
+                            "**不要复述素材、也不要删减**。"
+                            "禁止只说「我这就整理成md发出来」，禁止把正文贴在聊天里。"
+                        ),
+                    })
                 continue
             break
 
@@ -1964,6 +2113,39 @@ async def generate_multi_reply_with_tools(
             logger.warning("FC: 检测到连续两轮相同工具调用，终止循环防止死循环")
             break
         _prev_call_set = cur_set
+
+    # ★ v2.3.81d: 交付兜底——用户要文件、素材也到手了，模型却始终没调 write_code
+    #   （它爱"口头答应"："我这就整理成md发出来"）。此时由代码直接生成并发送，
+    #   保证东西真的交付出去，而不是只回一句漂亮话。
+    #   两道保险避免重复发文件：① 最后一轮还在发工具调用 → 交给循环，不兜底；
+    #   ② 最终 JSON 里已经用 legacy calls 点了 write_code → pipeline 会执行，不兜底。
+    _last_content = (result.content or "") if result is not None else ""
+    _pending_legacy_write = "write_code" in _last_content
+    if (
+        _needs_deliverable_file(current_msg)
+        and _gathered
+        and not _wrote_file
+        and not result.tool_calls
+        and not _pending_legacy_write
+    ):
+        try:
+            logger.warning("FC: 模型未生成文件，触发兜底强制生成（素材 %d 段）", len(_gathered))
+            from core.tools import execute_tool as _exec_tool
+            await _exec_tool(
+                "write_code",
+                {
+                    "language": "markdown",
+                    "description": (
+                        "把下面这些已检索到的素材整理成一份完整文档，逐条覆盖、每条附来源链接：\n\n"
+                        + "\n\n".join(_gathered)[:7000]
+                    ),
+                },
+                user_id=user_id, group_id=group_id, sender_name=speaker_name,
+                is_group=is_group, bot_qq=bot_qq, original_msg="",
+            )
+            _wrote_file = True
+        except Exception as e:
+            logger.warning("FC: 兜底生成文件失败: %s", e)
 
     # ── 如果工具已执行，强制 json_mode 回复 ──
     if errors or data_results or action_results:
