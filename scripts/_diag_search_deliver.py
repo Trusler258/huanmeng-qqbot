@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -31,6 +32,20 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(_ROOT / "config" / ".env")
 
 _FAKE_FILES: list[str] = []
+
+
+def _extra_info() -> str:
+    """复刻 pipeline 注入的 extra_info 里的时间行。
+
+    ⚠️ 不自测时**必须带上**：生产环境 core/pipeline.py:628 会注入
+    「当前时间：2026年10月10日 ... 周六」。不带的话模型不知道今年是哪年，
+    会瞎猜年份（实测它把"10月9日的新闻"搜成了 2025 年）。
+    """
+    from datetime import datetime
+
+    now = datetime.now()
+    weekdays = "日一二三四五六"
+    return f"当前时间：{now.strftime('%Y年%m月%d日 %H:%M:%S')} 周{weekdays[int(now.strftime('%w'))]}"
 
 
 def _install_fake_sender() -> None:
@@ -69,7 +84,10 @@ async def test_fc() -> bool:
     from services.llm import generate_multi_reply_with_tools
 
     cfg = get_config()
-    cases = ["整理今日的新闻并总结成md文档发送出来"]
+    cases = [
+        "整理今日的新闻并总结成md文档发送出来",
+        "整理近期AI新闻，并总结成md文档发出来",
+    ]
     ok = True
     for msg in cases:
         _FAKE_FILES.clear()
@@ -82,6 +100,7 @@ async def test_fc() -> bool:
             system_prompt=cfg.system_prompt,
             reply_model=cfg.reply_model,
             is_group=False,
+            extra_info=_extra_info(),
             user_id=0,
             group_id=0,
             bot_qq=0,
@@ -92,15 +111,93 @@ async def test_fc() -> bool:
         if _FAKE_FILES:
             for fp in _FAKE_FILES:
                 p = Path(fp)
-                size = p.stat().st_size if p.exists() else -1
-                print("       文件: %s (%d 字节)" % (p.name, size))
-                if p.exists():
-                    print("       正文预览: %s" % p.read_text(encoding="utf-8")[:160].replace("\n", " | "))
+                if not p.exists():
+                    print("       文件: %s (已不存在)" % p.name)
+                    continue
+                txt = p.read_text(encoding="utf-8")
+                bullets = sum(1 for ln in txt.splitlines() if ln.strip()[:2] in ("- ", "· ", "* "))
+                print(
+                    "       文件: %s | %d 字节 | 来源链接 %d 个 | 条目 %d 条"
+                    % (p.name, len(txt.encode("utf-8")), txt.count("http"), bullets)
+                )
+                print("       正文预览: %s" % txt[:400].replace("\n", " | "))
+                if txt.count("http") == 0:
+                    print("       ⚠️ 一个来源链接都没有——文档应逐条附来源")
+                if bullets < 3:
+                    print("       ⚠️ 条目太少（<3）——素材可能没被用尽")
         else:
             print("       FAIL —— 没生成文件（模型只回了聊天文字）")
         print("       回复: %s" % (out[0] or [])[:2])
         ok = ok and bool(_FAKE_FILES)
     return ok
+
+
+async def test_fc_legacy() -> bool:
+    """确定性回归：模型走 legacy 协议时（content 里带 calls，tool_calls=0）仍要交付文件。
+
+    模型有时不用原生 function-calling，而把调用写进 content 的 {"replies":...,"calls":[...]}。
+    此前这条路会绕过整个先找后写机制（素材/多轮/兜底全失效），只回一句"我这就整理成md发出来"。
+    这里 monkeypatch 把**第 1 轮响应固定成 legacy 格式**，避开"模型随机选哪种协议"的不确定性，
+    稳定复现该场景。第 2 轮起走真实 LLM（应产出 write_code）。
+    """
+    import services.llm as llm
+    from core.config import get_config
+
+    cfg = get_config()
+    msg = "整理今日的新闻并总结成md文档发出来"
+    legacy_json = json.dumps({
+        "replies": ["好呀，我去扒一圈新闻～", "搜完整理成 md 文档发你"],
+        "fav": 2,
+        "calls": [
+            {"name": "search_web", "args": "今日要闻 国内新闻"},
+            {"name": "search_web", "args": "今日国际新闻"},
+        ],
+    }, ensure_ascii=False)
+
+    _orig = llm.call_llm_with_tools
+    _n = {"i": 0}
+
+    async def _patched(*a, **kw):
+        _n["i"] += 1
+        if _n["i"] == 1:
+            print("       [注入] 第1轮固定返回 legacy 协议（content 带 calls，tool_calls=0，reasoning 为空）")
+            return llm.ToolCallResult(legacy_json, [])
+        return await _orig(*a, **kw)
+
+    llm.call_llm_with_tools = _patched
+    _FAKE_FILES.clear()
+    try:
+        t = time.time()
+        out = await llm.generate_multi_reply_with_tools(
+            msg_history=["（群聊）自测: 在吗"],
+            speaker_name="自测",
+            current_msg=msg,
+            bot_name=cfg.bot_name,
+            system_prompt=cfg.system_prompt,
+            reply_model=cfg.reply_model,
+            is_group=False,
+            extra_info=_extra_info(),
+            user_id=0,
+            group_id=0,
+            bot_qq=0,
+        )
+        cost = time.time() - t
+    finally:
+        llm.call_llm_with_tools = _orig
+
+    print("[先找后写/legacy] %s" % msg)
+    print("       耗时 %.1fs | 生成文件 %d 个" % (cost, len(_FAKE_FILES)))
+    if _FAKE_FILES:
+        for fp in _FAKE_FILES:
+            p = Path(fp)
+            if p.exists():
+                txt = p.read_text(encoding="utf-8")
+                print("       文件: %s | %d 字节 | 来源链接 %d 个"
+                      % (p.name, len(txt.encode("utf-8")), txt.count("http")))
+    else:
+        print("       FAIL —— legacy 协议下没生成文件")
+    print("       回复: %s" % (out[0] or [])[:2])
+    return bool(_FAKE_FILES)
 
 
 async def main() -> None:
@@ -112,6 +209,8 @@ async def main() -> None:
         results.append(("搜索兜底", await test_search()))
     if mode in ("all", "fc"):
         results.append(("先找后写", await test_fc()))
+    if mode in ("all", "legacy"):
+        results.append(("先找后写(legacy协议)", await test_fc_legacy()))
 
     print("=" * 56)
     for name, ok in results:
