@@ -29,6 +29,38 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# ── DeepSeek 原生搜索：可用性判定 + 熔断 ─────────────────────
+# 背景（2026-10-05 实测）：api.deepseek.com/responses 接受 tools=[{"type":"web_search"}]
+# 并不代表模型会真的调用它。本账号上该工具从不触发，模型只回"我无法实时联网"+ 知识截止
+# 日期，且内部"当前时间"停在 2026-05-07（落后真实日期约 5 个月），遇到带日期的查询就判为
+# "未来"直接拒答。这段拒答文本非空，会被 perform_search 当成"搜索成功"，从而跳过
+# AnySearch / 百度 / Bing 兜底——结果就是"一搜就说搜不到"。
+# 故：① 只有 output 里出现 web_search_call 才认定为真搜索，否则一律返回 None 交回退；
+#     ② 连续失败则熔断 30 分钟，避免每次搜索都白等 2~3 秒；③ 兜底结果再做一次拒答校验。
+_NO_SEARCH_MARKERS = (
+    "无法实时联网", "无法联网", "不能联网", "无法实时", "无法获取实时",
+    "无法提供该日期", "无法提供该日", "无法提供该时间",
+    "尚未到来", "还未到来", "还没有到来", "尚未发生",
+    "知识截止", "知识库截止", "我的知识库", "训练数据截止", "知识更新至",
+    "开启联网搜索", "开启联网", "联网搜索功能", "请更正日期", "请确认日期",
+    "cannot browse", "cannot access the internet", "knowledge cutoff", "as of my last",
+)
+
+_ds_native_dead_until = 0.0
+
+
+def is_no_search_text(text: str) -> bool:
+    """这段文本是不是"没真搜到 / 没联网"的拒答或旧记忆？
+
+    用于丢弃被误当成搜索结果的模型拒答。空串不算（交给调用方按"无结果"处理）。
+    """
+    if not text or not text.strip():
+        return False
+    t = text.strip()
+    if len(t) < 40:
+        return True
+    return any(m in t for m in _NO_SEARCH_MARKERS)
+
 # ── 关键词预处理 ──────────────────────────────────────────
 
 _ORAL_PATTERNS = [
@@ -64,10 +96,20 @@ def preprocess_query(raw: str) -> tuple[str, str, list[str], str | None]:
     year_match = re.search(r'((?:19|20)\d{2}(?:[-年](?:19|20)\d{2})?)', s)
     year = year_match.group(1) if year_match else None
 
+    # ★ v2.3.81c: 完整日期（2026年10月9日 / 2026-10-09）整体保留。
+    #   旧逻辑只抽年份，把"2026年10月9日"劈成"2026"+"年10月9日"，优化词破碎。
+    _date_re = r'((?:19|20)\d{2})\s*[年\-/.]\s*(\d{1,2})\s*[月\-/.]\s*(\d{1,2})\s*日?'
+    date_match = re.search(_date_re, s)
+    full_date = None
+    if date_match:
+        full_date = f"{date_match.group(1)}年{int(date_match.group(2))}月{int(date_match.group(3))}日"
+
     s_clean = s
     for pat in _ORAL_PATTERNS:
         s_clean = re.sub(pat, ' ', s_clean, flags=re.IGNORECASE)
     s_clean = re.sub(r'[，。？！,.?!；;：:、（）()\[\]【】「」"\'""''《》]', ' ', s_clean)
+    if full_date:
+        s_clean = re.sub(_date_re, ' ', s_clean)  # 日期整体摘掉，别留下"年10月9日"
     s_clean = re.sub(r'\s+', ' ', s_clean).strip()
 
     place_tokens = re.findall(r'([\u4e00-\u9fa5]+(?:市|区|县|镇))', s)
@@ -79,7 +121,9 @@ def preprocess_query(raw: str) -> tuple[str, str, list[str], str | None]:
     parts = []
     if place_tokens:
         parts.append(place_tokens[0])
-    if year:
+    if full_date:
+        parts.append(full_date)
+    elif year:
         parts.append(year)
     if doc_tokens:
         seen2 = set()
@@ -509,9 +553,19 @@ def agent_search(query: str, limit: int = 5, deep_fetch: bool = False) -> str:
 
 
 async def ds_native_search(query: str) -> str | None:
-    """DeepSeek Responses API 原生搜索 — 服务端搜 + 合成，零本地开销"""
-    import os, json, asyncio
+    """DeepSeek Responses API 原生搜索 — 服务端搜 + 合成，零本地开销。
+
+    ⚠️ 服务端接受 tools=[{"type":"web_search"}] ≠ 模型会调用它。只有 output 里真的出现
+    web_search_call，才说明这次是"搜过之后再回答"；否则就是模型凭记忆编的（还会带一句
+    "我无法实时联网"），必须返回 None 让 perform_search 走 AnySearch / 爬虫兜底。
+    """
+    global _ds_native_dead_until
+    import os, json, asyncio, time as _time
     import urllib.request
+
+    if _time.time() < _ds_native_dead_until:
+        logger.debug("DeepSeek 原生搜索处于熔断期，直接跳过")
+        return None
 
     api_key = os.getenv("DEEPSEEK_KEY", "")
     if not api_key:
@@ -536,11 +590,19 @@ async def ds_native_search(query: str) -> str | None:
     loop = asyncio.get_running_loop()
 
     def _call():
+        global _ds_native_dead_until
         with urllib.request.urlopen(req, timeout=45) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+        output = data.get("output") or []
+        if not any("web_search" in (it.get("type") or "") for it in output):
+            # 模型没联网，只凭记忆作答（拒答或旧记忆），不能当搜索结果用
+            _ds_native_dead_until = _time.time() + 1800
+            logger.warning("DeepSeek 原生搜索未触发 web_search（未联网），熔断 30 分钟并回退")
+            return None
+        _ds_native_dead_until = 0.0  # 真的搜到了 → 解除熔断
         text = data.get("output_text", "")
         if not text:
-            for item in data.get("output", []):
+            for item in output:
                 if item.get("type") == "message":
                     for part in item.get("content", []):
                         if part.get("type") == "output_text":

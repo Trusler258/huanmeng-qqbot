@@ -11,6 +11,74 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.81c — 搜索"一搜就说搜不到"根因修复 (2026.10.9)
+一句话总结：DeepSeek 原生搜索其实从未联网（模型只回"我无法实时联网"，内部"当前日期"还停在
+2026-05-07），这段拒答文本非空，被当成"搜索成功"，于是跳过了本来可用的 AnySearch/百度/Bing
+兜底——用户看到的"搜不到"是假的。改为只有真正触发 web_search 才认账，否则一律回退。
+
+### 1. 结构性判定"是否真联网"（modules/web_search.py · ds_native_search）
+- 服务端接受 `tools=[{"type":"web_search"}]` ≠ 模型会调用它。实测本账号从不触发，模型只凭
+  记忆作答（还会带上"我无法实时联网""知识截止到 2024 年 6 月"）
+- 改为：只有响应 `output` 里出现 `web_search_call` 才认定为真搜索，否则返回 None 交回退
+- 连续失败熔断 30 分钟（省掉每次 2~3 秒白等），真搜到即自动解除
+
+### 2. 拒答文本二次校验（modules/search.py · perform_search）
+- 新增 `is_no_search_text()`：命中"无法实时联网/尚未到来/知识截止/开启联网搜索"等特征，
+  或正文短于 40 字 → 判为无效结果丢弃，不再当搜索结果用
+- 原生搜索、AnySearch 兜底两条路都做该校验
+
+### 3. 完整日期不再被劈碎（modules/web_search.py · preprocess_query）
+- 旧逻辑只抽年份，"2026年10月9日"被切成 "2026" + "年10月9日"，优化词破碎
+- 改为完整日期整体保留：`今日要闻 2026年10月9日` → `2026年10月9日 今日要闻`
+
+### 4. 污染数据清理
+- 清掉 3 条被拒答写进长期记忆的搜索记录（memory_247478659.md 3 行 + SQLite memories
+  id 35343/35474/35475），备份在同目录 .bak_20261005
+- 实测：修复后同一查询 4~10 秒返回 1200+ 字真实新闻（此前 2~3 秒返回 121~178 字拒答）
+
+## v2.3.81b — 网页抓取/whois/搜索三处修复 (2026.10.8)
+一句话总结：用户实测 updream.cn 三条路全翻车，逐一定位：web_fetch 抓不到正文是反爬
+JS 挑战 + SPA；whois 报"未注册"是 .cn 没有 RDAP；搜索答不上来是原生结果太弱不回退 AnySearch。
+
+### 1. web_fetch（core/tools.py）
+- 新增 `_decode_js_challenge`：真 HTML 被 URL 编码塞进 JS 变量（%3C!doctype 形式）时
+  纯 Python 解码提正文，零额外开销
+- 解码仍不足（SPA 客户端渲染）才降级 Chromium 真渲染（lazy 加载 + 空闲 10 分钟自动回收，
+  非常驻）——外部渲染代理 r.jina.ai 从本机不通，已排除
+
+### 2. whois（modules/whois_lookup.py）
+- .cn 等无 RDAP 服务的后缀走 port-43 传统 WHOIS（whois.cnnic.cn），解析注册商/时间/NS
+- 实测 updream.cn：阿里云 · 2026-03-15 注册 · 2027-03-15 到期 · status ok（此前误报未注册）
+
+### 3. 搜索（modules/search.py）
+- AnySearch 回退条件放宽：DeepSeek 原生结果为空**或过短（<150 字）** 时回退 AnySearch
+
+### 4. 输出格式
+- 网页摘要提示词禁止 markdown（#/**/| 在 QQ 原样显示），改纯文本「名称：值」逐行
+
+## v2.3.81b — 极简沙箱 v2：持久工作区 + net 模式 + ws_files (2026.10.8)
+一句话总结：让幻梦真正能干活——run_code 代码跑在持久工作区（文件跨对话保留），
+net=true 联网抓网页/调 API，新增 ws_files 工具（list/read/write 工作区文件），
+预装 pandas/numpy/requests/pillow/openpyxl/matplotlib/bs4，撤掉 pre-chroot 时代的关键字黑名单。
+
+### 1. `core/sandbox.py`
+- `run_python(..., net=False, workspace=False)`：net=True 不加 unshare -n（保留 chroot 根隔离
+  + 凭证隔离，放开网络）；workspace=True 用持久工作区 data/sandbox_ws（rw 绑定到 /work）
+- chroot 脚本：拷宿主 /etc/resolv.conf/hosts（chroot 里没 /etc，DNS 会失败——net 模式必需）
+- _chroot_wrap/_run_proc 透传 ws_host/net 参数
+
+### 2. `core/tools.py`
+- run_code schema：描述更新（预装包清单/工作区持久/net 说明）+ net 参数
+- `_ws_files` 新 FC 工具 ws_files：list/read/write 工作区文件（路径穿越已防）
+- 撤掉 pre-chroot 时代的 `_SANDBOX_BLOCK_RE` 关键字黑名单（chroot 根隔离是真防线，
+  正则可被绕过且拦掉 net 模式需要的 requests）
+
+### 3. 实测（全过）
+- 持久工作区：ws_files write data.csv → run_code pandas 处理 → ws_files read → 第二次
+  run_code 读同一文件（跨对话持久）
+- net=true：requests GET http 200；net=false：ConnectionError（隔离不联网）
+- chroot 里 pandas/numpy 正常 import
+
 ## v2.3.81 — 沙箱 chroot 根隔离：rm -rf /* 只砸沙箱 (2026.10.4)
 一句话总结：旧隔离（unshare -m -n）只隔离挂载点不隔离文件内容，沙箱里 rm -rf /* 会真删盘
 （实测沙箱内能 touch 真实 /）。现在 /~run 的 py/cpp/sh 在 chroot 里执行：进程的 / 是沙箱
