@@ -107,6 +107,23 @@ from utils.format_lang import format_lang
 
 logger = get_logger("llm")
 
+# ── "先找后写"请求识别（v2.3.81c）─────────────────────────
+# 背景：FC 循环原本"工具一返回数据就 break"，为了省一轮。这对"搜完就答"是对的，
+# 但对"整理/汇总成文档并发出来"这类请求是致命的——第一轮搜到素材就退出，
+# 永远轮不到 write_code 去真正生成文件，结果只会把内容打在聊天里。
+# 这里只决定"是否多给几轮"，普通对话仍走搜完即答的快路径。
+_DELIVERABLE_FILE_RE = re.compile(
+    r"(整理|汇总|总结|生成|导出|制作|做成|编成|写成)[^，。！？!?]{0,8}?"
+    r"(md|markdown|txt|文档|文件|报告|表格|清单|资料|日报|周报)",
+    re.IGNORECASE,
+)
+_WRITE_TOOL_NAMES = ("write_code",)
+
+
+def _needs_deliverable_file(msg: str) -> bool:
+    """用户是不是要"把资料整理成文档/报告并发出来"？"""
+    return bool(_DELIVERABLE_FILE_RE.search(msg or ""))
+
 # ── 多句回复提示词（从 main_skill.md 加载）──────────────────
 # 设计原则：system 消息只放不随对话变化的内容（人设+格式规则），
 # 动态内容（历史/记忆/搜索）放在 user/assistant 多轮消息中。
@@ -1909,11 +1926,36 @@ async def generate_multi_reply_with_tools(
             elif tool_text:
                 action_results.append(tool_text)
 
-        # 遇到错误或数据结果 → 停止循环
-        if errors or data_results:
+        # 遇到错误 → 停止循环
+        if errors:
             break
-        # 已执行过工具 → 跳出，走 json_mode 生成最终回复
-        if action_results:
+        # 数据/动作结果 → 常规直接停（搜完即答，省一轮）；
+        # ⚠️ "先找后写"类请求例外：搜到素材只是半成品，必须再跑几轮让模型去调
+        #    write_code 真正生成文件，否则用户要的文件永远发不出来（v2.3.81c）
+        if data_results or action_results:
+            _names = {tc["name"] for tc in result.tool_calls}
+            if (
+                _needs_deliverable_file(current_msg)
+                and round_idx < 2
+                and not (_names & set(_WRITE_TOOL_NAMES))
+            ):
+                logger.info(
+                    "FC: '先找后写'请求，轮%d 工具=%s → 继续一轮以便生成文件",
+                    round_idx + 1, ",".join(sorted(_names)),
+                )
+                # ★ 光靠常驻提醒管不住模型"口头答应不执行"（实测它回"我这就整理成md发出来"
+                #   却不肯调工具）。这里在循环内补一条定向指令，明确要求这一轮必须出文件。
+                msgs.append({
+                    "role": "system",
+                    "content": (
+                        "用户要的是【文件】，不是聊天文字。此刻立刻调用 write_code："
+                        "language=markdown（要纯文本填 text），description 写【完整文档正文】"
+                        "——把上面工具查到/换算出的内容整理成一份结构清晰的文档"
+                        "（一级标题、分节、要点条目），直接给正文。"
+                        "禁止只说「我这就整理成md发出来」，禁止在聊天里重复粘贴正文。"
+                    ),
+                })
+                continue
             break
 
         # 防死循环：连续两轮发起相同的工具调用集则停（移植 kook LoopDetector 思路）
