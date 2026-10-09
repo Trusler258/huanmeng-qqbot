@@ -69,23 +69,32 @@ async def perform_search(
     from services.sender import send_by_chat_type
     search_tip = f"🔍 web_search ['{query[:60]}{'…' if len(query)>60 else ''}']"
 
-    # ── Step 2: DeepSeek Responses API 原生搜索（优先）──
+    # ── Step 2: DeepSeek Responses API 原生搜索（优先尝试）──
+    # ★ v2.3.81c: 该路径未必真联网——实测常回"我无法实时联网"的拒答/旧记忆（模型内部
+    #   当前日期停在 2026-05-07）。必须丢弃这种文本，否则会被当成搜索结果，
+    #   跳过 AnySearch/百度/Bing 兜底，表现为"一搜就说搜不到"。
+    from modules.web_search import is_no_search_text
     logger.info("执行 DeepSeek 原生搜索: '%s...' (user=%s)", query[:40], sender_name)
     result_text = None
     try:
         from modules.web_search import ds_native_search
-        result_text = await asyncio.wait_for(ds_native_search(query), timeout=45.0)
+        native = await asyncio.wait_for(ds_native_search(query), timeout=45.0)
+        if native and is_no_search_text(native):
+            logger.warning("DeepSeek 原生搜索为拒答/旧记忆（未真联网），丢弃并回退: %s", native[:80])
+        else:
+            result_text = native
     except asyncio.TimeoutError:
         logger.warning("DeepSeek 原生搜索超时，回退 Agent 搜索")
     except Exception as e:
         logger.warning("DeepSeek 原生搜索异常: %s，回退 Agent 搜索", e)
 
-    # ── Step 2b: AnySearch 统一搜索（回退，v2.3.81）──
+    # ── Step 2b: AnySearch + 百度/Bing/百科（回退，v2.3.81）──
     if result_text is None:
         try:
             from modules.web_search import agent_search
             logger.info("DeepSeek 原生无结果，AnySearch 回退: '%s...'", query[:40])
-            result_text = await asyncio.to_thread(agent_search, query, limit)
+            fallback = await asyncio.to_thread(agent_search, query, limit)
+            result_text = None if (fallback and is_no_search_text(fallback)) else fallback
         except Exception as e:
             logger.warning("AnySearch 搜索异常: %s", e)
 
