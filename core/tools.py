@@ -167,12 +167,12 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_code",
-            "description": "编写程序代码并发送文件给用户。用户让你写代码/做游戏/做网页/写脚本时必须调用此工具，不要只口头答应。",
+            "description": "按用户要求生成文件并发送给用户。写代码/做游戏/网页/脚本 → language 填对应编程语言；把资料整理成文档、总结成报告、生成 md/txt 文件发送 → language 填 markdown 或 text。用户明确说了「发送文件/发出来/整理成文档」时必须调用本工具，不要只把内容打在聊天里。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "language": {"type": "string", "enum": ["python", "javascript", "html", "css", "java", "c++", "c#", "go", "rust", "typescript"], "description": "编程语言"},
-                    "description": {"type": "string", "description": "程序需求描述"},
+                    "language": {"type": "string", "enum": ["python", "javascript", "html", "css", "java", "c++", "c#", "go", "rust", "typescript", "markdown", "text"], "description": "编程语言；文档用 markdown（.md）或 text（.txt）"},
+                    "description": {"type": "string", "description": "需求描述。写文档时把要整理的【具体内容/素材】一并写进来（例如刚搜到的新闻要点），只写「整理成md」会生成空壳"},
                 },
                 "required": ["language", "description"],
             },
@@ -459,7 +459,7 @@ async def _write_code(
     language: str, description: str,
     user_id: int, group_id: int, sender_name: str, is_group: bool, bot_qq: int,
 ) -> str:
-    """FC 代码生成：单文件发送，多文件 zip"""
+    """FC 文件生成：代码单文件发送/多文件 zip；文档（md/txt）单文件发送"""
     import re, zipfile, tempfile
     from pathlib import Path
     from core.logger import get_logger
@@ -469,23 +469,48 @@ async def _write_code(
         "python": "py", "javascript": "js", "html": "html", "css": "css",
         "java": "java", "c++": "cpp", "c#": "cs", "go": "go",
         "rust": "rs", "typescript": "ts",
+        # ★ v2.3.81c: 文档类——"整理成 md 文档/报告发送"走同一条发文件通道
+        "markdown": "md", "md": "md", "text": "txt", "txt": "txt",
     }
     ext = ext_map.get(language, "txt")
+    is_doc = ext in ("md", "txt")
 
     from services.llm import call_llm
     from core.config import get_config
     from services.sender import send_group_msg, send_private_msg
     cfg = get_config()
-    msgs = [
-        {"role": "system", "content": f"你是{language}程序员。下面是程序设计题，写出完整解法代码。只输出代码不写注释，多文件用 //FILE:name.{ext} 和 //END 分隔。"},
-        {"role": "user", "content": description[:4000]},
-    ]
+    if is_doc:
+        # ★ v2.3.81c: 文档模式——产出的是文档正文，不是代码。
+        #   明确禁止开场白/围栏，避免文件名被 "```markdown" 污染，也避免正文里塞"好的以下是"。
+        msgs = [
+            {"role": "system", "content": (
+                "你是资料整理助手。把用户给的材料写成一份完整、可直接阅读的文档正文，"
+                "直接输出文档本身：不要代码围栏（```），不要「好的/以下是/希望对你有帮助」这类话，"
+                "不要单独输出文件名行。需要标题就用 # 号，需要列表就用 - 号。"
+                "材料里没有的信息一律不写，不许编造数字、时间、人名或出处。"
+            )},
+            {"role": "user", "content": description[:4000]},
+        ]
+    else:
+        msgs = [
+            {"role": "system", "content": f"你是{language}程序员。下面是程序设计题，写出完整解法代码。只输出代码不写注释，多文件用 //FILE:name.{ext} 和 //END 分隔。"},
+            {"role": "user", "content": description[:4000]},
+        ]
     code = await call_llm(cfg.reply_model, msgs, temperature=0.3, timeout=120.0)
     if not code:
-        logger.error("write_code: 代码生成 LLM 返回空")
-        return "代码生成失败，请稍后重试"
+        logger.error("write_code: 生成 LLM 返回空")
+        return "文件生成失败，请稍后重试"
 
-    logger.info("write_code: LLM 返回 %d 字符", len(code))
+    logger.info("write_code: LLM 返回 %d 字符 (语言=%s)", len(code), language)
+
+    if is_doc:
+        # 去掉可能残留的代码围栏，否则首行 "```markdown" 会被当成标题写进文件名
+        code = code.strip()
+        if code.startswith("```"):
+            code = code.split("\n", 1)[1] if "\n" in code else ""
+        if code.rstrip().endswith("```"):
+            code = code.rstrip()[:-3]
+        code = code.strip()
 
     files = {}
     parts = re.split(r'//FILE:\s*(.+?)\s*\n', code.strip())
@@ -1087,9 +1112,16 @@ async def execute_tool(
     if tool_name == "web_fetch":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
-        desc = original_msg or arguments.get("description", "")
+        _lang = arguments.get("language", "python") or "python"
+        _arg_desc = arguments.get("description", "")
+        # ★ v2.3.81c: 文档类必须用 LLM 传来的 description——里面带着要整理的素材
+        #   （如刚搜到的新闻要点）；original_msg 只有"整理成md发我"这种指令，没有内容。
+        if _lang in ("markdown", "md", "text", "txt") and _arg_desc.strip():
+            desc = _arg_desc
+        else:
+            desc = original_msg or _arg_desc
         return await _write_code(
-            arguments.get("language", "python"),
+            _lang,
             desc,
             user_id, group_id, sender_name, is_group, bot_qq,
         )
@@ -1389,9 +1421,16 @@ async def execute_tool(
     if tool_name == "web_fetch":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
-        desc = original_msg or arguments.get("description", "")
+        _lang = arguments.get("language", "python") or "python"
+        _arg_desc = arguments.get("description", "")
+        # ★ v2.3.81c: 文档类必须用 LLM 传来的 description——里面带着要整理的素材
+        #   （如刚搜到的新闻要点）；original_msg 只有"整理成md发我"这种指令，没有内容。
+        if _lang in ("markdown", "md", "text", "txt") and _arg_desc.strip():
+            desc = _arg_desc
+        else:
+            desc = original_msg or _arg_desc
         return await _write_code(
-            arguments.get("language", "python"),
+            _lang,
             desc,
             user_id, group_id, sender_name, is_group, bot_qq,
         )
