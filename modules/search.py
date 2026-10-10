@@ -48,12 +48,19 @@ async def perform_search(
     source: str = "all",
     is_group: bool = False,
     context: str = "",
+    freshness: str | None = None,
+    content_type: str | None = None,
+    zone: str | None = None,
+    language: str | None = None,
 ) -> Optional[str]:
     """
     执行搜索：缓存 → Agent级搜索（百度+bing+百科并行）→ 格式化 → 写缓存/记忆。
 
     context：最近对话上下文（可选）。当 query 是承接句（如"搜搜看吧?")自身无实体词时，
     用于给 DeepSeek 搜索补充"搜什么"的主题上下文，避免搜到无关内容或搜了个寂寞。
+
+    freshness/content_type/zone/language：透传给 AnySearch 的过滤参数（可选，由 LLM 按需填）。
+      freshness: day/week/month/year；content_type: web/news；zone: cn/intl；language: zh-CN/en
     """
     # 承接句无实体词：把前文并入 query 前缀
     if context and len(query.strip()) <= 8 and _is_continuation(query):
@@ -93,7 +100,11 @@ async def perform_search(
         try:
             from modules.web_search import agent_search
             logger.info("DeepSeek 原生无结果，AnySearch 回退: '%s...'", query[:40])
-            fallback = await asyncio.to_thread(agent_search, query, limit)
+            fallback = await asyncio.to_thread(
+                agent_search, query, limit, False,
+                freshness=freshness, content_type=content_type,
+                zone=zone, language=language,
+            )
             result_text = None if (fallback and is_no_search_text(fallback)) else fallback
         except Exception as e:
             logger.warning("AnySearch 搜索异常: %s", e)
@@ -108,8 +119,8 @@ async def perform_search(
         logger.info("搜索无结果: '%s...'", query[:30])
         return None
 
-    # 截断保护
-    max_len = min(limit * 400, 3000)
+    # 截断保护（★ v2.3.81e: 400/3000 → 500/4000，让多路结果别被腰斩）
+    max_len = min(limit * 500, 4000)
     if len(result_text) > max_len:
         result_text = result_text[:max_len] + "..."
 

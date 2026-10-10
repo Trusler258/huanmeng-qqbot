@@ -11,11 +11,12 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
-## v2.3.81e — "先找后写"交付加固：素材不再丢、协议不再漏 (2026.10.10)
+## v2.3.81e — 交付加固 + 搜索更广：素材不再丢、协议不再漏、AnySearch 参数交给 LLM (2026.10.10)
 一句话总结：用户实测生成的新闻 md"只有两条、还净是空话"以及偶发"只回一句'我这就整理成 md 发出来'
 却没有文件"，根因有二：① 靠模型自己复述搜索素材必然丢料；② 模型有时不走原生 function-calling，
 而把调用写进内容的 legacy 协议里，整条先找后写机制被绕过。现改为素材由代码直接注入、legacy 调用
-照常转成原生调用执行，无论模型用哪种协议都能把文件真正发出来。
+照常转成原生调用执行，无论模型用哪种协议都能把文件真正发出来。另按用户要求把 AnySearch 的过滤
+参数暴露给 LLM 自行填写，并修掉"AnySearch 结果被零分过滤整批丢掉"的瓶颈——同一查询素材量翻倍。
 
 ### 1. 素材由代码注入，不再靠模型复述（services/llm.py，代码标注 v2.3.81d）
 - 病根：检索到的原始素材要模型"复述"进 write_code 的 description，实测 1635 字素材写进文档只剩
@@ -50,6 +51,32 @@
 - 新增 `scripts/_diag_legacy_calls.py`：转换函数的离线单测（不联网、不调 LLM），覆盖正常转换、
   write_code 字符串参数、混入 note 整体放弃、内联指令提取、非法 JSON 放弃
 - 实测三路全绿：搜索兜底 OK；先找后写(native) 5158B/13 链接/18 条；先找后写(legacy) 3895B/18 链接
+
+### 5. 搜索"查得更广"：AnySearch 参数交给 LLM + 修掉一批隐形天花板（modules/web_search.py · modules/search.py · core/tools.py）
+- 摸清 AnySearch 官方接口（anysearch.com/docs/api-endpoints/v1-search）：参数是 `max_results`
+  （**服务端硬上限 10**，填 20/50/100 都只回 10）、`constraint.freshness`(day/week/month/year)、
+  `content_types`([web,news])、`zone`(cn/intl)、`language`、`format`(json/markdown)、`tag/domains/params`。
+  ⚠️ 旧代码传的参数名是非法值 `count` → 被服务端静默忽略，等于永远走默认 10 条
+- 按用户要求"让 LLM 自己填这些参数"：`search_web` 工具 schema 增加 max_results/freshness/content_type/
+  zone/language 五个可选参数，并把精简后的参数说明写进工具描述（LLM 按需填，不必都填）
+- 参数贯通：`execute_tool(FC)` 直接调 `perform_search`（不再绕 `/~search` 指令层）→ `agent_search`
+  → `search_anysearch`，过滤参数一路透传
+- 修掉三处隐形天花板：① `AgentSearch(max_total_results)` 5→10（此前最多只留 5 条）；
+  ② 单条预览 150→300 字；③ `perform_search` 截断上限 `min(limit*400,3000)` → `min(limit*500,4000)`；
+  另 AnySearch 正文改用 `content`（一般长于 snippet）
+- **关键修复**：AnySearch 返回的常是首页/聚合页（标题只有站点名），`_score_result` 命中 0 分 →
+  被"零分过滤"**整批丢掉**（实测一次查询 10 条全废）。给 anysearch 结果 +1 底分，只在"有分"过滤里
+  保命、排序仍按相关性
+- 实测（改前 → 改后）：`agent_search("今日新闻 国内国际要闻")` **0 → 1497 字**（此前 AnySearch 全被丢，
+  只剩空）；`perform_search("今日要闻", limit=8)` 1419 → 2326 字；FC 端到端素材 2305/2699 字 →
+  **3745/5807 字**，生成文档 5158/6656 字节、19/20 个来源链接
+- 探针：`scripts/_probe_anysearch.py`（返回结构）、`_probe_anysearch2.py`（metadata + 参数名）、
+  `_probe_anysearch3.py`（过滤参数实测）、`_probe_search_filters.py`（参数贯通 + 体量对比）
+
+### 6. 发现：core/tools.py 有一整段重复代码（未改，待确认）
+- `core/tools.py` 里 `_extract_stats` / `execute_tool` **各定义了两遍**（`_extract_stats` 1078 与 1387，
+  `execute_tool` 1103 与 1412）。Python 取最后定义 → 前者是**死代码**。本次改动对两份都做了同样处理，
+  保持一致，但建议后续清理（属既有问题，未擅自删）
 
 ## v2.3.81c — 搜索"一搜就说搜不到"根因修复 (2026.10.9)
 一句话总结：DeepSeek 原生搜索其实从未联网（模型只回"我无法实时联网"，内部"当前日期"还停在

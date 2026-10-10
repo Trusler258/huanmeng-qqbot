@@ -92,11 +92,19 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "search_web",
-            "description": "搜索互联网获取权威信息。必须调用的场景：① 用户问实时/会变化的事实（新闻/行情/股价/市值/汇率/最新事件）；② 用户提出一个需要核实的断言（如\"长鑫存储市值已超过Intel\"\"某公司上市3周干翻XX\"）——“X是不是真的/真的假的/属实吗”这类事实核实必须搜索后回答，禁止仅凭模型内在知识直接下结论；③ 模型不确定或不懂的概念。日常闲聊（问候/吐槽/无事实内容）不需要调用。",
+            "description": "搜索互联网获取权威信息。必须调用的场景：① 用户问实时/会变化的事实（新闻/行情/股价/市值/汇率/最新事件）；② 用户提出一个需要核实的断言（如\"长鑫存储市值已超过Intel\"\"某公司上市3周干翻XX\"）——“X是不是真的/真的假的/属实吗”这类事实核实必须搜索后回答，禁止仅凭模型内在知识直接下结论；③ 模型不确定或不懂的概念。日常闲聊（问候/吐槽/无事实内容）不需要调用。\n可选过滤参数（按需填，不必都填）：max_results 返回条数 1~10（默认10，也是服务端硬上限）；freshness 时效窗口 day/week/month/year（查新闻/最新动态填 day 或 week）；content_type 选 news 查新闻、web 查一般网页；zone 选 cn(国内) / intl(国际)；language 如 zh-CN / en。首轮结果不够回答时，换关键词再搜一轮（最多3轮），别硬凑。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"},
+                    "query": {"type": "string", "description": "搜索关键词（精炼，不要整句）"},
+                    "max_results": {"type": "integer", "description": "返回条数 1~10（默认10）"},
+                    "freshness": {"type": "string", "enum": ["day", "week", "month", "year"],
+                                  "description": "时效窗口；查最新新闻/动态用 day 或 week"},
+                    "content_type": {"type": "string", "enum": ["web", "news"],
+                                     "description": "内容类型；查新闻用 news"},
+                    "zone": {"type": "string", "enum": ["cn", "intl"],
+                             "description": "区域：cn 国内 / intl 国际"},
+                    "language": {"type": "string", "description": "语言，如 zh-CN / en"},
                 },
                 "required": ["query"],
             },
@@ -1232,13 +1240,28 @@ async def execute_tool(
             return _extract_stats(player, stat, result)
         return "wdsj 指令未注册"
     elif tool_name == "search_web":
-        # ★ FC 路径搜索词优化：LLM 传来的 query 可能是完整句子，先优化成关键词
-        raw_query = arguments.get("query", "")
-        if raw_query:
-            optimized = await _optimize_search_keywords(raw_query)
-            args = [optimized]
-        else:
-            args = [""]
+        # ★ v2.3.81e: FC 搜索直接走 perform_search（不再绕 /~search 指令层），把 LLM 按需
+        #   填的过滤参数透传给 AnySearch；max_results 同时决定返回条数与结果文本的截断上限
+        #   （原来固定 limit=4 → 结果只留 1600 字，多路结果被腰斩）。
+        raw_query = (arguments.get("query") or "").strip()
+        if not raw_query:
+            return "请提供搜索关键词"
+        optimized = await _optimize_search_keywords(raw_query)
+        try:
+            _lim = int(arguments.get("max_results") or 8)
+        except Exception:
+            _lim = 8
+        _lim = max(3, min(_lim, 10))
+        from modules.search import perform_search
+        return await perform_search(
+            optimized, sender_name=sender_name, user_id=user_id,
+            chat_id=group_id if is_group else user_id,
+            limit=_lim, source="all", is_group=is_group,
+            freshness=arguments.get("freshness") or None,
+            content_type=arguments.get("content_type") or None,
+            zone=arguments.get("zone") or None,
+            language=arguments.get("language") or None,
+        )
     elif tool_name == "earthquake":
         prov = arguments.get("province", "")
         if prov:
@@ -1541,13 +1564,28 @@ async def execute_tool(
             return _extract_stats(player, stat, result)
         return "wdsj 指令未注册"
     elif tool_name == "search_web":
-        # ★ FC 路径搜索词优化：LLM 传来的 query 可能是完整句子，先优化成关键词
-        raw_query = arguments.get("query", "")
-        if raw_query:
-            optimized = await _optimize_search_keywords(raw_query)
-            args = [optimized]
-        else:
-            args = [""]
+        # ★ v2.3.81e: FC 搜索直接走 perform_search（不再绕 /~search 指令层），把 LLM 按需
+        #   填的过滤参数透传给 AnySearch；max_results 同时决定返回条数与结果文本的截断上限
+        #   （原来固定 limit=4 → 结果只留 1600 字，多路结果被腰斩）。
+        raw_query = (arguments.get("query") or "").strip()
+        if not raw_query:
+            return "请提供搜索关键词"
+        optimized = await _optimize_search_keywords(raw_query)
+        try:
+            _lim = int(arguments.get("max_results") or 8)
+        except Exception:
+            _lim = 8
+        _lim = max(3, min(_lim, 10))
+        from modules.search import perform_search
+        return await perform_search(
+            optimized, sender_name=sender_name, user_id=user_id,
+            chat_id=group_id if is_group else user_id,
+            limit=_lim, source="all", is_group=is_group,
+            freshness=arguments.get("freshness") or None,
+            content_type=arguments.get("content_type") or None,
+            zone=arguments.get("zone") or None,
+            language=arguments.get("language") or None,
+        )
     elif tool_name == "earthquake":
         prov = arguments.get("province", "")
         if prov:
