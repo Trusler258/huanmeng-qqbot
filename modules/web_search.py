@@ -274,21 +274,46 @@ def search_bing_cn(query: str, limit: int = 5, timeout: float = 5.0) -> list[dic
         return []
 
 
-def search_anysearch(query: str, limit: int = 5, timeout: float = 10.0) -> list[dict]:
+def search_anysearch(query: str, limit: int = 5, timeout: float = 10.0,
+                     max_results: int | None = None, freshness: str | None = None,
+                     content_type: str | None = None, zone: str | None = None,
+                     language: str | None = None) -> list[dict]:
     """AnySearch 统一搜索 API（v2.3.81）— Bearer 认证，未配 ANYSEARCH_KEY 时静默返回空。
 
-    POST https://api.anysearch.com/v1/search {query, count}
-    响应: {code:0, data:{results:[{title,url,snippet,content}]}}
+    POST https://api.anysearch.com/v1/search
+    官方参数（https://anysearch.com/docs/api-endpoints/v1-search）：
+      query                 查询词
+      max_results           结果数，**实测服务端硬上限 10**（填 20/50/100 都只回 10）
+      constraint.freshness  时效窗口 day/week/month/year
+      content_types         ["web","news"]      zone  cn/intl      language  zh-CN/en
+      tag / domains / providers / params / format("json"/"markdown")
+    ⚠️ 旧代码传的 key 是非法名 count（服务端静默忽略）→ 等于永远走默认 10 条；已改为 max_results。
+    ⚠️ format="markdown" 时 content 明显更长（实测中位 90→167 字）但正文带 Markdown 记号；
+       这里不强制（由调用方决定是否传），正文取 content、无则回退 snippet。
     """
     import os as _os
     key = _os.getenv("ANYSEARCH_KEY", "")
     if not key:
         return []
     try:
+        _mr = max_results if isinstance(max_results, int) else int(limit or 10)
+    except Exception:
+        _mr = 10
+    _mr = max(1, min(_mr, 10))  # 服务端硬上限 10
+    payload: dict = {"query": query, "max_results": _mr}
+    if freshness in ("day", "week", "month", "year"):
+        payload["constraint"] = {"freshness": freshness}
+    if content_type in ("web", "news"):
+        payload["content_types"] = [content_type]
+    if zone in ("cn", "intl"):
+        payload["zone"] = zone
+    if language:
+        payload["language"] = language
+    try:
         resp = requests.post(
             "https://api.anysearch.com/v1/search",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"query": query, "count": limit},
+            json=payload,
             timeout=timeout,
         )
         if resp.status_code != 200:
@@ -300,9 +325,11 @@ def search_anysearch(query: str, limit: int = 5, timeout: float = 10.0) -> list[
             return []
         out = []
         for item in (data.get("data") or {}).get("results") or []:
+            # content 一般略长于 snippet（markdown 模式差异更大）→ 优先取 content
+            body = item.get("content") or item.get("snippet", "")
             out.append(_format_entry(0, item.get("title", ""),
-                                     item.get("snippet", ""), item.get("url", ""), "anysearch"))
-        logger.debug("AnySearch 返回 %d 条", len(out))
+                                     body, item.get("url", ""), "anysearch"))
+        logger.debug("AnySearch 返回 %d 条 (payload=%s)", len(out), payload)
         return out
     except Exception as e:
         logger.debug("AnySearch 搜索失败: %s", e)
@@ -391,20 +418,23 @@ def fetch_content(url: str, timeout: float = 6.0, max_chars: int = 2500) -> str 
 
 class AgentSearch:
     def __init__(self, per_source_timeout=8.0, fetch_timeout=5.0,
-                 fetch_top_n=2, max_total_results=5, fetch_max_chars=2000):
+                 fetch_top_n=3, max_total_results=10, fetch_max_chars=2000):
         self.per_source_timeout = per_source_timeout
         self.fetch_timeout = fetch_timeout
         self.fetch_top_n = fetch_top_n
         self.max_total_results = max_total_results
         self.fetch_max_chars = fetch_max_chars
 
-    def _search_all_sources(self, optimized: str, main: str, limit: int) -> list[dict]:
-        """AnySearch 优先（正规 API，v2.3.81），百度+百科+Bing 爬虫兜底"""
+    def _search_all_sources(self, optimized: str, main: str, limit: int, **filters) -> list[dict]:
+        """AnySearch 优先（正规 API，v2.3.81），百度+百科+Bing 爬虫兜底
+
+        filters：透传给 AnySearch 的过滤参数（freshness / content_type / zone / language）。
+        """
         all_results = []
 
         # Step 0: AnySearch 统一搜索（正规 API，质量最好，ANYSEARCH_KEY 配置才启用）
         try:
-            as_results = search_anysearch(optimized, limit, 10.0)
+            as_results = search_anysearch(optimized, limit, 10.0, **filters)
             if as_results:
                 all_results.extend(as_results)
                 logger.debug("AnySearch 返回 %d 条", len(as_results))
@@ -455,17 +485,17 @@ class AgentSearch:
             out.append(r)
         return out
 
-    def search(self, raw_query: str, limit: int = 5, deep_fetch: bool = False) -> str:
+    def search(self, raw_query: str, limit: int = 5, deep_fetch: bool = False, **filters) -> str:
         t0 = time.time()
         optimized, main, keywords, year = preprocess_query(raw_query)
         logger.info("[Agent搜索] 原始='%s' → 优化='%s' 年份=%s",
                     raw_query[:40], optimized[:60], year)
 
-        results = self._search_all_sources(optimized, main, limit)
+        results = self._search_all_sources(optimized, main, limit, **filters)
 
         if not results:
             logger.info("[Agent搜索] 优化词无结果，重试用原文")
-            results = self._search_all_sources(raw_query, raw_query, limit)
+            results = self._search_all_sources(raw_query, raw_query, limit, **filters)
 
         if not results:
             return ""
@@ -473,6 +503,12 @@ class AgentSearch:
         results = self._deduplicate(results)
         for r in results:
             r["score"] = _score_result(r["title"], r["snippet"], keywords, year)
+            # ★ v2.3.81e: AnySearch（正规 API，质量最好）给一个微弱底分 +1。
+            #   病根：它返回的常是首页/聚合页（标题只写站点名，如"主页- BBC News 中文"），
+            #   关键词命中为 0 → 被下面"零分过滤"整批丢掉，10 条白调（实测）。
+            #   加底分只在"有分"过滤里保命，排序仍按相关性，不抢百度具体条目的位次。
+            if r.get("source") == "anysearch":
+                r["score"] += 1
         results.sort(key=lambda x: x["score"], reverse=True)
 
         # 过滤零分结果：如果最高分 > 0，只保留有分的结果
@@ -522,7 +558,9 @@ class AgentSearch:
             lines.append("===== 摘要结果 =====")
 
         for i, r in enumerate(results, 1):
-            short_snip = r["snippet"][:150].replace("\n", " ") if r["snippet"] else ""
+            # ★ v2.3.81e: 单条预览 150 → 300 字（AnySearch 的 content 更丰富，
+            #   150 字会把"聚合页里的一串具体标题"直接腰斩）
+            short_snip = r["snippet"][:300].replace("\n", " ") if r["snippet"] else ""
             src_tag = f"[{r['source']}]" if r.get("source") else ""
             lines.append(f"{i}. {src_tag} {r['title']}")
             if short_snip:
@@ -547,9 +585,9 @@ def get_agent_searcher() -> AgentSearch:
     return _searcher
 
 
-def agent_search(query: str, limit: int = 5, deep_fetch: bool = False) -> str:
+def agent_search(query: str, limit: int = 5, deep_fetch: bool = False, **filters) -> str:
     s = get_agent_searcher()
-    return s.search(query, limit=limit, deep_fetch=deep_fetch)
+    return s.search(query, limit=limit, deep_fetch=deep_fetch, **filters)
 
 
 async def ds_native_search(query: str) -> str | None:
