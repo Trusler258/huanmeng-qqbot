@@ -60,6 +60,34 @@ _browser = None
 _playwright_instance = None
 
 
+_CHROMIUM_CANDIDATES = (
+    "/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome",
+    "/snap/bin/chromium",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+)
+
+
+def _chromium_path() -> str | None:
+    """Chromium 可执行路径：环境变量 CHROMIUM_PATH > 常见路径探测 > None（用 Playwright 自带）。
+
+    v2.3.82（2026-10-12）：原来写死 "/usr/bin/chromium-browser"，在 Windows（本地开发机）
+    必然启动失败 → 卡片退回插件自带的浏览器路径。改成自适应后，本机也能走内置卡片渲染。
+    """
+    import os
+    from pathlib import Path as _P
+    env = os.getenv("CHROMIUM_PATH", "").strip()
+    if env and _P(env).exists():
+        return env
+    for c in _CHROMIUM_CANDIDATES:
+        try:
+            if _P(c).exists():
+                return c
+        except OSError:
+            continue
+    return None   # 交给 Playwright 自带的 chromium
+
+
 async def _ensure_browser():
     """确保全局 Chromium 实例存在，不存在则启动（极致加速）"""
     global _browser, _playwright_instance
@@ -72,9 +100,11 @@ async def _ensure_browser():
     logger.info("[Playwright] 启动 Chromium（极致加速模式）...")
 
     _playwright_instance = await pw().start()
+    _exe = _chromium_path()
+    logger.info("[Playwright] Chromium 路径: %s", _exe or "（Playwright 自带）")
     _browser = await _playwright_instance.chromium.launch(
         headless=True,
-        executable_path="/usr/bin/chromium-browser",
+        executable_path=_exe,
         args=[
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -575,16 +605,18 @@ async def _screenshot_html(
     output_path: Path,
     width: int = 800,
     scale: float = 1.0,
+    html_file: Optional[str] = None,
 ) -> bool:
     """截图入口：统计在飞渲染数 + 刷新"最后使用时间"，再交给实现。
 
     ★ v2.3.67: 外壳只为配合空闲回收——渲染期间 _browser_busy > 0，回收器会让路；
       渲染一结束就 touch，空闲计时从头开始。
+    ★ html_file: 见 _screenshot_html_inner（file:// 图片必须走真文件加载）。
     """
     global _browser_busy
     _browser_busy += 1
     try:
-        return await _screenshot_html_inner(html_content, output_path, width, scale)
+        return await _screenshot_html_inner(html_content, output_path, width, scale, html_file)
     finally:
         _browser_busy -= 1
         touch_browser()
@@ -595,6 +627,7 @@ async def _screenshot_html_inner(
     output_path: Path,
     width: int = 800,
     scale: float = 1.0,
+    html_file: Optional[str] = None,
 ) -> bool:
     """
     Playwright 截图（v0.9.6 极致加速版 + 页面池）
@@ -617,7 +650,25 @@ async def _screenshot_html_inner(
                     page = await browser.new_page()
 
             await page.set_viewport_size({"width": width, "height": 10, "device_scale_factor": scale})
-            await page.set_content(html_content, wait_until='domcontentloaded', timeout=15000)
+            if html_file:
+                # ★ v2.3.82: set_content 把页面放在 about:blank 源下，Chromium 会**拦截
+                #   file:// 子资源**（实测 <img src="file:///..."> naturalWidth=0 → 卡片里
+                #   曲绘/头像全部破图）。写成真实 .html 再 goto(file://) 同源加载即可。
+                #   调用方传的是已在磁盘上的 html 路径（本函数只负责导航，不写文件）。
+                _hp = str(html_file).replace("\\", "/")
+                # POSIX 绝对路径以 / 开头，直接拼 'file:///' 会得到 file:////root/... → 解析错
+                page_url = ("file://" + _hp) if _hp.startswith("/") else ("file:///" + _hp)
+                await page.goto(page_url, wait_until='domcontentloaded', timeout=15000)
+                # 等所有 <img> 解码完（本地磁盘很快；超时也不阻塞截图）
+                try:
+                    await page.wait_for_function(
+                        "Array.from(document.images).every(i => i.complete)",
+                        timeout=5000,
+                    )
+                except Exception:
+                    pass
+            else:
+                await page.set_content(html_content, wait_until='domcontentloaded', timeout=15000)
             await page.wait_for_timeout(150)
             await page.screenshot(path=str(output_path), full_page=True, type='jpeg', quality=92)
 
@@ -861,6 +912,7 @@ async def render_card_to_image(
     full_html: str,
     output_filename: Optional[str] = None,
     width: int = 800,
+    html_file: Optional[str] = None,
 ) -> Optional[str]:
     """
     通用截图入口：任意完整 HTML → Playwright 截图 → 返回图片路径。
@@ -871,7 +923,10 @@ async def render_card_to_image(
         full_html: 填充完成的完整 HTML 字符串
         output_filename: 输出文件名（默认自动生成时间戳命名）
         width: 视口宽度
-        
+        html_file: 若给出，则用 ``goto(file://<html_file>)`` 而不是 ``set_content``。
+            卡片引用了本地 ``file://`` 图片时必须给（详见 _screenshot_html_inner）。
+            调用方需保证该路径的 HTML 已写到磁盘，且内容与 full_html 一致。
+
     Returns:
         成功返回图片绝对路径；失败返回 None
     """
@@ -893,7 +948,7 @@ async def render_card_to_image(
     output_path = _get_img_output_dir() / output_filename
     logger.info("[Card] 正在截图 → %s (%d bytes HTML)", output_path.name, len(full_html))
     
-    success = await _screenshot_html(full_html, output_path, width=width)
+    success = await _screenshot_html(full_html, output_path, width=width, html_file=html_file)
     if success:
         size_kb = output_path.stat().st_size / 1024
         logger.info("[Card] ✅ 截图成功! path=%s size=%.1fKB", output_path, size_kb)

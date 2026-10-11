@@ -11,6 +11,52 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.82 — Phigros 插件上线：/~phi 全套移植 + 卡片渲染打通本地图片 (2026.10.12)
+一句话总结：把第三方 phi-plugin 的 Phigros 查询整体移植成幻梦插件（曲目资料/定数/理论值离线可查，
+TapTap 登录 → 存档 → B19/B30 出图），并修掉"卡片里曲绘、头像全是破图"的根因——Chromium 在
+`set_content` 下会拦截 `file://` 子资源，必须用真实 HTML 文件走 `goto(file://)` 加载。
+
+### 一、/~phi 新插件（plugins/phi/，PHI-PORT-20261011）
+- 入口 `/~phi`（`/phi` 同效），旧 `/~pgr` 改名 `/~oldphi` 原样保留，不动老代码
+- 子命令：`song/info/card/theory/new/status/login/logout/me/b19(N)/help`
+- 曲目资料走**本地曲库**（`data/songs.json` 346 曲 / 345 别名），断网可用；
+  登录/存档出图走 TapTap sessionToken → LeanCloud 云存档 → 本地 AES 解密（零 API key）
+- 存档链路三处硬伤一并修掉：`where` 参数未 URL 编码（真机会抛 InvalidURL）、
+  密文被当 ASCII 解码、AES key 抄错一字节
+- rks 计算对齐上游：`build_chart_table → build_records → calc_b19`；⚠️ `save_ver` 只在
+  **有历史定数表**时才有意义，我们一律传 `None`，否则定数全部返回 0、rks 全 0
+- 登录流程加"用完即撤"：二维码与提示在登录结束（成功/失败/超时）后撤回，需要新权限
+  `message.delete`
+
+### 二、插件平台能力扩展（core/plugin/）
+- `PluginMessage` 新增 `send_ex` / `send_file_ex`（返回含 `data.message_id` 的原始响应）、
+  `message_id_of()`、`delete(message_id)`（需 `message.delete` 权限）
+- 新增 `PluginNapCat`（读写/管理三类白名单 + 权限双门 + `call()`/`raw()`）、
+  `PluginFS`（沙箱在 `data/plugins/<name>/`，越界抛错）；`PluginContext` 挂上 `napcat`/`fs` 与 `has(perm)`
+- `_perm_ok(manifest, perm)`：未声明即拒绝，`napcat.*` 前缀通配不覆盖高危 leaf（`raw`）
+- manifest 升到 v2：`commands`(含 aliases)/`tools`/`config_schema`/`secrets`/`storage`/`limits`/
+  `network`/`requires`/`events`/`hooks`/`timers`/`priority`…，未知字段进 `extra` 保证向下兼容；
+  规范草案 `docs/plugin-manifest-v2.md` + 机器可读 `core/plugin/manifest.schema.json`
+
+### 三、卡片渲染：file:// 图片不再破图（modules/changelog.py、plugins/phi/card_render.js）
+- **根因**：`page.set_content()` 把页面放在 `about:blank` 源下，Chromium 拒绝加载 `file://`
+  子资源（实测 `<img src="file:///...">` 的 `naturalWidth` 全为 0）→ 卡片曲绘/头像/评级图标全废
+- `render_card_to_image(..., html_file=...)` 新增可选参数：给路径就写成真 HTML 走
+  `goto(file://<path>)`，并等所有 `<img>` 解码完再截图；不传则维持原 `set_content` 行为
+- ⚠️ POSIX 路径拼接坑：`'file:///' + '/root/x'` = `file:////root/x`（四斜杠，首段被当 authority）
+  → 统一按平台拼前缀（Windows `file:///G:/…`、Linux `file:///root/…`）
+- ⚠️ `card_render.js` 里内联 CSS 时用 `href.replace(/^file:\/\/\//, '')` 在 Linux 上会吃掉路径
+  开头的 `/`（得到 `root/x` 相对路径）→ CSS 静默不内联、页面裸奔；改为按平台还原
+- 曲绘资源接入 `card_assets/original_ill/`（来自 `Catrong/phi-plugin-ill`，只带卡片真正用到的
+  `illLow` 512×270 / `illBlur` 256×135 / `SP` 共 144MB；2048×1080 的 `ill/` 768MB 卡片里用不上，未随包）
+- 数据整形对齐上游 `LevelRecordInfo` / `b30Analysis.js` / `Save.getStats`：`rank` 必须是难度名
+  （曾误填序号，`rank-IN` 之类 CSS 类名全部失效）、新增 `Rating`（phi/FC/V/S/A/B/C/F）、
+  真实 RKS 直方图（28 槽）、真实 C/FC/Phi 统计表、真实玩家名（`/users/me` 拿昵称）
+- ⚠️ 部署踩坑：scp 会把 Windows 的 UID（197609）带到服务器文件上，snap 版 Chromium 的 AppArmor
+  `owner` 规则不匹配 → 一律 `ERR_ACCESS_DENIED`。**scp 后必须 `chown -R root:root`**
+- 验证：本地与服务器双端跑通完整链路（真存档 90 曲 / 30 条榜 / 曲绘缺图 0 / 直方图 28 槽），
+  出图 667KB 两端字节一致
+
 ## v2.3.81e — 交付加固 + 搜索更广：素材不再丢、协议不再漏、AnySearch 参数交给 LLM (2026.10.10)
 一句话总结：用户实测生成的新闻 md"只有两条、还净是空话"以及偶发"只回一句'我这就整理成 md 发出来'
 却没有文件"，根因有二：① 靠模型自己复述搜索素材必然丢料；② 模型有时不走原生 function-calling，
