@@ -140,3 +140,9 @@ deploy/cf-steam-proxy/tokens.local.md
 
 # wrangler 本地状态
 deploy/cf-steam-proxy/.wrangler/
+
+# 内部工作文档（不开源，留在本地/工作区）
+docs/kook_*
+docs/dead_code_report.md
+docs/i18n_scan_commands.md
+docs/commands_i18n.json
