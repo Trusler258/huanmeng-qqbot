@@ -212,7 +212,7 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "pgr",
-            "description": "查询 Phigros 玩家存档数据：RKS值、Best30曲目、各难度评级统计。需要 sessionToken（通过 /~pgr login 获取）。",
+            "description": "查询 Phigros 玩家存档数据：RKS值、Best30曲目、各难度评级统计。需要 sessionToken（通过 /~phi login 或 /~oldphi login 获取）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -349,7 +349,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "agent_think": "",  # 自有实现
     "system_status": "",  # 自有实现
     "whois":       "whois",  # ★ 域名查询
-    "pgr":         "pgr",
+    "pgr":         "oldphi",  # FC 工具名不变，指向改名后的指令（PHI-PORT-20261011）
     "run_code":    "",  # 自有实现（沙箱执行 Python / C++）
     "ws_files":    "",  # 自有实现（沙箱持久工作区文件管理）
     "load_skill":  "",  # 自有实现（按需拉取技能手册正文）
@@ -1052,9 +1052,26 @@ async def _read_url(url: str) -> str | None:
 
 
 async def _resolve_player(user_id: int, game: str) -> str | None:
-    """从玩家绑定数据中查找用户对应游戏ID"""
+    """从玩家绑定数据中查找用户对应游戏ID
+
+    v2.3.93: wdsj 的绑定有**两个来源**——`.wdsj bd` 写 data/wdsj_player_name.json
+    （扁平 {uid: 名字}，用户实际用的），旧的 player_bindings.json 是 {uid: {game: 名字}}
+    （2026-09-05 的旧数据，只有 2 条）。两者不一致导致 FC 路径查不到 .wdsj bd 的绑定
+    （实测用户明明绑过，机器人却回"你还未绑定起床战绩账号"）。
+    这里 wdsj 先查 wdsj_player_name.json，查不到再回退旧文件。
+    """
     import json
     from pathlib import Path
+    if game == "wdsj":
+        wdsj_file = Path(__file__).resolve().parent.parent / "data" / "wdsj_player_name.json"
+        if wdsj_file.exists():
+            try:
+                data = json.loads(wdsj_file.read_text(encoding="utf-8"))
+                hit = data.get(str(user_id))
+                if hit:
+                    return hit
+            except Exception:
+                pass
     bind_file = Path(__file__).resolve().parent.parent / "data" / "player_bindings.json"
     if bind_file.exists():
         data = json.loads(bind_file.read_text(encoding="utf-8"))
