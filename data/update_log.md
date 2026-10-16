@@ -11,12 +11,267 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
-## v2.3.82 — Phigros 插件上线：/~phi 全套移植 + 卡片渲染打通本地图片 (2026.10.12)
-一句话总结：把第三方 phi-plugin 的 Phigros 查询整体移植成幻梦插件（曲目资料/定数/理论值离线可查，
-TapTap 登录 → 存档 → B19/B30 出图），并修掉"卡片里曲绘、头像全是破图"的根因——Chromium 在
-`set_content` 下会拦截 `file://` 子资源，必须用真实 HTML 文件走 `goto(file://)` 加载。
+## v2.3.91 — 修复 CapabilityRegistry.discover() 覆盖插件能力（对齐 KOOK v2.3.96）(2026.10.16)
 
-### 一、/~phi 新插件（plugins/phi/，PHI-PORT-20261011）
+一句话总结：修掉一个与 KOOK 同源的潜伏 bug——插件运行时注册的能力会被 discover 清掉。
+
+`registry.all()/get()` 惰性触发 `discover()`，而 discover 用**全新 dict 覆盖 `_caps`**：
+若插件先于 discover 注册（启动顺序如此），插件能力连同 handler 绑定会被整体清掉。
+QQ 侧因为插件命令全走 `COMMAND_MAP`（委托内置），分发未受影响；
+但 CapabilityRouter 按 `registry.all()` 选能力给 LLM 时，插件能力会丢失（cmd_list 缺项）。
+修复：discover 改为**合并保留**已有运行时注册（与 KOOK v2.3.96 同款修复）。
+
+## v2.3.90 — 提示语 i18n 外化：commands.py 470 处 (2026.10.15)
+
+用户要求：`commands.py` 里硬编码提示「全转到 lang.toml」，一次做完。
+
+### 工具链（新建 3 个）
+| 脚本 | 作用 |
+|---|---|
+| `scripts/scan_i18n.py` | AST 扫描待外化清单（排除 docstring / logger / 格式串），输出 Markdown + JSON |
+| `scripts/i18n_convert.py` | 自动转换器：中文常量/f-string → `format_lang("key", ...)`，并产出 toml 片段 |
+| `scripts/merge_lang_fragment.py` | 幂等合并片段进 `lang.toml`（按 `(section, key)` 判重） |
+
+### 成果（最终）
+- `modules/commands.py`：**470 处**硬编码提示 → `format_lang`，涉及 **65 个函数**
+  （464 处脚本自动 + 3 处 IfExp/漏网手工 + 6 处用户可见兜底值经 code review 补）
+- `config/lang.toml`：**93 分组 / 585 条**（原有 27 组）
+- 覆盖位置：`return` / `append` / `send_*` / **dict value** / **list·tuple 元素** /
+  **if-else 分支** / 字符串拼接
+- **排除**（外化会改变行为）：docstring / logger 参数 / dict **key** /
+  `Compare` 右值 / `get·split·startswith·compile·match` 等内部函数参数
+
+### 等价性验证（关键，不只看编译）
+写 `verify_i18n_equiv.py`：插值处统一用**表达式源码文本**当假值，
+重建「备份原文」与「新模板 + kwargs」的输出并逐条比对 →
+**415 点全部一致（0 不一致 / 0 缺 key）**。
+
+### ⚠️ 四个坑（都踩过并修好）
+1. **AST 的 `col_offset` 是 UTF-8 字节偏移**，不是字符偏移 —— 含中文的行按字符索引切片
+   会把整行拼坏（产出语法错误）。必须 `line.encode()[:c1] + code + line.encode()[c2:]` 再解码。
+2. **TOML 转义顺序**：反斜杠必须最先处理；且 **普通字符串分支与 f-string 分支都要转义**
+   —— 曾漏给前者（多行帮助文本）转义 → `Unbalanced quotes`；字面 `\n`（两字符）未转义 → 同样报错。
+3. **merge 脚本判重必须按 `(section, key)`**：用全局 key 集合会误跳过（曾致 5 个 key 缺失）
+   且不判重会产生重复 key（`Duplicate keys!`，曾产生 95 行重复）。
+4. **含条件表达式 / 嵌套字面量的 f-string 不能自动转**：`f"{'开' if x else '关'}"`
+   会被推出变量名 `else` → 生成非法代码。已加"简单表达式白名单"（Name/属性/下标/常量）。
+5. 跨行 f-string 最初跳过 → 后实现跨行替换（首行前缀 + 新代码 + 末行后缀，中间行丢弃）；
+   7 处成功转换，剩余 3 处是**有意保留**的（LLM 提示词 / 2 个 HTML 卡片模板）。
+
+### ★ 独立 code review（子代理）发现的 3 个问题
+1. **`game` 修复被回滚**（严重）：为修 i18n 我从旧备份 `bak_i18n_auto` 重建 commands.py，
+   把上一轮修的 `game → get_game(chat_id)` **一起回滚了**。
+   ⇒ **教训：从旧快照重建前必须确认它是最新基线；重建后要重新应用所有此前的修复。**
+2. **`cmd_help.m23` 判断串外化**（设计问题）：`if format_lang("cmd_help.m23") in label`
+   —— 权限判断依赖文案，用户改文案就会改逻辑。已改回字面量 + 注释说明。
+3. **6 处用户可见兜底值未外化**：`data.get("desc", "未知错误")`、`pkg.get("cpName","某快递")`、
+   `KIND_LABEL.get(...,"棋局")`、`data.get("_template_display","未知模式")`、
+   `res.get("msg","兑换失败")`、`pkg.get("state","未知")` → 已外化到 `[common]`。
+   （转换器按"get/split 等内部函数"规则会跳过这些，属规则的自然盲区）
+
+### ★ 部署事故（自查发现）
+首次部署时**漏传 `merge_lang_fragment.py`**（上一轮清理时被我删了）→ 合并静默失败 →
+`lang.toml` 仍是旧版 → **生产提示语会显示 `[LANG:cmd_xxx.mN]`**。
+已重传脚本 + 重新合并 + 重启，实测 7/7 通过、取不到的 key 0。
+⇒ **教训：部署后必须验证"生效"，不能只看 compile OK。**
+
+### 顺带修复
+`cmd_countdown` 调用的 `_load_countdowns` / `_save_countdowns` **全仓无定义**
+（KOOK 端有，移植时漏了）→ `/~countdown` 一直 NameError、从未可用。已补 10 行存储层。
+
+
+
+
+## v2.3.89 — 故障监控上线 + 工具调用强制接管 + 两处紧急修复 (2026.10.15)
+
+### 一、API 故障推送（按群开关）+ 监控范围定案
+**背景**：DeepSeek 2026-10-15 08:11 起部分中断（V4.1 Flash API + 对话服务），
+bot 回复模型正是 `deepseek-flash`，实测服务器直连 30s 读超时。
+
+- **监控范围定案：只有 DeepSeek**。其他服务商（OpenRouter/智谱/硅基流动）都没有
+  RSS/状态页，无从自动判定，故不做自动监控
+- 新增指令 `/~owner fault <show|on|off|test> [群号]`，配置落 `bot_config.toml [fault] notify_groups`
+  （用 `_toml_write_in_section` 只改目标行、保留注释；**无需写内存**）
+- 新增 `_build_fault_notice()`：按状态出文本，圆圈区分严重程度
+  （🔴 不可用 / 🟡 降级 / 🟢 已恢复），**全文不用句号**（用户要求）
+- ⚠️ 踩坑：`cmd_owner` 内 wdsj 分支有 `import toml` / `from pathlib import Path`，
+  这俩会成为**整个函数的局部变量**；新分支必须自己 `import toml as _toml`、
+  `from pathlib import Path as _P` 用别名，否则 UnboundLocalError（连踩两次）
+- 验证：show/on/off/重复 on/重复 off/无参帮助/非法子命令/缺群号 全部符合预期；
+  推送文本 red / recovered / yellow 三种形态正常；配置无残留
+
+### 二、feed 实时读取（不手抄）+ 自动监控推送
+**背景**：国内访问 `status.deepseek.com` 被三重阻断（实测）：
+① DNS 分线路指到阿里云**中国**节点 → 该站没 ICP 备案，HTTP 明文返回
+"Non-compliance ICP Filing" 403；② HTTPS 在 TLS 握手时被 SNI 重置；③ DoH（1.1.1.1:443）超时。
+但 **UDP 53 → 1.1.1.1 是通的**。
+
+- **真拉取实现**（`_fetch_deepseek_status`）：国外 DNS（UDP 53 → 1.1.1.1，纯 stdlib 的
+  `_dns_a()`）解析到 statuspage.flashduty.com 的**香港** NLB 节点 → `_fetch_feed_via_ip()`
+  对该 IP 直连（SNI/Host 用真域名，证书校验正常）。feed.rss 失败再试 feed.atom，
+  **NLB 节点可用性会翻转**（47.76 / 8.217 轮流 502/超时），失败重试
+- **运行时解析**（`_parse_ds_feed`）：title / Status 词 / 中文正文 / Affected components /
+  pubDate→北京时间，全部从 feed 现取，`_FAULT_DEFAULT` 退化为拉取失败时的兜底
+- ⚠️ 踩坑：剥 description 的 HTML 标签必须用**空格**而非 \n ——
+  `<strong>Status:</strong> identified` 若换 \n 会把 "Status:" 和值拆两行，抓不到
+- **自动监控**（bg_tasks `_bg_fault_watcher`）：轮询 `[fault] poll_interval`（默认 300s），
+  判据 = `<link> + status_word`（同一事故链接不变但状态会变，要拼一起才算更新）；
+  状态存 `data/fault_watcher.json`，**首次只建基线不推**（防重启重发）；
+  有更新 → 按状态出 🔴/🟡/🟢 推给 `[fault] notify_groups`
+- 验证：`_fetch_deepseek_status()` 连测 **3/3** 成功，status_word=identified、
+  正文/组件/开始时间全对；监控已启动并建立基线
+- 补充（14:30）：**恢复通知里去掉「现象」行**（那是描述故障期的，放"已恢复"语境下读着像还在故障）；
+  故障通知仍保留。DeepSeek 已恢复验证：HTTP 200、~1.5s、正常出内容
+
+### 三、紧急修复：`_build_messages` 漏形参 → 生产回复全线失败
+**现象**（日志原文）：
+```
+Oct 15 13:49:00 ERROR (queues:_group_worker:132) [队列] 群247478659 处理异常: name 'needs' is not defined
+```
+13:49 起**所有走回复管道的消息全部失败**（流量低，只留一条日志）。
+
+**根因**：「路由以决策为准」那次把 `needs` 参数加到了 `generate_multi_reply_with_tools` 签名，
+却把函数体改在了 `_build_messages` 内（`services/llm.py:2621` 参考资料注入）——
+该函数没有这个形参。**当时误以为 2618 行属于前者，实际它在后者内部。**
+
+**修复**：`_build_messages(...)` 补 `needs: set | None = None`；调用点透传；
+其他调用点（`scripts/*.py` 4 处）靠默认值兼容。
+
+### 四、紧急修复：`safe_fav` 引用未定义函数（潜伏 bug）
+`services/llm.py:2508` `fav_change = safe_fav(...)` —— **`safe_fav` 全仓从未定义**。
+它在 `except Exception: pass` 里，不崩但整条「JSON 截断修复」路径静默失效。
+实测近 7 天该路径**从未触发**（`JSON截断修复` 日志 0 次）→ 潜伏非活跃。已改为
+`data.get("fav", 0)`（与正常路径一致）。
+
+**★ 教训：改完 py 必须三步** ① `py_compile` ② **AST 未定义名检查**（本可抓到上面两个问题）
+③ **真跑一次调用**。本次只做了 ①。
+
+### 五、B+C：决策模型强制指定工具 + `tools` 命中开思考
+**背景（盲测证明"提示"无效）**：50 条 × 3 轮 × 2 路径实测，给决策模型的工具建议加进
+`extra_info` 后，该调工具时调用率仍是 **3.3%（与不给提示完全一致）** —— 回复模型直接无视文字提示。
+
+- **B 强制调用**（`services/llm.py` + `core/pipeline.py`）
+  `route()` 新增第 3 个返回值 `tool = {"name", "confidence"}`（选项**从 `get_tool_schemas()`
+  动态派生** → 插件新工具自动纳入）；阈值 `[decision] tool_force_threshold`（默认 0.7，
+  用于防决策模型判错时硬调错工具）；FC 第 0 轮传
+  `tool_choice={"type":"function","function":{"name": ...}}`，之后各轮恢复 `auto`。
+  实测：`weather{city:广州}` / `wdsj_query{player,mode,stat}` / `chess{action:join}` /
+  `draw_card{}` 全部按指定调用，**参数质量正常**。
+- **C 思考模式**（`core/pipeline.py`）：`thinking = ("deep" in needs) or ("tools" in needs)`，
+  开关 `[decision] think_on_tools`（默认 true）。
+- **兜底（用户明确要求）**：决策模型不可用 / 超时 / 失败 → `route()` 返回 `(None, None, None)`
+  → 关键词版 `_detect_skill_needs` + `tool_choice="auto"`，**与接入前完全一致**。
+
+### 六、盲测结论：新旧路径零差异，思考模式才是主因
+| 条件 | 该调工具时的调用命中率 |
+|---|---|
+| 旧逻辑（关键词 needs） | 3/90（3.3%） |
+| 新逻辑（决策 needs + 工具提示） | 3/90（3.3%） |
+| `thinking=False`（10 例×2） | **0/20（0%）** |
+| `thinking=True`（10 例×2） | **7/20（35%）** |
+
+- **决策模型自身的工具选择准确率 26/30 = 86.7%**（weather/search_web/chess/write_code/
+  earthquake/pgr/whois/web_fetch 全对；短板：**draw_card 0/2**、"来局围棋吧"误判「无」）
+- 生产基线：近 7 天 197 次轮1输出中仅 **23 次真调用工具（11.7%）** → 工具调用本是低频事件
+- ⇒ 瓶颈不在"选哪个"，而在"回复模型压根不想调"；文字提示传不进去，**强制才有效**
+
+## v2.3.88 — 决策模型接入（免费）+ 群聊回复收紧为硬规则 (2026.10.14)
+一句话总结：接入一个**免费**的专用决策模型（OpenRouter Mercury Decide）做通用判定——**一次调用同时判「要不要联网/写代码/深讲/调工具/记记忆」**，可替换原关键词判定与 LLM judge；并按用户要求把群聊回复收成**确定性硬规则**：没 @、也没叫名字就一律不回，不再"以为对方在问自己"。
+
+### 一、决策模型客户端 services/decision.py（新建）
+- 端点 `POST https://openrouter.ai/api/alpha/decisions`，模型 `inception/mercury-decide:free`
+  ⚠️ 该模型**不能用 chat/completions**（会 400 提示走 decisions 端点）；与 Jev / System One 同构
+  （`state` + `questions`，题型 `noul`/`choice`/`score`），返回**校准概率**而非文本，`usage.cost=0`
+- 三个接口：`decide()`（通用）、`route()`（多路路由，**一次调用问 7 个问题**）、`judge()`（回复判定，
+  契约对齐 `call_judgment_pipeline`：返回 `(interest 0~10, should_reply, is_arch)`）
+- **fail-open 铁律**：非 200 / 超时 / 无 `answers` / 抛异常 → 一律返回 `None`，调用方回退原逻辑；
+  架构上决策层**没有能力**阻断回复
+- ⚠️ `score` 的 `criteria` **上限 10 档**（11 档报 422）；`score` 返回的是**期望档位值**，按 `n/(n-1)*10` 归一化
+- 自测：`python3 -m services.decision`（need_search / route / judge 三组，服务器 6/6、5/5 全对）
+
+### 二、A：决策模型路由接入主流程（core/pipeline.py）
+- 在自忽略检查后**提前 fire** `route(msg_content)`，与记忆检索/上下文组装重叠，到用的时候才 await
+  （`asyncio.wait_for`，超时/异常一律忽略）→ 尽量不增加串行延迟
+- 结果并入 `needs`（关键词版 `_detect_skill_needs` 继续作兜底），补上关键词表**没有的 `search`**
+  与 `code`/`memory`；`deep` 命中即开思考模式
+- 新增日志：`决策模型路由: [...] | probs={...}`
+
+### 三、B：决策模型替代 LLM judge（modules/judge.py）
+- `should_respond` 里启用且调用成功 → 直接采用其判定；失败/未启用 → 原 `call_judgment_pipeline`（fail-open）
+- `reply` 概率已内含"该不该回"的整体判断，**不再叠加** `reply_interest` 阈值（决策模型生效时）
+
+### 四、群聊回复收紧为硬规则（modules/judge.py，用户 2026-10-14 明确）
+- **没有 @（已在 pipeline 层短路）也没有叫名字 → 一律不回复**，不再交给模型猜
+- 理由：多人群聊 ≠ 一对一答疑，不能因为"对方在提问"就默认在问自己、跑去插话
+- 实测：`今天A股大盘怎么样` / `你们俩明天几点见` → False；`幻梦…` → True
+
+### 五、启用与回退（config/bot_config.toml [decision] + bot.py 启动提示）
+- `enabled=true` **且** `.env` 配了 `OPENROUTER_KEY` 才生效；任一不满足 → **启动时日志提示 +
+  自动回退原逻辑**（关键词 `_detect_skill_needs` + LLM judge）
+- 启动日志：`决策模型 | 决策模型已启用: inception/mercury-decide:free | 阈值 0.5 | 超时 6.0s（fail-open…）`
+- 备注：`.env` 另存 `JEV_*`（OpenCode Zen）——其免费档被限制为「仅限 OpenCode 客户端内使用」，
+  外部代码调用返回 451，**不可用**，仅作留档
+
+### 六、判定准绳改为「addressed（带上下文）」+ 回复链（modules/judge.py / services/decision.py）
+- 原「未@且未叫名字 → 不回复」是硬规则，抓不到**隐晦代称**（那个猫娘 / 梦梦 / 小猫咪）。
+  改为：决策模型启用时由它带上下文判 `addressed`；**未启用**才退回硬规则
+- **合成判定 = `addressed` AND `reply`** ⚠️ **只看 `reply` 会误判**——无指向的群友闲聊
+  `reply` 也高达 0.8~0.99（该题前提是"已确认在跟它说话"），必须以 `addressed` 为准绳
+- **回复链**：`[CQ:reply,id=…]` → `get_msg` 取 `sender.user_id` 比对 bot_qq，
+  引的是幻梦的消息即视为已指向（确定性，3s 超时，失败当未指向）。仅带引用的消息才发 API，普通消息零开销
+- **上下文条数**做成配置 `[decision] judge_context`（默认 20）
+- ⚠️ 踩坑：`addressed` 题列了别名（幻梦/梦梦/猫娘/小猫咪）但 `reply` 题没列 →
+  模型对「梦梦」在两题间摇摆（reply 仅 0.06~0.68）。**两题必须给同样的别名提示**
+
+### 七、模拟测试结论（决策模型「是否被指向」判定）
+50 例（10 条消息 × 上下文 3/10/15/20/30 条）：
+| 上下文 | 准确率 | 平均耗时 |
+|---|---|---|
+| 3 条 | **100%** | 1.85s |
+| 10 条 | **100%** | 2.17s |
+| 15 条 | **100%** | 1.81s |
+| 20 条 | **100%** | 1.92s |
+| 30 条 | **100%** | 2.07s |
+- **分离度极大**：被指向 0.98~1.000 ／ 无指向 0.004~0.107，中间几乎无模糊地带
+- **隐晦代称全部抓到**：`那个猫娘` 0.996、`梦梦` 0.999、`小猫咪` 0.999
+- **上下文条数不影响准确率，也不影响延迟**（30 条 ≈ 3 条）
+- 修复别名后稳定性复测：**18/18**（6 例 × 3 次全一致）
+
+### 八、紧急修复：日榜推送因漏导 timedelta 整段失败（plugins/bg_tasks/main.py）
+- **现象**：2026-10-15 00:01 采集正常（106 条），但**日榜推送整段失败**——
+  `_bg_wdsj_collector` 只 `from datetime import datetime`，而推送段算"昨天"用了 `timedelta`
+  → `NameError: name 'timedelta' is not defined`
+- **是我引入的**：把调度改成 `wdsj_next_slot()` 后误以为 `timedelta` 不再需要，从导入里删掉了
+- **修复**：导入改回 `from datetime import datetime, timedelta`（并写注释警告别再删）
+- **可观测性**：该处 `logger.warning` 只有一行、被淹没 → 改为 `logger.error(..., exc_info=True)`，
+  以后"日榜没发"会带堆栈、ERROR 级可 grep
+- **防复发**：新增静态检查（AST 扫函数内未定义名），已复验能抓到 timedelta 这类问题
+- ⚠️ 遗留：**2026-10-14 的日榜未推送**（数据仍在：起床榜 5 行 / 竞技榜 2 行），待补推
+
+### 九、决策模型带上「本群成员名单 + 说话人」；路由改为以决策为准（2026-10-15）
+**动机**：线上真实撞名——群 1073298664 里有真人昵称就叫 **`幻梦bot`**，群 1017391415 有 `AxT机器人`/`可怜BOT`。
+别人 @ 那位群友时，我们却可能跑去插话。
+
+1. **成员名单进 state**：读 `data/group_nicknames.json` 本地缓存（不发 API，上限 120 人，
+   排除 bot_name 自身），连同「正在说话的人」一起塞给决策模型；`addressed` 题加说明
+   "名单里都是真人，昵称像机器人名也不算在叫幻梦"
+   - **A/B 对照**：`@幻梦bot 你好` 带名单 → `addressed=False` ✅；**不带名单 → True ❌**
+   - `@幻梦 你好` 两条路都 True ✅
+2. **路由改为"以决策模型为准"**（不再并集）：原先 `needs = 关键词 ∪ 决策`，关键词的 `deep`
+   会把闲聊也强开思考模式（实测 `@幻梦 那我继续摸？` 被判 deep、拖慢回复）。
+   现在决策成功就整体采用，失败才退回关键词版
+   - 为此给 `generate_multi_reply_with_tools` 加 `needs` 透传参数 —— 因为它在
+     `services/llm.py:2618` 自己又跑了一遍 `_detect_skill_needs`，不透传会被覆盖回去
+   - 实测：`@幻梦 那我继续摸？` → needs 空集（deep=0.014，思考模式关闭）；
+     `详细讲讲…原理` → deep=0.9997；`恒大现状` → search=0.989
+3. **硬规则兜底改边界匹配**：`bot_name in msg` 是子串匹配，`"幻梦bot"` 含 `"幻梦"` 会误判 →
+   改为 `re.search(bot_name + r'(?![A-Za-z0-9_])')`
+4. 验证：撞名 4 例 × 决策开/关 = **8/8 全对**
+
+## v2.3.87 — 当日合集：Phigros 插件上线 + 内置模块插件化（三批 + 真正插件化）+ PhigrosLibrary 前置库 + 谱面实力分析 (2026.10.12)
+一句话总结：把 phi-plugin 整套移植成 `/~phi` 插件并修好卡片破图（含 B30 榜单上限、OVER FLOW 分段、Phigros 字体加载）；内置模块插件化分两步走——先三批把 17 个指令迁成插件（老代码保留兜底），再**真正插件化**把 7 个模块的逻辑整体搬进插件、旧模块改后缀退役（不再有内置兜底）；期间给插件平台补上 manifest v2、指令遮蔽还原、i18n、卡片渲染、重命令、依赖声明、原始消息回传七项能力；再给 phi 接入 PhigrosLibrary 原生前置库（打三个适配补丁），最后把卡片里空着的「谱面实力分析」用本地章节统计补上。
+
+### 一、/~phi Phigros 插件上线（plugins/phi/，PHI-PORT-20261011）
 - 入口 `/~phi`（`/phi` 同效），旧 `/~pgr` 改名 `/~oldphi` 原样保留，不动老代码
 - 子命令：`song/info/card/theory/new/status/login/logout/me/b19(N)/help`
 - 曲目资料走**本地曲库**（`data/songs.json` 346 曲 / 345 别名），断网可用；
@@ -25,10 +280,9 @@ TapTap 登录 → 存档 → B19/B30 出图），并修掉"卡片里曲绘、头
   密文被当 ASCII 解码、AES key 抄错一字节
 - rks 计算对齐上游：`build_chart_table → build_records → calc_b19`；⚠️ `save_ver` 只在
   **有历史定数表**时才有意义，我们一律传 `None`，否则定数全部返回 0、rks 全 0
-- 登录流程加"用完即撤"：二维码与提示在登录结束（成功/失败/超时）后撤回，需要新权限
-  `message.delete`
+- 登录流程加"用完即撤"：二维码与提示在登录结束（成功/失败/超时）后撤回，需要新权限 `message.delete`
 
-### 二、插件平台能力扩展（core/plugin/）
+### 二、插件平台能力扩展：manifest v2 / message_ex / napcat / fs（core/plugin/）
 - `PluginMessage` 新增 `send_ex` / `send_file_ex`（返回含 `data.message_id` 的原始响应）、
   `message_id_of()`、`delete(message_id)`（需 `message.delete` 权限）
 - 新增 `PluginNapCat`（读写/管理三类白名单 + 权限双门 + `call()`/`raw()`）、
@@ -54,8 +308,282 @@ TapTap 登录 → 存档 → B19/B30 出图），并修掉"卡片里曲绘、头
   真实 RKS 直方图（28 槽）、真实 C/FC/Phi 统计表、真实玩家名（`/users/me` 拿昵称）
 - ⚠️ 部署踩坑：scp 会把 Windows 的 UID（197609）带到服务器文件上，snap 版 Chromium 的 AppArmor
   `owner` 规则不匹配 → 一律 `ERR_ACCESS_DENIED`。**scp 后必须 `chown -R root:root`**
-- 验证：本地与服务器双端跑通完整链路（真存档 90 曲 / 30 条榜 / 曲绘缺图 0 / 直方图 28 槽），
-  出图 667KB 两端字节一致
+
+### 四、内置模块插件化 第 1 批：nasa / weather / box + 平台补 4 个缺口
+- 三个"附加型"功能迁成 `plugins/<name>/{manifest.json, main.py}`；入口不变
+  （`/~nasa`、`/~天气`=`/~weather`、`/~box`），行为逐字对齐内置版（含全部降级分支）
+- 卡片渲染复用 `modules.changelog`；文案走 `ctx.i18n`（同一份 config/lang.toml）；
+  box 密钥改 manifest `config_schema.ckey`（secret，面板可改），未配置回退环境变量 `KUAIBAO_CKEY`
+- **平台补 4 缺口**（core/plugin/api.py、modules/commands.py，只增不改）：
+  - G1 指令名遮蔽/还原：插件注册同名指令时先记下内置原值；`unregister_all` 只删"仍属于本插件"的项，
+    被遮蔽的内置指令在插件禁用/卸载时**自动还原**（此前 `pop` 会连内置一起删掉）
+  - G4 `ctx.i18n`：读 lang.toml 的统一入口（`get`/`has`，支持 `${}` 占位）
+  - G5 `ctx.image.render_html(...)`：卡片截图能力薄封装
+  - G7 重命令标记：manifest `limits.heavy=true` 登记进 `EXTRA_HEAVY_COMMANDS`，`is_heavy_command` 一并识别
+    → 迁移后仍走旁路并发、不占用同群 worker
+- 验证：双跑比对 nasa 4 / weather 5 / box 8 例全 PASS；服务器 E2E 路由全部指向插件，
+  weather 58KB / box 42KB 真渲染出图
+
+### 五、第 2 批：ping / gh / reward / power / pgr / steam / voice / tuf / wdsj
+- 均"薄封装 + 复用旧实现"：编排搬进 `plugins/<name>/main.py`，共享助手仍复用 `modules.<x>`；
+  数据文件**不迁移**（gh→`data/gh.json`、reward→`data/rewards.json`+赞赏码图、pgr→`data/pgr_tokens.json`）
+- heavy 语义保持：原属 HEAVY_COMMANDS 的（reward/power/oldphi/steam/voice/tuf/wdsj）声明 `limits.heavy=true`；
+  **ping/gh 原本就不是 heavy → 不声明**（保持串行）
+- ⚠️ **wdsj 特例**：`cmd_wdsj`(535 行) 依赖 commands.py 的 12 个私有助手，其中 `_build_daily_rank_html` /
+  `_arena_daily_payload` / `_render_html_to_png` **被 bot.py 的 0 点日榜推送与多个 scripts 直接 import**，
+  不能搬走 → 采用**"插件拥有指令名 + 委托内置 cmd_wdsj"** 的薄壳（行为逐字节一致）
+- 验证：双跑比对 ping 10 / gh 24 / reward 14 / power 10 / pgr 16 / steam 16 / voice 8 / tuf 21 / wdsj 6 全 PASS；
+  14 个本地插件、20 个指令名全部路由到对应插件
+
+### 六、第 3 批：relay / agnes / op / memory_link / earthquake + 依赖机制 + G8
+- relay（`/~say`、`/~代发`）：**入口逻辑搬入插件**（复刻旧 `cmd_say`），帮助/目标解析/@渲染复用
+  `modules.msg_relay`；权限走 `ctx.identity.is_admin/is_op`；发送仍直调 `services.sender.*`
+  以保留"抛异常 vs 返回 False"两个错误分支
+- agnes / op / memory_link / earthquake：**薄壳委托**（插件只拥有指令名，编排仍 `await modules.<x>.cmd_*(...)`），
+  因为这些模块的助手被 `core/pipeline.py`（op 的 get_mode/get_persona、memory_link 的 build_linked_context）、
+  `modules/commands.py`（agnes 的 owner_quota_*）、`bot.py`（earthquake 的 start_polling）**直接 import，整模块不能搬**
+- earthquake **仅迁指令面**：常驻监听（58889）仍由 bot.py 托管，不随插件走
+- **插件依赖机制**：`requires.plugins`(硬) / `requires.optional_plugins`(软)，并兼容 v1 `dependencies` 与
+  `extra.depends_on|depends|dependencies|optional` 兜底归并；`manager.load_order()` 拓扑排序加载，
+  缺硬依赖 → 跳过并 emit error；新增 `ctx.plugins.loaded()/has(name)`、`ctx.identity.is_op(user_id)`
+- **G8 原始消息回传**（`api.py::_bridge`）：qqbot 风格 handler 若签名显式声明 `raw_message` 形参，
+  bridge 回传原始 CQ 串（agnes 的 `/~draw` 引用图、`/~img2video` 图生视频需要）；其余 handler 行为不变
+- 验证：双跑比对 relay 10 例 + 委托插件逐字一致、agnes raw_message 正确回传、卸载还原全 OK；
+  19 个本地插件、19 个指令名全部路由；依赖机制离线探针（拓扑序/缺硬依赖跳过/软依赖加载）PASS
+- 定案：`auto_update` **不迁**（进程自更新 `os._exit(0)` + systemd 拉起，保持内置）→ 内置模块插件化至此收尾
+
+### 七、phi 接入 PhigrosLibrary 原生前置库（plugins/phi/lib/）
+- 上游 `S-t-e-v-e-e/PhigrosLibrary`（C/C++ 云存档解析库）编译为 `libphigros.so`
+  （Ubuntu 22.04 x86_64，210KB，7 个导出符号齐全）；`phigros_lib.py` 做 ctypes 封装
+  （懒加载 + 全调用加锁 + handle 生命周期 + `ERROR:` 前缀识别）+ 产物转成 `save_parser` 同构
+- `difficulty.tsv` 由 phi 现行曲库生成 327 行（上游自带那份停在 2024-10，缺新曲会让 `get_b19` 抛 out_of_range）；
+  附 `gen_difficulty_tsv.py` 供曲库更新后重新生成；`patches/` 存三个补丁脚本与打补丁后的源码，可复现构建
+- **接缝选择**：C 库只替换「取档 + AES 解密 + zip + 二进制解析」，**rks 数学仍走 Python**
+  （C 库 b19 是旧算法 `(P1+B19)/20`，phi 用新算法 `(P3+B27)/30`，直接换会改数）
+- **三个原生适配补丁**（上游代码停在 2024-10，直接用会出事故）：
+  1. `deserializationNodes` 边界钳制（save.c）——原实现按存档 `version` 遍历静态 schema 表，
+     当前存档 `gameKey.version=3`/`gameProgress.version=4` 已超表长 → **全局数组越界读 → SIGBUS**
+     （ASan 定位 `save.c:217`，越界读全局 `GameKey`）。改为 `min(version, node_count)`，
+     未消费字节由原有 `overflow`(base64) 兜底保留，数据不丢。
+  2. 存档查询补 `where(user)` + `order(-updatedAt)`（phigros.cxx）——原查询 `classes/_GameSave?limit=1`
+     既无用户过滤也无排序，实测拿到**其他玩家 4 个月前的旧存档**（objectId/rks/userId 全不同）。
+     ⚠️ 踩坑：`char objectId[16]` 会截断 24 位 LeanCloud objectId，导致恒返回 `ERROR:no result`，缓冲区已改 `[32]`。
+  3. u8/u16 字段按无符号读取（save.c）——原实现用有符号 `char` 读 u8，`gameVersion 157 → -99`，共 5 处修正。
+- 接入方式：`save_parser.full_save()` 优先走原生后端，失败/库缺失**自动回退**纯 Python 实现（零功能中断）
+- 验证：**集成级双跑比对**（真机真存档）gameRecord 90 首全难度 score/acc/fc **0 差异**；
+  summary 的 save_version/challenge_mode_rank/ranking_score/game_version/avatar 全一致；
+  **回退链路**（藏起 `.so`）Python 后端照常出数且数据一致
+- 后缀约定：插件前置库按 **`.hmpl`**（HuanMeng Plugin Lib）打包分发，解包到 `plugins/<插件名>/lib/`
+
+### 八、phi 卡片补上「谱面实力分析」（本地章节分类雷达图 + 擅长/薄弱词条）
+- 原来为什么没有：上游这一块的 `tagAnalysis` 依赖 phib19.top 投票后端，本地没有，
+  `phi_card_data.py` 里整块硬编码留空 + `showTags=False`，模板走 else 分支只渲染「等效 RKS 直方图」，
+  「谱面实力分析」标题从来不会出现
+- 本地实现（`phi_card_data.py::build_tag_analysis`）：按章节分组统计玩家**平均 RKS**
+  （复用 `build_records` 已算的 rks），仅统计有定数曲目（SP 等自动排除）；
+  每类至少 2 首、至少 3 个分类才算样本充足；分组为 单曲/联动/支线/1-4章/5-6章/7-9章
+- 雷达图几何与模板 `viewBox 0 0 200 184` 对齐（圆心 100,92）；半径按玩家自身分类 min/max
+  相对归一（lo→0.25、hi→1.0），标签仍显示**绝对 RKS**，避免最弱分类塌成圆心一个点
+- ⚠️ 两个布局踩坑：
+  - `histogramWide` 原硬编码 True → `.histogram-wide .histogram-panel{width:100%}` 让直方图抢占整行宽，
+    flex 把实力分析面板挤扁，右侧词条名被 ellipsis 截成"单…" → 改为 `histogramWide = insufficient`
+  - 雷达标签字号仅 10px，左右两侧 anchor=start/end 可用宽度约 33px，"主线7-9"（约 36px）会被 viewBox 裁掉
+    → 分类名压到 2-4 字符（单曲/联动/支线/5-6章/7-9章）+ 标签半径 78→70
+- 验证：真机渲染 `showTags=True`、5 个章节分类、成绩 113 条、分类平均 RKS 13.046
+  （擅长 单曲14.47/联动13.52/5-6章12.52，薄弱 7-9章12.22/支线12.50），PNG 475KB；
+  降级路径（仅1分类/每类1首/db=None/空成绩/全分类同RKS）均正确回落为只显示直方图，不崩
+
+### 九、真正插件化：7 个模块的逻辑搬进插件，旧模块改后缀退役
+> 前三批只是"改入口"——插件拿指令名、逻辑仍留在 `modules/`。本节做**真正的插件化**：
+> 逻辑整体搬进 `plugins/<名>/`，`modules` 里的旧文件改后缀退役，**不再有内置兜底**。
+
+- **试点 `ping`**：`modules/ping.py` 助手部分（268 行）整体搬进 `plugins/ping/ping_core.py`，
+  `main.py` 用 `_load_core()`（`importlib` 按文件路径加载，插件目录不是 package）取用；
+  `commands.py` 摘除 `cmd_ping` 导入 + COMMAND_MAP 注册；`modules/ping.py` → `ping.py.legacy`
+- **批量 6 个**：`msg_relay`(relay) / `weather` / `power` / `pgr` / `voice` / `gh`，同一套路：
+  `plugins/<名>/<模块>_core.py` + `main.py` 走 `_load_core()` + commands.py 摘注册 + 旧模块 `.legacy`
+  - 摘要式改造：保留原有局部变量名（`X, Y = core.X, core.Y`），正文一行不动 → diff 最小、零漏改
+  - ⚠️ **pgr 陷阱**：它的助手 `_login/_query_profile/_query_best/_leaderboard/_search_song/_new_songs/_help`
+    定义在 `cmd_pgr` **之后**，按"第一个 cmd_ 之前"切分会漏掉 → 已改为"cmd_pgr 前后两段拼接"
+  - ⚠️ **gh 特例**：其数据层 `_load/_save/_gkey` 被核心模块 `modules/leave.py`（`_fmt_gh` 复用 ~gh list 输出）共用，
+    不能整体搬走 → 抽成 **core 级 `modules/gh_store.py`**，插件与 leave 各自 import，
+    避免"核心 import 插件"的反向依赖。gh 指令逻辑仍在插件内
+  - ⚠️ `commands.py` 里 `cmd_weather`(41 行实现) + `_cmd_gh` 包装需一并摘除；其余 5 个只是 import，无函数体
+- **验证**（本地 + 服务器双端）：
+  - 逐函数源码等价：core 与 `.legacy` 同名函数 `inspect.getsource` **完全一致**（relay 9 / weather 12 /
+    power 13 / pgr 26 / voice 16 / gh 9 个符号）；gh 的 `_load` 唯一差异是新增 docstring，
+    去 docstring 的 AST 比对 PASS
+  - 路由与退役：`say/代发/天气/weather/power/功耗/电费/oldphi/voice/语音/gh` 全部来自插件；
+    `modules/{msg_relay,weather,power,pgr,voice,gh,ping}.py` 均已 `.legacy`，全仓无残留导入
+  - `.hmp` 往返：`pack_plugin("ping")` → 3 文件逐字节一致、STORED、`peek_hmp_name` 可识别、
+    解包后 `_load_core()` 正常 → **逻辑确实全保存在 hmp 里**
+  - 服务器 E2E：23 插件、`/~say`/`/~gh`/`/~weather`/`/~oldphi`/`/~voice` 空参分支正常、
+    `modules.gh_store` 可用且 `leave._fmt_gh` 不再炸；重启后无 Traceback、`NRestarts=0`
+
+### 十、修 phi 的 B30：榜单上限被写死成 19，OVER FLOW 分段从未渲染
+- **症状**：`/~phi b30` 只出 19 行；模板里那段 `OVER FLOW` 分隔线（第 28 条起）从来没出现过；
+  自算 rks 显示 9.7094（存档实际 13.6385）
+- **根因**：`/~phi bN` 里有两个互不相遇的 `n` ——
+  `_do_best` 用请求值（b30→30），而 `_attach_rks` 用 `ctx.config("b19_calc_num", 19)`，
+  这个键**从未在 manifest 声明** → 恒取默认 19。于是 `calc_b19(num=19)` 产出的 `b19_list` 只有 19 项，
+  `build_b19_data` 里 `b_list[:30]` 切不出 30，模板的 `$index == (phi ? 27 : 30)` 永不成立
+- **连带**：`calc_b19` 的 `com_rks = (Σphi + Σ前 min(num,27) 项) / 30` 除数写死 30，
+  传 19 只累加 19 项 ⇒ 9.7094（正确应为 13.6385）
+- **顺带修的第二个 bug**：`phi_render.normalize_local_save` 的 `total_rks` 只读 camelCase
+  `summary["rankingScore"]`，而原生后端（phigros_lib）转出的是 **snake_case** `ranking_score`
+  → 取到 None → 回退到上面那个错值。上游卡片走 `_pick` 两种键都试所以显示正确，
+  一旦降级到插件自带模板/纯文本就变成 9.7094
+- **修法**：`_attach_rks` 改用 `b19_max`(30) 让 `b19_list` 有 30 项（实际显示条数由
+  `build_b19_data(num=请求的N)` 再切）；`normalize_local_save` 两种键名都试
+- **验证**（真机真存档，走真实 `_attach_rks` 代码路径）：`b19_list` 19→**30**；
+  `com_rks` 9.7094→**13.6385**（= 存档 `ranking_score`）；`profile['total_rks']` 同步修正；
+  `/~phi b19` → 19 行无 OVER FLOW（正确，27 才分段）、`/~phi b30` → **30 行 + OVER FLOW 分隔线**
+
+### 十一、修复 phi 卡片字体：45MB 字体从未上传，且内联 CSS 不重定位相对路径
+- **症状**：卡片一直是**回退字体**，Phigros 字体（`phi.ttf`）从未生效
+- **根因 1：字体文件根本没在服务器上**。`card_assets/html/common/font/` 在服务器上**整个目录不存在**
+  （本地 12 个字体 45MB：`phi.ttf` / `Aldrich-Regular.ttf` / `HIMALAYA.TTF` / 各种 `NotoSans*` / `吞弥恰俊.ttf`），
+  而 `common.css` 里声明了 12 条 `@font-face`
+- **根因 2：`card_render.js` 内联 CSS 时不重定位相对路径**。`inlineCss` 只把 `<link>` 换成 `<style>`，
+  但 CSS 内部的相对 `url()` / `@import` 仍以 **HTML 所在目录**（`data/img_temp/`）为基准解析，
+  于是 `./font/phi.ttf` 被当成 `img_temp/font/phi.ttf`；`@import "../common/common.css"`
+  被当成 `data/common/common.css`。**即使把字体传上去也依然 404**
+- **实测证据**（Playwright 查浏览器）：修复前 12 个 `@font-face` 全部 `status=error`，
+  `document.fonts.check('16px PHI')` = False，加载失败请求 12 个（字体 ×10 + `common.css` + `snow.css` + `otherimg/phigros.png`）
+- **修法**：
+  1. 上传整套字体目录（tar.gz 21MB → 解包 45MB）
+  2. `card_render.js` 新增 `rebaseCss(css, cssDir)`：内联 CSS 前把相对 `url()` 重写为绝对
+     `file://`，并把相对 `@import` **递归内联**（带深度保护）。在 `inlineCss` 里按**源 CSS 所在目录**调用
+- **验证**：`PHI`/`Aldrich` 状态 `error → loaded`；`fonts.check('16px PHI')` = **True**；**加载失败请求 = 0**；
+  CDP `CSS.getPlatformFontsForNode` 全页扫描：`PHI` 承担 **3777 个字形**、`Aldrich` 76 个
+  - ⚠️ 记录一个坑：CDP 报的是字体**内部名**而非 CSS 别名 —— `phi.ttf` 的内部名是
+    **`Source Han Sans & Saira Hybrid`**，`吞弥恰俊.ttf` 是 `Calligraphy of Thonmi-`。
+    只看内部名会误判「PHI 没被使用」
+  - 顺带更正：`phi.ttf` **含中文字形**（是 CJK+拉丁混合字体），只有 `Aldrich` 是纯拉丁
+- **部署注意**：`card_assets/html/common/font/` 有 45MB，随 `plugins/phi/` 一起打包部署
+  （本地备份 `qqbot-backup/2026-10-12/phi_fonts.tgz`）
+
+### 十二、明确 WDSJ 日榜「未配置推送群 = 不推群」语义，修正与之矛盾的帮助文字
+- **背景**：全量回归验证时发现 `bg_tasks` 与遗留 `bot.py` 对 `wdsj.target_groups` 为空的处理不一致 ——
+  遗留版 `if not gids: gids = cfg.group_ids()` **发全群**，现行版**只记日志不推送**。
+  用户 2026-10-12 确认**以现行版为准：未设置推送群就不推群，仅同步 QQ 空间**
+- **代码不改**（保持现行语义），只把**与实际行为矛盾的文字**改掉：
+  - `modules/commands.py` `/~owner wdsj groups`：
+    · 用法里的 `clear 清除(发全群)` → `清空（清空后不推送群，仅同步 QQ 空间）`
+    · `show` 的 `未设置推送群，凌晨自动发全群` → `未设置推送群：日榜不推送任何群，仅同步 QQ 空间`
+      （并附上 `set` 的用法提示）
+    · `clear` 的 `已清除推送群限制，凌晨发全群` → `已清空推送群：日榜不再推送任何群，仅同步 QQ 空间`
+  - `plugins/bg_tasks/main.py`：空值分支的日志改为
+    `日榜未推送任何群: target_groups 未设置（仅同步 QQ 空间）；如需推群用 /~owner wdsj groups set <群号>`，
+    并加注释说明与遗留版的语义差异
+  - `bot.py`：给那段**已停用**的遗留推送代码补注释，明确它「为空→发全群」的旧语义已不适用
+- **验证**：服务器实跑 `/~owner wdsj groups` / `groups show` → 输出为新的正确文案；重启后无 Traceback
+
+### 十三、WDSJ 采集节奏做成可切换（4h / 12h），默认改为每天两次以规避上游 429
+- **背景**：上游 wdsj.net 请求频次一高就 429/503（现网日志里直连经常 503、要代理兜底）。
+  原节奏是"每 4 小时（0/4/8/12/16/20 点第 1 分钟）"，每天 6 轮 × 57 玩家 × 2 模板。
+- **做法**：把节奏做成**配置项**而不是写死 —— 新增 `wdsj.collect_interval`（4 或 12 小时），
+  `/~owner wdsj interval <4|12>` 随时切换，**默认 12**（每天两次：00:01 采集+推日榜、12:01 仅采集补趋势采样点）。
+  - `plugins/bg_tasks/main.py`：新增 `wdsj_collect_interval()`（读 toml）/`wdsj_slots()`/`wdsj_next_slot()`；
+    4h→`(0,4,8,12,16,20)`，12h→`(0,12)`，统一取该小时**第 1 分钟**（沿用旧惯例，避开整点）
+  - **启动补采阈值随节奏走**（`节奏 + 1h`）：原来固定 4h，12h 档下会误判"漏采"；
+    +1h 余量同时避免"补采与即将到来的时隙"撞在一起采两次
+  - **分片睡眠（每片 ≤60s 并重算）**：改配置后约 1 分钟内切换，无需重启；节奏或时隙变化会记日志
+- **配置写入改为"只改目标行"**：新增 `modules/commands.py::_toml_write_in_section()`，
+  不再用 `toml.dumps()` 整文件重写 —— 服务器 `bot_config.toml` 有 **16 行注释**，原写法会把注释和排版全丢掉
+  （**原有 `/~owner wdsj groups set/clear` 也有这个毛病，一并修掉**）
+- **顺带修掉一个既有 bug**：三处配置写入后面都跟着 `cfg.config["wdsj"] = ...` 的"热更新内存"，
+  但 `BotConfig` 是 dataclass、**根本没有 `.config` 属性** → 必然 `AttributeError`。
+  这意味着**原来的 `groups set/clear` 一直是"文件写成功、但用户收到异常提示"**。
+  由于 `bg_tasks` 的采集循环与推送都**直接读 toml**，这句内存更新本就不需要 → 直接删除
+- **验证**（服务器实跑）：
+  - `/~owner wdsj interval` / `interval show` → 显示「每 12 小时」；`interval 99` → 「只支持 4 或 12」（不再抛异常）
+  - `interval 12`：**注释 16→16 完整保留**，diff 仅 `+[wdsj]` `+collect_interval = 12` 两行；重复执行幂等
+  - `interval 4` → 文件里仅 `collect_interval` 那一行变化；再切回 12
+  - **实时生效观测**：切 4 后 60s 内出现 `采集节奏已切换为每 4h`，切回 12 同样 60s 内出现
+  - 重启后日志 `战绩采集将在 3h15m 后执行 (10-13 00:01, 每 12h)`
+- 调度数学单测覆盖：两档时隙、`00:00:30`/`00:01:00` 边界、跨天（`23:59 → 次日 00:01`）均正确
+
+### 十四、紧急修复：分片睡眠导致 00:01 采集被整个跳过（我前一版引入的回归）
+- **现象**：2026-10-13 00:01 那一刻日志**只有一行** `下次采集时刻调整为 10-13 12:01` ——
+  **没有采集、没有日榜、没有 QQ 空间推送**，这一轮的 0 点日榜直接丢失
+- **根因**（我上一版改"分片睡眠"时引入）：循环里睡醒后**先**重算下个时隙、**后**判断是否到点。
+  而到达目标的那一瞬间，`wdsj_next_slot()` 因为用的是严格 `>` 比较，会认为"本时隙已不是未来"
+  从而返回**下一轮**（00:01 → 12:01），把 `target` 覆盖掉 → 外层继续睡 → 本次采集被跳过
+- **修法**：睡醒后**先** `if datetime.now() >= target: break`，再重算时隙
+- **同时修掉一个"漏采无法自愈"的缺陷**（这才是这次真正让它变成事故的原因）：
+  原补采判据是"距今超过 `节奏+1h`"，属于**时间长度**判据 —— 12h 档下 20:01 采过、00:01 被跳过，
+  重启时距今才 4h < 13h → 判为正常，**永远不会自愈**。
+  改为**按"已过去的时隙"判断**（新增 `wdsj_last_passed_slot()`）：`上次采集 < 最近已过时隙` 即视为漏采
+- **验证**：
+  - 假时钟重放：旧逻辑在 23:59:30 进入循环会一路把 target 推到**第二天**（复现成功）；
+    修复后 8 个边界场景（23:56 / 23:59:30 / 00:00:59 / 13:01 × 两档）**全部准时采集**
+  - 漏采判据 5 个场景全对，含本次真实场景（`now=00:25, last=20:01 → 判漏采`）
+  - **服务器实测**：重启后日志
+    ```
+    00:28:10 上次采集 2026-10-12T20:01 早于最近时隙 10-13 00:01，启动时立即补采
+    00:28:11 每日战绩采集: 53 个玩家 x 2 模板
+    00:28:23 首轮采集完成: 成功 106, 失败 0 项
+    00:28:40 每日战绩采集完成: 106 条新记录 (最终失败 0)
+    00:28:40 战绩采集将在 11h32m 后执行 (10-13 12:01, 每 12h)
+    ```
+- ⚠️ **遗留**：2026-10-12 的日榜**没有推送出去**（被跳过的那次本该推）。数据已由补采补齐，
+  但推送不会再自动补 —— 需要的话得手动触发一次
+
+### 十五、补推 2026-10-12 日榜 + 清掉卡片上残留的「4 小时节奏」硬编码
+- **补推**（因上一节的分片睡眠 bug，10-12 的日榜当时没发出去）：
+  - 数据核对：现在算出的行数与**历史实际推送完全吻合** →
+    `10-09=3 行 / 10-10=8 行 / 10-11=20 行` 分别对应日志里的 `日榜已推送: 3 / 8 / 20 人`，
+    说明日榜计算逻辑正常；10-12 是 **5 行（起床）/ 4 行（竞技）**，属当天真实增量
+  - ⚠️ 区间末端显示 `00:01~10-13 00:28` 而非 `00:01` —— 因为 00:01 那轮采集被跳过，
+    函数取的是"日界后第一个可用快照"。无法回溯成 00:01，属可接受偏差
+  - 已推送到**群 1058782600**（2 张图）+ **QQ 空间**（多图合并一条说说），均返回成功
+- **卡片上残留的 4 小时硬编码全部清掉**（节奏已是配置项，这些地方却还写死 4h）：
+  - 起床榜 / 竞技榜卡片底部的「下一轮 xx:0x」（`_daily_rank_payload`、竞技版）→ 原来的
+    `((now.hour // 4 + 1) * 4) % 24` 换成按配置算；**实测卡片已显示「下一轮 12:01」**（此前是 04:01）
+  - `/~wdsj daily` 无数据提示里的「每天 0:01 / 4:01 / … / 20:01」
+  - 断流补位公告卡的「缺失轮次 0:01 / 4:01 / …（共 6 轮）」
+- **架构整理**：节奏工具函数**下沉到 `services/wdsj_tracker.py`** 作为单一真相源
+  （`collect_interval` / `collect_slots` / `next_slot` / `last_passed_slot` / `slots_hint`），
+  `plugins/bg_tasks` 改为直接复用，`modules/commands.py` 三处也改读它 ——
+  避免"调度已切 12h、卡片还写 4:01"这类口径漂移
+- ⚠️ 未改：`data/wdsj_site/index.html` 里还有一句静态提示「榜单每天 0:01 / 4:01 / … 产出」
+  （那是个静态站点，不参与卡片渲染）
+
+### 十六、修复「说得要查、实际零调用」的空头承诺（承诺落空补救）
+- **现象**（2026-10-14 21:11 群 1017391415）：模型回复 `"这个得查查最新的，光看官网那几行通稿不够喵"`
+  `"我搜一下再跟你说"`，但 `tool_calls=0` → 管道随即结束，**承诺落空、用户被晾住**
+- **根因**：`services/llm.py` 的 FC 循环里
+  ```python
+  if not result.tool_calls:
+      ...
+      break      # 没有 tool_calls 就立即结束、采用当前 replies
+  ```
+  系统**完全信任模型的 `calls` 字段**，无法区分「真不需要工具」与「该用但忘了填」。
+  `20_command_tools.md` 虽有「不要只回文字假装做了」的规则，但 prompt 命中率非 100%，**无兜底校验**
+- **修法**（新增 `_looks_like_tool_promise()` + 循环内补救）：
+  1. 模块级新增 `_TOOL_PROMISE_RE` 与 `_looks_like_tool_promise()`：
+     **只解析 replies 文本**（避免匹配到 JSON 键名），匹配「搜一下/查查/帮你查/让我搜」等**明确承诺**
+  2. FC 循环 `if not result.tool_calls:` 分支的 `break` **之前**插入补救：
+     命中承诺 → **补一次独立调用**，附上模型原话 + 指令「现在就调用对应工具，不要再只说话」
+     - 补救产出 tool_calls → 采纳，继续正常走工具执行
+     - 补救仍无 / 抛异常 → **放行原回复**（fail-open，绝不吞回复、不改动已验证的 content）
+     - `_promise_retried` 标志保证**只补一次**，防死循环
+- **验证**：
+  - 单测检测函数：**应命中 5/5、不应命中 6/6**（含「我刚查了一下」过去时**不误触发**）
+  - **受控测试**（mock 模型调用，确定性）断言全过：补救被发起（调用 2 次）/ 无工具调用时
+    **原回复完整保留** / 补救带上了强制调用指令 / 上下文保留模型原话 / 消息列表正确追加
+  - 服务器实测（真调模型 3 轮）：`恒大现状` **3/3 都主动调用了搜索**（说明事故是模型偶发漏调，
+    本修复是其安全网）；新增日志行 `检测到「承诺调用工具但 calls 为空」→ 补一轮强制调用` 可观测
+- ⚠️ **仍未覆盖**：判断层的**语义漏判** —— `realtime_words`（天气/最新/股价…）
+  与 `search_trigger_words`（搜索/什么是/为什么…）**都不含「现状/近况/进展」**，
+  所以 `needs=[]`、思考模式关闭。本修复只管「承诺了没做」，**不管「该做没想到」**
+
+### 十七、当日总验证
+- 本地双跑比对全 PASS（各批插件逐字段 diff）；全量装载最终 **23 个插件**、
+  全部指令名路由到对应插件；服务器多次 E2E 无 Traceback、`NRestarts=0`
+- ⚠️ 教训：双跑比对的"0 差异"可能是**空交集假象**——曾因两端拿到不同存档、键集无交集而误判通过，
+  必须同时核对曲目数与键集
 
 ## v2.3.81e — 交付加固 + 搜索更广：素材不再丢、协议不再漏、AnySearch 参数交给 LLM (2026.10.10)
 一句话总结：用户实测生成的新闻 md"只有两条、还净是空话"以及偶发"只回一句'我这就整理成 md 发出来'

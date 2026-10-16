@@ -62,6 +62,13 @@ class CapabilityRegistry:
             for a in cap.aliases:
                 if a not in old.aliases:
                     old.aliases.append(a)
+        # ★ 运行时注册的插件能力（register_command / register_tool）不被 discover 覆盖：
+        #   discover 由 all()/get() 惰性触发，若插件先于 discover 注册，
+        #   直接 self._caps = merged 会把插件能力连同 handler 绑定一起清掉。
+        #   这里改为合并保留（与 KOOK v2.3.96 同款修复）。
+        for cap_id, cap in self._caps.items():
+            if cap_id not in merged:
+                merged[cap_id] = cap
         self._caps = merged
         self._loaded = True
         logger.info("CapabilityRegistry 发现 %d 个能力", len(self._caps))
