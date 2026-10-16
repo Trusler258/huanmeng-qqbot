@@ -11,6 +11,19 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.93 — 修 wdsj 不可用 + FC 绑定源错位（2026.10.16）
+
+一句话总结：`.wdsj` 全线不可用的根因是 cmd_wdsj 里函数内 import 遮蔽了顶层 format_lang
+（UnboundLocalError），外加 FC 路径读错绑定文件。
+
+1. **`.wdsj` 全线崩**：`cmd_wdsj` 第 2871 行函数内 `from utils.format_lang import format_lang`
+   把顶层 import（27 行）遮蔽成局部变量，第 2592 行先用 → UnboundLocalError
+   （实测 21:16 用户发 `/~wdsj bw img` 直接无响应）。删掉该函数内 import。
+2. **FC 路径查错绑定文件**：`_resolve_player` 读 `player_bindings.json`（9-05 旧数据仅 2 条），
+   而 `.wdsj bd` 写 `wdsj_player_name.json`（14+ 条活跃绑定）→ 机器人代替查询时
+   永远回"你还未绑定起床战绩账号"。修：wdsj 先查 wdsj_player_name.json，回退旧文件。
+3. 图片不发送是 1 的连带（崩溃在任何发送之前）；绑定修好后 FC 的 img 路径即可正常出图。
+
 ## v2.3.92 — 修复思考模式下强制调用工具 400（2026.10.16）
 
 一句话总结：DeepSeek 思考模式不支持 function 对象的 tool_choice，开启思考时跳过强制调用。

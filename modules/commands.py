@@ -28,28 +28,17 @@ from utils.format_lang import format_lang
 from modules.fav import get_all_fav, FAV_FILE as FAV_FILE_REF, reset_all_fav
 from services.sender import send_group_msg, send_private_msg, send_raw_group, send_raw_user
 from modules.search import perform_search
-from modules.pgr import cmd_pgr
 from modules.earthquake import cmd_eq
 from modules.nasa import cmd_nasa
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
-from modules.voice import cmd_voice
 try:
     from modules.steam import cmd_steam, cmd_steam_doing
 except ImportError:          # 缺依赖时不拖垮整条指令链路
     cmd_steam = cmd_steam_doing = None
 try:
-    from modules.ping import cmd_ping
-except ImportError:
-    async def cmd_ping(args, user_id, group_id, sender_name, is_group, bot_qq):
-        return "ping 模块未安装喵~"
-try:
     from modules.op import cmd_op, cmd_persona, cmd_master, cmd_sleep, cmd_hanxu
 except ImportError:
     cmd_op = cmd_persona = cmd_master = cmd_sleep = cmd_hanxu = None
-try:
-    from modules.weather import query_weather, build_weather_report
-except ImportError:
-    query_weather = build_weather_report = None
 
 from modules.changelog import send_changelog_card, send_weather_card, send_box_card
 from modules.whois_lookup import lookup_domain   # ★ WHOIS 域名查询
@@ -62,22 +51,12 @@ except ImportError:
 from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
 from core.bot_notes import cmd_note
 from core.ctx_usage import cmd_ctx
-from modules.msg_relay import cmd_say
 from modules.reward import cmd_reward   # ★ 赞赏码 / 赞助名单
-from modules.power import cmd_power      # ★ 服务器功耗 / 电费（仅管理员）
 from modules.memory_link import cmd_mlink   # ★ 跨聊天记忆关联（单一入口）
 
 # ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
 
 logger = get_logger("commands")
-
-
-async def _cmd_gh(args, user_id, group_id, sender_name, is_group, bot_qq):
-    try:
-        from modules.gh import cmd_gh
-    except ImportError:
-        return "公会登记模块未安装喵~"
-    return await cmd_gh(args, user_id, group_id, sender_name, is_group, bot_qq)
 
 
 async def _cmd_update(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -128,14 +107,14 @@ async def cmd_help(args, user_id, group_id, sender_name, is_group, bot_qq):
                 except Exception:
                     pass
             if desc:
-                return f"【指令 /~{keyword}】\n{desc}"
+                return format_lang("cmd_help.m1", keyword=keyword, desc=desc)
             # 插件指令描述
             try:
                 from core.capability import get_capability_registry
                 reg = get_capability_registry()
                 for c in (list(reg._caps.values()) if hasattr(reg, "_caps") else []):
                     if getattr(c, "name", "") == keyword and getattr(c, "description", ""):
-                        return f"【指令 /~{keyword}】\n{c.description}"
+                        return format_lang("cmd_help.m2", keyword=keyword, description=c.description)
             except Exception:
                 pass
         except Exception:
@@ -167,17 +146,19 @@ async def cmd_help(args, user_id, group_id, sender_name, is_group, bot_qq):
     sections = get_lang_data().get("help", {}).get("sections", [])
     if isinstance(sections, str):
         sections = [
-            ["--- 聊天 ---", "@${name} <内容>     跟我说话", "{{提示词}}         注入临时人设（仅主人）"],
-            ["--- 工具 ---", "/~s <关键词>        联网搜索", "/~remind <时间> <事> 定时提醒", "/~抽 <A> <B>        随机选择"],
-            ["--- 数据 ---", "/~stats [...]      群聊统计", "/~recall [数量]     撤回记录", "/~favlist           好感度"],
-            ["--- 系统 ---", "/~cost              Token消耗统计", "/~info             运行状态", "/~up [版本]         更新日志", "/~ping             在线检测"],
-            ["--- 主人专用 ---", "/~owner ...        配置管理", "/~preset ...        提示词注入", "/~reload           热重载"],
+            [format_lang("cmd_help.m3"), format_lang("cmd_help.m4"), format_lang("cmd_help.m5")],
+            [format_lang("cmd_help.m6"), format_lang("cmd_help.m7"), format_lang("cmd_help.m8"), format_lang("cmd_help.m9")],
+            [format_lang("cmd_help.m10"), format_lang("cmd_help.m11"), format_lang("cmd_help.m12"), format_lang("cmd_help.m13")],
+            [format_lang("cmd_help.m14"), format_lang("cmd_help.m15"), format_lang("cmd_help.m16"), format_lang("cmd_help.m17"), format_lang("cmd_help.m18")],
+            [format_lang("cmd_help.m19"), format_lang("cmd_help.m20"), format_lang("cmd_help.m21"), format_lang("cmd_help.m22")],
         ]
     for section in sections:
         if not section:
             continue
         label = section[0]
-        if "主人" in label and not is_admin:
+        # ⚠️ 这里比对的是 section 的**分类标签**，故意用字面量：
+        #   若改成 format_lang，用户改文案就会改掉权限逻辑（code review 指出）
+        if "主人专用" in label and not is_admin:
             continue
         lines.append(label)
         for cmd in section[1:]:
@@ -193,154 +174,62 @@ async def cmd_help(args, user_id, group_id, sender_name, is_group, bot_qq):
 # ════════════════════════════════════════════════════════════
 
 _HELP_DETAIL = {
-    "nasa": "【NASA 每日天文图 /~nasa】\n"
-          "  nasa [日期]  查看 NASA 每日天文图片，如 /~nasa 2025-06-01\n",
-    "pgr": "【Phigros 查询 /~pgr】\n"
-          "  pgr login / me / top / song / new\n",
-    "wzq": "【五子棋 /~wzq】\n"
-           "  duel @某人    发起挑战\n"
-            "  accept        接受挑战\n"
-           "  decline       拒绝挑战\n"
-           "  cancel        取消未开始的挑战\n"
-           "  <坐标>        落子 (H8 / 8,8)\n"
-           "  ai <难度> [nofb] 人机对战 (可选无禁手)\n"
-           "  board         查看棋盘\n"
-           "  surrender     认输\n"
-           "  undo          悔棋 (对手再发一次确认)\n"
-           "  status        对局信息\n"
-           "  history [N]   历史战绩\n"
-           "  history <编号> board 查看对局棋盘",
+    "nasa": format_lang("mod.m1"),
+    "oldphi": format_lang("mod.m2"),
+    "wzq": format_lang("mod.m3"),
 
-    "remind": "【提醒 /~remind /~提醒】\n"
-              "  /~remind 30分钟后 吃饭\n"
-              "  /~remind 2小时后 开会\n"
-              "  /~remind 明天14:30 午休\n"
-              "  /~remind 14:30 下班\n"
-              "  到期自动 @ 提醒",
+    "remind": format_lang("mod.m4"),
 
-    "chou": "【抽签 /~抽】\n"
-            "  /~抽 吃面 吃饭 打游戏   空格分隔\n"
-            "  /~抽 选项A,选项B,选项C   逗号分隔\n"
-            "  随机选一个 + 猫娘点评",
+    "chou": format_lang("mod.m5"),
 
-    "stats": "【统计 /~stats /~统计】\n"
-             "  /~stats         今日群聊统计\n"
-             "  /~stats 昨天    昨日群聊回顾\n"
-             "  自动 0 点发送日报",
+    "stats": format_lang("mod.m6"),
 
-    "recall": "【撤回 /~recall】\n"
-              "  /~recall        查看最近 5 条撤回\n"
-              "  /~recall 10     查看最近 10 条\n"
-              "  主动录制，100% 命中",
+    "recall": format_lang("mod.m7"),
 
-    "s": "【搜索 /~s】\n"
-         "  /~s Python asyncio 用法\n"
-         "  自动判断是否需要搜索 + DuckDuckGo",
+    "s": format_lang("mod.m8"),
 
-    "favlist": "【好感度 /~favlist】\n"
-               "  查看当前群/私聊的好感度排行\n"
-               "  从高到低，显示昵称",
+    "favlist": format_lang("mod.m9"),
 
-    "luck": "【运气 /~luck】\n"
-            "  获取今日运气值 (1~100)\n"
-            "  0.1% 概率抽到 1000\n"
-            "  同一个人当天内结果不变",
+    "luck": format_lang("mod.m10"),
 
-    "up": "【更新日志 /~up /~updateinfo】\n"
-          "  /~up            最新版本\n"
-          "  /~up 0.9.4      指定版本\n"
-          "  /~up all        完整日志\n"
-          "  生成精美 HTML 卡片",
+    "up": format_lang("mod.m11"),
 
-    "updateinfo": "【更新日志 /~up /~updateinfo】\n"
-                  "  /~up            最新版本\n"
-                  "  /~up 0.9.4      指定版本\n"
-                  "  /~up all        完整日志",
+    "updateinfo": format_lang("mod.m12"),
 
-    "info": "【系统信息 /~info】\n"
-            "  显示运行状态: 系统/运行时间/内存/磁盘/CPU\n"
-            "  连接状态/消息统计/模型列表/配置摘要",
+    "info": format_lang("mod.m13"),
 
-    "ping": "【在线 /~ping】\n"
-            "  测试 bot 是否在线\n"
-            "  随机猫娘卖萌回复，@ 触发者",
+    "ping": format_lang("mod.m14"),
 
-    "owner": "【配置管理 /~owner (主人)】\n"
-             "  list <bot|adapter|roles>   列所有配置\n"
-             "  get <路径>      读取: get bot.reply_threshold\n"
-             "  set <路径> <值>  修改: set bot.reply_threshold 5\n"
-             "  data get <名> [键] 读数据\n"
-             "  data set <名> <键> <值> 改数据\n"
-             "  data reset <名|all> 清空\n"
-             "  wl show/add/remove  白名单快捷操作\n"
-             "  luck list/set/del   运气管理",
+    "owner": format_lang("mod.m15"),
 
-    "preset": "【提示词注入 /~preset (主人)】\n"
-              "  /~preset        查看当前注入\n"
-              "  /~preset clear  清除注入\n"
-              "  或在消息中用 {{提示词}} 注入, {{reset}} 清除",
+    "preset": format_lang("mod.m16"),
 
-    "reload": "【重载 /~reload (主人)】\n"
-              "  热重载所有配置，不重启进程\n"
-              "  也可用 systemctl reload robot",
+    "reload": format_lang("mod.m17"),
 
-    "tr": "【翻译 /~tr /~翻译】\n"
-          "  /~tr en 你好           中→英\n"
-          "  /~tr 中文 hello        英→中\n"
-          "  /~tr jp こんにちは     →日文\n"
-          "  支持 en/zh/jp/kr/fr/de\n"
-          "  也支持 中文/英文/日文/韩文/法文/德文",
+    "tr": format_lang("mod.m18"),
 
-    "translate": "【翻译 /~tr /~翻译】\n"
-                 "  /~tr en 你好\n"
-                 "  /~tr 中文 hello\n"
-                 "  支持 6 种语言",
+    "translate": format_lang("mod.m19"),
 
-    "countdown": "【倒计时 /~countdown /~倒计时】\n"
-                 "  /~countdown 2026-12-25 圣诞节   添加\n"
-                 "  /~countdown                    查看\n"
-                 "  /~countdown list               详细列表\n"
-                 "  /~countdown del 1              删除",
+    "countdown": format_lang("mod.m20"),
 
-    "balance": "【余额查询 /~balance】\n"
-               "  查询 DeepSeek API 余额\n",
+    "balance": format_lang("mod.m21"),
 
-    "plugin": "【插件管理 /~plugin (主人)】\n"
-              "  /~plugin             插件列表/状态\n"
-              "  /~plugin install <名|url>  安装插件（支持插件库名或 .hmp 直链）\n"
-              "  /~plugin unload <名>  卸载插件\n"
-              "  /~plugin reload <名>  热重载插件\n"
-              "  /~plugin pack <名>    把插件打包成 .hmp 分享\n"
-              "  /~plugin update [名]  从插件库一键更新",
-    "apy": "【审批 /~apy (主人)】\n"
-           "  /~apy <token> 同意|拒绝  响应插件发起的人工审批",
+    "plugin": format_lang("mod.m22"),
+    "apy": format_lang("mod.m23"),
 
-    "voice": "【语音 /~voice】\n"
-             "  /~voice <文本>           Edge TTS 合成语音\n"
-             "  /~voice list             列出可用语音\n"
-             "  /~voice zh-CN-YunxiNeural <文本>  指定发音人\n"
-             "  默认: 晓晓 (女声)",
+    "voice": format_lang("mod.m24"),
 
-    "cost": "【Token消耗 /~cost】\n"
-            "  查看今日/累计 token 消耗和费用\n",
+    "cost": format_lang("mod.m25"),
 
-    "tokens": "【Token计算 /~tokens】\n"
-              "  /~tokens <文本>  计算 token 数和预估费用\n",
+    "tokens": format_lang("mod.m26"),
 
-    "note": "【你的笔记本 /~note】维护长期群内记忆（群内关系/称呼/约定/梗/谁是谁）。用法: /~note 查看 | /~note <内容> 新增 | /~note fix <序号> <新内容> 修改 | /~note del <序号> 删除 | /~note clear 清空。**重要：①有人说\"记一下/记住\"或出现值得长期记住的信息（谁是谁、什么关系、称呼黑话、约定）→ 必须用 calls 调 note 真的记，严禁只在回复说\"记下了\"；②发现之前记错了或信息过时了 → 用 calls 调 note 传 \"fix <序号> <新内容>\" 改正（序号见上下文里笔记本的编号），不要重新记一条重复的。**",
+    "note": format_lang("mod.m27"),
 
-    "cache": "【缓存命中率 /~cache】\n"             "  /~cache [天数]  查看 token 缓存命中率趋势（默认近7天）\n"
-             "  用于排查命中率低的原因（DeepSeek 前缀缓存）\n",
+    "cache": format_lang("mod.m28"),
 
-    "resetfav": "【重置好感 /~resetfav (主人)】\n"
-                "  清空所有好感度数据",
+    "resetfav": format_lang("mod.m29"),
 
-    "memory": "【记忆 /~memory】\n"
-              "  working      瞬时记忆（当前对话）\n"
-              "  short        短时记忆（最近30条）\n"
-              "  long         长时记忆（持久化）\n"
-              "  search <关键词> 搜索全部记忆\n"
-              "  clear        清空短时记忆",
+    "memory": format_lang("mod.m30"),
 }
 
 
@@ -373,7 +262,7 @@ async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_qq):
     logger.info("指令 /~info 触发 user=%d", user_id)
 
     lines: list[str] = []
-    lines.append(f"--- {name} 运行状态 ---")
+    lines.append(format_lang("cmd_info.m1", name=name))
     lines.append("")
 
     # ── 系统 ──
@@ -479,7 +368,7 @@ async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):
     cfg = get_config()
     key = cfg.reply_model.key
     if not key:
-        return "未配置 DeepSeek API Key 喵~"
+        return format_lang("cmd_balance.m1")
 
     try:
         import httpx
@@ -489,27 +378,27 @@ async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):
                 headers={"Accept": "application/json", "Authorization": f"Bearer {key}"},
             )
             if resp.status_code != 200:
-                return f"查询失败: HTTP {resp.status_code} 喵~"
+                return format_lang("cmd_balance.m2", status_code=resp.status_code)
             data = resp.json()
     except Exception as e:
-        return f"查询余额失败: {e}"
+        return format_lang("cmd_balance.m3", e=e)
 
     if not data.get("is_available"):
-        return "余额查询不可用喵~"
+        return format_lang("cmd_balance.m4")
 
     infos = data.get("balance_infos", [])
     if not infos:
-        return "余额信息为空喵~"
+        return format_lang("cmd_balance.m5")
 
-    lines = ["【DeepSeek 余额】"]
+    lines = [format_lang("cmd_balance.m6")]
     for info in infos:
         currency = info.get("currency", "?")
         total = info.get("total_balance", "?")
         granted = info.get("granted_balance", "?")
         topped_up = info.get("topped_up_balance", "?")
-        lines.append(f"  总余额: {total} {currency}")
-        lines.append(f"  赠送额: {granted} {currency}")
-        lines.append(f"  充值额: {topped_up} {currency}")
+        lines.append(format_lang("cmd_balance.m7", total=total, currency=currency))
+        lines.append(format_lang("cmd_balance.m8", granted=granted, currency=currency))
+        lines.append(format_lang("cmd_balance.m9", topped_up=topped_up, currency=currency))
     return "\n".join(lines)
 
 
@@ -541,7 +430,8 @@ async def cmd_box(args, user_id, group_id, sender_name, is_group, bot_qq):
     code = data.get("code", "")
     if code != "0000000000":
         logger.debug("快递API业务码异常: %s desc=%s", code, data.get("desc", ""))
-        return format_lang("box.api_error", message=data.get("desc", "未知错误"))
+        return format_lang("box.api_error",
+                           message=data.get("desc", format_lang("common.unknown_error")))
 
     try:
         pkgs = data.get("data", {}).get("packageInfoList", [])
@@ -549,17 +439,17 @@ async def cmd_box(args, user_id, group_id, sender_name, is_group, bot_qq):
             return format_lang("box.no_result")
         
         pkg = pkgs[0]
-        cp_name = pkg.get("cpName", "某快递")
-        state = pkg.get("state", "未知")
+        cp_name = pkg.get("cpName", format_lang("common.unknown_courier"))
+        state = pkg.get("state", format_lang("common.unknown"))
         
         # 状态映射（i18n）
         state_map = {
-            "TRANSPORT": format_lang("box.state_transport", default="运输中"),
-            "DELIVERING": format_lang("box.state_delivering", default="派送中"),
-            "SIGNED": format_lang("box.state_signed", default="已签收"),
-            "RETURN": format_lang("box.state_return", default="退件"),
-            "PENDING": format_lang("box.state_pending", default="待揽收"),
-            "FINISH": format_lang("box.state_finish", default="已完成"),
+            "TRANSPORT": format_lang("box.state_transport", default=format_lang("cmd_box.m1")),
+            "DELIVERING": format_lang("box.state_delivering", default=format_lang("cmd_box.m2")),
+            "SIGNED": format_lang("box.state_signed", default=format_lang("cmd_box.m3")),
+            "RETURN": format_lang("box.state_return", default=format_lang("cmd_box.m4")),
+            "PENDING": format_lang("box.state_pending", default=format_lang("cmd_box.m5")),
+            "FINISH": format_lang("box.state_finish", default=format_lang("cmd_box.m6")),
         }
         state_text = state_map.get(state, state)
 
@@ -670,7 +560,7 @@ async def cmd_luck(args, user_id, group_id, sender_name, is_group, bot_qq):
     # 检查今天是否已经抽过
     cached = _get_today_luck(user_id)
     if cached is not None:
-        return f"[CQ:at,qq={user_id}] 你今天的运气是 {cached} 喵（今日已抽签）"
+        return format_lang("cmd_luck.m1", user_id=user_id, cached=cached)
     
     # 首次抽签，生成幸运值
     if random.random() < 0.001:
@@ -679,7 +569,7 @@ async def cmd_luck(args, user_id, group_id, sender_name, is_group, bot_qq):
         num = random.randint(1, 100)
     
     _set_today_luck(user_id, num)
-    return f"[CQ:at,qq={user_id}] 你今天的运气是 {num} 喵"
+    return format_lang("cmd_luck.m2", user_id=user_id, num=num)
 
 
 async def cmd_testsys(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -699,7 +589,7 @@ async def cmd_testsys(args, user_id, group_id, sender_name, is_group, bot_qq):
             "permission": {"type": 2},
             "data": "/~testok",
             "enter": True,
-            "unsupport_tips": format_lang("testsys.unsupport_tip", default="当前版本不支持此按钮"),
+            "unsupport_tips": format_lang("testsys.unsupport_tip", default=format_lang("cmd_testsys.m1")),
         },
     }
     keyboard = {"rows": [{"buttons": [button]}]}
@@ -727,18 +617,18 @@ async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_qq):
     from services.llm import _build_reminder
     fmt_reminder = _build_reminder("jsonraw_reminder", max_chars=max_chars)
 
-    system = cfg.system_prompt or "你是幻梦，一只可爱的猫娘机器人。"
+    system = cfg.system_prompt or format_lang("cmd_jsonraw.m1")
     raw = await call_llm(cfg.reply_model, [
         {"role": "system", "content": system},
-        {"role": "user", "content": f"{fmt_reminder}\n\n{sender_name}说：{text}"},
+        {"role": "user", "content": format_lang("cmd_jsonraw.m2", fmt_reminder=fmt_reminder, sender_name=sender_name, text=text)},
     ], max_tokens=3000, temperature=0.8, json_mode=True)
-    return raw or "LLM 返回为空"
+    return raw or format_lang("cmd_jsonraw.m3")
 
 
 async def cmd_md(args, user_id, group_id, sender_name, is_group, bot_qq):
     """发送 Markdown 消息卡片 /~md <内容>"""
     if not args:
-        return "用法: /~md <markdown内容>\\n示例: /~md # 标题\\n> 引用\\n**粗体** *斜体*"
+        return format_lang("cmd_md.m1")
     raw = " ".join(args)
     raw = raw.replace("\\n", "\n")
 
@@ -782,7 +672,7 @@ async def cmd_update_info(args, user_id, group_id, sender_name, is_group, bot_qq
         if match:
             custom_md = match.group(1).strip()
         else:
-            return f"❌ 未找到版本 {target_version} 的更新日志，请检查版本号是否正确。"
+            return format_lang("cmd_update_info.m1", target_version=target_version)
     elif not args:
         # 无参数：提取最新（第一个 ## v 段落）
         import re
@@ -847,10 +737,10 @@ async def cmd_search(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~read <URL> — 深度读取网页正文，返回纯文本摘要。用于搜索后精读具体链接"""
     if not args:
-        return "用法: /~read <网页URL>  例如 /~read https://blog.csdn.net/xxx"
+        return format_lang("cmd_read.m1")
     url = args[0]
     if not url.startswith("http"):
-        return "请输入完整的网页URL（http/https开头）"
+        return format_lang("cmd_read.m2")
 
     try:
         from modules.local_search import get_scraper
@@ -859,10 +749,10 @@ async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
         result = await loop.run_in_executor(None, lambda: scraper.scrape(url))
         if result:
             return result
-        return f"无法读取该页面: {url}"
+        return format_lang("cmd_read.m3", url=url)
     except Exception as e:
         logger.warning("页面读取失败: %s", e)
-        return f"读取页面失败: {e}"
+        return format_lang("cmd_read.m4", e=e)
 
 
 # ─── WHOIS 指令 ──────────────────────────────────────────────
@@ -870,7 +760,7 @@ async def cmd_read(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~whois <域名> — 查询域名注册信息（注册商/注册时间/到期时间/NS/状态）"""
     if not args:
-        return "用法: /~whois <域名>  例如 /~whois example.com"
+        return format_lang("cmd_whois.m1")
     domain = " ".join(args)
     logger.info("指令 /~whois 触发 domain=%s user=%d", domain, user_id)
     loop = asyncio.get_running_loop()
@@ -881,9 +771,9 @@ async def cmd_whois(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_write_code(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~write_code <描述> — 生成代码文件并发送"""
     if not args:
-        return "用法: /~write_code <描述>  例如 /~write_code 用HTML写一个2048游戏"
+        return format_lang("cmd_write_code.m1")
     desc = " ".join(args)
-    lang = "html" if any(kw in desc.lower() for kw in ("html", "网页", "web", "css", "javascript", "js")) else "python"
+    lang = "html" if any(kw in desc.lower() for kw in ("html", format_lang("cmd_write_code.m2"), "web", "css", "javascript", "js")) else "python"
     from core.tools import _write_code
     return await _write_code(
         language=lang, description=desc,
@@ -898,25 +788,25 @@ async def cmd_ignore(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~ignore <QQ> — 全群忽略该用户（仅 admin）"""
     cfg = get_config()
     if user_id != cfg.admin_qq:
-        return "只有管理员能操作喵~"
+        return format_lang("cmd_ignore.m1")
     if not args:
-        return "用法: /~ignore <QQ号>  例如 /~ignore 123456789"
+        return format_lang("cmd_ignore.m2")
     try:
         target = int(args[0])
     except ValueError:
-        return "QQ 号不对喵~"
+        return format_lang("cmd_ignore.m3")
     from modules.ignore_users import add_ignored
     add_ignored(target)
-    return f"已忽略 {target}，所有群都不会再收到他的消息"
+    return format_lang("cmd_ignore.m4", target=target)
 
 
 async def cmd_unignore(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~unignore <QQ> — 解除全群忽略（仅 admin）"""
     cfg = get_config()
     if user_id != cfg.admin_qq:
-        return "只有管理员能操作喵~"
+        return format_lang("cmd_unignore.m1")
     if not args:
-        return "用法: /~unignore <QQ号> / all  例如 /~unignore 123456789"
+        return format_lang("cmd_unignore.m2")
     arg = args[0].lower()
     from modules.ignore_users import remove_ignored, list_ignored
     if arg == "all":
@@ -925,57 +815,16 @@ async def cmd_unignore(args, user_id, group_id, sender_name, is_group, bot_qq):
         for uid in ids:
             remove_ignored(uid)
             count += 1
-        return f"已解除所有忽略（共 {count} 人）"
+        return format_lang("cmd_unignore.m3", count=count)
     try:
         target = int(args[0])
     except ValueError:
-        return "QQ 号不对喵~"
+        return format_lang("cmd_unignore.m4")
     if remove_ignored(target):
-        return f"已解除忽略 {target}"
-    return f"{target} 不在忽略列表中喵~"
+        return format_lang("cmd_unignore.m5", target=target)
+    return format_lang("cmd_unignore.m6", target=target)
 
 
-# ─── 天气指令 ──────────────────────────────────────────────
-
-async def cmd_weather(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """天气查询指令 /~天气 /~weather（优先输出精美卡片图片）"""
-    if not args:
-        return format_lang("weather.prompt_input")
-    
-    city = " ".join(args)
-    logger.info("指令 /~weather 触发 city=%s user=%d (卡片模式优先)", city, user_id)
-    
-    # 先发提示
-    from services.sender import send_group_msg, send_private_msg
-    tip = format_lang("weather.searching")
-    await (send_group_msg(tip, group_id) if is_group 
-           else send_private_msg(tip, user_id))
-    
-    data = await query_weather(city)
-    if data is None:
-        return format_lang("weather.fallback_error")
-
-    # ── 异步卡片生成（不阻塞聊天线程）──
-    async def _bg_send_weather():
-        try:
-            card_result = await send_weather_card(
-                data=data,
-                group_id=group_id if is_group else None,
-                user_id=user_id if not is_group else None,
-                is_group=is_group,
-            )
-            if card_result is not None:
-                # 卡片生成失败，回退纯文本
-                fallback = build_weather_report(data, user_id)
-                if is_group:
-                    await send_group_msg(fallback, group_id)
-                else:
-                    await send_private_msg(fallback, user_id)
-        except Exception as e:
-            logger.error("[BG] 天气卡片后台发送失败: %s", e, exc_info=True)
-
-    asyncio.create_task(_bg_send_weather())
-    return None  # 后台异步处理，无需立即回复
 
 
 # ─── 管理员指令 ────────────────────────────────────────────
@@ -1083,7 +932,7 @@ _IMG_SENT_PIDS_MAX = 200
 
 # r18=0（全年龄）时的标签黑名单，与 lolicon_client.py 一致（大小写不敏感）
 _R18_TAG_BLACKLIST = [
-    "r-18", "r18", "r-18g", "r18g", "裸体", "裸身", "全裸", "半裸",
+    "r-18", "r18", "r-18g", "r18g", format_lang("mod.m31"), format_lang("mod.m32"), format_lang("mod.m33"), format_lang("mod.m34"),
     "裸", "sex", "sexual", "hentai", "ero", "erotic", "porn", "nsfw",
     "bukkake", "paizuri", "anal", "bondage", "tentacle", "ahegao",
     "incest", "shotacon", "lolicon", "futanari", "furry", "beastiality",
@@ -1152,7 +1001,7 @@ async def _lolicon_fetch_and_send(
 
         if not fresh:
             logger.warning("[%s] Lolicon 无结果 tags=%r", cmd_tag, tags)
-            tip = f"没有找到 tag「{' '.join(tags)}」的图，换个关键词试试喵~" if tags else "没有找到图片，稍后再试喵~"
+            tip = format_lang("_lolicon_fetch_and_send.m1", tags=' '.join(tags)) if tags else format_lang("_lolicon_fetch_and_send.m2")
             if is_group and group_id:
                 await send_group_msg(tip, group_id)
             elif not is_group and user_id:
@@ -1258,12 +1107,7 @@ async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if tags and tags[0].lower() in ("help", "帮助", "?", "usage"):
         return (
-            "【/~img 二次元图片】\n"
-            "/~img              随机\n"
-            "/~img 甘雨         单标签\n"
-            "/~img 甘雨 原神    多标签 AND（同时包含，最多3个）\n"
-            "/~img 萝莉|少女 白丝|黑丝  | 为 OR，组合匹配\n"
-            "/~img help         本帮助"
+            format_lang("cmd_img.m1")
         )
 
     async def _bg_send():
@@ -1283,19 +1127,14 @@ async def cmd_img(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_img18(args, user_id, group_id, sender_name, is_group, bot_qq):
     """R18 图片 /~img18 [标签...]（仅私聊，群聊拒绝防封号）"""
     if is_group:
-        return "R18 图片仅限私聊使用喵~"
+        return format_lang("cmd_img18.m1")
 
     tags = [a.strip() for a in args if a.strip()]
     logger.info("指令 /~img18 触发 user=%d tags=%r", user_id, tags)
 
     if tags and tags[0].lower() in ("help", "帮助", "?", "usage"):
         return (
-            "【/~img18 R18 图片】仅限私聊\n"
-            "/~img18             随机\n"
-            "/~img18 白丝        单标签\n"
-            "/~img18 白丝 黑丝   多标签 AND（最多3个）\n"
-            "/~img18 萝莉|少女    | 为 OR\n"
-            "/~img18 help        本帮助"
+            format_lang("cmd_img18.m2")
         )
 
     async def _bg_send():
@@ -1331,7 +1170,7 @@ async def cmd_recall(args, user_id, group_id, sender_name, is_group, bot_qq):
         return format_lang("recall.empty")
 
     cfg = get_config()
-    lines = [f"【最近 {len(records)} 条撤回记录】"]
+    lines = [format_lang("cmd_recall.m1", records=len(records))]
     images_to_send = []
 
     for i, r in enumerate(records, 1):
@@ -1346,28 +1185,28 @@ async def cmd_recall(args, user_id, group_id, sender_name, is_group, bot_qq):
             img_path = r.get("img_path", "")
             if img_path:
                 images_to_send.append((i, img_path, name, r))
-                content_display = "[图片已发送]"
+                content_display = format_lang("cmd_recall.m2")
             else:
-                content_display = "[图片已过期]"
+                content_display = format_lang("cmd_recall.m3")
         elif msg_type == "文件":
-            content_display = "[文件]"
+            content_display = format_lang("cmd_recall.m4")
         else:
             content_display = r["content"][:60] + ("..." if len(r["content"]) > 60 else "")
             if not content_display:
-                content_display = "[无内容]"
+                content_display = format_lang("cmd_recall.m5")
 
         if r.get("recalled_by") == r["user_id"]:
             if r["user_id"] == 0:
                 op_id = str(r.get("recalled_by", ""))
                 op_name = cfg.get_display_name(op_id, group_id=group_id)
-                lines.append(f"{i}. [{t} mid={mid}] {op_name} 撤回了自己的消息: {content_display}")
+                lines.append(format_lang("cmd_recall.m6", i=i, t=t, mid=mid, op_name=op_name, content_display=content_display))
             else:
-                lines.append(f"{i}. [{t} mid={mid}] {name} 撤回了自己的消息: {content_display}")
+                lines.append(format_lang("cmd_recall.m7", i=i, t=t, mid=mid, name=name, content_display=content_display))
         else:
             op_id = str(r.get("recalled_by", ""))
             op_name = cfg.get_display_name(op_id, group_id=group_id)
-            target_name = name if r["user_id"] != 0 else "某人"
-            lines.append(f"{i}. [{t} mid={mid}] {op_name} 撤回了 {target_name} 的消息: {content_display}")
+            target_name = name if r["user_id"] != 0 else format_lang("cmd_recall.m8")
+            lines.append(format_lang("cmd_recall.m9", i=i, t=t, mid=mid, op_name=op_name, target_name=target_name, content_display=content_display))
 
     # 先发送图片
     from services.sender import send_group_msg
@@ -1424,7 +1263,7 @@ async def cmd_remind(args, user_id, group_id, sender_name, is_group, bot_qq):
     time_display = target_dt.strftime("%m月%d日 %H:%M")
     logger.info("指令 /~remind 触发: user=%d time=%s content='%s'",
                user_id, time_display, content_part[:30])
-    return f"好的喵~ 我会在 {time_display} 提醒你「{content_part[:40]}」(๑•̀ㅂ•́)و✧"
+    return format_lang("cmd_remind.m1", time_display=time_display, content_part=content_part[:40])
 
 
 # ─── 抽签指令 ──────────────────────────────────────────────
@@ -1447,11 +1286,11 @@ async def cmd_chou(args, user_id, group_id, sender_name, is_group, bot_qq):
     logger.info("指令 /~抽 触发: user=%d options=%s → '%s'", user_id, options, pick)
 
     reactions = [
-        f"我帮你决定了喵~ 选「{pick}」！(。-`ω´-)✧",
-        f"喵呜～ 命运指引着你走向「{pick}」！",
-        f"尾巴晃了晃，指向了「{pick}」喵～",
-        f"闭上眼睛默念三秒… 就决定是「{pick}」了！",
-        f"不用纠结啦，当然是「{pick}」喵～",
+        format_lang("cmd_chou.m1", pick=pick),
+        format_lang("cmd_chou.m2", pick=pick),
+        format_lang("cmd_chou.m3", pick=pick),
+        format_lang("cmd_chou.m4", pick=pick),
+        format_lang("cmd_chou.m5", pick=pick),
     ]
     return random.choice(reactions)
 
@@ -1470,13 +1309,13 @@ async def cmd_stats(args, user_id, group_id, sender_name, is_group, bot_qq):
         yesterday = datetime.now() - timedelta(days=1)
         stats = get_yesterday_stats(group_id)
         if not stats or stats.get("_meta", {}).get("total", 0) == 0:
-            return "昨天没有统计数据喵~"
-        card = await generate_daily_report_image(stats, group_id, yesterday.strftime("%Y.%m.%d"), f"群{group_id}")
+            return format_lang("cmd_stats.m1")
+        card = await generate_daily_report_image(stats, group_id, yesterday.strftime("%Y.%m.%d"), format_lang("cmd_stats.group_label", group_id=group_id))
         if card:
             cq = f"[CQ:image,file=file:///{card.replace(chr(92), '/')}]"
             await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             return None
-        return "日报卡片生成失败喵~"
+        return format_lang("cmd_stats.m2")
 
     show_yesterday = args and args[0] == "昨天"
 
@@ -1485,11 +1324,11 @@ async def cmd_stats(args, user_id, group_id, sender_name, is_group, bot_qq):
     if show_yesterday:
         from modules.stats import get_yesterday_stats, format_stats_report
         stats = get_yesterday_stats(group_id)
-        report = format_stats_report(stats, cfg, group_id, title="昨日群聊日报") if stats else "昨天没有统计数据喵…"
+        report = format_stats_report(stats, cfg, group_id, title=format_lang("cmd_stats.m3")) if stats else format_lang("cmd_stats.m4")
     else:
         from modules.stats import get_today_stats, format_stats_report
         stats = get_today_stats(group_id)
-        report = format_stats_report(stats, cfg, group_id, title="今日群聊统计")
+        report = format_stats_report(stats, cfg, group_id, title=format_lang("cmd_stats.m5"))
 
     logger.info("指令 /~stats 触发: user=%d group=%d yesterday=%s", user_id, group_id, show_yesterday)
     return report
@@ -1498,38 +1337,38 @@ async def cmd_stats(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_unstats(args, user_id, group_id, sender_name, is_group, bot_qq):
     """暂停群聊统计 /~unstats"""
     if not is_group:
-        return "仅在群聊可用喵~"
+        return format_lang("cmd_unstats.m1")
     
     from modules.stats import set_stats_state, is_stats_enabled
     
     if not is_stats_enabled(group_id):
-        return "本群统计已暂停中喵~"
+        return format_lang("cmd_unstats.m2")
     
     set_stats_state(group_id, enabled=False)
     logger.info("指令 /~unstats: 群=%d 统计已暂停 user=%d", group_id, user_id)
-    return "已暂停本群统计喵~ (用 /~setstats 恢复)"
+    return format_lang("cmd_unstats.m3")
 
 
 async def cmd_setstats(args, user_id, group_id, sender_name, is_group, bot_qq):
     """恢复群聊统计 /~setstats"""
     if not is_group:
-        return "仅在群聊可用喵~"
+        return format_lang("cmd_setstats.m1")
     
     from modules.stats import set_stats_state, is_stats_enabled
     
     if is_stats_enabled(group_id):
-        return "本群统计本来就是开启的喵~"
+        return format_lang("cmd_setstats.m2")
     
     set_stats_state(group_id, enabled=True)
     logger.info("指令 /~setstats: 群=%d 统计已恢复 user=%d", group_id, user_id)
-    return "已恢复本群统计喵~"
+    return format_lang("cmd_setstats.m3")
 
 
 async def cmd_leave(args, user_id, group_id, sender_name, is_group, bot_qq):
     """退群指令 /~leave [群号] — 收集数据 → 发送 → 重置好感度 → 退群（仅管理员）"""
     cfg = get_config()
     if not cfg.is_admin(user_id, group_id):
-        return "只有主人才能让我退群喵~"
+        return format_lang("cmd_leave.m1")
     
     # 解析目标群号：有参数用参数，没参数用当前群
     if args and args[0].isdigit():
@@ -1537,7 +1376,7 @@ async def cmd_leave(args, user_id, group_id, sender_name, is_group, bot_qq):
     elif is_group:
         target_gid = group_id
     else:
-        return "私聊使用时请指定群号: /~leave 群号"
+        return format_lang("cmd_leave.m2")
     
     from services.sender import send_group_msg, get_ws_manager
     from modules.leave import collect_group_data
@@ -1546,7 +1385,7 @@ async def cmd_leave(args, user_id, group_id, sender_name, is_group, bot_qq):
     _log = get_logger("leave_cmd")
     
     # 1. 收集数据
-    ok = await send_group_msg("📦 正在收集本群数据...", target_gid)
+    ok = await send_group_msg(format_lang("cmd_leave.m3"), target_gid)
     _log.info("发送进度提示 → 群%d: %s", target_gid, "成功" if ok else "失败")
     data_parts = await collect_group_data(target_gid)
     
@@ -1554,11 +1393,11 @@ async def cmd_leave(args, user_id, group_id, sender_name, is_group, bot_qq):
         for title, content in data_parts:
             msg = f"【{title}】\n{content}"
             if len(msg) > 2000:
-                msg = msg[:1990] + "...\n(截断)"
+                msg = msg[:1990] + format_lang("cmd_leave.m4")
             ok = await send_group_msg(msg, target_gid)
             _log.info("发送 %s → 群%d: %s (%d字)", title, target_gid, "成功" if ok else "失败", len(msg))
     else:
-        await send_group_msg("本群无留存数据喵~", target_gid)
+        await send_group_msg(format_lang("cmd_leave.m5"), target_gid)
     
     # 2. 重置好感度
     import json
@@ -1590,7 +1429,7 @@ async def cmd_leave(args, user_id, group_id, sender_name, is_group, bot_qq):
     except Exception:
         pass
     
-    await send_group_msg(f"✅ remove group done... (重置好感度 {fav_count} 人)", target_gid)
+    await send_group_msg(format_lang("cmd_leave.m6", fav_count=fav_count), target_gid)
     
     # 4. 退群
     try:
@@ -1599,7 +1438,7 @@ async def cmd_leave(args, user_id, group_id, sender_name, is_group, bot_qq):
         _log.info("退群成功: 群=%d user=%d", target_gid, user_id)
     except Exception as e:
         _log.error("退群API调用失败: %s", e)
-        return f"退群失败: {e}"
+        return format_lang("cmd_leave.m7", e=e)
     
     return None  # 不发返回值，_handle_command_route 会跳过
 
@@ -1612,7 +1451,7 @@ async def cmd_analyze(args, user_id, group_id, sender_name, is_group, bot_qq):
     直接发给 LLM，不注入任何聊天记录、记忆、架构上下文。
     """
     if not args:
-        return "用法: /~analyze <日志内容>\n直接粘贴 Minecraft 日志，零上下文分析。"
+        return format_lang("cmd_analyze.m1")
     
     content = " ".join(args)
     from services.llm import call_llm_raw
@@ -1647,7 +1486,7 @@ async def cmd_preset(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     preset = get_preset(chat_id)
     if preset:
-        return f"【当前注入的提示词】({len(preset)}字)\n{preset[:500]}"
+        return format_lang("cmd_preset.m1", preset=len(preset), preset2=preset[:500])
     else:
         return format_lang("preset.empty")
 
@@ -1663,7 +1502,7 @@ async def _wzq_render_and_send(chat_id: int, is_group: bool, group_id: int, user
         await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
 
 
-_GAME_CN = {"go": "围棋", "wzq": "五子棋", "xq": "中国象棋"}
+_GAME_CN = {"go": format_lang("mod.m35"), "wzq": format_lang("mod.m36"), "xq": format_lang("mod.m37")}
 
 
 def _room_links(kind: str, chat_id: int, players) -> tuple:
@@ -1693,7 +1532,7 @@ async def _announce_room(kind: str, chat_id: int, players: list, is_group: bool,
     code, spec, links = _room_links(kind, chat_id, [p[0] for p in players])
     if not code:
         return ""
-    title = f"{_GAME_CN.get(kind, '棋局')}房间 {code}"
+    title = format_lang("_announce_room.m1", kind=_GAME_CN.get(kind, '棋局'), code=code)
     roster = " vs ".join(str(p[1]) for p in players)
     if roster:
         title += f"｜{roster}"
@@ -1708,28 +1547,26 @@ async def _announce_room(kind: str, chat_id: int, players: list, is_group: bool,
             continue                     # 私聊开局：发起人的链接直接放回复里
         try:
             await send_private_msg(
-                f"{title}\n你执{role}。专属对局链接（别转发）：\n{link}", int(uid))
+                format_lang("_announce_room.m2", title=title, role=role, link=link), int(uid))
         except Exception as e:
             logger.warning("对局链接私聊失败 uid=%s: %s", uid, e)
 
     if is_group:
-        return f"{title}\n观战链接（点开即围观，可转发）：{spec}"
+        return format_lang("_announce_room.m3", title=title, spec=spec)
     own = links.get(int(me_uid), "")
-    return f"{title}\n你的对局链接（别转发）：\n{own}" if own else title
+    return format_lang("_announce_room.m4", title=title, own=own) if own else title
 
 
 def _link_text(kind: str, chat_id: int, uid: int, has_game: bool) -> str:
     """`link` 子命令回复：房间号 + 自己的对局链接 + 观战链接"""
     if not has_game:
-        return "这里还没有对局喵~ 先开一局"
+        return format_lang("_link_text.m1")
     try:
         from services.game_web import ensure_room, play_link, spectate_link
     except Exception as e:
-        return f"棋局网页服务未启用喵~（{e}）"
+        return format_lang("_link_text.m2", e=e)
     code = ensure_room(kind, chat_id, is_group=chat_id in get_config().group_list)
-    return (f"房间号 {code}\n"
-            f"你的对局链接（别转发）：\n{play_link(code, uid)}\n"
-            f"观战链接（可发群里）：\n{spectate_link(code)}")
+    return (format_lang("_link_text.m3", code=code, uid=play_link(code, uid), code2=spectate_link(code)))
 
 
 def _parse_opponent(text: str, group_id: int, cfg) -> int | None:
@@ -1759,18 +1596,17 @@ def _parse_opponent(text: str, group_id: int, cfg) -> int | None:
 async def cmd_watch(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~观战 <房间号> —— 取某个棋局房间的观战链接"""
     if not args:
-        return ("用法：/~观战 <房间号>\n"
-                "房间号是开局时 bot 给出的 4 位编号（不含 0/O/1/I/L）")
+        return (format_lang("cmd_watch.m1"))
     code = str(args[0]).strip().upper()
     try:
         from services.game_web import KIND_LABEL, room_of, spectate_link
     except Exception as e:
-        return f"棋局网页服务未启用喵~（{e}）"
+        return format_lang("cmd_watch.m2", e=e)
     room = room_of(code)
     if not room:
-        return f"找不到房间 {code} 喵~ 房间号是 4 位（不含 0/O/1/I/L）"
-    kind_cn = KIND_LABEL.get(room.get("kind"), "棋局")
-    return f"{kind_cn}房间 {code} 观战链接（点开即围观）：\n{spectate_link(code)}"
+        return format_lang("cmd_watch.m3", code=code)
+    kind_cn = KIND_LABEL.get(room.get("kind"), format_lang("common.chess_default"))
+    return format_lang("cmd_watch.m4", kind_cn=kind_cn, code=code, code2=spectate_link(code))
 
 
 async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -1796,18 +1632,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             args = ["board"]
         else:
             return (
-                "五子棋 /~wzq\n"
-                "  duel @某人 [nofb] 发起挑战(可选无禁手)\n"
-                "  ai 新手/普通/困难/专家 [nofb]\n"
-                "  accept      接受挑战\n"
-                "  cancel/unduel 取消未接受的挑战\n"
-                "  <坐标>      落子 (H8 / 8,8)\n"
-                "  board       查看棋盘\n"
-                "  surrender   认输\n"
-                "  undo        悔棋\n"
-                "  link        取房间号与网页链接\n"
-                "  status      对局信息\n"
-                "  admin clear 强制结束本群棋局(仅主人)"
+                format_lang("cmd_wzq.m1")
             )
 
     action = args[0].lower()
@@ -1816,12 +1641,12 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ── 人机对战 ──
     if action in ("ai", "人机"):
         if len(args) < 2:
-            return "用法: /~wzq ai <难度>\n难度: 新手 普通 困难 专家"
+            return format_lang("cmd_wzq.m2")
         diff = args[1]
-        diff_map = {"新手": "新手", "普通": "普通", "困难": "困难", "专家": "专家", "easy": "新手", "normal": "普通", "hard": "困难", "expert": "专家"}
+        diff_map = {"新手": format_lang("cmd_wzq.m3"), "普通": format_lang("cmd_wzq.m4"), "困难": format_lang("cmd_wzq.m5"), "专家": format_lang("cmd_wzq.m6"), "easy": format_lang("cmd_wzq.m7"), "normal": format_lang("cmd_wzq.m8"), "hard": format_lang("cmd_wzq.m9"), "expert": format_lang("cmd_wzq.m10")}
         diff = diff_map.get(diff, diff)
         if diff not in ("新手", "普通", "困难", "专家"):
-            return f"未知难度: {diff}\n可选: 新手 普通 困难 专家"
+            return format_lang("cmd_wzq.m11", diff=diff)
         nofb = args[-1].lower() in ("nofb", "无禁手", "noforbidden")
         result = g.create_duel_ai(chat_id, user_id, diff, forbidden=not nofb)
         if result.startswith("started_ai"):
@@ -1835,14 +1660,14 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             base = format_lang("wzq.start", diff=diff_name)
             uname = cfg.get_display_name(str(user_id), group_id=group_id if is_group else 0)
             ann = await _announce_room("wzq", chat_id, [(user_id, uname, "黑")], is_group,
-                                       group_id, me_uid=user_id, mode_text=f"人机·{diff_name}")
+                                       group_id, me_uid=user_id, mode_text=format_lang("cmd_wzq.m12", diff_name=diff_name))
             return f"{base}\n{ann}" if ann else base
         return result
 
     # ── 发起挑战 ──
     if action == "duel":
         if len(args) < 2:
-            return "用法: /~wzq duel @某人"
+            return format_lang("cmd_wzq.m13")
 
         # 从参数中提取 QQ 号（支持 @昵称 反向查映射）
         opponent = " ".join(args[1:])
@@ -1861,8 +1686,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                     cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
                     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             asyncio.create_task(_bg_duel())
-            return (f"挑战已发起！等待 [CQ:at,qq={white_id}] 接受 (/~wzq accept) "
-                    f"或拒绝 (/~wzq decline)")
+            return (format_lang("cmd_wzq.m14", white_id=white_id))
         return result
 
     # ── 接受 ──
@@ -1875,7 +1699,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             name_w = cfg.get_display_name(str(game.white), group_id=gid)
             ann = await _announce_room("wzq", chat_id,
                                        [(game.black, name_b, "黑"), (game.white, name_w, "白")],
-                                       is_group, group_id, me_uid=user_id, mode_text="人人对战")
+                                       is_group, group_id, me_uid=user_id, mode_text=format_lang("cmd_wzq.m15"))
 
             async def _bg():
                 img = await g.render_board(chat_id, cfg)
@@ -1883,7 +1707,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                     cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
                     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             asyncio.create_task(_bg())
-            head = "对局开始！黑先白后，五子连珠者胜。"
+            head = format_lang("cmd_wzq.m16")
             return f"{head}\n{ann}" if ann else head
         return result
 
@@ -1898,26 +1722,26 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ★ admin 强制清除本群所有棋局
     if action == "admin":
         if not cfg.is_admin(user_id, group_id):
-            return "只有主人才能用这个喵~"
+            return format_lang("cmd_wzq.m17")
         sub = args[1] if len(args) > 1 else ""
         if sub == "clear":
             game = g.get_game(chat_id)
             if not game:
-                return "当前没有对局喵~"
+                return format_lang("cmd_wzq.m18")
             g.force_end(chat_id)
-            return f"已强制结束本群棋局 (状态={game.status})"
-        return "用法: /~wzq admin clear  强制清除本群所有对局"
+            return format_lang("cmd_wzq.m19", status=game.status)
+        return format_lang("cmd_wzq.m20")
 
     # ── 房间链接 ──
     if action in ("link", "链接", "网页", "房间"):
         game = g.get_game(chat_id)
         if not game:
-            return "这里还没有五子棋对局喵~ 用 /~wzq ai 普通 开局"
+            return format_lang("cmd_wzq.m21")
         side = ""
         if user_id == game.black:
-            side = "（你是黑方）"
+            side = format_lang("cmd_wzq.m22")
         elif user_id == game.white:
-            side = "（你是白方）"
+            side = format_lang("cmd_wzq.m23")
         return _link_text("wzq", chat_id, user_id, True) + f"\n{side}" if side else \
             _link_text("wzq", chat_id, user_id, True)
 
@@ -1936,14 +1760,14 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             if msg == "win":
                 game = g.get_game(chat_id)
                 winner_name = cfg.get_display_name(str(game.white if game.winner == 2 else game.black), group_id=group_id if is_group else 0)
-                return f"五连！{winner_name} 获胜！"
+                return format_lang("cmd_wzq.m24", winner_name=winner_name)
             if msg == "draw":
-                return "棋盘满了，平局！"
+                return format_lang("cmd_wzq.m25")
             if msg.startswith("forbidden:"):
                 reason = msg.split(":", 1)[1]
                 game = g.get_game(chat_id)
                 winner = cfg.get_display_name(str(game.white), group_id=group_id if is_group else 0)
-                return f"禁手犯规({reason})！{winner} 获胜！"
+                return format_lang("cmd_wzq.m26", reason=reason, winner=winner)
 
             # AI 自动走棋
             game = g.get_game(chat_id)
@@ -1958,11 +1782,11 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
                         if ai_msg == "win":
                             ai_game = g.get_game(chat_id)
                             if ai_game.winner == 2:
-                                await (send_group_msg("AI 获胜！", group_id) if is_group else send_private_msg("AI 获胜！", user_id))
+                                await (send_group_msg(format_lang("_ai_turn.m1"), group_id) if is_group else send_private_msg(format_lang("_ai_turn.m2"), user_id))
                             elif ai_game.winner == 1:
-                                await (send_group_msg("你赢了！", group_id) if is_group else send_private_msg("你赢了！", user_id))
+                                await (send_group_msg(format_lang("_ai_turn.m3"), group_id) if is_group else send_private_msg(format_lang("_ai_turn.m4"), user_id))
                         elif ai_msg.startswith("forbidden:"):
-                            await (send_group_msg("AI 禁手犯规，你赢了！", group_id) if is_group else send_private_msg("AI 禁手犯规，你赢了！", user_id))
+                            await (send_group_msg(format_lang("_ai_turn.m5"), group_id) if is_group else send_private_msg(format_lang("_ai_turn.m6"), user_id))
                     else:
                         logger.warning("AI turn failed: %s", ai_msg)
                 asyncio.create_task(_ai_turn())
@@ -1984,7 +1808,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
         ok, msg = g.surrender(chat_id, user_id)
         if ok:
             loser = cfg.get_display_name(str(user_id), group_id=group_id if is_group else 0)
-            return f"{loser} 认输了！"
+            return format_lang("cmd_wzq.m27", loser=loser)
         return msg
 
     # ── 悔棋 ──
@@ -2006,7 +1830,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
         result = g.request_undo(chat_id, user_id)
         if result == "undo_request":
             opponent = game.white if user_id == game.black else game.black
-            return f"悔棋申请已发送，等待 [CQ:at,qq={opponent}] 同意 (/~wzq undo)"
+            return format_lang("cmd_wzq.m28", opponent=opponent)
         return result
 
     # ── 状态 ──
@@ -2016,7 +1840,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             return format_lang("wzq.no_game")
         bn = cfg.get_display_name(str(game.black), group_id=group_id if is_group else 0)
         wn = cfg.get_display_name(str(game.white), group_id=group_id if is_group else 0)
-        return f"黑方 {bn} vs 白方 {wn} | 手数 {game.move_count} | 状态 {game.status}"
+        return format_lang("cmd_wzq.m29", bn=bn, wn=wn, move_count=game.move_count, status=game.status)
 
     # ── 历史记录 ──
     if action == "history":
@@ -2051,18 +1875,18 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
             return None
 
         # 文字列表
-        lines = [f"五子棋记录 (最近{min(count, len(records))}场)"]
-        lines.append("  /~wzq history <编号> board 查看棋盘")
+        lines = [format_lang("cmd_wzq.m30", records=min(count, len(records)))]
+        lines.append(format_lang("cmd_wzq.m31"))
         for i, r in enumerate(records[:count], 1):
             bn = cfg.get_display_name(str(r["black"]), group_id=group_id if is_group else 0)
             wn = cfg.get_display_name(str(r["white"]), group_id=group_id if is_group else 0)
             if r["winner"] == 1:
-                result = f"{bn} 胜"
+                result = format_lang("cmd_wzq.m32", bn=bn)
             elif r["winner"] == 2:
-                result = f"{wn} 胜"
+                result = format_lang("cmd_wzq.m33", wn=wn)
             else:
-                result = "平局"
-            lines.append(f"  {i}. [{r['time']}] {bn} vs {wn} -> {result} ({r['moves']}手)")
+                result = format_lang("cmd_wzq.m34")
+            lines.append(format_lang("cmd_wzq.m35", i=i, time=r['time'], bn=bn, wn=wn, result=result, moves=r['moves']))
         return "\n".join(lines)
 
     # ── 测试渲染 ──
@@ -2075,7 +1899,7 @@ async def cmd_wzq(args, user_id, group_id, sender_name, is_group, bot_qq):
         asyncio.create_task(_bg_test())
         return None
 
-    return f"未知操作: {action}\n使用 /~wzq 查看帮助"
+    return format_lang("cmd_wzq.m36", action=action)
 
 
 # ─── 翻译 ───────────────────────────────────────────────────
@@ -2088,7 +1912,7 @@ async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_qq):
       /~tr jp こんにちは
     """
     if len(args) < 2:
-        return "用法: /~tr <目标语言> <文本>\n例如: /~tr en 你好\n     /~tr 中文 hello"
+        return format_lang("cmd_translate.m1")
 
     # 语言别名映射
     LANG_MAP = {
@@ -2102,7 +1926,7 @@ async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_qq):
     target = args[0].lower()
     lang = LANG_MAP.get(target)
     if not lang:
-        return f"不支持的语言: {target}\n支持: en/zh/jp/kr/fr/de 或 中文/英文/日文/韩文..."
+        return format_lang("cmd_translate.m2", target=target)
 
     text = " ".join(args[1:])
 
@@ -2148,16 +1972,7 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if not args:
         return (
-            "围棋 /~go <操作>\n"
-            "  start [难度] [尺寸]  开始新对局\n"
-            "     难度：新手/普通/困难/专家（默认普通）\n"
-            "     尺寸：9/13/19 或 小/中/大（默认 19 标准盘）\n"
-            "  <坐标>        落子（D4 / 4,4，字母跳过 I）\n"
-            "  pass          停一手（双方连续 pass 即终局数子）\n"
-            "  board         查看棋盘\n"
-            "  duel @某人 [难度]  邀请群友对弈（双人）\n"
-            "  link          取房间号与网页链接\n"
-            "  resign        认输"
+            format_lang("cmd_go.m1")
         )
 
     action = args[0].lower()
@@ -2169,39 +1984,38 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
                 diff_raw = tok
             else:
                 opts = " / ".join(v["label"] for v in G.DIFFICULTIES.values())
-                return f"参数「{tok}」不认识喵~ 难度可选：{opts}"
+                return format_lang("cmd_go.m2", tok=tok, opts=opts)
         r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY)
         if not r.startswith("ok"):
             return r
-        label = r.split(":", 1)[1] if ":" in r else "普通"
+        label = r.split(":", 1)[1] if ":" in r else format_lang("cmd_go.m3")
         gid = group_id if is_group else 0
         uname = cfg.get_display_name(str(user_id), group_id=gid)
         ann = await _announce_room("go", chat_id, [(user_id, uname, "黑")], is_group,
-                                   group_id, me_uid=user_id, mode_text=f"人机·{label}")
+                                   group_id, me_uid=user_id, mode_text=format_lang("cmd_go.m4", label=label))
         try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-            await _send(f"围棋开局！{G.BOARD_SIZE}×{G.BOARD_SIZE} 标准盘，你执黑先行，AI 难度「{label}」\n"
-                        f"{ann}\n落子用 /~go D4（字母跳过 I）\n{cq}")
+            await _send(format_lang("cmd_go.m5", BOARD_SIZE=G.BOARD_SIZE, BOARD_SIZE2=G.BOARD_SIZE, label=label, ann=ann, cq=cq))
             return None
         except Exception as e:
-            return f"棋盘渲染失败喵: {e}"
+            return format_lang("cmd_go.m6", e=e)
 
     # ── 邀请群友对弈（双人） ──
     if action in ("duel", "对战", "挑战"):
         if len(args) < 2:
-            return "用法：/~go duel @某人 [难度]"
+            return format_lang("cmd_go.m7")
         opp = _parse_opponent(args[1], group_id if is_group else 0, cfg)
         if not opp:
-            return f"没认出对手「{args[1]}」喵~ 用 @某人 或直接写 QQ 号"
+            return format_lang("cmd_go.m8", args=args[1])
         if opp == user_id:
-            return "不能自己跟自己下喵~"
+            return format_lang("cmd_go.m9")
         diff_raw = ""
         for tok in args[2:]:
             if not diff_raw and G.resolve_difficulty(tok):
                 diff_raw = tok
             else:
-                return f"参数「{tok}」不认识喵~"
+                return format_lang("cmd_go.m10", tok=tok)
         r = G.start_game(user_id, chat_id, diff_raw or G.DEFAULT_DIFFICULTY,
                          opponent_id=opp)
         if not r.startswith("ok"):
@@ -2211,14 +2025,14 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
         n2 = cfg.get_display_name(str(opp), group_id=gid)
         ann = await _announce_room("go", chat_id,
                                    [(user_id, n1, "黑"), (opp, n2, "白")], is_group,
-                                   group_id, me_uid=user_id, mode_text="人人对战")
+                                   group_id, me_uid=user_id, mode_text=format_lang("cmd_go.m11"))
         try:
             img = await G.render_board(chat_id)
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]" if img else ""
-            await _send(f"围棋对战开始！{G.BOARD_SIZE}×{G.BOARD_SIZE} 标准盘，{n1} 执黑先行。\n{ann}\n{cq}")
+            await _send(format_lang("cmd_go.m12", BOARD_SIZE=G.BOARD_SIZE, BOARD_SIZE2=G.BOARD_SIZE, n1=n1, ann=ann, cq=cq))
             return None
         except Exception as e:
-            return f"棋盘渲染失败喵: {e}"
+            return format_lang("cmd_go.m13", e=e)
 
     if action in ("link", "链接", "网页", "房间"):
         return _link_text("go", chat_id, user_id, G.get_game(chat_id) is not None)
@@ -2226,9 +2040,9 @@ async def cmd_go(args, user_id, group_id, sender_name, is_group, bot_qq):
     if action in ("board", "棋盘", "查看"):
         game = G.get_game(chat_id)
         if not game:
-            return "这里没有围棋对局喵~ 用 /~go start 开局"
+            return format_lang("cmd_go.m14")
         await _send_board()
-        return f"当前局面 · 手数 {game.get('move_count', 0)}"
+        return format_lang("cmd_go.m15", move_count=game.get('move_count', 0))
 
     if action in ("pass", "停一手", "过"):
         ok, msg, _ = G.do_pass(user_id, chat_id)
@@ -2275,14 +2089,7 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if not args:
         return (
-            "中国象棋 /~xq <操作>\n"
-            "  start [难度]  开始新对局（新手/普通/困难/专家，默认普通）\n"
-            "  <走法>        炮二平五 / h2e2\n"
-            "  board         查看棋盘\n"
-            "  duel @某人 [难度]  邀请群友对弈（双人）\n"
-            "  link          取房间号与网页链接\n"
-            "  resign        认输\n"
-            "  history       走棋记录"
+            format_lang("cmd_xq.m1")
         )
 
     action = args[0].lower()
@@ -2291,34 +2098,34 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
         diff_raw = args[1] if len(args) > 1 else ""
         if diff_raw and not resolve_difficulty(diff_raw):
             opts = " / ".join(v["label"] for v in DIFFICULTIES.values())
-            return f"难度「{diff_raw}」不认识喵~ 可选：{opts}"
+            return format_lang("cmd_xq.m2", diff_raw=diff_raw, opts=opts)
         result = start_game(user_id, chat_id, diff_raw or DEFAULT_DIFFICULTY)
         if not result.startswith("ok"):
             return result
-        label = result.split(":", 1)[1] if ":" in result else "普通"
+        label = result.split(":", 1)[1] if ":" in result else format_lang("cmd_xq.m3")
         gid = group_id if is_group else 0
         uname = cfg.get_display_name(str(user_id), group_id=gid)
         ann = await _announce_room("xq", chat_id, [(user_id, uname, "红")], is_group,
-                                   group_id, me_uid=user_id, mode_text=f"人机·{label}")
+                                   group_id, me_uid=user_id, mode_text=format_lang("cmd_xq.m4", label=label))
         try:
             svg = build_initial_svg()
             out = str(_ROOT / "data" / "img_temp" / f"xq_{chat_id}.png")
             await _svg_to_png(svg, out)
             cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
-            await _send(f"对局开始！你执红方，AI 难度「{label}」，请落子喵~\n{ann}\n{cq}")
+            await _send(format_lang("cmd_xq.m5", label=label, ann=ann, cq=cq))
             return None
         except Exception as e:
-            return f"棋盘渲染失败喵: {e}"
+            return format_lang("cmd_xq.m6", e=e)
 
     # ── 邀请群友对弈（双人） ──
     if action in ("duel", "对战", "挑战"):
         if len(args) < 2:
-            return "用法：/~xq duel @某人 [难度]"
+            return format_lang("cmd_xq.m7")
         opp = _parse_opponent(args[1], group_id if is_group else 0, cfg)
         if not opp:
-            return f"没认出对手「{args[1]}」喵~ 用 @某人 或直接写 QQ 号"
+            return format_lang("cmd_xq.m8", args=args[1])
         if opp == user_id:
-            return "不能自己跟自己下喵~"
+            return format_lang("cmd_xq.m9")
         diff_raw = ""
         for tok in args[2:]:
             if resolve_difficulty(tok):
@@ -2327,22 +2134,22 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
         result = start_game(user_id, chat_id, diff_raw or DEFAULT_DIFFICULTY, opponent_id=opp)
         if not result.startswith("ok"):
             return result
-        label = result.split(":", 1)[1] if ":" in result else "普通"
+        label = result.split(":", 1)[1] if ":" in result else format_lang("cmd_xq.m10")
         gid = group_id if is_group else 0
         n1 = cfg.get_display_name(str(user_id), group_id=gid)
         n2 = cfg.get_display_name(str(opp), group_id=gid)
         ann = await _announce_room("xq", chat_id,
                                    [(user_id, n1, "红"), (opp, n2, "黑")], is_group,
-                                   group_id, me_uid=user_id, mode_text="人人对战")
+                                   group_id, me_uid=user_id, mode_text=format_lang("cmd_xq.m11"))
         try:
             svg = build_initial_svg()
             out = str(_ROOT / "data" / "img_temp" / f"xq_{chat_id}.png")
             await _svg_to_png(svg, out)
             cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
-            await _send(f"象棋对战开始！{n1} 执红先行（{label}）。\n{ann}\n{cq}")
+            await _send(format_lang("cmd_xq.m12", n1=n1, label=label, ann=ann, cq=cq))
             return None
         except Exception as e:
-            return f"棋盘渲染失败喵: {e}"
+            return format_lang("cmd_xq.m13", e=e)
 
     if action == "board":
         msg, img = show_board(chat_id)
@@ -2353,7 +2160,7 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
         return msg
 
     if action in ("link", "链接", "网页", "房间"):
-        return _link_text("xq", chat_id, user_id, game is not None)
+        return _link_text("xq", chat_id, user_id, get_game(chat_id) is not None)
 
     if action == "resign":
         return resign_game(user_id, chat_id)
@@ -2374,6 +2181,28 @@ async def cmd_xq(args, user_id, group_id, sender_name, is_group, bot_qq):
     return msg
 
 
+# ── 倒计时存储（★ v2.3.89 补：从 KOOK 端移植 cmd_countdown 时漏了这两个函数，
+#    `/~countdown` 一直 NameError；帮助文本里保留着该指令，说明是有意保留的）──
+_COUNTDOWN_FILE = Path(__file__).resolve().parent.parent / "data" / "countdowns.json"
+
+
+def _load_countdowns() -> list:
+    """读取倒计时列表（data/countdowns.json）"""
+    if _COUNTDOWN_FILE.exists():
+        try:
+            return json.loads(_COUNTDOWN_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save_countdowns(data: list):
+    """写回倒计时列表"""
+    _COUNTDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _COUNTDOWN_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+
+
 async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
     """
     倒计时 /~countdown
@@ -2388,17 +2217,19 @@ async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
         items = _load_countdowns()
         if not items:
             return format_lang("countdown.empty_list")
-        lines = ["【倒计时】"]
+        lines = [format_lang("countdown.header_recent")]
         now = _dt.datetime.now()
         for i, item in enumerate(items, 1):
             try:
                 target = _dt.datetime.strptime(item["date"], "%Y-%m-%d")
                 days = (target - now).days
-                sign = "已过" if days < 0 else "还有"
-                days_str = f"{sign} {abs(days)} 天"
+                days_str = format_lang(
+                    "countdown.days_past" if days < 0 else "countdown.days_left",
+                    n=abs(days))
             except Exception:
                 days_str = "?"
-            lines.append(f"  {i}. [{item['date']}] {item['event']}  ({days_str})")
+            lines.append(format_lang("countdown.item", i=i, date=item["date"],
+                                     event=item["event"], days=days_str))
         return "\n".join(lines)
 
     action = args[0].lower()
@@ -2407,22 +2238,24 @@ async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
         items = _load_countdowns()
         if not items:
             return format_lang("countdown.empty_single")
-        lines = ["【倒计时列表】"]
+        lines = [format_lang("countdown.header_list")]
         now = _dt.datetime.now()
         for i, item in enumerate(items, 1):
             try:
                 target = _dt.datetime.strptime(item["date"], "%Y-%m-%d")
                 days = (target - now).days
-                sign = "已过" if days < 0 else "还有"
-                days_str = f"{sign} {abs(days)} 天"
+                days_str = format_lang(
+                    "countdown.days_past" if days < 0 else "countdown.days_left",
+                    n=abs(days))
             except Exception:
                 days_str = "?"
-            lines.append(f"  {i}. [{item['date']}] {item['event']}  ({days_str})")
+            lines.append(format_lang("countdown.item", i=i, date=item["date"],
+                                     event=item["event"], days=days_str))
         return "\n".join(lines)
 
     if action == "del" or action == "delete":
         if len(args) < 2:
-            return "用法: /~countdown del <编号>"
+            return format_lang("countdown.usage_del")
         try:
             idx = int(args[1]) - 1
         except ValueError:
@@ -2432,11 +2265,12 @@ async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
             return format_lang("countdown.delete_out_of_range")
         removed = items.pop(idx)
         _save_countdowns(items)
-        return f"已删除: [{removed['date']}] {removed['event']}"
+        return format_lang("countdown.deleted", date=removed["date"],
+                           event=removed["event"])
 
     if action == "add":
         if len(args) < 3:
-            return "用法: /~countdown add <日期> <事件>\n例如: /~countdown add 2026-12-25 圣诞节"
+            return format_lang("countdown.usage_add")
         date_str = args[1]
         event = " ".join(args[2:])
     else:
@@ -2448,7 +2282,7 @@ async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
     try:
         _dt.datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
-        return f"日期格式错误: {date_str}\n请使用 YYYY-MM-DD 格式，如 2026-12-25"
+        return format_lang("countdown.bad_date", value=date_str)
 
     items = _load_countdowns()
     items.append({"date": date_str, "event": event})
@@ -2456,8 +2290,9 @@ async def cmd_countdown(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     target = _dt.datetime.strptime(date_str, "%Y-%m-%d")
     days = (target - _dt.datetime.now()).days
-    days_str = f"还有 {days} 天" if days >= 0 else f"已过 {abs(days)} 天"
-    return f"已添加倒计时喵~ [{date_str}] {event} ({days_str})"
+    days_str = format_lang("countdown.days_left" if days >= 0 else "countdown.days_past",
+                           n=abs(days))
+    return format_lang("countdown.added", date=date_str, event=event, days=days_str)
 
 
 
@@ -2506,16 +2341,13 @@ async def _handle_wdsj_dual(args, is_group, group_id, user_id):
     parts = [a for a in args if a.lower() not in ("img", "pic", "card", "图片")]
     player = " ".join(parts).strip() if parts else (_get_bound_player(user_id) or "")
     if not player:
-        return ("用法: /~wdsj me（用绑定玩家）或 /~wdsj <玩家名> me\n"
-                "未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~")
+        return (format_lang("_handle_wdsj_dual.m1"))
     # 误把模式名当玩家名（如 /~wdsj bw me）→ 提示正确用法
     if parts and len(parts) == 1 and api.resolve_template(parts[0]):
-        return (f"「{player}」是模式名不是玩家名喵~\n"
-                f"查双模式卡: /~wdsj me 或 /~wdsj <玩家名> me\n"
-                f"查单模式: /~wdsj {parts[0]} <玩家名>")
+        return (format_lang("_handle_wdsj_dual.m2", player=player, parts=parts[0]))
 
-    await (send_group_msg(f"正在生成 {player} 的双模式战绩卡喵~", group_id) if is_group
-           else send_private_msg(f"正在生成 {player} 的双模式战绩卡喵~", user_id))
+    await (send_group_msg(format_lang("_handle_wdsj_dual.m3", player=player), group_id) if is_group
+           else send_private_msg(format_lang("_handle_wdsj_dual.m4", player=player), user_id))
 
     # 三项并行：两个模式查询 + 皮肤头像下载（头像内联后渲染不再等外部网络）
     bw, ar, head_uri = await asyncio.gather(
@@ -2525,7 +2357,7 @@ async def _handle_wdsj_dual(args, is_group, group_id, user_id):
         return_exceptions=False,
     )
     if not bw and not ar:
-        return format_lang("wdsj.player_not_found", player=player, template="双模式")
+        return format_lang("wdsj.player_not_found", player=player, template=format_lang("_handle_wdsj_dual.m5"))
 
     html = api.build_dual_card_html(bw, ar, head_data_uri=head_uri)
 
@@ -2548,7 +2380,7 @@ async def _handle_wdsj_dual(args, is_group, group_id, user_id):
         await page.close()
     except Exception as e:
         logger.warning("wdsj dual 卡片渲染失败: %s", e)
-        return f"双模式战绩卡渲染失败: {e}"
+        return format_lang("_handle_wdsj_dual.m6", e=e)
 
     cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
@@ -2588,7 +2420,7 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
         board_id = api.resolve_board(lb_args[0])
         period = "ALLTIME"
     else:
-        return "用法: /~wdsj lb <榜单名> [周期] [img]"
+        return format_lang("_handle_wdsj_lb.m1")
     board_id = board_id or lb_args[0]
     period = period if period in api.PERIOD_LABELS else {
         "MONTH": "MONTHLY", "WEEK": "WEEKLY", "DAY": "DAILY", "ALL": "ALLTIME"
@@ -2646,7 +2478,7 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
             await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             return None
         except Exception as e:
-            return f"排行榜卡片渲染失败: {e}"
+            return format_lang("_handle_wdsj_lb.m2", e=e)
 
     # 文字模式
     board = data["board"]
@@ -2656,7 +2488,7 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
     for e in entries:
         lines.append(f'  #{e["rank"]:>3}  {e["owner"]:<16} {e["value"]} {board.get("unit","")}')
     if not entries:
-        lines.append("  (暂无数据)")
+        lines.append(format_lang("_handle_wdsj_lb.m3"))
     return "\n".join(lines)
 
 
@@ -2688,13 +2520,13 @@ async def _handle_wdsj_bind(args: list, user_id: int) -> str:
     if not args:
         player = _get_bound_player(user_id)
         if player:
-            return f"你当前绑定的玩家名是「{player}」喵~"
-        return "你还没有绑定玩家名喵~ 试试 /~wdsj bd <玩家名>"
+            return format_lang("_handle_wdsj_bind.m1", player=player)
+        return format_lang("_handle_wdsj_bind.m2")
     player = args[0]
     bindings = _load_wdsj_bindings()
     bindings[str(user_id)] = player
     _save_wdsj_bindings(bindings)
-    return f"已绑定玩家名「{player}」喵~ 以后查战绩可以直接 /~wdsj bw 不带名字啦"
+    return format_lang("_handle_wdsj_bind.m3", player=player)
 
 
 # ─── 洛花星雨战绩查询 ──────────────────────────────────────
@@ -2702,9 +2534,9 @@ async def _handle_wdsj_bind(args: list, user_id: int) -> str:
 def _build_wdsj_summary(data: dict) -> str:
     """从 WDSJ API 返回中提取简短摘要"""
     pi = data.get("player", {})
-    display = data.get("_template_display", "未知模式")
+    display = data.get("_template_display", format_lang("common.unknown_mode"))
     hdr = data.get("headerCards", [])
-    lines = [f"{pi.get('name', '?')} 的 {display} 战绩"]
+    lines = [format_lang("_build_wdsj_summary.m1", name=pi.get('name', '?'), display=display)]
     for c in hdr[:6]:
         v = c["value"]
         if c.get("hint"):
@@ -2757,9 +2589,9 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     if action == "collect":
         from core.config import get_config as _get_cfg
         if not _get_cfg().is_admin(user_id, group_id):
-            return "只有管理员才能手动采集喵~"
+            return format_lang("cmd_wdsj.m1")
         from services.sender import send_group_msg as _sgm
-        await _sgm("⏳ 手动采集开始，请稍候...", group_id)
+        await _sgm(format_lang("cmd_wdsj.m2"), group_id)
         from services.wdsj_tracker import daily_stats_collect
         import time as _t
         t0 = _t.time()
@@ -2767,16 +2599,16 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         elapsed = _t.time() - t0
         if failed:
             names = sorted({p for p, _t in failed})
-            return f"✅ 手动采集完成 ({elapsed:.1f}s)，{len(names)} 人仍未采集到: " + "、".join(names)
-        return f"✅ 手动采集完成 ({elapsed:.1f}s)，全部成功"
+            return format_lang("cmd_wdsj.m3", elapsed=format(elapsed, ".1f"), names=len(names)) + "、".join(names)
+        return format_lang("cmd_wdsj.m4", elapsed=format(elapsed, ".1f"))
 
     # 绑定玩家名
     if action in ("bd", "bind", "绑定"):
         if args[1:] and args[1] in ("list", "列表"):
             bindings = _load_wdsj_bindings()
             if not bindings:
-                return "还没有人绑定喵~"
-            lines = ["绑定玩家列表:"]
+                return format_lang("cmd_wdsj.m5")
+            lines = [format_lang("cmd_wdsj.m6")]
             seen = set()
             for qq, name in sorted(bindings.items(), key=lambda x: x[1].lower()):
                 if name not in seen:
@@ -2799,20 +2631,20 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             rows = [(a, bid) for a, bid in api.BOARD_ALIASES.items()
                     if bid.startswith(prefix) or bid.startswith(cn)]
             if rows:
-                lines = [f"{cn} 排行榜 (用法: /~wdsj lb <简写> [周期] [img])", ""]
+                lines = [format_lang("cmd_wdsj.m7", cn=cn), ""]
                 lines += [f"  {a:<8s} = {bid}" for a, bid in sorted(rows, key=lambda x: x[1])]
-                lines += ["", "周期: alltime(all) / month(ly) / week(ly) / day(ily)，默认总榜",
-                          "末尾加 img = 发卡片图片"]
+                lines += ["", format_lang("cmd_wdsj.m8"),
+                          format_lang("cmd_wdsj.m9")]
                 return "\n".join(lines)
-        lines = ["洛花星雨排行榜 简写速查 (用法: /~wdsj lb <简写> [周期] [img])"]
+        lines = [format_lang("cmd_wdsj.m10")]
         lines.append("")
         # 按游戏分组的简写
         groups = {
-            "起床战争(bw)": [("win","胜"),("kill","击杀"),("beds","摧床"),("fk","最终"),("1k","首杀")],
-            "击退战场(kbw)": [("kill","击杀"),("dead","死亡"),("tnt","TNT"),("arrow","弓箭"),("rod","鱼竿"),("jp","跳板")],
-            "空岛战争(sw)": [("kill","击杀"),("win","胜"),("dead","死亡"),("1k","首杀")],
-            "职业战争(kp)": [("kill","击杀"),("xp","经验")],
-            "其他": [("pt","在线"),("cp","情侣"),("title","称号"),("guild","公会"),("dg win","画猜"),("cw win","色盲"),("cw kill","色盲杀"),("has win","躲猫猫")],
+            "起床战争(bw)": [("win","胜"),("kill",format_lang("cmd_wdsj.m11")),("beds",format_lang("cmd_wdsj.m12")),("fk",format_lang("cmd_wdsj.m13")),("1k",format_lang("cmd_wdsj.m14"))],
+            "击退战场(kbw)": [("kill",format_lang("cmd_wdsj.m15")),("dead",format_lang("cmd_wdsj.m16")),("tnt","TNT"),("arrow",format_lang("cmd_wdsj.m17")),("rod",format_lang("cmd_wdsj.m18")),("jp",format_lang("cmd_wdsj.m19"))],
+            "空岛战争(sw)": [("kill",format_lang("cmd_wdsj.m20")),("win","胜"),("dead",format_lang("cmd_wdsj.m21")),("1k",format_lang("cmd_wdsj.m22"))],
+            "职业战争(kp)": [("kill",format_lang("cmd_wdsj.m23")),("xp",format_lang("cmd_wdsj.m24"))],
+            "其他": [("pt",format_lang("cmd_wdsj.m25")),("cp",format_lang("cmd_wdsj.m26")),("title",format_lang("cmd_wdsj.m27")),("guild",format_lang("cmd_wdsj.m28")),("dg win",format_lang("cmd_wdsj.m29")),("cw win",format_lang("cmd_wdsj.m30")),("cw kill",format_lang("cmd_wdsj.m31")),("has win",format_lang("cmd_wdsj.m32"))],
         }
         for group, items in groups.items():
             suffix = " " + group
@@ -2823,14 +2655,14 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         return "\n".join(lines)
 
     if action == "list":
-        lines = ["洛花星雨 13种游戏模式 (简写 => 全名)"]
+        lines = [format_lang("cmd_wdsj.m33")]
         for tid, name in api.TEMPLATES.items():
             alias = [a for a, t in api.ALIASES.items() if t == tid]
             a_str = alias[0] if alias else tid
             lines.append(f"  {a_str} = {tid} ({name})")
         lines.append("")
-        lines.append("排行榜别名: /~wdsj lb <简写> [周期]")
-        lines.append("  双词: 游戏名 指标 (如: bw win, kbw tnt, sw kill)")
+        lines.append(format_lang("cmd_wdsj.m34"))
+        lines.append(format_lang("cmd_wdsj.m35"))
         for a, bid in sorted(api.BOARD_ALIASES.items()):
             lines.append(f"  {a:6s} = {bid}")
         return "\n".join(lines)
@@ -2839,7 +2671,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     if action in ("rank", "排名", "群排名"):
         mode_key = (args[1] if len(args) > 1 else "bw_kills").strip().lower()
         from services.wdsj_tracker import build_group_rank
-        tip = f"正在生成绑定排行 ({mode_key}) 喵..."
+        tip = format_lang("cmd_wdsj.m36", mode_key=mode_key)
         await (send_group_msg(tip, group_id) if is_group
                else send_private_msg(tip, user_id))
         text_result, image_path = await build_group_rank(group_id, mode_key)
@@ -2875,8 +2707,8 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             # ★ v2.3.24: 日榜渲染 ~1-3s，先回执避免用户以为没反应（原来全程静默）
             _is_push0 = len(args) >= 2 and args[-1].lower() in ("send", "push", "推送", "发送")
             if not _is_push0:
-                await (send_group_msg("正在生成竞技场日榜喵~", group_id) if is_group
-                       else send_private_msg("正在生成竞技场日榜喵~", user_id))
+                await (send_group_msg(format_lang("cmd_wdsj.m37"), group_id) if is_group
+                       else send_private_msg(format_lang("cmd_wdsj.m38"), user_id))
             rows, today, time_start, time_end, fb = build_arena_daily_rankings(label_date=label_date)
         else:
             from datetime import date as _date, timedelta as _td
@@ -2889,23 +2721,23 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             # ★ v2.3.24: 先回执（push 模式是后台推送，不用回执）
             if not is_push:
                 _d = label_date or _date.today().isoformat()
-                await (send_group_msg(f"正在生成 {_d} 的起床战争日榜喵~", group_id) if is_group
-                       else send_private_msg(f"正在生成 {_d} 的起床战争日榜喵~", user_id))
+                await (send_group_msg(format_lang("cmd_wdsj.m39", _d=_d), group_id) if is_group
+                       else send_private_msg(format_lang("cmd_wdsj.m40", _d=_d), user_id))
             rows, today, time_start, time_end, new_players, fb = build_daily_rankings(
                 label_date=label_date, cross_day=use_cross)
 
             if not rows:
                 now = datetime.now()
-                label = today or "该日期"
+                label = today or format_lang("cmd_wdsj.m41")
+                # 节奏/时隙列表取自配置（4h / 12h），别硬编码
+                from services.wdsj_tracker import (
+                    next_slot as _wdsj_next_slot, slots_hint as _wdsj_slots_hint,
+                )
                 if today == _date.today().isoformat():
-                    next_hour = (now.hour // 4 + 1) * 4
-                    if next_hour >= 24:
-                        next_hour = 0
-                    next_time = f"{next_hour:02d}:01"
-                    hint = f"，下一轮 {next_time}"
+                    hint = format_lang("cmd_wdsj.m42", M=_wdsj_next_slot(now).strftime('%H:%M'))
                 else:
                     hint = ""
-                return f"{label}还没有数据喵~ 榜单将在每天 0:01 / 4:01 / 8:01 / 12:01 / 16:01 / 20:01 产出{hint}"
+                return format_lang("cmd_wdsj.m43", label=label, _wdsj_slots_hint=_wdsj_slots_hint(), hint=hint)
 
         out_path = None
         # ★ v2.3.26: 起床战争日榜优先走 Pillow 绘制（服务器实测 79ms vs Chromium
@@ -2949,13 +2781,13 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             out_path = await _render_html_to_png(html, prefix)
 
         if not out_path:
-            return "排名卡片渲染失败喵~"
+            return format_lang("cmd_wdsj.m44")
         cq = f"[CQ:image,file=file:///{out_path.replace(chr(92), chr(47))}]"
 
         # ★ 推送模式：发到当前群（仅 is_group 时）
         if len(args) >= 2 and args[-1].lower() in ("send", "push", "推送", "发送"):
             if not is_group:
-                return "send 模式仅在群聊中可用喵~"
+                return format_lang("cmd_wdsj.m45")
             await send_group_msg(cq, group_id)
             return None
 
@@ -2965,7 +2797,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ★ 双模式横屏卡（起床战争 + 竞技场）
     #    主用法: /~wdsj me（用绑定玩家） | /~wdsj <玩家名> me（指定玩家）
     #    兼容旧写法: /~wdsj dual <玩家名>
-    _ME_WORDS = ("me", "我", "我的", "my")
+    _ME_WORDS = ("me", "我", format_lang("cmd_wdsj.m46"), "my")
     if action in ("dual", "double", "双模式", "双段") or args[-1].lower() in _ME_WORDS:
         if action in ("dual", "double", "双模式", "双段"):
             name_args = args[1:]
@@ -2987,10 +2819,10 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not player:
             player = _get_bound_player(user_id)
         if not player:
-            return "用法: /~wdsj trend <玩家名> [指标]\n未绑定玩家名时试试 /~wdsj bd <玩家名> 先绑定喵~"
+            return format_lang("cmd_wdsj.m47")
         
         label = {"bw_kills":"击杀","bw_wins":"胜场","bw_finals":"最终击杀","bw_deaths":"死亡","arena_kills":"竞技场击杀"}.get(metric, metric)
-        tip = f"正在生成 {player} 的 {label} 趋势图喵..."
+        tip = format_lang("cmd_wdsj.m48", player=player, label=label)
         await (send_group_msg(tip, group_id) if is_group
                else send_private_msg(tip, user_id))
         
@@ -3000,7 +2832,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             await (send_group_msg(cq, group_id) if is_group
                    else send_private_msg(cq, user_id))
             return None
-        return f"{player} 的 {label} 数据不够喵~ 需要至少 2 天的记录才能画趋势图"
+        return format_lang("cmd_wdsj.m49", player=player, label=label)
 
     if len(args) < 2:
         # 尝试从绑定中查找
@@ -3008,7 +2840,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if player:
             args = [args[0], player] + (args[1:] if len(args) > 1 else [])
         if len(args) < 2:
-            return "用法: /~wdsj <模式> <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+            return format_lang("cmd_wdsj.m50")
 
     # 提取输出模式标记（在绑定补齐之后）
     # v2.3.20: 默认发官方图片卡片（去文字刷屏）；img/pic/card/图片 兼容旧写法（等同默认）；
@@ -3027,16 +2859,14 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             player_parts = [player]
     player = " ".join(player_parts)
     if not player:
-        return "用法: /~wdsj <模式> <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+        return format_lang("cmd_wdsj.m51")
 
     template_id = api.resolve_template(action)
     if not template_id:
-        return f"未知模式: {action}\n用 /~wdsj list 查看所有模式"
+        return format_lang("cmd_wdsj.m52", action=action)
 
     display = api.TEMPLATES.get(template_id, template_id)
     logger.info("查询wdsj战绩: player=%s template=%s img=%s", player, template_id, want_img)
-
-    from utils.format_lang import format_lang
 
     tip = format_lang("wdsj.player_searching", player=player, template=display)
     await (send_group_msg(tip, group_id) if is_group
@@ -3070,7 +2900,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             wdsj_store(snapshot, player, template_id, summary)
             return None
         else:
-            return format_lang("wdsj.img_download_fail") + " 用 text 看文字数据喵~"
+            return format_lang("wdsj.img_download_fail") + format_lang("cmd_wdsj.m53")
 
     # 文字模式：完整数据
     pi = data.get("player", {})
@@ -3079,7 +2909,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     hdr = data.get("headerCards", [])
     smr = data.get("summaryCards", [])
 
-    lines = [f"{pi.get('name', '?')} 的 {display} 战绩"]
+    lines = [format_lang("cmd_wdsj.m54", name=pi.get('name', '?'), display=display)]
 
     for c in hdr:
         v = c["value"]
@@ -3221,32 +3051,290 @@ def _handle_owner_cmd(args):
     wl = roles.get("command_whitelist", [])
     if not isinstance(wl, list): wl = []
     if not args:
-        return "~owner cmd add/remove/list/clear <指令名>"
+        return format_lang("_handle_owner_cmd.m1")
     sub = args[0].lower()
     if sub in ("list", "show"):
-        if not wl: return "指令白名单为空（所有指令可用）"
-        return "指令白名单:\n  " + "\n  ".join(wl)
+        if not wl: return format_lang("_handle_owner_cmd.m2")
+        return format_lang("_handle_owner_cmd.m3") + "\n  ".join(wl)
     if sub == "clear":
         roles["command_whitelist"] = []
         save_roles_config(roles)
-        return "指令白名单已清空（所有指令可用）"
+        return format_lang("_handle_owner_cmd.m4")
     if sub in ("add", "remove") and len(args) < 2:
-        return f"~owner cmd {sub} <指令名>"
+        return format_lang("_handle_owner_cmd.m5", sub=sub)
     cmd_name = args[1].lower().lstrip("/~#")
     if sub == "add":
-        if cmd_name in wl: return f"指令 {cmd_name} 已在白名单"
+        if cmd_name in wl: return format_lang("_handle_owner_cmd.m6", cmd_name=cmd_name)
         wl.append(cmd_name)
         roles["command_whitelist"] = wl; save_roles_config(roles)
-        return f"已添加: {cmd_name}"
+        return format_lang("_handle_owner_cmd.m7", cmd_name=cmd_name)
     if sub == "remove":
-        if cmd_name not in wl: return f"指令 {cmd_name} 不在白名单"
+        if cmd_name not in wl: return format_lang("_handle_owner_cmd.m8", cmd_name=cmd_name)
         wl.remove(cmd_name)
         roles["command_whitelist"] = wl; save_roles_config(roles)
-        return f"已移除: {cmd_name}"
-    return f"未知 cmd 子命令: {sub}"
+        return format_lang("_handle_owner_cmd.m9", cmd_name=cmd_name)
+    return format_lang("_handle_owner_cmd.m10", sub=sub)
 
 
 # ─── 管理员 ──────────────────────────────────────────────────
+
+def _toml_write_in_section(path: Path, section: str, key: str,
+                           value_literal: str | None) -> bool:
+    """在 toml 的 `[section]` 里设置/删除一个键，**只动目标行**，保留其余内容与注释。
+
+    ⚠️ 不要用 `toml.dumps()` 整文件重写 —— 那会把所有注释和排版全丢掉
+    （服务器 bot_config.toml 有 16 行注释）。value_literal=None 表示删除该键。
+    返回是否写入了文件。
+    """
+    lines = path.read_text(encoding="utf-8").split("\n") if path.exists() else []
+    hdr = f"[{section}]"
+    sec_start = next((i for i, ln in enumerate(lines) if ln.strip() == hdr), None)
+
+    if sec_start is None:
+        if value_literal is None:
+            return False
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += ["", hdr, f"{key} = {value_literal}"]
+    else:
+        sec_end = len(lines)
+        for j in range(sec_start + 1, len(lines)):
+            s = lines[j].strip()
+            if s.startswith("[") and s.endswith("]"):
+                sec_end = j
+                break
+        pat = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        hit = next((j for j in range(sec_start + 1, sec_end) if pat.match(lines[j])), None)
+        if value_literal is None:
+            if hit is None:
+                return False
+            del lines[hit]
+        elif hit is not None:
+            lines[hit] = f"{key} = {value_literal}"
+        else:
+            lines.insert(sec_start + 1, f"{key} = {value_literal}")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return True
+
+
+# ── 故障推送（目前只有 DeepSeek 提供 RSS/状态页，故监控范围仅限它）────
+_FAULT_DOT = {"red": "🔴", "yellow": "🟡", "green": "🟢"}
+
+# 当前这轮 DeepSeek 故障的实况（**兜底用**：正常情况下 `fault test` 运行时直接读官方
+# feed 拿最新状态，拉取失败/超时才落到这里这份手抄快照，2026-10-15 09:2x 更新）。
+_FAULT_DEFAULT = {
+    "started": "2026-10-15 08:11",
+    "status": format_lang("mod.m38"),
+    "components": (format_lang("mod.m39")),
+    "symptom": format_lang("mod.m40"),
+}
+
+
+_DS_FEED_URL = "https://status.deepseek.com/feed.rss"
+
+# 国内访问 status.deepseek.com 的三重阻断（2026-10-15 实测）：
+#   ① DNS 被分线路指到阿里云**中国**节点 → 该站没 ICP 备案，HTTP 明文直接返回
+#      "Non-compliance ICP Filing" 403 页
+#   ② HTTPS 在 TLS 握手时被 RST（SNI 阻断）
+#   ③ DoH（1.1.1.1:443）也超时
+# 但 **UDP 53 → 1.1.1.1 是通的**：用国外 DNS 拿到 statuspage.flashduty.com 的
+# **香港** NLB 节点（47.76.103.98 等），对该 IP 直连（SNI/Host 仍用真域名）→ HTTP 200。
+_DS_FEED_DNS = "1.1.1.1"
+
+
+def _dns_a(name: str, server: str = _DS_FEED_DNS, timeout: float = 5.0) -> list:
+    """极简 DNS A 记录查询（UDP 53，纯 stdlib，不依赖 dig/dnspython）。"""
+    import random as _rd
+    import socket as _s
+    import struct as _st
+
+    tid = _rd.randint(0, 65535)
+    q = _st.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+    for lab in name.split("."):
+        q += bytes([len(lab)]) + lab.encode()
+    q += b"\x00" + _st.pack(">HH", 1, 1)
+    s = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(q, (server, 53))
+        data, _ = s.recvfrom(4096)
+    finally:
+        s.close()
+
+    ancount = _st.unpack(">H", data[6:8])[0]
+    i = 12
+    while data[i] != 0:          # 跳过 question 的域名
+        i += data[i] + 1
+    i += 5                        # \0 + type + class
+    out = []
+    for _ in range(ancount):
+        if data[i] & 0xC0:        # 压缩指针
+            i += 2
+        else:
+            while data[i] != 0:
+                i += data[i] + 1
+            i += 1
+        rtype, _, _, rdlen = _st.unpack(">HHIH", data[i:i + 10])
+        i += 10
+        if rtype == 1 and rdlen == 4:
+            out.append(".".join(str(b) for b in data[i:i + 4]))
+        i += rdlen
+    return out
+
+
+def _fetch_feed_via_ip(ip: str, path: str, timeout: float = 10.0) -> str:
+    """对指定 IP 直连拉 feed：SNI/Host 用真域名（证书校验正常），绕开国内 DNS 污染。"""
+    import http.client as _hc
+    import socket as _s
+    import ssl as _ssl
+
+    ctx = _ssl.create_default_context()
+    raw = _s.create_connection((ip, 443), timeout=timeout)
+    tls = ctx.wrap_socket(raw, server_hostname="status.deepseek.com")
+    conn = _hc.HTTPSConnection("status.deepseek.com", 443, timeout=timeout)
+    conn.sock = tls
+    try:
+        conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0",
+                                           "Accept": "*/*"})
+        r = conn.getresponse()
+        body = r.read()
+        if r.status != 200:
+            raise RuntimeError(f"HTTP {r.status}")
+        return body.decode("utf-8", "ignore")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _parse_ds_feed(xml: str) -> dict:
+    """从 feed XML 里解析最新一条。"""
+    import html as _html
+
+    m = re.search(r"<item>(.*?)</item>|<entry>(.*?)</entry>", xml, re.S)
+    if not m:
+        raise ValueError(format_lang("_parse_ds_feed.m1"))
+    block = m.group(1) or m.group(2)
+
+    def _tag(name: str) -> str:
+        mm = re.search(rf"<{name}[^>]*>(.*?)</{name}>", block, re.S | re.I)
+        return _html.unescape(mm.group(1)).strip() if mm else ""
+
+    title = _tag("title")
+    desc = _tag("description") or _tag("summary") or _tag("content")
+    link = _tag("link")
+    pub = _tag("pubDate") or _tag("updated") or _tag("published")
+
+    # ⚠️ description 是 HTML 转义的：先解实体，再剥标签。
+    #    剥标签必须用**空格**而不是 \n —— `<strong>Status:</strong> identified`
+    #    若换成 \n 会把 "Status:" 和它的值拆到两行，status_word 就抓不到（已踩过）。
+    text = _html.unescape(desc)
+    text = re.sub(r"</p\s*>|<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    lines = [re.sub(r"\s+", " ", l).strip() for l in text.split("\n") if l.strip()]
+
+    status_word, components, status_text = "", "", ""
+    for l in lines:
+        mm = re.match(r"Status:\s*\**\s*([A-Za-z]+)", l)
+        if mm and not status_word:
+            status_word = mm.group(1).lower()
+        mm = re.match(r"Affected components:\s*(.+)", l)
+        if mm and not components:
+            components = mm.group(1).strip().replace(", ", "、")
+        if (not status_text and not l.startswith("Status:")
+                and not l.startswith("Affected components:")
+                and re.search(r"[\u4e00-\u9fff]", l)):
+            status_text = l.rstrip("。")
+
+    started = ""
+    if pub:
+        import email.utils as _eu
+        from datetime import timedelta as _td, timezone as _tz
+        try:
+            started = _eu.parsedate_to_datetime(pub).astimezone(
+                _tz(_td(hours=8))).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            started = ""
+
+    return {"title": title, "status_word": status_word, "status_text": status_text,
+            "components": components, "started": started, "link": link}
+
+
+_DS_STATUS_LEVEL = {
+    # feed 里的 Status 词 → (圆圈, 是否已恢复)
+    "resolved": ("green", True),
+    "monitoring": ("yellow", False),
+    "identified": ("red", False),
+    "investigating": ("red", False),
+}
+
+
+async def _fetch_deepseek_status(timeout: float = 8.0):
+    """拉 DeepSeek 状态页 feed，解析最新一条（**不手抄，运行时读官方 feed**）。
+
+    国内访问被三重阻断（ICP 403 / SNI 重置 / DoH 超时），所以：
+      ① 国外 DNS（UDP 53 → 1.1.1.1）解析到香港节点
+      ② 对该 IP 直连（SNI/Host 用真域名，证书校验正常）
+      ③ feed.rss 失败再试 feed.atom；NLB 节点可用性会翻转，失败重试
+    返回 dict: {title, status_word, status_text, components, started, link}；
+    **失败返回 None**（调用方回退 _FAULT_DEFAULT，fail-open）。
+    """
+    import asyncio as _aio
+
+    def _get() -> str:
+        last = None
+        for path in ("/feed.rss", "/feed.atom"):
+            for _attempt in range(2):
+                ips = _dns_a("status.deepseek.com", _DS_FEED_DNS, timeout=timeout)
+                if not ips:
+                    raise RuntimeError(format_lang("_get.m1"))
+                for ip in ips:
+                    try:
+                        return _fetch_feed_via_ip(ip, path, timeout=timeout)
+                    except Exception as e:
+                        last = RuntimeError(f"{type(e).__name__}: {e} [{ip} {path}]")
+        raise last or RuntimeError(format_lang("_get.m2"))
+
+    try:
+        xml = await _aio.wait_for(_aio.to_thread(_get), timeout=timeout * 2 + 4)
+    except Exception as e:
+        logger.warning("拉取 DeepSeek 状态 feed 失败（回退内置默认）: %s", e)
+        return None
+
+    try:
+        return _parse_ds_feed(xml)
+    except Exception as e:
+        logger.warning("解析 DeepSeek 状态 feed 失败（回退内置默认）: %s", e)
+        return None
+
+def _build_fault_notice(level: str = "red", *, started: str = "", status: str = "",
+                        components: str = "", symptom: str = "",
+                        recovered: bool = False) -> str:
+    """拼一条故障推送文本（按群发送）。
+
+    level: red=不可用 / yellow=降级；recovered=True 时强制 green。
+    圆圈颜色让严重程度一眼可辨；全文不用句号（用户 2026-10-15 要求）。
+    """
+    dot = "🟢" if recovered else _FAULT_DOT.get(level, "🔴")
+    head = format_lang("_build_fault_notice.m1") if recovered \
+        else format_lang("_build_fault_notice.m2")
+    lines = [format_lang("_build_fault_notice.m3", dot=dot), "", head,
+             format_lang("_build_fault_notice.m4"), ""]
+    if started:
+        lines.append(format_lang("_build_fault_notice.m5", started=started))
+    if status:
+        lines.append(format_lang("_build_fault_notice.m6", status=status))
+    if components:
+        lines.append(format_lang("_build_fault_notice.m7", components=components))
+    # 恢复通知里不写「现象」——那是描述故障期的，放在"已恢复"语境下读着像还在故障
+    if symptom and not recovered:
+        lines.append(format_lang("_build_fault_notice.m8", symptom=symptom))
+    lines += ["", format_lang("_build_fault_notice.m9") if recovered else format_lang("_build_fault_notice.m10"),
+              format_lang("_build_fault_notice.m11")]
+    return "\n".join(lines)
+
 
 async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
     """
@@ -3258,7 +3346,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
     """
     cfg = get_config()
     if not cfg.is_admin(user_id, group_id):
-        return "权限不足喵~"
+        return format_lang("cmd_owner.m1")
 
     if not args or (len(args) == 1 and args[0].lower() == "help"):
         md = _build_owner_help_md()
@@ -3271,7 +3359,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
         filename = f"owner_{uuid.uuid4().hex[:8]}.jpg"
         img_path = await render_card_to_image(html, filename, width=680)
         if not img_path:
-            return "卡片生成失败喵~"
+            return format_lang("cmd_owner.m2")
 
         normalized = img_path.replace("\\", "/")
         cq = f"[CQ:image,file=file:///{normalized}]"
@@ -3293,19 +3381,19 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ── config get ──
     if action == "get":
         if len(args) < 2:
-            return "用法: /~owner get <路径>\n如: get bot.reply_threshold"
+            return format_lang("cmd_owner.m3")
         return admin.config_get(args[1])
 
     # ── config set ──
     if action == "set":
         if len(args) < 3:
-            return "用法: /~owner set <路径> <值>\n如: set bot.reply_threshold 5"
+            return format_lang("cmd_owner.m4")
         return admin.config_set(args[1], " ".join(args[2:]))
 
     # ── data 子命令 ──
     if action == "data":
         if len(args) < 3:
-            return "用法: /~owner data <get|set|del|reset> <名> [键] [值]"
+            return format_lang("cmd_owner.m5")
         sub = args[1].lower()
         if sub == "get":
             key = args[3] if len(args) > 3 else ""
@@ -3316,7 +3404,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
             return admin.data_get(args[2], key)
         if sub == "set":
             if len(args) < 5:
-                return "用法: data set <名> <键> <值>"
+                return format_lang("cmd_owner.m6")
             key = args[3]
             # ★ fav key 自动纠正
             if args[2] == "fav" and key.isdigit():
@@ -3333,7 +3421,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
             return admin.data_delete(args[2], key)
         if sub == "reset":
             return admin.data_reset(args[2])
-        return f"未知 data 操作: {sub}"
+        return format_lang("cmd_owner.m7", sub=sub)
 
     # ── luck 子命令 ──
     if action == "luck":
@@ -3344,7 +3432,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
             return admin.luck_set(args[2], args[3])
         if sub == "del" and len(args) >= 3:
             return admin.luck_del(args[2])
-        return "用法: luck list|set <QQ> <值>|del <QQ>"
+        return format_lang("cmd_owner.m8")
 
     # ── files 子命令 ──
     if action == "files":
@@ -3359,14 +3447,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
     if action == "wl":
         if len(args) < 2:
             return (
-                "【白名单管理 /~owner wl】\n"
-                "  wl add group <群号> [atonly]  添加群白名单\n"
-                "  wl remove group <群号>  移除群白名单\n"
-                "  wl add private <QQ>    添加私聊白名单\n"
-                "  wl remove private <QQ> 移除私聊白名单\n"
-                "  wl show                查看所有白名单\n"
-                "  wl cmd add|remove <群> <指令>  分群指令白名单\n"
-                "  wl welcome set|del <群> [欢迎语]  入群欢迎语"
+                format_lang("cmd_owner.m9")
             )
         sub = args[1].lower()
         if sub == "cmd":
@@ -3379,7 +3460,7 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
             result = admin.whitelist_add(args[2], int(args[3]))
             if len(args) >= 5 and args[4].lower() == "atonly" and args[2] == "group":
                 admin.group_set(int(args[3]), "at_only", "true")
-                result += "\n已设置 @仅模式"
+                result += format_lang("cmd_owner.m10")
             return result
         if sub == "remove" and len(args) >= 4:
             return admin.whitelist_remove(args[2], int(args[3]))
@@ -3390,8 +3471,8 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
                 return admin.group_set(gid, "at_only", "true")
             if mode == "default":
                 return admin.group_set(gid, "at_only", "false")
-            return f"设置: group={gid} mode={mode}\n支持: atonly, default"
-        return "格式: wl add|remove group|private <ID>\n      wl gset <群号> atonly|default\n例: wl add group 123456789 atonly"
+            return format_lang("cmd_owner.m11", gid=gid, mode=mode)
+        return format_lang("cmd_owner.m12")
 
     # ── wdsj 推送群管理 ──
     if action == "wdsj":
@@ -3399,55 +3480,153 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
         from pathlib import Path
         _cfg_path = Path(__file__).resolve().parent.parent / "config" / "bot_config.toml"
         if len(args) < 2:
-            return "用法: /~owner wdsj groups <show|set|clear>\n  show  查看推送群\n  set 123456789,987654321  设推送群\n  clear  清除(发全群)"
+            return (format_lang("cmd_owner.m13"))
         sub = args[1].lower()
+        if sub in ("interval", "节奏"):
+            data = toml.load(_cfg_path) if _cfg_path.exists() else {}
+            try:
+                cur = int(data.get("wdsj", {}).get("collect_interval") or 12)
+            except Exception:
+                cur = 12
+            if cur not in (4, 12):
+                cur = 12
+
+            def _desc(h: int) -> str:
+                return format_lang("_desc.m1") if h == 4 else format_lang("_desc.m2")
+
+            if len(args) < 3 or args[2].lower() in ("show", "get"):
+                return (format_lang("cmd_owner.m14", cur=cur, cur2=_desc(cur)))
+            try:
+                v = int(args[2])
+            except ValueError:
+                return format_lang("cmd_owner.m15")
+            if v not in (4, 12):
+                return format_lang("cmd_owner.m16")
+            # ⚠️ 只改目标行、保留注释；不要用 toml.dumps 整文件重写。
+            #    无需"热更新内存"：bg_tasks 的采集循环与推送都直接读这个 toml
+            #    （BotConfig 也没有 .config 属性，写内存会 AttributeError）。
+            _toml_write_in_section(_cfg_path, "wdsj", "collect_interval", str(v))
+            return (format_lang("cmd_owner.m17", v=v, v2=_desc(v)))
         if sub == "show" or sub == "groups":
             data = toml.load(_cfg_path) if _cfg_path.exists() else {}
             gs = data.get("wdsj", {}).get("target_groups", [])
             if gs:
-                return f"WDSJ 日榜推送群: {', '.join(str(g) for g in gs)}"
-            return "未设置推送群，凌晨自动发全群"
+                return format_lang("cmd_owner.m18", gs=', '.join((str(g) for g in gs)))
+            return format_lang("cmd_owner.m19")
         if sub == "set":
             if len(args) < 3:
-                return "用法: /~owner wdsj groups set <群号1,群号2,...>"
+                return format_lang("cmd_owner.m20")
             gs = [int(x.strip()) for x in args[2].split(",") if x.strip().isdigit()]
-            data = toml.load(_cfg_path) if _cfg_path.exists() else {}
-            data.setdefault("wdsj", {})["target_groups"] = gs
-            _cfg_path.write_text(toml.dumps(data), encoding="utf-8")
-            cfg.config["wdsj"] = data["wdsj"]  # 热更新内存
-            return f"WDSJ 日榜推送群已设为: {', '.join(str(g) for g in gs)}"
+            arr = "[" + ", ".join(str(g) for g in gs) + "]"
+            # ⚠️ 只改目标行、保留注释；不要用 toml.dumps 整文件重写（无需写内存，见上）
+            _toml_write_in_section(_cfg_path, "wdsj", "target_groups", arr)
+            return format_lang("cmd_owner.m21", gs=', '.join((str(g) for g in gs)))
         if sub == "clear":
-            data = toml.load(_cfg_path) if _cfg_path.exists() else {}
-            data.setdefault("wdsj", {}).pop("target_groups", None)
-            _cfg_path.write_text(toml.dumps(data), encoding="utf-8")
-            cfg.config["wdsj"] = data["wdsj"]
-            return "已清除推送群限制，凌晨发全群"
-        return f"未知: /~owner wdsj {sub}"
+            _toml_write_in_section(_cfg_path, "wdsj", "target_groups", None)
+            return format_lang("cmd_owner.m22")
+        return format_lang("cmd_owner.m23", sub=sub)
+
+    # ── 故障推送管理（按群开关）────────────────────────────────────
+    # 说明：目前只有 DeepSeek 提供 RSS/状态页，其他服务商无从自动判定，
+    #      所以监控范围仅限 DeepSeek；这里是"手动触发 + 按群开关"。
+    if action == "fault":
+        if len(args) < 2:
+            return (format_lang("cmd_owner.m24"))
+        sub = args[1].lower()
+        # ⚠️ 必须在本分支内**自己导入**：cmd_owner 里 wdsj 分支有 `import toml` 和
+        #    `from pathlib import Path`，这会让 toml / Path 成为**整个函数的局部变量**；
+        #    直接在本分支用会 UnboundLocalError（已踩过两次）。用别名彻底绕开。
+        import toml as _toml
+        from pathlib import Path as _P
+        _cfg_path = _P(__file__).resolve().parent.parent / "config" / "bot_config.toml"
+
+        def _fault_groups() -> list:
+            try:
+                d = _toml.load(_cfg_path) if _cfg_path.exists() else {}
+            except Exception:
+                return []
+            return [int(g) for g in (d.get("fault", {}).get("notify_groups") or [])
+                    if str(g).strip().lstrip("-").isdigit()]
+
+        if sub == "show":
+            gs = _fault_groups()
+            if gs:
+                return format_lang("cmd_owner.m25", gs=', '.join((str(g) for g in gs)))
+            return format_lang("cmd_owner.m26")
+
+        if sub in ("on", "off"):
+            if len(args) < 3 or not args[2].strip().isdigit():
+                return format_lang("cmd_owner.m27", sub=sub)
+            g = int(args[2].strip())
+            gs = _fault_groups()
+            if sub == "on":
+                if g in gs:
+                    return format_lang("cmd_owner.m28", g=g)
+                gs.append(g)
+            else:
+                if g not in gs:
+                    return format_lang("cmd_owner.m29", g=g)
+                gs = [x for x in gs if x != g]
+            # ⚠️ 只改目标行、保留注释；不要用 toml.dumps 整文件重写
+            _toml_write_in_section(_cfg_path, "fault", "notify_groups",
+                                   "[" + ", ".join(str(x) for x in gs) + "]" if gs else None)
+            return format_lang("cmd_owner.fault_push",
+                               state=(format_lang("fault.state_on") if sub == "on"
+                                      else format_lang("fault.state_off")), g=g)
+
+        if sub == "test":
+            # ⚠️ 同样必须用别名：cmd_owner 的 help 分支（约 3284 行）有
+            #    `from services.sender import send_group_msg`，这会让它成为整个函数的
+            #    局部变量，本分支直接用会 UnboundLocalError（toml / Path 同理会炸）。
+            from services.sender import send_group_msg as _send_group_msg
+            if len(args) > 2 and args[2].strip().isdigit():
+                gid = int(args[2].strip())
+            elif is_group:
+                gid = group_id
+            else:
+                return format_lang("cmd_owner.m30")
+            # ★ 运行时直接读官方 feed（不手抄状态），拉取失败才回退 _FAULT_DEFAULT
+            info = await _fetch_deepseek_status()
+            if info:
+                lvl, recovered = _DS_STATUS_LEVEL.get(info["status_word"], ("red", False))
+                txt = _build_fault_notice(
+                    lvl, started=info["started"], status=info["status_text"],
+                    components=info["components"], symptom=_FAULT_DEFAULT["symptom"],
+                    recovered=recovered)
+            else:
+                txt = _build_fault_notice("red", **_FAULT_DEFAULT)
+            try:
+                await _send_group_msg(txt, gid)
+            except Exception as e:
+                return format_lang("cmd_owner.m31", gid=gid, e=e)
+            return format_lang("cmd_owner.m32", gid=gid)
+
+        return format_lang("cmd_owner.m33", sub=sub)
 
     # ── draw/video 配额管理 ──
     if action in ("draw", "video"):
         from modules.agnes import owner_quota_get, owner_quota_set, owner_quota_reset
         if len(args) < 2:
-            return f"用法: /~owner {action} <get|set|reset> [参数]\n/~owner {action} get [QQ]  查看用量\n/~owner {action} set <QQ> <N>  设上限\n/~owner {action} reset       重置"
+            return format_lang("cmd_owner.m34", action=action, action2=action, action3=action, action4=action)
         sub = args[1].lower()
         if sub == "get":
             qq = args[2] if len(args) > 2 else ""
             return owner_quota_get(action, qq)
         if sub == "set":
             if len(args) < 4:
-                return f"用法: /~owner {action} set <QQ> <N>"
+                return format_lang("cmd_owner.m35", action=action)
             owner_quota_set(action, args[2], int(args[3]))
-            return f"已设置 QQ {args[2]} 每日{action}上限为 {args[3]}"
+            return format_lang("cmd_owner.m36", args=args[2], action=action, args2=args[3])
         if sub == "reset":
             owner_quota_reset(action)
-            return f"已重置今日{action}用量"
-        return f"未知: /~owner {action} {sub}"
+            return format_lang("cmd_owner.m37", action=action)
+        return format_lang("cmd_owner.m38", action=action, sub=sub)
 
     # ── 兼容旧指令 ──
     if action in ("glist", "gadd", "gremove", "padd", "premove", "gset"):
         return await _owner_legacy(args, action, admin)
 
-    return f"未知操作: {action}\n/~owner 查看帮助"
+    return format_lang("cmd_owner.m39", action=action)
 
 
 # ─── 记忆查询 ────────────────────────────────────────────────
@@ -3463,12 +3642,7 @@ async def cmd_memory(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if not args:
         return (
-            "【三层记忆 /~memory】\n"
-            "  working      瞬时记忆（当前对话上下文）\n"
-            "  short        短时记忆（最近30条）\n"
-            "  long         长时记忆（持久化）\n"
-            "  search <关键词>  搜索所有记忆\n"
-            "  clear        清空短时记忆"
+            format_lang("cmd_memory.m1")
         )
 
     action = args[0].lower()
@@ -3478,8 +3652,8 @@ async def cmd_memory(args, user_id, group_id, sender_name, is_group, bot_qq):
         ctx = get_context()
         msgs = ctx.get_history(chat_id, 15)
         if not msgs:
-            return "瞬时记忆为空"
-        lines = [f"【瞬时记忆 · 最近{len(msgs)}条】"]
+            return format_lang("cmd_memory.m2")
+        lines = [format_lang("cmd_memory.m3", msgs=len(msgs))]
         for m in msgs:
             lines.append(f"  [{m.get('tag','?')}] {m.get('sender','')}: {m.get('content','')[:80]}")
         return "\n".join(lines)
@@ -3492,33 +3666,33 @@ async def cmd_memory(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if action == "search":
         if len(args) < 2:
-            return "用法: /~memory search <关键词>"
+            return format_lang("cmd_memory.m4")
         kw = " ".join(args[1:])
         s = stm.search(chat_id, kw)
         l = search_long_memory(chat_id, kw)
         parts = []
         if s:
-            parts.append("【短时记忆匹配】")
+            parts.append(format_lang("cmd_memory.m5"))
             for e in s:
                 t = __import__("time").strftime("%H:%M", __import__("time").localtime(e["time"]))
                 parts.append(f"  [{t}] {e['content'][:100]}")
         if l:
             if parts: parts.append("")
-            parts.append("【长时记忆匹配】")
+            parts.append(format_lang("cmd_memory.m6"))
             parts.append(l)
-        return "\n".join(parts) if parts else f"未找到含「{kw}」的记忆"
+        return "\n".join(parts) if parts else format_lang("cmd_memory.m7", kw=kw)
 
     if action == "clear":
         return stm.clear(chat_id)
 
-    return f"未知操作: {action}\n/~memory 查看帮助"
+    return format_lang("cmd_memory.m8", action=action)
 
 
 # --- 昵称同步 ---
 
 async def cmd_nickname(args, user_id, group_id, sender_name, is_group, bot_qq):
     if not args or args[0].lower() != 'update':
-        return '用法: /~nickname update'
+        return format_lang("cmd_nickname.m1")
     from modules.nickname_sync import sync_and_report
     chat_id = group_id if is_group else user_id
     return await sync_and_report(chat_id=chat_id, is_group=is_group)
@@ -3532,7 +3706,7 @@ async def cmd_friend_add(args, user_id, group_id, sender_name, is_group, bot_qq)
 
     req = get_latest_pending()
     if not req:
-        return "当前没有待处理的好友请求喵~"
+        return format_lang("cmd_friend_add.m1")
 
     add_wl = args and args[0].lower() == "wl"
     return await approve_request(req["flag"], add_whitelist=add_wl)
@@ -3544,7 +3718,7 @@ async def cmd_friend_reject(args, user_id, group_id, sender_name, is_group, bot_
 
     req = get_latest_pending()
     if not req:
-        return "当前没有待处理的好友请求喵~"
+        return format_lang("cmd_friend_reject.m1")
 
     return await reject_request(req["flag"])
 
@@ -3578,19 +3752,19 @@ async def _owner_legacy(args, action, admin):
             return admin.group_set(gid, "at_only", "true")
         if sub == "default":
             return admin.config_set(f"adapter.group_settings.{gid}", "null")
-    return f"未知操作: {action}"
+    return format_lang("_owner_legacy.m1", action=action)
 
 async def cmd_restart(args, user_id, group_id, sender_name, is_group, bot_qq):
     """远程重启 /~restart"""
     from core.config import get_config
     cfg = get_config()
     if not cfg.is_admin(user_id, group_id if is_group else 0):
-        return "权限不足"
+        return format_lang("cmd_restart.m1")
     from services.sender import send_group_msg, send_private_msg
     if is_group:
-        await send_group_msg("正在重启喵～", group_id)
+        await send_group_msg(format_lang("cmd_restart.m2"), group_id)
     else:
-        await send_private_msg("正在重启喵～", user_id)
+        await send_private_msg(format_lang("cmd_restart.m3"), user_id)
     import os
     os._exit(0)
 
@@ -3611,16 +3785,16 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ★ v2.3.24 通用化: owner 名不再硬编码 "Trusler"，取 roles.toml 的 qq_name_map
     #   （admin_qq 对应的昵称），换部署改配置即可，不用动代码
     _cfg = get_config()
-    owner = _cfg.get_display_name(_cfg.admin_qq) or "主人"
+    owner = _cfg.get_display_name(_cfg.admin_qq) or format_lang("cmd_sys.m1")
 
     # 截屏
     if sub in ("shot", "shotdesk"):
         # ★ v2.3.24: 截屏最长等 30s，先回执避免用户以为没反应（原来全程静默）
-        await (send_group_msg("正在叫 PC 截屏喵，稍等一下下~", group_id) if is_group
-               else send_private_msg("正在叫 PC 截屏喵，稍等一下下~", user_id))
+        await (send_group_msg(format_lang("cmd_sys.m2"), group_id) if is_group
+               else send_private_msg(format_lang("cmd_sys.m3"), user_id))
         b64 = await request_screenshot(timeout=30.0)
         if not b64:
-            return "截屏失败（PC 客户端未连接或超时）"
+            return format_lang("cmd_sys.m4")
         from pathlib import Path as _Path
         tmp = _Path(__file__).resolve().parent.parent / "data" / "img_temp" / f"shot_{uuid.uuid4().hex[:8]}.jpg"
         tmp.parent.mkdir(parents=True, exist_ok=True)
@@ -3628,7 +3802,7 @@ async def cmd_sys(args, user_id, group_id, sender_name, is_group, bot_qq):
         try:
             data = binascii.a2b_base64(b64)
         except Exception as e:
-            return f"截屏数据解码失败: {e}"
+            return format_lang("cmd_sys.m5", e=e)
         tmp.write_bytes(data)
         cq = f"[CQ:image,file=file://{tmp.as_posix()}]"
         if is_group:
@@ -3670,19 +3844,19 @@ async def cmd_dbsearch(args, user_id, group_id, sender_name, is_group, bot_qq):
     try:
         from db.store import get_search_store
     except Exception:
-        return "检索模块未启用喵~"
+        return format_lang("cmd_dbsearch.m1")
     store = get_search_store()
     if not store.available:
-        return "检索数据库未就绪（FTS5 缺失或初始化失败）喵~"
+        return format_lang("cmd_dbsearch.m2")
     if not args:
         c = store.count()
-        return f"用法: /~回顾 <关键词>\n当前已索引 {c} 条消息"
+        return format_lang("cmd_dbsearch.m3", c=c)
     query = " ".join(args)
     chat_id = group_id if is_group else None
     rows = store.search_messages(query, chat_id=chat_id, limit=8)
     if not rows:
-        return f"没找到和「{query}」相关的历史消息喵~"
-    lines = [f"【聊天回溯】关键词「{query}」命中 {len(rows)} 条:"]
+        return format_lang("cmd_dbsearch.m4", query=query)
+    lines = [format_lang("cmd_dbsearch.m5", query=query, rows=len(rows))]
     for r in rows:
         name = r.get("name") or str(r.get("user_id", "?"))
         ts = r.get("ts") or 0
@@ -3701,23 +3875,23 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
         from core.plugin import get_plugin_manager
         from modules import plugin_share as ps
     except Exception as e:
-        return f"插件系统未启用喵~ ({e})"
+        return format_lang("cmd_plugin.m1", e=e)
     mgr = get_plugin_manager()
 
     if not args or args[0].lower() in ("list", "ls", "status"):
         mgr.discover()
         rows = mgr.list()
         if not rows:
-            lines = ["【插件列表】暂无插件"]
+            lines = [format_lang("cmd_plugin.m2")]
         else:
-            lines = ["【插件列表】"]
+            lines = [format_lang("cmd_plugin.m3")]
             for r in rows:
                 mark = {"enabled": "✅", "disabled": "⏸️", "error": "❌", "loaded": "📦", "discovered": "🗂️"}.get(r["state"], "•")
                 line = f"  {mark} {r['name']}@{r['version']} [{r['state']}]"
                 if r.get("error"):
                     line += f" err={r['error']}"
                 lines.append(line)
-        lines.append("子命令: list | install <名|url> | unload <名> | reload <名> | pack <名> | import <url> | update [名]")
+        lines.append(format_lang("cmd_plugin.m4"))
         return "\n".join(lines)
 
     sub = args[0].lower()
@@ -3737,13 +3911,13 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
             return msg
         name = conflict["name"] if conflict else ps.peek_hmp_name(hmp_path)
         if not name:
-            return "无法识别插件名"
+            return format_lang("_install_from.m1")
         ok3, msg3 = await ps.load_local_plugin(name)
         return msg3
 
     if sub in ("install", "装"):
         if not rest:
-            return "用法: /~plugin install <插件名|.hmp直链>"
+            return format_lang("cmd_plugin.m5")
         target = rest[0]
         if ps.is_hmp_url(target):
             ok, msg = ps.download_hmp(target)
@@ -3758,7 +3932,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
         # 走插件库
         ok, info, err = ps.lib_latest(target)
         if not ok:
-            return f"插件库查询失败: {err}"
+            return format_lang("cmd_plugin.m6", err=err)
         url = ps.lib_download_url(target)
         ok, msg = ps.download_hmp(url)
         if not ok:
@@ -3767,7 +3941,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if sub in ("import", "导入"):
         if not rest or not ps.is_hmp_url(rest[0]):
-            return "用法: /~plugin import <.hmp直链>"
+            return format_lang("cmd_plugin.m7")
         url = rest[0]
         ok, msg = ps.download_hmp(url)
         if not ok:
@@ -3776,25 +3950,25 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     if sub in ("unload", "卸"):
         if not rest:
-            return "用法: /~plugin unload <插件名>"
+            return format_lang("cmd_plugin.m8")
         ok, msg = await mgr.unload(rest[0])
-        return msg if ok else f"卸载失败: {msg}"
+        return msg if ok else format_lang("cmd_plugin.m9", msg=msg)
 
     if sub in ("reload", "重载"):
         if not rest:
-            return "用法: /~plugin reload <插件名>"
+            return format_lang("cmd_plugin.m10")
         ok, msg = await mgr.reload(rest[0])
-        return msg if ok else f"重载失败: {msg}"
+        return msg if ok else format_lang("cmd_plugin.m11", msg=msg)
 
     if sub in ("pack", "打包"):
         if not rest:
-            return "用法: /~plugin pack <插件名>"
+            return format_lang("cmd_plugin.m12")
         ok, msg, path = ps.pack_plugin(rest[0])
         if ok and path:
             try:
                 from services.sender import send_file
                 await send_file(str(path), group_id if is_group else user_id, is_group)
-                return f"{msg}\n已发送 .hmp 包到本聊天"
+                return format_lang("cmd_plugin.m13", msg=msg)
             except Exception:
                 return msg
         return msg
@@ -3803,7 +3977,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not rest:
             # 列出可更新项
             mgr.discover()
-            lines = ["【插件更新检查】"]
+            lines = [format_lang("cmd_plugin.m14")]
             for r in mgr.list():
                 ok, info, err = ps.lib_latest(r["name"])
                 if ok:
@@ -3812,14 +3986,14 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
                     if ps.compare_versions(remote, local) > 0:
                         lines.append(f"  ⬆️ {r['name']}: {local} → {remote}（/~plugin update {r['name']}）")
                     else:
-                        lines.append(f"  ✅ {r['name']}: 已是最新 v{local}")
+                        lines.append(format_lang("cmd_plugin.m15", name=r['name'], local=local))
                 else:
-                    lines.append(f"  ❓ {r['name']}: 库查询失败 {err}")
+                    lines.append(format_lang("cmd_plugin.m16", name=r['name'], err=err))
             return "\n".join(lines)
         name = rest[0]
         ok, info, err = ps.lib_latest(name)
         if not ok:
-            return f"插件库查询失败: {err}"
+            return format_lang("cmd_plugin.m17", err=err)
         url = ps.lib_download_url(name)
         ok, msg = ps.download_hmp(url)
         if not ok:
@@ -3832,7 +4006,7 @@ async def cmd_plugin(args, user_id, group_id, sender_name, is_group, bot_qq):
         ok, msg = await ps.load_local_plugin(name)
         return msg
 
-    return f"未知子命令: {sub}\n可用: list | install | unload | reload | pack | import | update"
+    return format_lang("cmd_plugin.m18", sub=sub)
 
 
 async def cmd_apy(args, user_id, group_id, sender_name, is_group, bot_qq):
@@ -3840,14 +4014,14 @@ async def cmd_apy(args, user_id, group_id, sender_name, is_group, bot_qq):
     try:
         from core.config import get_config
         if not get_config().is_admin(user_id, group_id):
-            return "只有管理员可以审批喵~"
+            return format_lang("cmd_apy.m1")
         if len(args) < 2:
-            return "用法: /~apy <token> 同意|拒绝"
+            return format_lang("cmd_apy.m2")
         from core.plugin.api import resolve_approval
         approved = args[1] in ("同意", "yes", "y", "1", "approve", "ok")
         return resolve_approval(args[0], approved)
     except Exception as e:
-        return f"审批失败: {e}"
+        return format_lang("cmd_apy.m3", e=e)
 
 
 # ════════════════════════════════════════════════════════════
@@ -3872,14 +4046,12 @@ async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ── 兑换许可码（任何人可兑换，不需要先有权限）──
     if args and args[0] in ("兑换", "激活码", "许可", "redeem", "cdk"):
         if len(args) < 2:
-            return "用法：/~key 兑换 <许可码>"
+            return format_lang("cmd_key.m1")
         res = licenses.redeem(args[1], user_id)
         if not res.get("ok"):
-            return res.get("msg", "兑换失败")
+            return res.get("msg", format_lang("common.redeem_failed"))
         return (
-            f"{res['msg']}\n"
-            f"{res['desc']}\n"
-            f"现在可以正常用了，发 /~key 看测试项列表"
+            format_lang("cmd_key.m2", msg=res['msg'], desc=res['desc'])
         )
 
     # ── 权限校验：管理员免码，其他人必须有有效许可 ──
@@ -3892,37 +4064,35 @@ async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
             }.get(st.get("reason"), "你还没有许可码")
             kind = "、".join(f'{v["label"]}（{v["desc"]}）' for v in licenses.TYPES.values())
             return (
-                f"{reason}，/~key 需要许可码才能用\n"
-                f"找管理员要一个，然后发：/~key 兑换 <许可码>\n"
-                f"许可码共三档：{kind}"
+                format_lang("cmd_key.m3", reason=reason, kind=kind)
             )
 
     # 无参 → 列表
     if not args:
         items = list_features()
         if not items:
-            return "当前没有可用的测试项喵~"
-        lines = ["【实验测试项】"]
+            return format_lang("cmd_key.m4")
+        lines = [format_lang("cmd_key.m5")]
         for it in items:
             code = it["code"]
-            state = "已激活" if it["on"] else "已关闭"
-            mark = "" if it["default"] else "（默认关闭）"
+            state = format_lang("cmd_key.m6") if it["on"] else format_lang("cmd_key.m7")
+            mark = "" if it["default"] else format_lang("cmd_key.m8")
             alias = "/".join(it["aliases"][:3])
             lines.append(f"· {code}（{alias}）— {state}{mark}")
             lines.append(f"     {it['desc']}")
             if not it["on"]:
-                lines.append(f"     关闭后：{it['affects']}")
+                lines.append(format_lang("cmd_key.m9", affects=it['affects']))
         if not is_admin:
             lines.append("")
-            lines.append(f"你的许可：{licenses.describe(user_id)}")
+            lines.append(format_lang("cmd_key.m10", user_id=licenses.describe(user_id)))
         lines.append("")
-        lines.append("用法：/~key <名称> 激活 ｜ /~key <名称> off 恢复默认")
+        lines.append(format_lang("cmd_key.m11"))
         return "\n".join(lines)
 
     code = resolve(args[0])
     if not code:
         known = "、".join(FEATURES.keys())
-        return f"没有这个测试项喵~\n可用：{known}\n（也可以发 /~key 看列表）"
+        return format_lang("cmd_key.m12", known=known)
 
     action = (args[1].lower() if len(args) > 1 else "on")
     meta = FEATURES[code]
@@ -3933,51 +4103,49 @@ async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not is_admin:
             licenses.consume(user_id)     # 一次性许可在这里扣次数
             tail = f"\n（{licenses.describe(user_id)}）"
-        return f"已激活测试项「{code}」喵~\n{meta['desc']}{tail}\n想恢复默认发：/~key {code} off"
+        return format_lang("cmd_key.m13", code=code, desc=meta['desc'], tail=tail, code2=code)
     if action in ("off", "关", "关闭", "恢复", "0", "false"):
         set_enabled(code, False)
         tail = ""
         if not is_admin:
             licenses.consume(user_id)
             tail = f"\n（{licenses.describe(user_id)}）"
-        return f"已关闭测试项「{code}」，恢复默认行为喵~\n{meta['affects']}{tail}"
+        return format_lang("cmd_key.m14", code=code, affects=meta['affects'], tail=tail)
     if action in ("reset", "重置", "默认"):
         reset(code)
-        default_state = "开启" if meta.get("default") else "关闭"
-        return f"「{code}」已恢复注册表默认（{default_state}）喵~"
+        default_state = format_lang("cmd_key.m15") if meta.get("default") else format_lang("cmd_key.m16")
+        return format_lang("cmd_key.m17", code=code, default_state=default_state)
 
-    return f"不认识这个操作「{action}」喵~\n用法：/~key {code} ｜ /~key {code} off ｜ /~key {code} reset"
+    return format_lang("cmd_key.m18", action=action, code=code, code2=code, code3=code)
 
 
 async def cmd_motd(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~motd <服务器地址>[:端口] — Minecraft 服务器状态卡（原生协议 ping + HTML 渲染）"""
     if not args:
-        return ("用法: /~motd <服务器地址>[:端口]\n"
-                "例: /~motd mc.hypixel.net\n"
-                "原生协议查询，出在线人数/延迟/MOTD 状态卡")
+        return (format_lang("cmd_motd.m1"))
 
     address = args[0].strip()
     port_arg = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
     if len(address) > 100 or "/" in address or " " in address:
-        return "这地址看起来不太对喵~ 换个正常的域名试试"
+        return format_lang("cmd_motd.m2")
 
     from services.sender import send_group_msg, send_private_msg
-    await (send_group_msg(f"正在查询 {address} 的状态喵...", group_id) if is_group
-           else send_private_msg(f"正在查询 {address} 的状态喵...", user_id))
+    await (send_group_msg(format_lang("cmd_motd.m3", address=address), group_id) if is_group
+           else send_private_msg(format_lang("cmd_motd.m4", address=address), user_id))
 
     from services.motd_card import make_card
     try:
         png, status, err = await asyncio.wait_for(make_card(address, port_arg), timeout=30)
     except asyncio.TimeoutError:
-        return "查询超时了喵~（30s）服务器可能无响应，稍后再试试"
+        return format_lang("cmd_motd.m5")
     except Exception as e:
         import traceback
         logger.warning("motd 卡生成异常: %s", e)
         # ★ 报错必须带完整 traceback（用户 2026-10-03 明确：全栈扔出来，行级定位）
-        return f"查询出错了喵~ {traceback.format_exc()}"
+        return format_lang("cmd_motd.m6", format_exc=traceback.format_exc())
 
     if not png:
-        return ("查询失败了喵~ " + address + " 可能离线或地址不对（Java 版服务器才能查）\n" + err)
+        return (format_lang("cmd_motd.m7") + address + format_lang("cmd_motd.m8") + err)
 
     cq = f"[CQ:image,file=file:///{png.as_posix()}]"
     await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
@@ -4025,14 +4193,11 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
         rest = rest[m2.end():].strip()
 
     if not rest:
-        return ("用法: /~run py <代码> 运行Python\n"
-                "/~run cpp <代码> 编译运行C++\n"
-                "/~run sh <命令> 终端命令(仅管理员，如 /~run sh cd / && ls -l)\n"
-                "/~run <描述> 自动生成代码并运行(如 /~run 创建10个md文件打包zip)")
+        return (format_lang("cmd_run.m1"))
 
     # sh 终端命令仅管理员（与 KOOK 一致）
     if lang == "sh" and not cfg.is_admin(user_id, group_id):
-        return "sh 终端命令仅管理员可用喵~"
+        return format_lang("cmd_run.m2")
 
     # ── 无语言前缀 → 按描述生成代码再运行 ──
     if lang is None:
@@ -4040,13 +4205,13 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
         gen = await call_llm(
             model_cfg=cfg.reply_model,
             messages=[
-                {"role": "system", "content": "写一段可独立运行的 Python 脚本，关键结果用 print() 输出，UTF-8，只输出代码不写注释。"},
+                {"role": "system", "content": format_lang("cmd_run.m3")},
                 {"role": "user", "content": rest[:3000]},
             ],
             max_tokens=2000, temperature=0.3, timeout=60.0,
         )
         if not gen or not gen.strip():
-            return "代码生成失败，请稍后重试"
+            return format_lang("cmd_run.m4")
         code = _re.sub(r"^```\w*\n?", "", gen.strip())
         code = _re.sub(r"\n?```$", "", code).strip()
         lang, rest = "py", code
@@ -4065,18 +4230,19 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
     except Exception as e:
         logger.warning("/~run 执行异常: %s", e)
         cleanup(tmp)
-        return f"沙箱执行失败喵~ {type(e).__name__}: {str(e)[:200]}"
+        return format_lang("cmd_run.sandbox_fail",
+                           etype=type(e).__name__, emsg=str(e)[:200])
 
     out_parts = []
     if res.get("stdout"):
         out_parts.append(res["stdout"].strip())
     if res.get("stderr"):
         out_parts.append(f"[stderr]\n{res['stderr'].strip()}")
-    text = "\n\n".join(out_parts) or "[无输出]"
+    text = "\n\n".join(out_parts) or format_lang("cmd_run.m5")
     if res.get("timed_out"):
-        text += "\n[提示] 运行超时已强制终止"
+        text += format_lang("cmd_run.m6")
     if res.get("returncode") not in (0, None):
-        text += f"\n[退出码] {res['returncode']}"
+        text += format_lang("cmd_run.m7", returncode=res['returncode'])
 
     # ── 产物收集与发送（CQ file）——失败/超时不发产物（编译失败的残留文件没有意义）──
     send_msgs = []
@@ -4097,12 +4263,12 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
             for f in files_to_send:
                 cq = f"[CQ:file,file=file:///{f.as_posix()},name={f.name}]"
                 await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
-            send_msgs.append(f"已发送 {len(files_to_send)} 个产物文件")
+            send_msgs.append(format_lang("cmd_run.m8", files_to_send=len(files_to_send)))
         except Exception as e:
-            send_msgs.append(f"产物发送异常: {e}")
+            send_msgs.append(format_lang("cmd_run.m9", e=e))
     cleanup(tmp)
 
-    result = f"[运行输出]\n{text}"
+    result = format_lang("cmd_run.m10", text=text)
     if send_msgs:
         result += "\n\n" + "\n".join(send_msgs)
     logger.info("/~run 完成: lang=%s rc=%s", lang, res.get("returncode"))
@@ -4111,7 +4277,6 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
 
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
-    "ping":       cmd_ping,
     "restart":    cmd_restart,
     "favlist":    cmd_favlist,
     "info":       cmd_info,
@@ -4124,12 +4289,9 @@ COMMAND_MAP: dict[str, callable] = {
     "write_code":  cmd_write_code,  # ★ 代码生成
     "ignore":      cmd_ignore,      # ★ 忽略用户
     "unignore":    cmd_unignore,    # ★ 解除忽略
-    "天气":       cmd_weather,
-    "weather":    cmd_weather,
     "reload":     cmd_reload,
     "update":     _cmd_update,
     "upd":        _cmd_update,    # 短别名
-    "gh":         _cmd_gh,
     "添加关系":   cmd_add_relation,
     "resetfav":   cmd_reset_fav,
     "updateinfo": cmd_update_info,
@@ -4143,8 +4305,6 @@ COMMAND_MAP: dict[str, callable] = {
     "绘画":       cmd_draw,
     "video":      cmd_video,
     "视频":       cmd_video,
-    "voice":      cmd_voice,
-    "语音":       cmd_voice,
     "img2video":  cmd_img2video,
     "图生视频":   cmd_img2video,
     "img":        cmd_img,
@@ -4177,7 +4337,6 @@ COMMAND_MAP: dict[str, callable] = {
     "拒绝":       cmd_friend_reject,
     "好友列表":   cmd_friend_list,
     "nasa":       cmd_nasa,
-    "pgr":        cmd_pgr,
     "watch":      cmd_watch,
     "spec":       cmd_watch,
     "观战":       cmd_watch,
@@ -4214,8 +4373,6 @@ COMMAND_MAP: dict[str, callable] = {
     "插件":       cmd_plugin,
     "apy":        cmd_apy,          # 插件审批回执
     # ── 管理员代发（/~say）──
-    "say":        cmd_say,
-    "代发":       cmd_say,
     # ── 实验测试项开关（仅管理员）──
     "key":        cmd_key,
     "测试项":     cmd_key,
@@ -4228,9 +4385,6 @@ COMMAND_MAP: dict[str, callable] = {
     "赞助":       cmd_reward,
     "sponsor":    cmd_reward,
     # ── 服务器功耗 / 电费（仅管理员）──
-    "power":      cmd_power,
-    "功耗":       cmd_power,
-    "电费":       cmd_power,
     # ── Steam 状态 / 价格 ──
     "steam":      cmd_steam,
     "在干嘛":     cmd_steam_doing,
@@ -4249,26 +4403,31 @@ COMMAND_MAP: dict[str, callable] = {
 #   只列真正重的主命令；进程控制类（restart/reload/update）**故意不在列**，保持串行。
 HEAVY_COMMANDS: frozenset[str] = frozenset({
     # 战绩 / 游戏数据
-    "wdsj", "steam", "在干嘛",
+    "wdsj", "steam", format_lang("mod.m41"),
     # MC 服务器状态卡（网络查询 + Chromium 渲染，数秒级）
-    "motd", "mc状态",
+    "motd", format_lang("mod.m42"),
     # 沙箱执行（编译/运行，数秒级）
     "run",
     # 天气 / 地震 / NASA / PGR
-    "天气", "weather", "eq", "地震", "nasa", "pgr",
+    format_lang("mod.m43"), "weather", "eq", format_lang("mod.m44"), "nasa", "oldphi", "phi",
     # 生成类（图/视频/语音）
-    "draw", "绘画", "video", "视频", "voice", "语音",
-    "img2video", "图生视频", "img",
+    "draw", format_lang("mod.m45"), "video", format_lang("mod.m46"), "voice", format_lang("mod.m47"),
+    "img2video", format_lang("mod.m48"), "img",
     # 谱面查询
-    "tuflevel", "tuf谱面", "tufsearch", "tufd", "tufpage",
+    "tuflevel", format_lang("mod.m49"), "tufsearch", "tufd", "tufpage",
     # 抽卡 / 观战
-    "抽", "watch", "spec", "观战",
+    "抽", "watch", "spec", format_lang("mod.m50"),
     # 需要现拉数据的展示类
-    "power", "功耗", "电费",
-    "stats", "统计", "dbsearch", "回顾",
-    "reward", "赞赏", "赞助", "sponsor",
+    "power", format_lang("mod.m51"), format_lang("mod.m52"),
+    "stats", format_lang("mod.m53"), "dbsearch", format_lang("mod.m54"),
+    "reward", format_lang("mod.m55"), format_lang("mod.m56"), "sponsor",
     "sys", "pc", "phone",
 })
+
+
+# ★ v2.3.83：插件声明的重命令（manifest limits.heavy=true）。由 PluginCapability 在注册时写入，
+#   卸载时移除。与 HEAVY_COMMANDS 并列参与 is_heavy_command 判定。
+EXTRA_HEAVY_COMMANDS: set[str] = set()
 
 
 def is_heavy_command(text: str) -> bool:
@@ -4285,7 +4444,10 @@ def is_heavy_command(text: str) -> bool:
     t = t.strip()
     if not t:
         return False
-    return t.split()[0].lower() in HEAVY_COMMANDS
+    name = t.split()[0].lower()
+    # ★ v2.3.83：插件可在 manifest 声明 limits.heavy=true，注册时写入 EXTRA_HEAVY_COMMANDS，
+    #   迁移后仍保持"重命令走旁路并发、不占用同群 worker"的原有语义。
+    return name in HEAVY_COMMANDS or name in EXTRA_HEAVY_COMMANDS
 
 
 async def handle_command(
@@ -4362,7 +4524,7 @@ async def handle_command(
         # 来源标注：插件注册的指令（bridge 带 __plugin__ 属性）
         src = ""
         if getattr(handler, "__plugin__", None):
-            src = f" (插件: {handler.__plugin__})"
+            src = format_lang("handle_command.m1", __plugin__=handler.__plugin__)
         if result is not None:
             # 打印完整返回内容（不截断），方便排障
             result_str = str(result)
@@ -4392,7 +4554,9 @@ def _daily_rank_payload(rows, today, new_players, time_start="", time_end=""):
         return _html.escape(str(x), quote=True)
 
     now = datetime.now()
-    next_time = f"{((now.hour // 4 + 1) * 4) % 24:02d}:01"
+    # 节奏取自配置（4h / 12h），不要硬编码 —— 否则卡片上的「下一轮」会与实际调度不符
+    from services.wdsj_tracker import next_slot as _wdsj_next_slot
+    next_time = _wdsj_next_slot(now).strftime("%H:%M")
 
     out_rows = []
     for i, item in enumerate(rows, 1):
@@ -4417,7 +4581,7 @@ def _daily_rank_payload(rows, today, new_players, time_start="", time_end=""):
     return {
         "date": today,
         "range": f"{time_start} → {time_end}" if (time_start or time_end) else "",
-        "when": "洛花星雨 Nexus",
+        "when": format_lang("_daily_rank_payload.m1"),
         "rows": out_rows,
         "newPlayers": list(new_players or []),
         "nextTime": next_time,
@@ -4434,6 +4598,9 @@ def _build_outage_notice_html(today: str = "", downtime: str = ""):
     from datetime import datetime
     from services.card_base import inject_stamp
     now = datetime.now()
+    # 缺失轮次文案随配置节奏走（4h→6 轮 / 12h→2 轮），别硬编码
+    from services.wdsj_tracker import collect_slots as _wdsj_slots, slots_hint as _wdsj_slots_hint
+    _slots_txt = format_lang("_build_outage_notice_html.m1", _wdsj_slots_hint=_wdsj_slots_hint(), _wdsj_slots=len(_wdsj_slots()))
     label = today or now.strftime("%Y-%m-%d")
     down = downtime or "10-06 ~21:00 → 10-07 21:45"
     html = f"""<!DOCTYPE html>
@@ -4481,7 +4648,7 @@ def _build_outage_notice_html(today: str = "", downtime: str = ""):
   </div>
   <div class="info">
     <div class="irow"><span class="d">停机时段</span><span class="v"><b>{down}</b></span></div>
-    <div class="irow"><span class="d">缺失轮次</span><span class="v">0:01 / 4:01 / 8:01 / 12:01 / 16:01 / 20:01（共 6 轮）</span></div>
+    <div class="irow"><span class="d">缺失轮次</span><span class="v">{_slots_txt}</span></div>
     <div class="irow"><span class="d">影响范围</span><span class="v">当日战绩增量未采集，日榜无法统计</span></div>
     <div class="irow"><span class="d">恢复时间</span><span class="v">次日 0:01 起正常产出，无需任何操作</span></div>
   </div>
@@ -4517,9 +4684,9 @@ def _bot_name() -> str:
     """当前 bot 名称（用于卡片署名）"""
     try:
         from core.config import get_config
-        return get_config().bot_name or "幻梦Bot"
+        return get_config().bot_name or format_lang("_bot_name.m1")
     except Exception:
-        return "幻梦Bot"
+        return format_lang("_bot_name.m2")
 
 
 def _arena_daily_payload(rows, today, time_start="", time_end=""):
@@ -4534,7 +4701,9 @@ def _arena_daily_payload(rows, today, time_start="", time_end=""):
         return _html.escape(str(x), quote=True)
 
     now = datetime.now()
-    next_time = f"{((now.hour // 4 + 1) * 4) % 24:02d}:01"
+    # 节奏取自配置（4h / 12h），不要硬编码 —— 否则卡片上的「下一轮」会与实际调度不符
+    from services.wdsj_tracker import next_slot as _wdsj_next_slot
+    next_time = _wdsj_next_slot(now).strftime("%H:%M")
 
     out_rows = []
     for i, item in enumerate(rows, 1):
@@ -4561,7 +4730,7 @@ def _arena_daily_payload(rows, today, time_start="", time_end=""):
     return {
         "date": today,
         "range": f"{time_start} → {time_end}" if (time_start or time_end) else "",
-        "when": "洛花星雨 Nexus",
+        "when": format_lang("_arena_daily_payload.m1"),
         "rows": out_rows,
         "newPlayers": [],
         "nextTime": next_time,
