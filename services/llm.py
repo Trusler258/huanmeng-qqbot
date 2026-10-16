@@ -787,32 +787,50 @@ _REMINDER_FALLBACK = (
 )
 
 
-def _recent_bot_snippets(history: list, bot_name: str, limit: int = 3) -> str:
-    """抽取 bot 最近的回复片段，生成「防复读」提醒文本（空则返回 ""）。
+_EDGE_PUNCT = "～~！!？?。.，,、；;：:… \t　"
 
-    v2.1.15 背景：用户实测同一个梗连续 4 轮出现（"薯片味" 12:37/12:44/12:44/13:02，
-    "KD 0.37" 3 轮），说明只写在 system 里的 anti_repeat 被长提示词稀释、没生效。
-    这里把 bot 自己刚说过的话摘出来，放到 fmt_reminder（最后一条 user 消息、
-    注意力最高处）再明确点一次，属于代码层的硬提醒。
+
+def _anti_repeat_hint(history: list, bot_name: str, limit: int = 4) -> str:
+    """生成「换说法」硬约束（**恒非空**），放在 fmt_reminder（注意力最高处）。
+
+    ★ v2.3.88 重写。背景与两条教训：
+
+    教训①**不要给可模仿语料**。旧实现把 bot 最近 3 句**原文**贴进上下文、附一句"别再重复"，
+    实测是反效果 —— 模型学到的是**模仿这个语气**而非"别重复"（"别想大象"效应）：
+      注入「那快去躺着吧，睡不着也别硬撑…」→ 模型下一句「快去躺着吧，数我数到天亮可不行…」
+      骨架一字不差，只换后半句。所以本函数**只给结构约束，不给整句**。
+
+    教训②**不要按"是否检测到复读"来决定注不注入**。字面 n-gram 检测对"换词复读"
+    本来就不可靠（词换一个就抓不到），一旦漏检 = 完全没有保护。
+    因此：**静态骨架禁令恒定注入**；能抽出最近几轮的开场/收尾/高频片段时再补一句具体信息，
+    属 best-effort，抽不到也不影响主约束。
 
     history 兼容两种形态：
       - 扁平上下文行：["幻梦: 文本", "群友: 文本", ...]
       - 已解析的多轮消息：[{"role": "assistant", "content": "文本"}, ...]
     """
-    picked: list[str] = []
+    # ── ① 静态骨架禁令（恒定，不依赖任何检测）──
+    lines = [
+        "【换说法·硬规则】上一轮用过的表达方式，这一轮一律不许再用：",
+        "· 开场：不要和上一轮用同一个开头字起手（连着两轮同一个语气字起手 = 一眼复读）",
+        "· 收尾：不要和上一轮用同一个收尾字，也不要复用同一种收尾套路",
+        "· 句式：不许照搬上一轮的句子骨架（例：上轮用「你这声X应得…」做前后对比，这轮就得换个说法）",
+        "· 模板：禁止用「快去…吧」「别…了」「记得要…哦」这类劝告/叮嘱句当结尾",
+        "目标：让人一眼看出这是新的一轮，而不是把上一轮换几个词重说一遍",
+    ]
+
+    # ── ② 动态补充（best-effort，抽不到就跳过）──
+    replies: list[str] = []
     for item in reversed(history or []):
         if isinstance(item, dict):
             if item.get("role") != "assistant":
                 continue
             txt = str(item.get("content") or "")
-            # 去掉可能残留的 "幻梦: " 前缀
             for sep in (f"{bot_name}: ", f"{bot_name}:", f"{bot_name}：", f"{bot_name}:"):
                 if txt.startswith(sep):
                     txt = txt[len(sep):]
                     break
         else:
-            # 扁平上下文：只有 "{bot_name}: xxx" 开头的才是 bot 自己的话，
-            # 其余是别人发言 → 必须跳过（否则会把群友的话当自己的复读内容）
             raw = str(item or "")
             for sep in (f"{bot_name}: ", f"{bot_name}:", f"{bot_name}：", f"{bot_name}:"):
                 if raw.startswith(sep):
@@ -820,16 +838,55 @@ def _recent_bot_snippets(history: list, bot_name: str, limit: int = 3) -> str:
                     break
             else:
                 continue
-        txt = re.sub(r'\s+', ' ', txt).strip()
-        if not txt or txt in picked:
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if not txt or txt in replies:
             continue
-        picked.append(txt[:50])
-        if len(picked) >= limit:
+        replies.append(txt)
+        if len(replies) >= limit:
             break
-    if not picked:
-        return ""
-    quoted = " ／ ".join(f"「{t}」" for t in picked)
-    return f"你最近说过：{quoted} —— 这些话和用过的梗不要再重复，换个说法或换话题。"
+
+    if replies:
+        def _head(t: str) -> str:
+            t = re.sub(r"^[（(][^）)]*[）)]\s*", "", t)      # 去掉句首括号动作
+            return t.lstrip(_EDGE_PUNCT)[:1]
+
+        def _tail(t: str) -> str:
+            t = re.sub(r"[（(][^）)]*[）)]\s*$", "", t)      # 去掉句尾括号动作
+            t = t.rstrip(_EDGE_PUNCT)
+            return t[-1:] if t else ""
+
+        # replies[0] = 最近一条（即"上一轮"）
+        marks = []
+        h0, t0 = _head(replies[0]), _tail(replies[0])
+        if h0:
+            marks.append(f"上一轮开场字「{h0}」")
+        if t0:
+            marks.append(f"上一轮收尾字「{t0}」")
+        if marks:
+            lines.append("（" + "、".join(marks) + " —— 本轮这两个都不能再用）")
+
+        # 窗口内重复的开场字 —— 最可靠的句式痕迹（起手字连着一样 = 一眼复读）
+        head_cnt: dict[str, int] = {}
+        for h in (_head(t) for t in replies):
+            if h:
+                head_cnt[h] = head_cnt.get(h, 0) + 1
+        rep_heads = [h for h, c in sorted(head_cnt.items(), key=lambda kv: -kv[1]) if c >= 2]
+        if rep_heads:
+            lines.append(
+                "最近几轮开场字重复：" + "、".join(f"「{h}」×{head_cnt[h]}" for h in rep_heads)
+                + " —— 本轮务必换一个不一样的开头字")
+
+        # 最近几轮出现 ≥2 次的 3 字中文片段 = 句式痕迹，直接点名
+        grams: dict[str, int] = {}
+        for t in replies:
+            for g in {t[i:i + 3] for i in range(len(t) - 2)}:
+                if re.fullmatch(r"[\u4e00-\u9fff]{3}", g):
+                    grams[g] = grams.get(g, 0) + 1
+        hot = [g for g, c in sorted(grams.items(), key=lambda kv: -kv[1]) if c >= 2][:3]
+        if hot:
+            lines.append("最近反复出现的片段，本轮不许再出现：" + "、".join(f"「{g}」" for g in hot))
+
+    return "\n".join(lines)
 
 
 def _build_reminder(name: str, append_plain: bool = True, **vars) -> str:
@@ -1258,6 +1315,11 @@ def format_llm_error(err: dict | None = None, since: float | None = None,
     return "\n".join(parts)
 
 
+# 回复路径采样参数：抑制「字面复读」。DeepSeek 官方接口实测接受该参数
+# （HTTP 200，不会 400）。0~2，越大惩罚越强；0.3 属温和档。要调只改这里。
+_REPLY_FREQ_PENALTY = 0.3
+
+
 async def call_llm(
     model_cfg: ModelConfig,
     messages: list[dict],
@@ -1268,6 +1330,7 @@ async def call_llm(
     _json_retries: int = 0,
     scene: str = "",
     thinking: bool | None = False,
+    frequency_penalty: float | None = None,
 ) -> str:
     """
     调用 LLM 并返回原始文本内容。
@@ -1309,6 +1372,8 @@ async def call_llm(
             req_params["max_tokens"] = max_tokens
         if json_mode:
             req_params["response_format"] = {"type": "json_object"}
+        if frequency_penalty is not None:
+            req_params["frequency_penalty"] = frequency_penalty
         # v2.1.10: 思考模式显式控制。本函数默认 False（短判断调用防思考吃光输出预算）
         if thinking is not None:
             req_params["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
@@ -1413,11 +1478,18 @@ async def call_llm_with_tools(
     timeout: float = 60.0,
     scene: str = "",
     thinking: bool | None = None,
+    frequency_penalty: float | None = None,
+    tool_choice="auto",
 ) -> ToolCallResult:
     """
     调用 LLM，支持 Function Calling。
     返回 ToolCallResult，包含可能的 tool_calls。
     scene: 调用场景标识，用于 token 命中率归因
+
+    tool_choice: "auto"（默认，模型自己决定）或
+      {"type": "function", "function": {"name": "weather"}}（强制调用指定工具）。
+      ★ v2.3.89：由决策模型选中工具后强制调用 —— 实测仅给文字提示时模型完全无视
+      （该调工具时调用率 3.3%，与不给提示无差别），强制才有效。
 
     thinking: 思考模式开关（DeepSeek-flash 默认开启思考）。
       - True  → 显式启用 (extra_body thinking.enabled)
@@ -1441,13 +1513,15 @@ async def call_llm_with_tools(
         "temperature": temperature,
         "messages": messages,
         "tools": tools,
-        "tool_choice": "auto",
+        "tool_choice": tool_choice,
     }
     if max_tokens is not None:
         req_params["max_tokens"] = max_tokens
     # v2.1.10: 思考模式显式控制（DeepSeek-flash；reasoning_effort 走模型默认 high）
     if thinking is not None:
         req_params["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
+    if frequency_penalty is not None:
+        req_params["frequency_penalty"] = frequency_penalty
 
     _t_start = loop.time()
     try:
@@ -1741,6 +1815,35 @@ def _build_history_messages(msg_history: list[str], bot_name: str) -> list[dict]
 
 # ── Function Calling 增强版生成 ──────────────────────────
 
+# ★ v2.3.89: 回复里"承诺要去查/搜"的表述。
+#   背景（2026-10-14 实测漏洞）：模型写了「这个得查查最新的…」「我搜一下再跟你说」，
+#   但 JSON 的 calls 为空 → 原逻辑 `if not result.tool_calls: break` 直接把这句
+#   空头承诺当最终回复发出去，管道随即结束（实测 tool_calls=0、用户被晾住）。
+#   宁可漏判也不要误判：只在出现**明确的"要查/要搜"**表述时才判定承诺。
+_TOOL_PROMISE_RE = re.compile(
+    r"(搜一下|搜搜|搜下|搜一搜|搜索一下|我去搜|帮我搜|帮你搜|让我搜"
+    r"|查一下|查查|查下|查询一下|我去查|帮你查|让我查|我去给你查)"
+)
+
+
+def _looks_like_tool_promise(content: str | None) -> bool:
+    """回复内容里是否**承诺了要调用工具（查/搜）**。
+
+    只解析 replies 文本，避免匹配到 JSON 的键名（如 "calls"）。
+    """
+    if not content:
+        return False
+    txt = content.strip()
+    if txt.startswith("{"):
+        try:
+            j = json.loads(txt)
+            rs = j.get("replies") or []
+            txt = " ".join(str(x) for x in rs if isinstance(x, str))
+        except Exception:
+            pass  # 解析失败就用原文找
+    return bool(_TOOL_PROMISE_RE.search(txt))
+
+
 async def generate_multi_reply_with_tools(
     msg_history: list[str],
     speaker_name: str,
@@ -1757,6 +1860,8 @@ async def generate_multi_reply_with_tools(
     interim_cb=None,
     thinking: bool | None = None,
     thought_shown_cb=None,
+    needs: set | None = None,
+    force_tool: str | None = None,
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
@@ -1778,7 +1883,16 @@ async def generate_multi_reply_with_tools(
     from core.tools import get_tool_schemas, execute_tool
 
     tools = get_tool_schemas()
-    msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info)
+    # ★ v2.3.89（B）：决策模型选中的工具 → 第 0 轮强制调用。
+    #   校验名字合法性：名字不在工具表里会让 API 直接 400（决策模型理论上只会给
+    #   列表内的名字，但选项是动态派生的，插件卸载后可能消失）。
+    if force_tool and not any(((t.get("function") or {}).get("name") == force_tool)
+                              for t in tools):
+        logger.warning("force_tool=%s 不在工具表中，忽略（按 auto 处理）", force_tool)
+        force_tool = None
+    if force_tool:
+        logger.info("FC: 第0轮强制调用工具 %s", force_tool)
+    msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info, needs=needs)
 
     # v2.1.12: 记录"最后一条有思考"的轮次耗时，最终回复生成时按它标注 [已思考N秒]
     _last_reasoning_dur: float | None = None
@@ -1800,6 +1914,7 @@ async def generate_multi_reply_with_tools(
     _gathered: list[str] = []
     _gathered_seen: set[str] = set()
     _wrote_file = False
+    _promise_retried = False   # ★ v2.3.89: 「承诺调用工具却没调用」最多补一次，防死循环
 
     for round_idx in range(MAX_ROUNDS):
         # ★ v2.3.23 实测结论（勿再"优化"）：max_tokens 是上限，模型遇 EOS 即停，
@@ -1807,7 +1922,18 @@ async def generate_multi_reply_with_tools(
         #   反而会在"轮0 直接回复"时截断 JSON —— 而 call_llm_with_tools 不检查
         #   finish_reason，截断后要走 salvage/json_mode 补救 = 多一次调用，更慢。
         #   这里恢复用完整 max_tokens。
-        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools", thinking=thinking)
+        # ★ v2.3.89（B）：第 0 轮若决策模型指定了工具 → 强制调用；
+        #   之后各轮恢复 "auto"，让模型在拿到工具结果后自由收口。
+        # ★ v2.3.92：DeepSeek 思考模式不支持 function 对象的 tool_choice
+        #   （400 "Thinking mode does not support this tool_choice"，2026-10-16 21:18
+        #   首次触发）。thinking=True 时第 0 轮退回 auto——思考模式下模型工具调用率
+        #   本就不低（实测 7/20），损失可接受；thinking=False 保持强制（该场景无此限制）。
+        _force_this_round = bool(force_tool) and round_idx == 0 and thinking is not True
+        if force_tool and round_idx == 0 and thinking is True:
+            logger.info("FC: 思考模式开启，跳过强制调用 %s（按 auto 处理）", force_tool)
+        _tc = ({"type": "function", "function": {"name": force_tool}}
+               if _force_this_round else "auto")
+        result = await call_llm_with_tools(reply_model, msgs, tools, max_tokens=max_tokens, temperature=0.4, scene="reply_tools", thinking=thinking, frequency_penalty=_REPLY_FREQ_PENALTY, tool_choice=_tc)
         raw_preview = (result.content or "")[:200].replace("\n", "\\n")
         logger.info("LLM原始输出 [轮%d]: content=%s | tool_calls=%d | reasoning=%d字",
                     round_idx + 1, raw_preview, len(result.tool_calls), len(result.reasoning))
@@ -1884,7 +2010,7 @@ async def generate_multi_reply_with_tools(
                         pass
                     # 提取成功但无 calls → json_mode 确保 JSON 完整
                     if not result.tool_calls:
-                        json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.4, json_mode=True)
+                        json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.4, json_mode=True, frequency_penalty=_REPLY_FREQ_PENALTY)
                         if json_raw and json_raw.startswith("{"):
                             result.content = json_raw
                 else:
@@ -1901,7 +2027,7 @@ async def generate_multi_reply_with_tools(
                         )
                     else:
                         logger.info("LLM 输出非 JSON 且内容残缺，走 json_mode 补救...")
-                        json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.3, json_mode=True)  # v2.0.4w
+                        json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.3, json_mode=True, frequency_penalty=_REPLY_FREQ_PENALTY)  # v2.0.4w
                         if json_raw and json_raw.startswith("{"):
                             result.content = json_raw
                             logger.info("json_mode 补救成功: %s...", json_raw[:80])
@@ -1909,6 +2035,39 @@ async def generate_multi_reply_with_tools(
                             # 补救也失败：宁可留首次的残缺内容（下游 _parse_reply
                             # 有纯文本兜底），也不要空手而归
                             logger.warning("json_mode 补救失败，保留首次原始输出")
+
+            # ★ v2.3.89: 承诺落空补救（放在 break 之前 —— 这是最后的补救机会）
+            #   模型承诺"我搜一下/帮你查查"但 calls 为空时，原逻辑会把这句空头承诺
+            #   直接当最终回复发出去（2026-10-14 实测：`我搜一下再跟你说` 后管道即结束）。
+            #   这里补一次独立调用要求它真的调工具；**仍无调用/异常就放行原回复**（fail-open，
+            #   绝不吞掉回复、不改变已验证过的 content）。
+            if (round_idx == 0 and not _promise_retried
+                    and _looks_like_tool_promise(result.content)):
+                _promise_retried = True
+                logger.warning(
+                    "检测到「承诺调用工具但 calls 为空」→ 补一轮强制调用 | 原文=%s",
+                    (result.content or "")[:70])
+                try:
+                    _retry_msgs = list(msgs) + [
+                        {"role": "assistant", "content": result.content},
+                        {"role": "user", "content":
+                            "你上一句说了要去查/搜，但这一轮并没有真的调用工具。"
+                            "现在就调用对应工具（把要查的内容作为参数传进去），不要再只说话。"},
+                    ]
+                    _r2 = await call_llm_with_tools(
+                        reply_model, _retry_msgs, tools,
+                        max_tokens=max_tokens, temperature=0.4,
+                        scene="reply_tools", thinking=thinking,
+                        frequency_penalty=_REPLY_FREQ_PENALTY,
+                    )
+                    if _r2 is not None and _r2.tool_calls:
+                        result.tool_calls = _r2.tool_calls
+                        logger.info("承诺补调用成功 → %s",
+                                    [t.get("name") for t in result.tool_calls])
+                    else:
+                        logger.info("承诺补调用仍未产生工具调用 → 放行原回复（fail-open）")
+                except Exception as _e:
+                    logger.warning("承诺补调用异常 → 放行原回复: %s", _e)
             break
 
         # ★ v2.0.4y(2026-09-04): 轮1有工具调用且 content 是短自然语 → 先发先导语。
@@ -2207,7 +2366,7 @@ async def generate_multi_reply_with_tools(
             {"role": "system", "content": "你是幻梦。用自然语气回复，别句句挂喵。简单数据一句话即可；如果是知识性/原理性内容，就多说几句讲清楚，不限字数。"},
             {"role": "user", "content": f"用户说「{current_msg}」\n查到数据：{data_results[0]}\n请自然回复——简单数据一两句；知识性内容该展开就展开，讲透为止。"},
         ]
-        raw = await call_llm(reply_model, wrap_msgs, max_tokens=2000, temperature=0.4)
+        raw = await call_llm(reply_model, wrap_msgs, max_tokens=2000, temperature=0.4, frequency_penalty=_REPLY_FREQ_PENALTY)
         if raw:
             # ★ v2.3.74: wrap 路径 JSON 裸奔守卫（2026-10-02 09:29 真实事故：
             #   wrap LLM 带习惯输出了 {"replies":[...],"fav":0}。 整帧（含尾缀句号），
@@ -2373,7 +2532,10 @@ def _parse_reply(
                     data = json.loads(fixed)
                     replies = data.get("replies", [])
                     if isinstance(replies, list) and replies:
-                        fav_change = safe_fav(data.get("fav", 0))
+                        # ⚠️ 原为 safe_fav(...)，但该函数全仓从未定义 → NameError 被外层
+                        #   `except Exception: pass` 吞掉，整条"截断修复"路径静默失效。
+                        #   与正常路径（data.get("fav", 0)）保持一致。
+                        fav_change = data.get("fav", 0)
                         calls = data.get("calls") or []
                         face_cq = data.get("face")
                         mood = data.get("mood", "")
@@ -2451,8 +2613,13 @@ def _build_messages(
     system_prompt: str,
     is_group: bool,
     extra_info: str,
+    needs: set | None = None,
 ) -> list[dict]:
-    """构建 messages 列表（与 generate_multi_reply 相同的格式）"""
+    """构建 messages 列表（与 generate_multi_reply 相同的格式）
+
+    ⚠️ needs 必须由调用方透传：函数体里的参考资料注入（2621 行）要用它。
+    v2.3.88 曾漏掉这个形参 → 每次回复 NameError（生产实测 13:49 报错）。
+    """
     # 拆 PERSONA:::{json}:::{原system} 标记（与 generate_multi_reply 一致）
     _custom_persona = None
     _personality = system_prompt
@@ -2484,7 +2651,10 @@ def _build_messages(
 
     user_parts = []
     # ★ v2.1.9: 按需参考资料（指令表/指令列表/表情库）注入 user，不污染 system 缓存
-    _refs = _build_skill_refs(_detect_skill_needs(current_msg, is_group), is_group, current_msg)
+    # v2.3.88: 上游（pipeline）已用决策模型算好 needs 时直接用，避免这里再跑一遍关键词
+    #   ——否则"以决策模型为准"会在这里被关键词版覆盖回去，两边口径不一致。
+    _needs = needs if needs is not None else _detect_skill_needs(current_msg, is_group)
+    _refs = _build_skill_refs(_needs, is_group, current_msg)
     if _refs:
         user_parts.append(_refs)
     # 大消息（题目/长文）→ 去记忆，给 LLM 省上下文
@@ -2496,8 +2666,8 @@ def _build_messages(
         ctx_hint = "如果你不了解，可以调用搜索工具查一下。"
     max_chars = "40" if is_group else "20"
     # ★ v2.2.2: 提醒模板统一放 data/skills/40_reminders.md，此处不再硬编码
-    # ★ v2.1.15: 防复读——把 bot 最近说过的话摘出来，在注意力最高处再点一次
-    no_repeat = _recent_bot_snippets(msg_history, bot_name)
+    # ★ v2.3.88: 换说法硬规则——只给结构约束、不给可模仿原句，恒定注入（见 _anti_repeat_hint）
+    no_repeat = _anti_repeat_hint(msg_history, bot_name)
     fmt_reminder = _build_reminder("reply_reminder", ctx_hint=ctx_hint, max_chars=max_chars, no_repeat=no_repeat)
     user_parts.append(fmt_reminder)
     # 长消息截断：保留前 2500 字（够题目描述+要求），防止 flash 模型吃不下
@@ -2579,8 +2749,8 @@ async def generate_multi_reply(
     # ★ 格式提醒：JSON 输出
     max_chars = "40" if is_group else "20"
     # ★ v2.2.2: 提醒模板统一放 data/skills/40_reminders.md，此处不再硬编码
-    # ★ v2.1.15: 防复读（语音路径同样需要，turns 已是解析好的多轮消息）
-    no_repeat = _recent_bot_snippets(turns, bot_name)
+    # ★ v2.3.88: 换说法硬规则（语音路径同样需要，turns 已是解析好的多轮消息）
+    no_repeat = _anti_repeat_hint(turns, bot_name)
     fmt_reminder = _build_reminder("voice_reminder", max_chars=max_chars, no_repeat=no_repeat)
     user_parts.append(fmt_reminder)
     user_parts.append(f"{speaker_name}说：{current_msg}")
@@ -2610,7 +2780,7 @@ async def generate_multi_reply(
     logger.info("开始多句回复生成 | speaker=%s | history_turns=%d | extra=%d字",
                speaker_name, len(turns) - 1, len(extra_info))
 
-    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True, scene="reply")
+    raw = await call_llm(reply_model, messages, max_tokens=max_tokens, temperature=0.4, json_mode=True, scene="reply", frequency_penalty=_REPLY_FREQ_PENALTY)
     if not raw:
         logger.warning("多句回复生成为空，将使用 fallback")
         return [], 0, [], "", "", "", None, None, "user", {}, [], []

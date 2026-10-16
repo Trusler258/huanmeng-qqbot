@@ -11,6 +11,17 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.92 — 修复思考模式下强制调用工具 400（2026.10.16）
+
+一句话总结：DeepSeek 思考模式不支持 function 对象的 tool_choice，开启思考时跳过强制调用。
+
+`registry.all()/get()` 惰性触发 `discover()`，发现它用**全新 dict 覆盖 `_caps`**
+（与 KOOK v2.3.96 同源，QQ 侧 v2.3.91 已修）。本轮修的是 LLM FC 侧：
+`llm.py` FC 第 0 轮传 function 对象强制调用时，若 `thinking=True`（决策模型命中
+deep/tools 需求）会 400 "Thinking mode does not support this tool_choice"。
+修复：思考模式开启时第 0 轮退回 auto（思考模式下模型工具调用率本就不低，实测 7/20）；
+thinking=False 保持强制。KOOK 侧无此 bug（其 FC 调用对 DeepSeek 恒定关闭 thinking）。
+
 ## v2.3.91 — 修复 CapabilityRegistry.discover() 覆盖插件能力（对齐 KOOK v2.3.96）(2026.10.16)
 
 一句话总结：修掉一个与 KOOK 同源的潜伏 bug——插件运行时注册的能力会被 discover 清掉。
