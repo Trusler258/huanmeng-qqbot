@@ -11,6 +11,31 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.96 — 回复碎片化：句法约束 + 决策模型判长度 (2026.10.19)
+
+一句话总结：把回复的"AI 味"从**句法**上压——短句、1~3 句、能一句说完就不说第二句；
+长度由决策模型在生成前定档（short/mid/long），不靠模型自觉。
+
+1. **人设（data/skills/）**
+   - `00_core/persona_lock`：删掉"耳朵尾巴藏不住情绪"的体态描写口子（写体态＝旁白感，
+     反而更像扮演）；新增【句法：句子要碎】（单句≤20字 / 1~3 句 / 不分点不总结 /
+     情绪靠用词不靠描写 / 允许口语省略与倒装）
+   - `40_reminders/reply_reminder_core`：新增【碎句·硬约束】（每轮注入，权重最高）
+   - `10_format_group/group_format`：修两处冲突——"插嘴"改为守【只答当前】；
+     "敷衍"补上"对方明确要详细时必须展开"
+   - `11_format_private/private_tone`：私聊也限 1~3 句
+2. **决策模型（services/decision.py）**：`route()` 新增 `reply_len` 三档判定
+   （短/中/长，choice 题型，criteria 用 record），返回由 3 元组变 **4 元组**，
+   失败 fail-open 返回 `(None,None,None,None)`
+3. **注入（services/llm.py）**：`generate_multi_reply_with_tools(reply_length=...)`
+   把档位**追加到 system_prompt**（不新增 system 消息，避免单 system 限制的 provider 400）
+4. **接线（core/pipeline.py）**：解包 4 元组，透传 `reply_length`
+
+验证：
+- `route()` 实测：`在吗`→short(0.998) / `解释一下 TCP 三次握手，要详细`→long(0.9997) /
+  `你吃饭了吗`→short(0.991)
+- 真实生成实测：`reply_length=short` → 1 句「在呀～怎么啦」；不传 → 2 句
+
 ## v2.3.95 — 修 /~reload 不重读技能文件 (2026.10.19)
 
 一句话总结：`/~reload` 原来只重载配置和关键词、完全不动 `data/skills/*.md`，改人设后必须重启才生效。

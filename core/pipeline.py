@@ -565,10 +565,20 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     elif is_group and re.search(r"@\S+", msg_content):
         logger.debug("@他人消息 [群%d] → SKIP", chat_id)
     else:
+        # 回复链：消息引用的原消息 ID（[CQ:reply,id=...]）。引的是幻梦的消息 = 明确指向它
+        _reply_id = None
+        if raw_message:
+            _rm = _re.search(r"\[CQ:reply,id=(\d+)\]", str(raw_message))
+            if _rm:
+                try:
+                    _reply_id = int(_rm.group(1))
+                except (ValueError, TypeError):
+                    _reply_id = None
         should_reply = await should_respond(
             msg_content, msg_type, sender_name, chat_id,
             ctx.get_context(chat_id), cfg.bot_name, bot_qq,
             reply_threshold_override=custom_threshold,
+            reply_id=_reply_id,
         )
     logger.debug("PIPE 回复判断完成 耗时%.2fs → should_reply=%s (total %.2fs)",
                  _tm.monotonic() - _t_pipe_start, should_reply, _tm.monotonic() - _t_pipe_start)
@@ -582,6 +592,22 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.info("用户%d在忽略列表中，跳过回复 (%ds后解除)", user_id, remaining_seconds(user_id))
         return
 
+    # ------决策模型路由（A：通用能力判定）------
+    # 提前 fire 出去，与后续的记忆检索/上下文组装/（可能的）代码管道重叠，
+    # 到真正要用时才 await，避免串行等待。失败/未启用 → 保持 None，行为与从前完全一致。
+    _dec_task = None
+    _dec_mod = None
+    try:
+        from services import decision as _dec_mod
+        if _dec_mod.enabled():
+            # 把「本群成员名单」一起给模型：群里有真人昵称撞了机器人名时（如"初梦bot"），
+            # 模型才能分清"这是群友"而不是"在叫幻梦"。
+            _nicks = _dec_mod.group_nicknames(chat_id, exclude={cfg.bot_name})
+            _dec_task = asyncio.create_task(
+                _dec_mod.route(msg_content, speaker_name=display_name,
+                               group_nicknames=_nicks))
+    except Exception as _e:
+        logger.debug("决策模型路由启动失败（忽略）: %s", _e)
 
     # ------记忆检索+好感度+上下文组装------
     full_msg = f"[{role_tag}] {display_name}发了: {msg_content}"
@@ -858,10 +884,41 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # v2.1.10: 前置思考判断 —— 复用 _detect_skill_needs 的 deep 意图
     # deep 命中（知识/原理/对比/长问句提问）→ 开启思考模式；闲聊/指令 → 关闭（更快更省）
     thinking = False
+    _force_tool = None          # ★ v2.3.89（B）决策模型选中的工具 → FC 第0轮强制调用
+    reply_len = None            # ★ v2.3.96 决策模型判定的回复长度档位 short/mid/long
     try:
         from services.llm import _detect_skill_needs
-        needs = _detect_skill_needs(full_msg, is_group)
-        thinking = "deep" in needs
+        needs = _detect_skill_needs(full_msg, is_group)   # 关键词版（兜底）
+        # ★ 决策模型路由：补充关键词表没有的项（尤其 search / code / memory）
+        #   已在前面 fire 出去，这里只等结果；超时/异常一律忽略（fail-open）
+        if _dec_task is not None:
+            try:
+                _dn, _dprobs, _dtool, _dlen = await asyncio.wait_for(_dec_task, timeout=_dec_mod.call_timeout())
+                reply_len = _dlen
+                if _dn is not None:
+                    # ★ v2.3.88 决策模型启用且成功 → **以它为准，不再并集**。
+                    #   并集会让关键词版的 "deep" 把闲聊也强开思考模式（实测
+                    #   "@幻梦 那我继续摸？" 被判 deep、拖慢回复），决策判对也压不住。
+                    #   只有失败（_dn 为 None）时才退回关键词版。
+                    needs = _dn
+                    if _dtool and _dtool.get("name"):
+                        _force_tool = _dtool["name"]
+                        logger.info("决策模型路由: %s | 强制工具 %s (%.3f) | probs=%s",
+                                    sorted(_dn), _force_tool,
+                                    _dtool.get("confidence") or 0, _dprobs)
+                    else:
+                        logger.info("决策模型路由: %s | probs=%s", sorted(_dn), _dprobs)
+            except Exception as _de:
+                logger.debug("决策模型路由未就绪（fail-open，用关键词结果）: %s", _de)
+            _dec_task = None
+        # ★ v2.3.89（C）：tools 命中同样开思考。实测依据——关思考时工具调用率
+        #   0/20，开思考 7/20。开思考会增加耗时，故留 [decision] think_on_tools 开关。
+        _think_tools = False
+        try:
+            _think_tools = bool(_dec_mod.think_on_tools()) if _dec_mod is not None else False
+        except Exception:
+            _think_tools = False
+        thinking = ("deep" in needs) or (_think_tools and "tools" in needs)
         logger.info("思考模式: %s (needs=%s)", "开启" if thinking else "关闭", sorted(needs))
     except Exception as e:
         logger.warning("思考判断失败，默认关闭: %s", e)
@@ -882,6 +939,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         interim_cb=_make_interim_sender(chat_id, is_group, user_id, thought_ctx, sent_lead),
         thinking=thinking,
         thought_shown_cb=_make_thought_cb(thought_ctx),
+        needs=needs,
+        force_tool=_force_tool,
+        reply_length=reply_len,
     )
     logger.debug("PIPE LLM生成完成 耗时%.2fs → %d句 (total %.2fs)",
                  _tm.monotonic() - _t_pipe_start, len(sentences) if sentences else 0,
