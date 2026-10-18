@@ -11,6 +11,19 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.95 — 修 /~reload 不重读技能文件 (2026.10.19)
+
+一句话总结：`/~reload` 原来只重载配置和关键词、完全不动 `data/skills/*.md`，改人设后必须重启才生效。
+
+三条路径实测全空：
+- `/~reload` → `cmd_reload`：只 `reload_config()` + `reload_keywords()`
+- `data/control.txt` → bg_tasks 的 control_watcher：只 `reload_config()`
+- 唯一会调 `reload_skill_cache()` 的 `Bot.handle_reload()`，所在循环 `bot.py:147` 已注释停用（防双跑）
+
+修复：`cmd_reload` 增加 `reload_skill_cache()` + 预加载，并记录章节数。
+验证（探针法）：写入 PROBE → 未 reload 时读不到（缓存生效）→ `/reload` 后读到 → 还原后再 reload 读不到。
+测试中还确认：热重载成功返回含 `done!`，章节数 27。
+
 ## v2.3.94 — 接入 DeepSeek 新搜索/Fetch/视觉能力（V4.1-Flash-1017）(2026.10.18)
 
 一句话总结：搜索主路径换成 DeepSeek 官方 `/v1/tools/search`（真联网），`web_fetch` 优先走

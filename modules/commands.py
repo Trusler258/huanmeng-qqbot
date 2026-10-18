@@ -840,6 +840,17 @@ async def cmd_reload(args, user_id, group_id, sender_name, is_group, bot_qq):
     from modules.judge import reload_keywords
     reload_config()
     reload_keywords()
+    # ★ v2.3.95: 技能文件（data/skills/*.md）也要重读。
+    #   原来只重载 config + keywords —— 改 skills 后发 /~reload 完全不生效，只能重启进程
+    #   （2026-10-19 实测三条路径全空：本函数、bg_tasks 的 control.txt 都只 reload_config；
+    #    唯一会调 reload_skill_cache() 的 Bot.handle_reload() 所在循环 bot.py:147 已注释停用）。
+    try:
+        from services.llm import reload_skill_cache, _load_skill_sections
+        reload_skill_cache()
+        _n = len(_load_skill_sections())
+        logger.info("技能文件已重载: %d 个章节", _n)
+    except Exception as e:
+        logger.error("技能文件重载失败: %s", e, exc_info=True)
     logger.info("热重载完成")
     return format_lang("reload.success")
 
