@@ -1866,6 +1866,7 @@ async def generate_multi_reply_with_tools(
     thought_shown_cb=None,
     needs: set | None = None,
     force_tool: str | None = None,
+    reply_length: str | None = None,   # ★ v2.3.96 short/mid/long（决策模型判定）
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
@@ -1896,6 +1897,18 @@ async def generate_multi_reply_with_tools(
         force_tool = None
     if force_tool:
         logger.info("FC: 第0轮强制调用工具 %s", force_tool)
+    # ★ v2.3.96：决策模型判定的「本轮长度」→ 直接追加到 system_prompt。
+    #   不额外插一条 system 消息（部分 provider 只允许单条 system，会 400）。
+    #   目的：压住模型的"小作文"倾向——真人聊天是碎的。
+    if reply_length:
+        _len_hint = {
+            "short": "【本轮长度】最多 1~2 句，单句不超过 15 字。别铺垫、别总结、别解释自己在做什么。",
+            "mid": "【本轮长度】2~4 句，单句不超过 20 字。别分点、别写成小作文。",
+            "long": "【本轮长度】可以 4~8 句，但仍用短句（单句不超过 25 字），别分点、别加标题。",
+        }.get(reply_length)
+        if _len_hint:
+            system_prompt = f"{system_prompt}\n\n{_len_hint}"
+            logger.debug("注入本轮长度约束: %s", reply_length)
     msgs = _build_messages(msg_history, speaker_name, current_msg, bot_name, system_prompt, is_group, extra_info, needs=needs)
 
     # v2.1.12: 记录"最后一条有思考"的轮次耗时，最终回复生成时按它标注 [已思考N秒]
