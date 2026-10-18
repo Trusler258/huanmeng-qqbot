@@ -1414,7 +1414,10 @@ async def call_llm(
             if usage:
                 from core.token_tracker import record_usage
                 cached = getattr(usage, 'prompt_tokens_details', None)
-                cached_tokens = getattr(cached, 'cached_tokens', 0) or 0
+                # DeepSeek 额外在 usage 顶层给 prompt_cache_hit_tokens（官方 KV 缓存字段），
+                # 两者取其一，兼容不同 SDK 映射
+                cached_tokens = (getattr(usage, 'prompt_cache_hit_tokens', 0)
+                                 or getattr(cached, 'cached_tokens', 0) or 0)
                 cwrite = getattr(cached, 'cache_write_tokens', 0) or 0
                 record_usage(
                     model=model_cfg.name,
@@ -1560,7 +1563,8 @@ async def call_llm_with_tools(
                     model=model_cfg.name,
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
-                    cached_tokens=getattr(cached, "cached_tokens", 0) or 0,
+                    cached_tokens=(getattr(usage, "prompt_cache_hit_tokens", 0)
+                                   or getattr(cached, "cached_tokens", 0) or 0),
                     cache_write_tokens=getattr(cached, "cache_write_tokens", 0) or 0,
                     scene=scene or _current_call_scene or "tools",
                 )

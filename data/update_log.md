@@ -11,6 +11,30 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.94 — 接入 DeepSeek 新搜索/Fetch/视觉能力（V4.1-Flash-1017）(2026.10.18)
+
+一句话总结：搜索主路径换成 DeepSeek 官方 `/v1/tools/search`（真联网），`web_fetch` 优先走
+`/v1/tools/fetch`（干净 Markdown），并支持 `deepseek-flash` 原生视觉；缓存统计兼容官方字段。
+
+依据官方 4 份文档：search / fetch / vision / kv_cache。
+
+1. **搜索**：新增 `services/ds_tools.py`（ds_search + ds_fetch，408/429/5xx 重试一次）。
+   `perform_search` 主路径由旧 Responses API `web_search`（常常不联网、回旧记忆）改为
+   **官方 `/v1/tools/search`**（自研搜索引擎，返回 rerank_score/摘要/权威度/日期）；
+   AnySearch+百度/Bing 保留为兜底。
+   ⚠️ `DEEPSEEK_URL` 配的是 `.../v1/`，工具接口路径本身含 `/v1` → 必须剥掉尾部 `/v1`
+   （否则 `/v1/v1/tools/search` 404，已踩）。
+2. **抓取**：`web_fetch`/`read_url` 优先 `ds_fetch`（Markdown 正文），失败再走原有
+   PageScraper / JS 挑战解码 / Chromium 三级兜底。
+3. **视觉**：`deepseek-flash` 已原生收图（base64/URL）。`image_api` 增加 DeepSeek 分支——
+   **必须 `thinking: disabled`**：实测默认思考会把 max_tokens 全耗在 reasoning_content、
+   content 恒为空（300 token 也不例外），关闭后 120 token 即可准确描述。
+4. **KV 缓存**：`record_usage` 的 cached_tokens 增加 `usage.prompt_cache_hit_tokens` 兜底。
+
+验证：`/v1/tools/search` 返回 5 条真实结果（含官方 news、权威度 3）；`ds_fetch` 取到
+10362 字符 Markdown；`perform_search` 返回当天 15:02 的实时新闻；DeepSeek 视觉关闭思考后
+准确描述卡片内容（66 token）。
+
 ## v2.3.93 — 修 wdsj 不可用 + FC 绑定源错位（2026.10.16）
 
 一句话总结：`.wdsj` 全线不可用的根因是 cmd_wdsj 里函数内 import 遮蔽了顶层 format_lang
