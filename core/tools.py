@@ -975,6 +975,21 @@ async def _read_url(url: str) -> str | None:
     if not url.startswith("http"):
         return "请提供完整链接（http/https）"
 
+    # ★ v2.3.94: DeepSeek 官方 Fetch 接口优先——返回干净的 Markdown 正文，
+    #   比本地 readability 更稳、无 CSS/导航噪音；失败再走原有
+    #   PageScraper / JS 挑战解码 / Chromium 渲染三级兜底。
+    try:
+        from services.ds_tools import ds_fetch
+        _page = await ds_fetch(url, timeout=40.0)
+        _txt = ((_page or {}).get("content") or "").strip()
+        if len(_txt) >= 200:
+            _title = ((_page or {}).get("title") or "").strip()
+            logger.info("DS Fetch 命中: %s → %d 字符", url[:50], len(_txt))
+            return (f"# {_title}\n\n{_txt}" if _title else _txt)[:12000]
+        logger.info("DS Fetch 未取到正文，回退本地抓取: %s", url[:50])
+    except Exception as e:
+        logger.warning("DS Fetch 异常: %s，回退本地抓取", e)
+
     # 用统一的 PageScraper 提取正文（readability + 智能截断）
     try:
         from modules.local_search import get_scraper
