@@ -1,9 +1,9 @@
 """
-Plugin Loader（移植自 huanmeng-kook-bot core/plugin/loader.py）
+Phase 13 Plugin Loader（Huanmeng 2.0）
 
 从 plugins/ 目录发现并加载插件：
 - discover()：扫描目录，读取 manifest.json，校验得到 PluginManifest
-- load_module()：为 python runtime 动态导入 entrypoint 模块
+- load_module()：为 python runtime 动态导入 entrypoint 模块；lua runtime 由 Phase 14 处理
 """
 from __future__ import annotations
 
@@ -15,12 +15,8 @@ from typing import Optional
 
 from core.logger import get_logger
 from core.plugin.manifest import PluginManifest, validate_manifest, RUNTIME_LUA
-from core.plugin import kook_compat
 
 logger = get_logger("plugin.loader")
-
-# 加载插件前注入 KOOK 专属模块 stub（.hmp 插件常 import khl，剥离 KOOK 格式依赖）
-kook_compat.install_kook_stubs()
 
 MANIFEST_FILE = "manifest.json"
 
@@ -39,6 +35,28 @@ def discover_plugins(plugins_dir: str) -> list[PluginManifest]:
         return manifests
 
     for child in sorted(base.iterdir()):
+        # ★ v2.3.104：`.hmp` 插件包（方案 A：包里就是插件，不在 plugins/ 下解压成目录）
+        if child.is_file() and child.suffix.lower() == ".hmp":
+            if child.name.startswith(DISABLE_PREFIX):
+                logger.debug("跳过 %s：文件名带 [DISABLE] 禁用前缀", child.name)
+                continue
+            try:
+                from core.plugin.archive import is_archive, read_manifest as _read_arc_manifest
+                if not is_archive(child):
+                    logger.warning("跳过 %s：不是有效的 .hmp（需 zip + 根目录 manifest.json）", child.name)
+                    continue
+                data = _read_arc_manifest(child) or {}
+                manifest, err = validate_manifest(data)
+                if err:
+                    logger.warning("插件包 %s 校验失败: %s", child.name, err)
+                    continue
+                manifest.base_dir = str(child)
+                manifest.archive = True
+                manifests.append(manifest)
+                logger.info("发现插件包 %s → %s@%s", child.name, manifest.name, manifest.version)
+            except Exception as e:
+                logger.warning("插件包 %s 解析失败: %s", child.name, e)
+            continue
         if not child.is_dir():
             continue
         # [DISABLE] 前缀：视为已停用，跳过加载
@@ -66,8 +84,20 @@ def discover_plugins(plugins_dir: str) -> list[PluginManifest]:
 def load_module(manifest: PluginManifest) -> Optional[object]:
     """加载 python runtime 插件的 entrypoint 模块，返回模块对象。"""
     if manifest.runtime == RUNTIME_LUA:
-        # Lua 插件暂不支持，不在 python 层动态导入
+        # Lua 插件由 Phase 14 LuaRuntime 处理，不在 python 层动态导入
         return None
+    # ★ v2.3.104：`.hmp` 包 —— 从 zip 内加载，不落地解压
+    if getattr(manifest, "archive", False):
+        module_name = f"_hm_plugin_{manifest.name}"
+        if module_name in sys.modules:
+            return sys.modules[module_name]
+        try:
+            from core.plugin.archive import load_module as _load_from_archive
+            return _load_from_archive(Path(manifest.base_dir), manifest.entrypoint, module_name)
+        except Exception as e:
+            logger.warning("插件包 %s 加载失败: %s", manifest.name, e)
+            sys.modules.pop(module_name, None)
+            return None
     entry = Path(manifest.base_dir) / manifest.entrypoint
     if not entry.is_file():
         logger.warning("插件 %s 入口不存在: %s", manifest.name, entry)
@@ -90,10 +120,10 @@ def load_module(manifest: PluginManifest) -> Optional[object]:
         return None
 
 
-def drop_module(manifest) -> None:
+def drop_module(manifest: PluginManifest) -> None:
     """清除插件模块的 import 缓存。
 
-    load_module 会缓存模块到 sys.modules，命中时直接返回旧模块，
+    load_module 会缓存 `_hm_plugin_{name}` 到 sys.modules，命中时直接返回旧模块，
     导致磁盘代码更新后 reload 仍加载旧代码。卸载/热重载前必须先清掉该缓存。
     """
     module_name = f"_hm_plugin_{manifest.name}"
@@ -103,11 +133,7 @@ def drop_module(manifest) -> None:
 
 
 def locate_plugin_classes(module: object) -> list[type]:
-    """从模块中找出 Plugin 类（名为 Plugin 或自身 dict 含 on_load/on_unload 的类）。
-
-    用 vars(obj)（类自身 __dict__）而非 hasattr 判定钩子，避免 KOOK stub 类
-    （元类 __getattr__ 兜底导致 hasattr 恒 True）被误判为 Plugin 类。
-    """
+    """从模块中找出 Plugin 类（名为 Plugin 或含 on_load/on_enable 钩子的类）。"""
     classes: list[type] = []
     for attrn in dir(module):
         if attrn.startswith("_"):
@@ -115,11 +141,8 @@ def locate_plugin_classes(module: object) -> list[type]:
         obj = getattr(module, attrn)
         if not isinstance(obj, type):
             continue
-        if getattr(obj, "_kook_stub", False):
-            # KOOK 兼容层注入的 stub 类，跳过
-            continue
         if attrn == "Plugin" or (
-            "on_load" in vars(obj) and "on_unload" in vars(obj)
+            hasattr(obj, "on_load") and hasattr(obj, "on_unload")
         ):
             classes.append(obj)
     return classes
