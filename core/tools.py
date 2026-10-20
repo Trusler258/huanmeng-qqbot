@@ -480,6 +480,47 @@ def _find_plugin_tool_handler(tool_name: str):
     except Exception:
         return None
 
+_CORE_TOOL_NAMES = {((t.get("function") or {}).get("name")) for t in TOOLS if t}
+
+
+def _plugin_tool_allowed(tool_name: str) -> tuple[bool, str]:
+    """插件工具的执行授权判定（★ v2.3.101）。
+
+    QQ 侧没有 KOOK 的 tool_runtime 权限层，所以这里做最小等价闭环：
+      1. 工具必须仍在注册表（插件卸载/禁用后不得继续可调）
+      2. 未声明权限的插件工具不得占用核心工具名（防静默接管 write_code 等）
+      3. 声明过的权限在执行期再验一次，必须仍在 manifest.permissions 内
+    """
+    try:
+        from core.capability.registry import get_capability_registry
+        cap = get_capability_registry().find_plugin_tool(tool_name)
+    except Exception:
+        cap = None
+    if cap is None:
+        return False, f"插件工具 {tool_name} 不在注册表（插件可能已卸载/禁用）"
+    plugin = cap.source.split(":", 1)[-1] if getattr(cap, "source", "") else "?"
+    declared = bool(getattr(cap, "perm_declared", True))
+    need = list(getattr(cap, "permissions", None) or [])
+    if not declared:
+        if tool_name in _CORE_TOOL_NAMES:
+            return False, (f"插件 {plugin} 的工具 {tool_name} 占用核心工具名但未声明权限，拒绝执行")
+        return True, "未声明权限（迁移期放行）"
+    live = None
+    try:
+        from core.plugin import get_plugin_manager
+        mf = get_plugin_manager().manifest_of(plugin)
+        if mf is not None:
+            live = list(getattr(mf, "permissions", None) or [])
+    except Exception:
+        live = None
+    if live is not None:
+        missing = [x for x in need if x not in live]
+        if missing:
+            return False, (f"插件 {plugin} 的工具 {tool_name} 所需权限 {missing} "
+                           "已不在 manifest.permissions 内（插件被降权？）")
+    return True, "ok"
+
+
 async def _write_code(
     language: str, description: str,
     user_id: int, group_id: int, sender_name: str, is_group: bool, bot_qq: int,
@@ -1228,6 +1269,11 @@ async def execute_tool(
         # 插件动态注册的工具：LLM 对话自动发现并调用，回退到插件 handler
         plugin_handler = _find_plugin_tool_handler(tool_name)
         if plugin_handler:
+            # ★ v2.3.101：注册不再等于授权——执行前按"归属 + 声明"复查
+            _ok, _why = _plugin_tool_allowed(tool_name)
+            if not _ok:
+                logger.error("插件工具 %s 执行被拒: %s", tool_name, _why)
+                return f"[工具被拒绝] {_why}"
             try:
                 result = await plugin_handler(
                     arguments, user_id, group_id, sender_name, is_group, bot_qq)
