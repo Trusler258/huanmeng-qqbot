@@ -11,6 +11,35 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.98 — QQ 空间互动：可复用库 + 插件（默认关闭）(2026.10.20)
+
+一句话总结：把逆向来的 Qzone 接口收进 `services/qzone.py` 当可调用库，
+再写 `plugins/qzone/` 轮询自己说说下的新评论，评论里 @机器人 就回一句。
+
+### 一、`services/qzone.py`（与框架无关的库）
+- `QzoneClient(cookie)`：自动解析 `uin/p_uin`、`skey`、`p_skey`，算 `g_tk`
+  （QQ 空间经典 5381 位移累加 & 0x7fffffff）
+- `my_feeds(num)`：自己的说说 + 内嵌评论（PC `emotion_cgi_msglist_v6` 先试，
+  失败自动回退 `feeds3_html_more`）
+- `comment(feed_uin, tid, text)`：一级评论（user 域 → H5 两路回退）
+- `reply(feed_uin, tid, cid, cuin, text)`：楼中楼（带 `commentId`/`commentUin` 锚定）
+- `check_cookie()`：探活；`-3/-100/-3000/-10001/-10006` 判定为 cookie 失效（`QzoneError.auth`）
+- 解析全部**防御式**：`msglist` / `data` / `feedlist` 三种结构都试，字段名做多路兜底
+
+### 二、`plugins/qzone/`
+- 轮询（默认 120s，`[qzone] poll_interval`），**首轮只建基线**，不回旧评论
+- 命中三种 @ 形态才回：原生 `@{uin:机器人QQ}` / 裸 `@3682248514` / `@昵称`；
+  喂模型前把 @ 标记剔掉，避免复读一串数字
+- 回复用现有人设生成 **1 句 ≤20 字**，走 `cheap_model`，不调工具
+- seen 存 `data/qzone_seen.json`；每轮最多回 `max_replies_per_poll` 条
+- `.qzone status|test|raw` 诊断（test/raw 直接拉最新说说，验证 cookie）
+
+### 三、状态
+**默认关闭**：`[qzone] enabled = false`。需要把**机器人号**的 Qzone cookie 写入
+`config/qzone_cookie.txt` 才能启用——cookie 从 i.qq.com 登录后 F12 取 `uin/skey/p_skey`。
+
+线上：24 插件，`.qzone` 已注册，未启用；接口只读+评论，不动主链路。
+
 ## v2.3.97 — 修复复读 + 补齐 draw 工具 (2026.10.20)
 
 一句话总结：修掉"同一句连着两轮一字不差发出"，并让模型能正常调用文生图、拿到真实结果。
