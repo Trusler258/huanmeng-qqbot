@@ -44,7 +44,7 @@ def test_resolve_model():
     ck("别名回查", P.model_alias_of("gpt-image-2.5-sunburst") == "sunburst")
     txt = P.model_list_text("gpt-image-2.5-sunburst")
     ck("模型列表无 md", "**" not in txt and "`" not in txt, txt[:60])
-    ck("模型列表含 8 个", txt.count("·") >= 8, txt)
+    ck("模型列表含 8 个", sum(1 for l in txt.split("\n") if "/张" in l) == 8, txt[:200])
 
 
 def test_size():
@@ -217,28 +217,46 @@ def test_size_fallback():
 
 
 def test_cost_and_tier():
-    """价格表 / 档位 / 能力标注（v2.3.104 第 2 轮）。"""
+    """价格表 / 档位 / 能力标注（真实报价：控制台 2026-10-21 01:16）."""
     from services import poke_image as P
 
     print("[6] 价格与能力标注")
-    ck("sunburst 1k 价", P.estimate_cost("sunburst", "1536x864") == 1.5,
+    # gpt 系 1k = $0.12 × 7.15 ≈ ¥0.86
+    ck("sunburst 1k 价 ¥0.86", P.estimate_cost("sunburst", "1536x864") == 0.86,
        str(P.estimate_cost("sunburst", "1536x864")))
-    ck("sunburst 2k 价 ≈4 倍", P.estimate_cost("sunburst", "3072x1728") == 6.0,
-       str(P.estimate_cost("sunburst", "3072x1728")))
-    ck("1024x1024 按面积折算", P.estimate_cost("sunburst", "1024x1024") <= 1.5)
-    ck("gemini 便宜", P.tier_label("gemini") == "便宜", P.tier_label("gemini"))
-    ck("gpt-image-2 中等", P.tier_label("gpt-image-2") == "中等", P.tier_label("gpt-image-2"))
-    ck("sunburst 贵", P.tier_label("sunburst") == "贵", P.tier_label("sunburst"))
-    ck("seedream 贵", P.tier_label("seedream") == "贵", P.tier_label("seedream"))
-    txt = P.estimate_text("gemini", "1536x864")
-    ck("预估文本含价格+档位", "¥" in txt and "便宜" in txt, txt)
+    # ⚠️ gpt 系 2k 与 1k 同价，不再"翻 4 倍"
+    ck("sunburst 2k 同价", P.estimate_usd("sunburst", "3072x1728") == 0.12,
+       str(P.estimate_usd("sunburst", "3072x1728")))
+    ck("sunburst 4k 加价", P.estimate_usd("sunburst", "6144x3456") == 0.18,
+       str(P.estimate_usd("sunburst", "6144x3456")))
+    # seedream 5.0 Pro 才是 2k 翻倍
+    ck("seedream 2k 翻倍 $0.80", P.estimate_usd("seedream", "3072x1728") == 0.80,
+       str(P.estimate_usd("seedream", "3072x1728")))
+    ck("seedream 2k ≈¥5.72", P.estimate_cost("seedream", "3072x1728") == 5.72,
+       str(P.estimate_cost("seedream", "3072x1728")))
+    ck("1024x1024 归 1k 档", P.estimate_usd("sunburst", "1024x1024") == 0.12)
+
+    # 档位按人民币：gpt/gemini/grok ¥0.86 便宜；seedream4 ¥2.15 中等；seedream pro ¥2.86 贵
+    for m, want in (("gemini", "便宜"), ("gpt-image-2", "便宜"), ("sunburst", "便宜"),
+                    ("grok", "便宜"), ("seedream4", "中等"), ("seedream", "贵")):
+        ck(f"{m} → {want}", P.tier_label(m) == want, P.tier_label(m))
+
+    txt = P.estimate_text("seedream", "3072x1728")
+    ck("预估文本含价格+档位", "5.72" in txt and "贵" in txt, txt)
+
+    # size_note：只有真加价才提醒
+    ck("sunburst 2k 无提醒", P.size_note("sunburst", "3072x1728") == "",
+       P.size_note("sunburst", "3072x1728"))
+    note = P.size_note("seedream", "3072x1728")
+    ck("seedream 2k 有提醒", "2k 比 1k 贵" in note and "5.72" in note, note)
 
     body = P.model_list_text("gpt-image-2.5-sunburst")
-    ck("列表含能力描述", "最稳最准" in body, body[:200])
-    ck("列表含中文名（能力）", "中文语义" in body)
-    ck("列表含实测耗时", "实测约41秒" in body or "实测约 41" in body, body[:300])
-    ck("列表含单价", "约¥" in body)
-    ck("列表含 2k 成本提示", "2k" in body and "4 倍" in body)
+    ck("列表含能力描述", "效果最好" in body, body[:200])
+    ck("列表含中文名（能力）", "中文国风强" in body)
+    ck("列表含平均耗时", "66秒" in body, body[:300])
+    ck("列表含单价", "¥0.86/张" in body)
+    ck("列表含别名方括号", "[sunburst]" in body and "[seedream4]" in body)
+    ck("列表说明 2k 同价", "同价" in body, body[-120:])
     ck("列表无 md", "**" not in body and "`" not in body)
 
 

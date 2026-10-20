@@ -48,56 +48,60 @@ MODEL_LABELS: dict[str, str] = {
     "seedream4": "豆包 Seedream 4.0",
 }
 
-# 相对能力（不是跑分，是"跟同批模型比"的定位；耗时为本机实测值，没测就不写）
+# 相对能力（不是跑分，是"跟同批模型比"的短标签，用 / 分隔两三个词）
 MODEL_ABILITY: dict[str, str] = {
-    "sunburst": "最稳最准，指令跟随最好",
-    "flare": "风格张力强，画面更有戏",
-    "gpt-image-2": "上一代旗舰，稳但细节偏旧",
-    "gemini": "便宜快，细节一般，2k 会被降回 1024",
-    "grok": "出图最快，偏写实",
-    "grok2": "构图更活，速度也快",
-    "seedream": "中文语义/国风强，但最贵",
-    "seedream4": "中文语义好，性价比款",
+    "sunburst": "旗舰/效果最好",
+    "flare": "旗舰/风格化更强",
+    "gpt-image-2": "上代旗舰/细节偏旧",
+    "gemini": "快/2k降1024",
+    "grok": "最快/偏写实",
+    "grok2": "快/构图更活",
+    "seedream": "中文国风强/最贵",
+    "seedream4": "中文好/性价比",
 }
 
-# 实测耗时（秒）；没实测的不出现
+# 平均生成耗时（秒，控制台「近期运行情况」24h 均值，2026-10-21 采集）
 MODEL_SPEED: dict[str, int] = {
-    "sunburst": 41,
-    "gemini": 26,
-    "grok": 9,
-    "seedream": 25,
-    "seedream4": 7,
+    "sunburst": 66,
+    "flare": 58,
+    "gpt-image-2": 66,
+    "gemini": 28,
+    "grok": 15,
+    "grok2": 27,
+    "seedream": 42,
+    "seedream4": 6,
 }
 
 DEFAULT_MODEL = "gpt-image-2.5-sunburst"
 
-# ── 价格与成本预估（v2.3.104 第 2 轮）────────────────────
-# 每张「1k 基准尺寸」（1536x864 ≈ 1.33MP）的预估人民币。仅用于对话里给"预计 ¥X"，
-# 不是账单；可用 config/bot_config.toml 的 [image.price] 覆盖（键=模型 ID 或别名）。
-# ⚠️ 依据：2026-10-21 控制台实测 doubao-seedream-5-0-pro 2 次（含一张 2048x2048）
-#    共 32.81K token = $1.72 → 2k 单张约 ¥6.2，按面积比 4 反推 1k 约 ¥1.5
-_PRICE_DEFAULTS: dict[str, float] = {
-    "gpt-image-2.5-sunburst": 1.5,
-    "gpt-image-2.5-flare": 1.5,
-    "gpt-image-2": 0.9,
-    "gemini-3.1-flash-image": 0.15,
-    "grok-imagine-image-quality": 0.4,
-    "grok-imagine-image-2.0": 0.4,
-    "doubao-seedream-5-0-pro": 1.5,
-    "doubao-seedream-4-0": 0.6,
+# ── 价格与成本（控制台报价，USD/张，2026-10-21 01:16 采集）────────────
+# 结构：模型 ID → (1k, 2k, 4k) 美元单价。
+# ⚠️ **2k 并非都涨价**：gpt-image-2*/gemini/grok/seedream-4-0 的 2K 与 1K 同价，
+#    只有 doubao-seedream-5-0-pro 的 2K 翻倍（0.40 → 0.80）。
+# 可用 config/bot_config.toml 的 [image.usd] 覆盖，值写成数组 [1k, 2k, 4k]。
+_PRICE_USD: dict[str, tuple[float, float, float]] = {
+    "gpt-image-2.5-sunburst": (0.12, 0.12, 0.18),
+    "gpt-image-2.5-flare": (0.12, 0.12, 0.18),
+    "gpt-image-2": (0.12, 0.12, 0.18),
+    "gemini-3.1-flash-image": (0.12, 0.12, 0.16),
+    "grok-imagine-image-quality": (0.12, 0.12, 0.18),
+    "grok-imagine-image-2.0": (0.12, 0.12, 0.18),
+    "doubao-seedream-5-0-pro": (0.40, 0.80, 0.80),
+    "doubao-seedream-4-0": (0.30, 0.30, 0.30),
 }
 
-# 成本档位阈值（元/张，按 1k 基准算）
-_TIER_CHEAP = 0.3
-_TIER_MID = 1.0
+DEFAULT_USD_CNY = 7.15   # 汇率，可在 [image] usd_cny 覆盖
+# 成本档位阈值（按 1k 价换算成人民币）：≤1.0 便宜 / ≤2.5 中等 / 其余贵
+_TIER_CHEAP = 1.0
+_TIER_MID = 2.5
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROUTE = Path(__file__).resolve().parent.parent
 _CFG_CACHE: dict = {"mtime": 0.0, "image": {}}
 
 
 def _image_section() -> dict:
     """读 bot_config.toml 的 [image] 段（按 mtime 缓存，改配置无需重启也能生效）。"""
-    p = _ROOT / "config" / "bot_config.toml"
+    p = _ROUTE / "config" / "bot_config.toml"
     try:
         mt = p.stat().st_mtime
     except OSError:
@@ -113,21 +117,53 @@ def _image_section() -> dict:
     return _CFG_CACHE["image"]
 
 
+def usd_cny() -> float:
+    try:
+        return float(_image_section().get("usd_cny") or DEFAULT_USD_CNY)
+    except (TypeError, ValueError):
+        return DEFAULT_USD_CNY
+
+
 def price_table() -> dict:
-    """模型 ID → 每张 1k 基准预估人民币（内置默认 + 配置覆盖）。"""
-    table = dict(_PRICE_DEFAULTS)
-    cfg = _image_section().get("price") or {}
+    """模型 ID → (1k, 2k, 4k) 美元单价（内置默认 + 配置覆盖）。"""
+    table = dict(_PRICE_USD)
+    cfg = _image_section().get("usd") or {}
     for k, v in cfg.items():
         mid = resolve_model(str(k)) or str(k)
         try:
-            table[mid] = float(v)
-        except (TypeError, ValueError):
+            seq = list(v)
+            if len(seq) == 1:
+                seq = seq * 3
+            elif len(seq) == 2:
+                seq = [seq[0], seq[1], seq[1]]
+            table[mid] = (float(seq[0]), float(seq[1]), float(seq[2]))
+        except (TypeError, ValueError, IndexError):
             continue
     return table
 
 
+def _size_tier(size: str | None) -> str:
+    """尺寸 → '1k' / '2k' / '4k'（按面积，基准 1k=1536x864）。"""
+    if not size:
+        return "1k"
+    s = str(size).lower().strip()
+    if "x" not in s:
+        return "1k"
+    try:
+        w, h = s.split("x")[:2]
+        area = int(w) * int(h)
+    except (TypeError, ValueError):
+        return "1k"
+    ratio = area / (1536 * 864)
+    if ratio >= 6.0:
+        return "4k"
+    if ratio >= 1.9:
+        return "2k"
+    return "1k"
+
+
 def _area_factor(size: str | None) -> float:
-    """尺寸面积 / 1k 基准面积（1536x864）。auto/空 → 1.0。"""
+    """尺寸面积 / 1k 基准面积（保留兼容，只用于粗略判断）。"""
     if not size:
         return 1.0
     s = str(size).lower().strip()
@@ -138,29 +174,33 @@ def _area_factor(size: str | None) -> float:
         area = int(w) * int(h)
     except (TypeError, ValueError):
         return 1.0
-    base = 1536 * 864
-    return max(0.25, round(area / base, 2))
+    return max(0.25, round(area / (1536 * 864), 2))
+
+
+def estimate_usd(model: str, size: str | None = None) -> float:
+    """这一张的美元单价（按尺寸档查表，不做面积折算）。"""
+    mid = resolve_model(model) or DEFAULT_MODEL
+    prices = price_table().get(mid, (0.12, 0.12, 0.18))
+    return prices[("1k", "2k", "4k").index(_size_tier(size))]
 
 
 def estimate_cost(model: str, size: str | None = None) -> float:
     """预估这一张的人民币成本（保留 2 位，显示时用 _fmt_cny 去尾零）。"""
-    mid = resolve_model(model) or DEFAULT_MODEL
-    base = price_table().get(mid, 1.0)
-    return round(base * _area_factor(size), 2)
+    return round(estimate_usd(model, size) * usd_cny(), 2)
 
 
 def _fmt_cny(v: float) -> str:
-    """1.5 → '1.5'；0.15 → '0.15'；6.0 → '6'。"""
+    """0.86 → '0.86'；1.5 → '1.5'；6 → '6'。"""
     return f"{v:g}"
 
 
 def tier_label(model: str) -> str:
-    """按 1k 基准单价返回 便宜 / 中等 / 贵。"""
+    """按 1k 单价（人民币）返回 便宜 / 中等 / 贵。"""
     mid = resolve_model(model) or DEFAULT_MODEL
-    base = price_table().get(mid, 1.0)
-    if base <= _TIER_CHEAP:
+    cny = estimate_cost(mid, "1536x864")
+    if cny <= _TIER_CHEAP:
         return "便宜"
-    if base <= _TIER_MID:
+    if cny <= _TIER_MID:
         return "中等"
     return "贵"
 
@@ -168,6 +208,21 @@ def tier_label(model: str) -> str:
 def estimate_text(model: str, size: str | None = None) -> str:
     """给用户看的一行：预计约 ¥x（档位）。"""
     return f"预计约 ¥{_fmt_cny(estimate_cost(model, size))}（{tier_label(model)}）"
+
+
+def size_note(model: str, size: str | None = None) -> str:
+    """2k/4k 且比 1k 贵时给一句成本提醒；不加价返回空串。"""
+    mid = resolve_model(model) or DEFAULT_MODEL
+    tier = _size_tier(size)
+    if tier == "1k":
+        return ""
+    p1 = estimate_usd(mid, "1536x864")
+    pn = estimate_usd(mid, size)
+    if pn <= p1:
+        return ""
+    return (f"{tier} 比 1k 贵：约 ¥{_fmt_cny(estimate_cost(mid, size))}/张"
+            f"（1k 约 ¥{_fmt_cny(estimate_cost(mid, '1536x864'))}），嫌贵就省掉分辨率参数")
+
 
 # 文件名别名 → 规范别名（用户手打的各种写法）
 _ALIASES: dict[str, str] = {
@@ -234,21 +289,23 @@ def model_alias_of(model_id: str) -> str:
 
 
 def model_list_text(current: str = DEFAULT_MODEL) -> str:
-    """/~draw model 的纯文本列表（QQ 不渲染 Markdown）：模型 + 相对能力 + 成本档位 + 实测耗时。"""
+    """/~draw model 的纯文本列表（QQ 不渲染 Markdown）：一行一个模型。
+
+    格式：显示名（默认） [别名]  ¥单价/张  档位/能力标签/耗时
+    """
     cur_alias = model_alias_of(current)
-    table = price_table()
-    lines = [f"可用绘图模型（当前 {cur_alias}，约 ¥{_fmt_cny(table.get(current, 0))}/张）"]
-    for i, (alias, mid) in enumerate(MODELS.items(), 1):
-        mark = " ★" if alias == cur_alias else ""
-        lines.append(f"· {i} {alias}  {MODEL_LABELS.get(alias, mid)}{mark}")
-        bits = [MODEL_ABILITY.get(alias, "")]
-        bits.append(f"{tier_label(mid)} 约¥{_fmt_cny(table.get(mid, 0))}/张")
+    lines = [f"可用绘图模型（当前 {cur_alias}）"]
+    for alias, mid in MODELS.items():
+        mark = "（默认）" if alias == cur_alias else ""
+        label = MODEL_LABELS.get(alias, mid).replace("（默认）", "")
+        tail = [tier_label(mid), MODEL_ABILITY.get(alias, "")]
         if alias in MODEL_SPEED:
-            bits.append(f"实测约{MODEL_SPEED[alias]}秒")
-        lines.append("    " + "｜".join(x for x in bits if x))
-    lines.append("用法：/~draw <模型> [比例] [分辨率] 提示词（参数顺序随意，都可省）")
-    lines.append("切换：/~draw model <名字>")
-    lines.append("提示：不写分辨率一律按 1k 算；写 2k 面积翻 4 倍、成本约为 4 倍，seedream 系列最贵")
+            tail.append(f"{MODEL_SPEED[alias]}秒")
+        tail_s = "/".join(x for x in tail if x)
+        cny = _fmt_cny(estimate_cost(mid, "1536x864"))
+        lines.append(f"{label}{mark} [{alias}]  ¥{cny}/张  {tail_s}")
+    lines.append("用法：/~draw [模型] [比例] [分辨率] 提示词（都可省）｜/~draw model <名字> 切换")
+    lines.append("不写分辨率按 1k；2k 多数模型与 1k 同价，只有 seedream 5.0 Pro 的 2k 翻倍")
     return "\n".join(lines)
 
 

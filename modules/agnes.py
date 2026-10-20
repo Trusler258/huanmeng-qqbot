@@ -716,11 +716,12 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
     limit_str = f"{limit}" if limit else "∞"
     ref_hint = " 参考图(备用通道)" if ref_url else ""
     est = poke_image.estimate_text(model_id, size)
-    # 2k 及以上额外提示成本（面积翻 4 倍）
+    # 2k/4k 若真比 1k 贵才提示（多数模型同价，只有 seedream 5.0 Pro 翻倍）
     big_hint = ""
     try:
-        if poke_image._area_factor(size) >= 1.9:
-            big_hint = "\n(2k 尺寸成本约为 1k 的 4 倍，嫌贵就省掉分辨率参数)"
+        _note = poke_image.size_note(model_id, size)
+        if _note:
+            big_hint = "\n(" + _note + ")"
     except Exception:
         pass
     tip = (f"开始生成{ref_hint}: [{prompt_short}]\n"
