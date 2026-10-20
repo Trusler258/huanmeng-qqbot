@@ -134,6 +134,21 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "draw",
+            "description": "文生图：按提示词生成图片并发到群里。用户说画画/生成图片/来张图/画一个时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "画面描述（中文即可，越具体越好）"},
+                    "size": {"type": "string", "description": "可选尺寸或比例，如 16:9 / 1:1 / 1024x1024，默认 16:9"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "chess",
             "description": "中国象棋对局管理：加入/移动/退出/局面查看。",
             "parameters": {
@@ -343,6 +358,7 @@ _TOOL_CMD_MAP: dict[str, str] = {
     "search_web":  "search",
     "earthquake":  "eq",
     "draw_card":   "抽",
+    "draw":        "draw",  # ★ v2.3.97 文生图（此前只能靠 legacy calls 调，模型拿不到结果）
     "chess":       "xq",
     "web_fetch":    "",  # 自有实现
     "write_code":  "",  # 自有实现
@@ -433,6 +449,7 @@ TOOL_TIMEOUTS: dict[str, float] = {
     "write_code":  120.0,
     "agent_think": 90.0,
     "weather":     15.0,
+    "draw":        40.0,
     "wdsj":        20.0,
     "wdsj_query":  20.0,
     "wzq":         10.0,
@@ -1233,7 +1250,13 @@ async def execute_tool(
 
     # 构建参数列表
     args = []
-    if tool_name == "weather":
+    if tool_name == "draw":
+        _p = (arguments.get("prompt") or arguments.get("description") or "").strip()
+        if not _p:
+            return "请提供画面描述"
+        _sz = (arguments.get("size") or "").strip()
+        args = ([_sz] if _sz else []) + [_p]
+    elif tool_name == "weather":
         args = [arguments.get("city", "")]
     elif tool_name == "wdsj":
         mode = arguments.get("mode", "bw")
