@@ -11,6 +11,50 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.104 — 绘图接入 Poke2API 多模型 + 写作收尾称谓修正 (2026.10.21)
+
+一句话总结：`/~draw` 换成 Poke2API 的 8 个绘图模型（默认 ChatGPT Image 2.5 Sunburst，
+原 CloudMist 降为备用，主挂备不挂），并修掉「群友让写东西也被叫主人」的称谓错误。
+
+### 一、绘图主通道换 Poke2API
+- 新增 `services/poke_image.py`（与框架无关的库）：`POST {base}/v1/images/generations`，
+  `Authorization: Bearer <POKE_API_KEY>`，返回 `data[0].b64_json` 或 `data[0].url` 都吃
+- 8 个模型 + 别名（`/~draw model` 可查）：
+  `sunburst`=gpt-image-2.5-sunburst（默认）、`flare`=gpt-image-2.5-flare、`gpt-image-2`、
+  `gemini`=gemini-3.1-flash-image、`grok`=grok-imagine-image-quality、
+  `grok2`=grok-imagine-image-2.0、`seedream`=doubao-seedream-5-0-pro、
+  `seedream4`=doubao-seedream-4-0；全名（如 `gpt-image-2.5-flare`）也能直接写
+- **主备顺序**：Poke 成功即用；Poke 失败/未配 key → 自动回落原 CloudMist `gpt-image-2`，
+  错误文本会把两个通道的失败原因都带出来
+- `size` 被模型拒绝时（400/422/502 且提示尺寸不合法）自动去掉 size 用 `auto` 重试一次
+- 凭证：`POKE_API_KEY` / `POKE_BASE_URL` 写进 `config/.env`（不进仓库）
+- 实测：sunburst 1536x864 约 40s；gemini 1024x1024 约 26s；grok 约 9s 返 URL；
+  seedream 约 25s 返 URL；2k（2048x2048）可用，**4k 4096x4096 直接 502**（gemini 会静默降回 1024）
+
+### 二、`/~draw` 参数扩展
+- 用法：`/~draw <模型> [比例] [分辨率] <提示词>`，参数顺序不敏感，模型/比例/分辨率可省略
+- 比例：`16:9 1:1 3:2 2:3 9:16 4:3 3:4`，或 `wide/square/portrait/tall`，或直接 `1024x1024`
+- 分辨率档：`1k`/`2k`（`4k` 按 2k 处理，服务端会 502）；例：`/~draw 16:9 2k 雪山` → 3072x1728
+- `/~draw model` 列出 8 个模型并标出当前；`/~draw model <名字>` 切换我的默认模型
+  （存 `data/draw_model.json`，按 QQ 号记）
+- 工具层 `draw` 的 schema 加 `model` 枚举，LLM 能自己挑模型
+- 参考图（`/~draw` + 引用图片）仍走原 CloudMist `images/edits`，提示里标 `[参考图·备用通道]`
+- 帮助文案（`lang.toml::help.detail.draw`）同步更新，纯文本无 Markdown
+
+### 三、写作收尾称谓修正（用户报的问题）
+- 现象：群友 𝙍𝙚𝙖𝙡𝙞𝙩𝙮. 让 bot 写表白信，收尾句是「写好啦，主人看看～」
+- 根因：`data/skills/80_writing.md::writing_followup` 写着「称呼固定用『主人』，
+  **不管对方是谁**（群友、朋友、谁让你写的，都一律叫主人）」，与 `10_format_group.md`
+  「[friend]/[群友] 用『你』」正面冲突
+- 修：模板改成按身份分支（是主人可叫主人 / 不是主人只能叫「你」）；
+  `utils/writing.py` 用 `cfg.is_admin(user_id, group_id)` 判身份，把「对方身份：…」
+  一行注入收尾 prompt；兜底文案同步改
+- 验证：单测 7/7（非主人 prompt 含「不是主人」+「禁止叫主人」；主人 prompt 含「是主人」）
+
+### 验证
+- 单测：`tests/_test_poke_image.py` 40/40、`tests/_test_writing_addr.py` 7/7
+- 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
+
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
 
 > 本日三次改动按「一天一版本」合并为同一版本号（v2.3.103），不再连续 bump。

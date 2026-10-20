@@ -83,7 +83,7 @@ _WRITING_SYS_FALLBACK = """你是一个写作助手。请根据用户的要求�
 不要用|||分隔符，不要加任何解释或聊天语气。"""
 
 _FOLLOWUP_FALLBACK = ("你刚刚帮对方写完文件并发给对方了。用 1 句简短猫娘语气收尾，"
-                      "15 字以内，称呼固定用「主人」。")
+                      "15 字以内。称呼按对方身份：是主人可叫主人，否则只能用「你」。")
 
 
 def _writing_sections() -> tuple[str, str]:
@@ -208,9 +208,16 @@ async def generate_and_send_file(
         await send_by_chat_type(file_cq, chat_id, is_group=False, user_id=user_id)
 
     # ★ 猫娘收尾回复（提示词同样来自 80_writing.md 的 writing_followup 章节）
-    #   称呼固定「主人」，不看触发人是谁（用户要求，v2.3.7 起）
+    #   v2.3.104 修正：原来说「称呼固定主人，不看触发人是谁」→ 群友让写东西也被叫"主人"，
+    #   现按 user_id 注入身份，非主人只能叫「你」。
     from services.llm import call_llm
-    followup_prompt = f"你刚刚帮对方写了《{title}》并把文件发给对方了。\n{_followup_tpl}"
+    try:
+        _is_owner = bool(cfg.is_admin(user_id, chat_id if is_group else 0)) if user_id else False
+    except Exception:
+        _is_owner = False
+    who = "是主人（可以叫主人）" if _is_owner else "不是主人（只能叫「你」或对方名字，禁止叫主人）"
+    followup_prompt = (f"你刚刚帮对方写了《{title}》并把文件发给对方了。\n"
+                       f"{_followup_tpl}\n\n对方身份：{who}")
     try:
         followup = await call_llm(cfg.reply_model, [
             {"role": "system", "content": cfg.system_prompt},

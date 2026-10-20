@@ -41,7 +41,7 @@ cost = "【Token消耗 /~cost】\n查看今日/累计 Token 消耗和预估费�
 ctx = "【上下文用量 /~ctx】\n查看当前对话给 LLM 的上下文都装了什么（system/参考资料/历史/注入/格式提醒/当前消息各占多少 token、百分比、进度条）\n/~ctx <群号>   管理员查看指定群"
 say = "【代发消息 /~say（管理员）】\n/~say g<群号> <内容>    发到指定群\n/~say u<QQ号> <内容>    发到指定私聊\n纯数字默认当群号；内容里的 @123456 会变成真的 @ 提醒\n例：/~say g2000000002 大家晚上好呀"
 token = "【Token计算 /~token】\n/~token <文本>   计算 token 数和费用"
-draw = "【绘画 /~draw】\n/~draw <提示词>   文生图\n引用一张图片 + /~draw <提示词>   以引用图为参考图生成"
+draw = "【绘画 /~draw】\n/~draw <提示词>   文生图（默认 ChatGPT Image 2.5 Sunburst）\n/~draw <模型> [比例] [分辨率] <提示词>   指定模型/比例/分辨率\n比例: 16:9 1:1 3:2 2:3 9:16 4:3 3:4  也可写 wide/square/portrait/tall\n分辨率: 1k 2k（服务端最高 2k，写 4k 会报错）\n/~draw model   查看可用模型\n/~draw model <名字>   切换我的默认模型\n可用模型: sunburst flare gpt-image-2 gemini grok grok2 seedream seedream4\n引用一张图片 + /~draw <提示词>   以引用图为参考图生成（走备用通道）"
 video = "【视频 /~video】\n/~video <提示词>  文生视频"
 img2video = "【图生视频 /~img2video】\n/~img2video <图片URL>  图生视频"
 eq = "【地震 /~eq】\n/~eq           最新 1 条地震速报\n/~eq 3         最新 3 条"
@@ -145,6 +145,16 @@ empty_list = "还没有倒计时喵~"
 empty_single = "还没有倒计时喵~"
 delete_invalid_id = "编号必须是数字喵~"
 delete_out_of_range = "编号超出范围喵~"
+header_recent = "【倒计时】"
+header_list = "【倒计时列表】"
+item = "  ${i}. [${date}] ${event}  (${days})"
+days_past = "已过 ${n} 天"
+days_left = "还有 ${n} 天"
+usage_del = "用法: /~countdown del <编号>"
+deleted = "已删除: [${date}] ${event}"
+usage_add = "用法: /~countdown add <日期> <事件>\n例如: /~countdown add 2026-12-25 圣诞节"
+bad_date = "日期格式错误: ${value}\n请使用 YYYY-MM-DD 格式，如 2026-12-25"
+added = "已添加倒计时喵~ [${date}] ${event} (${days})"
 
 [wzq]
 start = "人机对战开始！你执黑 vs AI，请先落子喵~"
@@ -187,3 +197,612 @@ parse_error = "快递数据解析失败喵~"
 
 [analyze]
 fail = "分析失败喵~ 换个说法试试"
+
+[cmd_help]
+m1 = "【指令 /~${keyword}】\n${desc}"
+m2 = "【指令 /~${keyword}】\n${description}"
+m3 = "--- 聊天 ---"
+m4 = "@${name} <内容>     跟我说话"
+m5 = "{{提示词}}         注入临时人设（仅主人）"
+m6 = "--- 工具 ---"
+m7 = "/~s <关键词>        联网搜索"
+m8 = "/~remind <时间> <事> 定时提醒"
+m9 = "/~抽 <A> <B>        随机选择"
+m10 = "--- 数据 ---"
+m11 = "/~stats [...]      群聊统计"
+m12 = "/~recall [数量]     撤回记录"
+m13 = "/~favlist           好感度"
+m14 = "--- 系统 ---"
+m15 = "/~cost              Token消耗统计"
+m16 = "/~info             运行状态"
+m17 = "/~up [版本]         更新日志"
+m18 = "/~ping             在线检测"
+m19 = "--- 主人专用 ---"
+m20 = "/~owner ...        配置管理"
+m21 = "/~preset ...        提示词注入"
+m22 = "/~reload           热重载"
+m23 = "主人"
+
+[mod]
+m1 = "【NASA 每日天文图 /~nasa】\n  nasa [日期]  查看 NASA 每日天文图片，如 /~nasa 2025-06-01\n"
+m2 = "【Phigros 查询 /~oldphi（原 /~pgr）】\n  oldphi login / me / top / song / new\n  → 新入口请用 /~phi（phi-plugin 移植版）\n"
+m3 = "【五子棋 /~wzq】\n  duel @某人    发起挑战\n  accept        接受挑战\n  decline       拒绝挑战\n  cancel        取消未开始的挑战\n  <坐标>        落子 (H8 / 8,8)\n  ai <难度> [nofb] 人机对战 (可选无禁手)\n  board         查看棋盘\n  surrender     认输\n  undo          悔棋 (对手再发一次确认)\n  status        对局信息\n  history [N]   历史战绩\n  history <编号> board 查看对局棋盘"
+m4 = "【提醒 /~remind /~提醒】\n  /~remind 30分钟后 吃饭\n  /~remind 2小时后 开会\n  /~remind 明天14:30 午休\n  /~remind 14:30 下班\n  到期自动 @ 提醒"
+m5 = "【抽签 /~抽】\n  /~抽 吃面 吃饭 打游戏   空格分隔\n  /~抽 选项A,选项B,选项C   逗号分隔\n  随机选一个 + 猫娘点评"
+m6 = "【统计 /~stats /~统计】\n  /~stats         今日群聊统计\n  /~stats 昨天    昨日群聊回顾\n  自动 0 点发送日报"
+m7 = "【撤回 /~recall】\n  /~recall        查看最近 5 条撤回\n  /~recall 10     查看最近 10 条\n  主动录制，100% 命中"
+m8 = "【搜索 /~s】\n  /~s Python asyncio 用法\n  自动判断是否需要搜索 + DuckDuckGo"
+m9 = "【好感度 /~favlist】\n  查看当前群/私聊的好感度排行\n  从高到低，显示昵称"
+m10 = "【运气 /~luck】\n  获取今日运气值 (1~100)\n  0.1% 概率抽到 1000\n  同一个人当天内结果不变"
+m11 = "【更新日志 /~up /~updateinfo】\n  /~up            最新版本\n  /~up 0.9.4      指定版本\n  /~up all        完整日志\n  生成精美 HTML 卡片"
+m12 = "【更新日志 /~up /~updateinfo】\n  /~up            最新版本\n  /~up 0.9.4      指定版本\n  /~up all        完整日志"
+m13 = "【系统信息 /~info】\n  显示运行状态: 系统/运行时间/内存/磁盘/CPU\n  连接状态/消息统计/模型列表/配置摘要"
+m14 = "【在线 /~ping】\n  测试 bot 是否在线\n  随机猫娘卖萌回复，@ 触发者"
+m15 = "【配置管理 /~owner (主人)】\n  list <bot|adapter|roles>   列所有配置\n  get <路径>      读取: get bot.reply_threshold\n  set <路径> <值>  修改: set bot.reply_threshold 5\n  data get <名> [键] 读数据\n  data set <名> <键> <值> 改数据\n  data reset <名|all> 清空\n  wl show/add/remove  白名单快捷操作\n  luck list/set/del   运气管理"
+m16 = "【提示词注入 /~preset (主人)】\n  /~preset        查看当前注入\n  /~preset clear  清除注入\n  或在消息中用 {{提示词}} 注入, {{reset}} 清除"
+m17 = "【重载 /~reload (主人)】\n  热重载所有配置，不重启进程\n  也可用 systemctl reload robot"
+m18 = "【翻译 /~tr /~翻译】\n  /~tr en 你好           中→英\n  /~tr 中文 hello        英→中\n  /~tr jp こんにちは     →日文\n  支持 en/zh/jp/kr/fr/de\n  也支持 中文/英文/日文/韩文/法文/德文"
+m19 = "【翻译 /~tr /~翻译】\n  /~tr en 你好\n  /~tr 中文 hello\n  支持 6 种语言"
+m20 = "【倒计时 /~countdown /~倒计时】\n  /~countdown 2026-12-25 圣诞节   添加\n  /~countdown                    查看\n  /~countdown list               详细列表\n  /~countdown del 1              删除"
+m21 = "【余额查询 /~balance】\n  查询 DeepSeek API 余额\n"
+m22 = "【插件管理 /~plugin (主人)】\n  /~plugin             插件列表/状态\n  /~plugin install <名|url>  安装插件（支持插件库名或 .hmp 直链）\n  /~plugin unload <名>  卸载插件\n  /~plugin reload <名>  热重载插件\n  /~plugin pack <名>    把插件打包成 .hmp 分享\n  /~plugin update [名]  从插件库一键更新"
+m23 = "【审批 /~apy (主人)】\n  /~apy <token> 同意|拒绝  响应插件发起的人工审批"
+m24 = "【语音 /~voice】\n  /~voice <文本>           Edge TTS 合成语音\n  /~voice list             列出可用语音\n  /~voice zh-CN-YunxiNeural <文本>  指定发音人\n  默认: 晓晓 (女声)"
+m25 = "【Token消耗 /~cost】\n  查看今日/累计 token 消耗和费用\n"
+m26 = "【Token计算 /~tokens】\n  /~tokens <文本>  计算 token 数和预估费用\n"
+m27 = "【你的笔记本 /~note】维护长期群内记忆（群内关系/称呼/约定/梗/谁是谁）。用法: /~note 查看 | /~note <内容> 新增 | /~note fix <序号> <新内容> 修改 | /~note del <序号> 删除 | /~note clear 清空。**重要：①有人说\"记一下/记住\"或出现值得长期记住的信息（谁是谁、什么关系、称呼黑话、约定）→ 必须用 calls 调 note 真的记，严禁只在回复说\"记下了\"；②发现之前记错了或信息过时了 → 用 calls 调 note 传 \"fix <序号> <新内容>\" 改正（序号见上下文里笔记本的编号），不要重新记一条重复的。**"
+m28 = "【缓存命中率 /~cache】\n  /~cache [天数]  查看 token 缓存命中率趋势（默认近7天）\n  用于排查命中率低的原因（DeepSeek 前缀缓存）\n"
+m29 = "【重置好感 /~resetfav (主人)】\n  清空所有好感度数据"
+m30 = "【记忆 /~memory】\n  working      瞬时记忆（当前对话）\n  short        短时记忆（最近30条）\n  long         长时记忆（持久化）\n  search <关键词> 搜索全部记忆\n  clear        清空短时记忆"
+m31 = "裸体"
+m32 = "裸身"
+m33 = "全裸"
+m34 = "半裸"
+m35 = "围棋"
+m36 = "五子棋"
+m37 = "中国象棋"
+m38 = "已定位原因，正在实施修复"
+m39 = "DeepSeek V4 Pro API服务(API Service)、DeepSeek V4.1 Flash API服务(API Service)、对话服务(Chatservice)"
+m40 = "回复耗时升高，严重时超时无响应"
+m41 = "在干嘛"
+m42 = "mc状态"
+m43 = "天气"
+m44 = "地震"
+m45 = "绘画"
+m46 = "视频"
+m47 = "语音"
+m48 = "图生视频"
+m49 = "tuf谱面"
+m50 = "观战"
+m51 = "功耗"
+m52 = "电费"
+m53 = "统计"
+m54 = "回顾"
+m55 = "赞赏"
+m56 = "赞助"
+
+[cmd_info]
+m1 = "--- ${name} 运行状态 ---"
+
+[cmd_balance]
+m1 = "未配置 DeepSeek API Key 喵~"
+m2 = "查询失败: HTTP ${status_code} 喵~"
+m3 = "查询余额失败: ${e}"
+m4 = "余额查询不可用喵~"
+m5 = "余额信息为空喵~"
+m6 = "【DeepSeek 余额】"
+m7 = "  总余额: ${total} ${currency}"
+m8 = "  赠送额: ${granted} ${currency}"
+m9 = "  充值额: ${topped_up} ${currency}"
+
+[cmd_box]
+m1 = "运输中"
+m2 = "派送中"
+m3 = "已签收"
+m4 = "退件"
+m5 = "待揽收"
+m6 = "已完成"
+
+[cmd_luck]
+m1 = "[CQ:at,qq=${user_id}] 你今天的运气是 ${cached} 喵（今日已抽签）"
+m2 = "[CQ:at,qq=${user_id}] 你今天的运气是 ${num} 喵"
+
+[cmd_testsys]
+m1 = "当前版本不支持此按钮"
+
+[cmd_jsonraw]
+m1 = "你是幻梦，一只可爱的猫娘机器人。"
+m2 = "${fmt_reminder}\n\n${sender_name}说：${text}"
+m3 = "LLM 返回为空"
+
+[cmd_md]
+m1 = "用法: /~md <markdown内容>\\n示例: /~md # 标题\\n> 引用\\n**粗体** *斜体*"
+
+[cmd_update_info]
+m1 = "❌ 未找到版本 ${target_version} 的更新日志，请检查版本号是否正确。"
+
+[cmd_read]
+m1 = "用法: /~read <网页URL>  例如 /~read https://blog.csdn.net/xxx"
+m2 = "请输入完整的网页URL（http/https开头）"
+m3 = "无法读取该页面: ${url}"
+m4 = "读取页面失败: ${e}"
+
+[cmd_whois]
+m1 = "用法: /~whois <域名>  例如 /~whois example.com"
+
+[cmd_write_code]
+m1 = "用法: /~write_code <描述>  例如 /~write_code 用HTML写一个2048游戏"
+m2 = "网页"
+
+[cmd_ignore]
+m1 = "只有管理员能操作喵~"
+m2 = "用法: /~ignore <QQ号>  例如 /~ignore 123456789"
+m3 = "QQ 号不对喵~"
+m4 = "已忽略 ${target}，所有群都不会再收到他的消息"
+
+[cmd_unignore]
+m1 = "只有管理员能操作喵~"
+m2 = "用法: /~unignore <QQ号> / all  例如 /~unignore 123456789"
+m3 = "已解除所有忽略（共 ${count} 人）"
+m4 = "QQ 号不对喵~"
+m5 = "已解除忽略 ${target}"
+m6 = "${target} 不在忽略列表中喵~"
+
+[_lolicon_fetch_and_send]
+m1 = "没有找到 tag「${tags}」的图，换个关键词试试喵~"
+m2 = "没有找到图片，稍后再试喵~"
+
+[cmd_img]
+m1 = "【/~img 二次元图片】\n/~img              随机\n/~img 甘雨         单标签\n/~img 甘雨 原神    多标签 AND（同时包含，最多3个）\n/~img 萝莉|少女 白丝|黑丝  | 为 OR，组合匹配\n/~img help         本帮助"
+
+[cmd_img18]
+m1 = "R18 图片仅限私聊使用喵~"
+m2 = "【/~img18 R18 图片】仅限私聊\n/~img18             随机\n/~img18 白丝        单标签\n/~img18 白丝 黑丝   多标签 AND（最多3个）\n/~img18 萝莉|少女    | 为 OR\n/~img18 help        本帮助"
+
+[cmd_recall]
+m1 = "【最近 ${records} 条撤回记录】"
+m2 = "[图片已发送]"
+m3 = "[图片已过期]"
+m4 = "[文件]"
+m5 = "[无内容]"
+m6 = "${i}. [${t} mid=${mid}] ${op_name} 撤回了自己的消息: ${content_display}"
+m7 = "${i}. [${t} mid=${mid}] ${name} 撤回了自己的消息: ${content_display}"
+m8 = "某人"
+m9 = "${i}. [${t} mid=${mid}] ${op_name} 撤回了 ${target_name} 的消息: ${content_display}"
+
+[cmd_remind]
+m1 = "好的喵~ 我会在 ${time_display} 提醒你「${content_part}」(๑•̀ㅂ•́)و✧"
+
+[cmd_chou]
+m1 = "我帮你决定了喵~ 选「${pick}」！(。-`ω´-)✧"
+m2 = "喵呜～ 命运指引着你走向「${pick}」！"
+m3 = "尾巴晃了晃，指向了「${pick}」喵～"
+m4 = "闭上眼睛默念三秒… 就决定是「${pick}」了！"
+m5 = "不用纠结啦，当然是「${pick}」喵～"
+
+[cmd_stats]
+m1 = "昨天没有统计数据喵~"
+m2 = "日报卡片生成失败喵~"
+m3 = "昨日群聊日报"
+m4 = "昨天没有统计数据喵…"
+m5 = "今日群聊统计"
+
+group_label = "群${group_id}"
+[cmd_unstats]
+m1 = "仅在群聊可用喵~"
+m2 = "本群统计已暂停中喵~"
+m3 = "已暂停本群统计喵~ (用 /~setstats 恢复)"
+
+[cmd_setstats]
+m1 = "仅在群聊可用喵~"
+m2 = "本群统计本来就是开启的喵~"
+m3 = "已恢复本群统计喵~"
+
+[cmd_leave]
+m1 = "只有主人才能让我退群喵~"
+m2 = "私聊使用时请指定群号: /~leave 群号"
+m3 = "📦 正在收集本群数据..."
+m4 = "...\n(截断)"
+m5 = "本群无留存数据喵~"
+m6 = "✅ remove group done... (重置好感度 ${fav_count} 人)"
+m7 = "退群失败: ${e}"
+
+[cmd_analyze]
+m1 = "用法: /~analyze <日志内容>\n直接粘贴 Minecraft 日志，零上下文分析。"
+
+[cmd_preset]
+m1 = "【当前注入的提示词】(${preset}字)\n${preset2}"
+
+[_announce_room]
+m1 = "${kind}房间 ${code}"
+m2 = "${title}\n你执${role}。专属对局链接（别转发）：\n${link}"
+m3 = "${title}\n观战链接（点开即围观，可转发）：${spec}"
+m4 = "${title}\n你的对局链接（别转发）：\n${own}"
+
+[_link_text]
+m1 = "这里还没有对局喵~ 先开一局"
+m2 = "棋局网页服务未启用喵~（${e}）"
+m3 = "房间号 ${code}\n你的对局链接（别转发）：\n${uid}\n观战链接（可发群里）：\n${code2}"
+
+[cmd_watch]
+m1 = "用法：/~观战 <房间号>\n房间号是开局时 bot 给出的 4 位编号（不含 0/O/1/I/L）"
+m2 = "棋局网页服务未启用喵~（${e}）"
+m3 = "找不到房间 ${code} 喵~ 房间号是 4 位（不含 0/O/1/I/L）"
+m4 = "${kind_cn}房间 ${code} 观战链接（点开即围观）：\n${code2}"
+
+[cmd_wzq]
+m1 = "五子棋 /~wzq\n  duel @某人 [nofb] 发起挑战(可选无禁手)\n  ai 新手/普通/困难/专家 [nofb]\n  accept      接受挑战\n  cancel/unduel 取消未接受的挑战\n  <坐标>      落子 (H8 / 8,8)\n  board       查看棋盘\n  surrender   认输\n  undo        悔棋\n  link        取房间号与网页链接\n  status      对局信息\n  admin clear 强制结束本群棋局(仅主人)"
+m2 = "用法: /~wzq ai <难度>\n难度: 新手 普通 困难 专家"
+m3 = "新手"
+m4 = "普通"
+m5 = "困难"
+m6 = "专家"
+m7 = "新手"
+m8 = "普通"
+m9 = "困难"
+m10 = "专家"
+m11 = "未知难度: ${diff}\n可选: 新手 普通 困难 专家"
+m12 = "人机·${diff_name}"
+m13 = "用法: /~wzq duel @某人"
+m14 = "挑战已发起！等待 [CQ:at,qq=${white_id}] 接受 (/~wzq accept) 或拒绝 (/~wzq decline)"
+m15 = "人人对战"
+m16 = "对局开始！黑先白后，五子连珠者胜。"
+m17 = "只有主人才能用这个喵~"
+m18 = "当前没有对局喵~"
+m19 = "已强制结束本群棋局 (状态=${status})"
+m20 = "用法: /~wzq admin clear  强制清除本群所有对局"
+m21 = "这里还没有五子棋对局喵~ 用 /~wzq ai 普通 开局"
+m22 = "（你是黑方）"
+m23 = "（你是白方）"
+m24 = "五连！${winner_name} 获胜！"
+m25 = "棋盘满了，平局！"
+m26 = "禁手犯规(${reason})！${winner} 获胜！"
+m27 = "${loser} 认输了！"
+m28 = "悔棋申请已发送，等待 [CQ:at,qq=${opponent}] 同意 (/~wzq undo)"
+m29 = "黑方 ${bn} vs 白方 ${wn} | 手数 ${move_count} | 状态 ${status}"
+m30 = "五子棋记录 (最近${records}场)"
+m31 = "  /~wzq history <编号> board 查看棋盘"
+m32 = "${bn} 胜"
+m33 = "${wn} 胜"
+m34 = "平局"
+m35 = "  ${i}. [${time}] ${bn} vs ${wn} -> ${result} (${moves}手)"
+m36 = "未知操作: ${action}\n使用 /~wzq 查看帮助"
+
+[_ai_turn]
+m1 = "AI 获胜！"
+m2 = "AI 获胜！"
+m3 = "你赢了！"
+m4 = "你赢了！"
+m5 = "AI 禁手犯规，你赢了！"
+m6 = "AI 禁手犯规，你赢了！"
+
+[cmd_translate]
+m1 = "用法: /~tr <目标语言> <文本>\n例如: /~tr en 你好\n     /~tr 中文 hello"
+m2 = "不支持的语言: ${target}\n支持: en/zh/jp/kr/fr/de 或 中文/英文/日文/韩文..."
+
+[cmd_go]
+m1 = "围棋 /~go <操作>\n  start [难度] [尺寸]  开始新对局\n     难度：新手/普通/困难/专家（默认普通）\n     尺寸：9/13/19 或 小/中/大（默认 19 标准盘）\n  <坐标>        落子（D4 / 4,4，字母跳过 I）\n  pass          停一手（双方连续 pass 即终局数子）\n  board         查看棋盘\n  duel @某人 [难度]  邀请群友对弈（双人）\n  link          取房间号与网页链接\n  resign        认输"
+m2 = "参数「${tok}」不认识喵~ 难度可选：${opts}"
+m3 = "普通"
+m4 = "人机·${label}"
+m5 = "围棋开局！${BOARD_SIZE}×${BOARD_SIZE2} 标准盘，你执黑先行，AI 难度「${label}」\n${ann}\n落子用 /~go D4（字母跳过 I）\n${cq}"
+m6 = "棋盘渲染失败喵: ${e}"
+m7 = "用法：/~go duel @某人 [难度]"
+m8 = "没认出对手「${args}」喵~ 用 @某人 或直接写 QQ 号"
+m9 = "不能自己跟自己下喵~"
+m10 = "参数「${tok}」不认识喵~"
+m11 = "人人对战"
+m12 = "围棋对战开始！${BOARD_SIZE}×${BOARD_SIZE2} 标准盘，${n1} 执黑先行。\n${ann}\n${cq}"
+m13 = "棋盘渲染失败喵: ${e}"
+m14 = "这里没有围棋对局喵~ 用 /~go start 开局"
+m15 = "当前局面 · 手数 ${move_count}"
+
+[cmd_xq]
+m1 = "中国象棋 /~xq <操作>\n  start [难度]  开始新对局（新手/普通/困难/专家，默认普通）\n  <走法>        炮二平五 / h2e2\n  board         查看棋盘\n  duel @某人 [难度]  邀请群友对弈（双人）\n  link          取房间号与网页链接\n  resign        认输\n  history       走棋记录"
+m2 = "难度「${diff_raw}」不认识喵~ 可选：${opts}"
+m3 = "普通"
+m4 = "人机·${label}"
+m5 = "对局开始！你执红方，AI 难度「${label}」，请落子喵~\n${ann}\n${cq}"
+m6 = "棋盘渲染失败喵: ${e}"
+m7 = "用法：/~xq duel @某人 [难度]"
+m8 = "没认出对手「${args}」喵~ 用 @某人 或直接写 QQ 号"
+m9 = "不能自己跟自己下喵~"
+m10 = "普通"
+m11 = "人人对战"
+m12 = "象棋对战开始！${n1} 执红先行（${label}）。\n${ann}\n${cq}"
+m13 = "棋盘渲染失败喵: ${e}"
+
+[_handle_wdsj_dual]
+m1 = "用法: /~wdsj me（用绑定玩家）或 /~wdsj <玩家名> me\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+m2 = "「${player}」是模式名不是玩家名喵~\n查双模式卡: /~wdsj me 或 /~wdsj <玩家名> me\n查单模式: /~wdsj ${parts} <玩家名>"
+m3 = "正在生成 ${player} 的双模式战绩卡喵~"
+m4 = "正在生成 ${player} 的双模式战绩卡喵~"
+m5 = "双模式"
+m6 = "双模式战绩卡渲染失败: ${e}"
+
+[_handle_wdsj_lb]
+m1 = "用法: /~wdsj lb <榜单名> [周期] [img]"
+m2 = "排行榜卡片渲染失败: ${e}"
+m3 = "  (暂无数据)"
+
+[_handle_wdsj_bind]
+m1 = "你当前绑定的玩家名是「${player}」喵~"
+m2 = "你还没有绑定玩家名喵~ 试试 /~wdsj bd <玩家名>"
+m3 = "已绑定玩家名「${player}」喵~ 以后查战绩可以直接 /~wdsj bw 不带名字啦"
+
+[_build_wdsj_summary]
+m1 = "${name} 的 ${display} 战绩"
+
+[cmd_wdsj]
+m1 = "只有管理员才能手动采集喵~"
+m2 = "⏳ 手动采集开始，请稍候..."
+m3 = "✅ 手动采集完成 (${elapsed}s)，${names} 人仍未采集到: "
+m4 = "✅ 手动采集完成 (${elapsed}s)，全部成功"
+m5 = "还没有人绑定喵~"
+m6 = "绑定玩家列表:"
+m7 = "${cn} 排行榜 (用法: /~wdsj lb <简写> [周期] [img])"
+m8 = "周期: alltime(all) / month(ly) / week(ly) / day(ily)，默认总榜"
+m9 = "末尾加 img = 发卡片图片"
+m10 = "洛花星雨排行榜 简写速查 (用法: /~wdsj lb <简写> [周期] [img])"
+m11 = "击杀"
+m12 = "摧床"
+m13 = "最终"
+m14 = "首杀"
+m15 = "击杀"
+m16 = "死亡"
+m17 = "弓箭"
+m18 = "鱼竿"
+m19 = "跳板"
+m20 = "击杀"
+m21 = "死亡"
+m22 = "首杀"
+m23 = "击杀"
+m24 = "经验"
+m25 = "在线"
+m26 = "情侣"
+m27 = "称号"
+m28 = "公会"
+m29 = "画猜"
+m30 = "色盲"
+m31 = "色盲杀"
+m32 = "躲猫猫"
+m33 = "洛花星雨 13种游戏模式 (简写 => 全名)"
+m34 = "排行榜别名: /~wdsj lb <简写> [周期]"
+m35 = "  双词: 游戏名 指标 (如: bw win, kbw tnt, sw kill)"
+m36 = "正在生成绑定排行 (${mode_key}) 喵..."
+m37 = "正在生成竞技场日榜喵~"
+m38 = "正在生成竞技场日榜喵~"
+m39 = "正在生成 ${_d} 的起床战争日榜喵~"
+m40 = "正在生成 ${_d} 的起床战争日榜喵~"
+m41 = "该日期"
+m42 = "，下一轮 ${M}"
+m43 = "${label}还没有数据喵~ 榜单将在每天 ${_wdsj_slots_hint} 产出${hint}"
+m44 = "排名卡片渲染失败喵~"
+m45 = "send 模式仅在群聊中可用喵~"
+m46 = "我的"
+m47 = "用法: /~wdsj trend <玩家名> [指标]\n未绑定玩家名时试试 /~wdsj bd <玩家名> 先绑定喵~"
+m48 = "正在生成 ${player} 的 ${label} 趋势图喵..."
+m49 = "${player} 的 ${label} 数据不够喵~ 需要至少 2 天的记录才能画趋势图"
+m50 = "用法: /~wdsj <模式> <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+m51 = "用法: /~wdsj <模式> <玩家名>\n未绑定玩家名时可用 /~wdsj bd <玩家名> 绑定喵~"
+m52 = "未知模式: ${action}\n用 /~wdsj list 查看所有模式"
+m53 = " 用 text 看文字数据喵~"
+m54 = "${name} 的 ${display} 战绩"
+
+[_handle_owner_cmd]
+m1 = "~owner cmd add/remove/list/clear <指令名>"
+m2 = "指令白名单为空（所有指令可用）"
+m3 = "指令白名单:\n  "
+m4 = "指令白名单已清空（所有指令可用）"
+m5 = "~owner cmd ${sub} <指令名>"
+m6 = "指令 ${cmd_name} 已在白名单"
+m7 = "已添加: ${cmd_name}"
+m8 = "指令 ${cmd_name} 不在白名单"
+m9 = "已移除: ${cmd_name}"
+m10 = "未知 cmd 子命令: ${sub}"
+
+[_parse_ds_feed]
+m1 = "feed 里没有 item/entry"
+
+[_get]
+m1 = "国外 DNS 解析不到可用节点"
+m2 = "所有节点均失败"
+
+[_build_fault_notice]
+m1 = "LLM对话已恢复，幻梦可以正常回复了"
+m2 = "LLM对话暂不可用，幻梦回复可能延迟或失败"
+m3 = "${dot} 【API 故障通知】"
+m4 = "幻梦本身运行正常，指令与查询不受影响"
+m5 = "· 开始：${started}"
+m6 = "· 状态：${status}"
+m7 = "· 受影响组件：${components}"
+m8 = "· 现象：${symptom}"
+m9 = "感谢等待"
+m10 = "恢复后会在本群通知"
+m11 = "详情 status.deepseek.com"
+
+[cmd_owner]
+m1 = "权限不足喵~"
+m2 = "卡片生成失败喵~"
+m3 = "用法: /~owner get <路径>\n如: get bot.reply_threshold"
+m4 = "用法: /~owner set <路径> <值>\n如: set bot.reply_threshold 5"
+m5 = "用法: /~owner data <get|set|del|reset> <名> [键] [值]"
+m6 = "用法: data set <名> <键> <值>"
+m7 = "未知 data 操作: ${sub}"
+m8 = "用法: luck list|set <QQ> <值>|del <QQ>"
+m9 = "【白名单管理 /~owner wl】\n  wl add group <群号> [atonly]  添加群白名单\n  wl remove group <群号>  移除群白名单\n  wl add private <QQ>    添加私聊白名单\n  wl remove private <QQ> 移除私聊白名单\n  wl show                查看所有白名单\n  wl cmd add|remove <群> <指令>  分群指令白名单\n  wl welcome set|del <群> [欢迎语]  入群欢迎语"
+m10 = "\n已设置 @仅模式"
+m11 = "设置: group=${gid} mode=${mode}\n支持: atonly, default"
+m12 = "格式: wl add|remove group|private <ID>\n      wl gset <群号> atonly|default\n例: wl add group 123456789 atonly"
+m13 = "用法: /~owner wdsj <groups|interval> ...\n  groups show                    查看推送群\n  groups set 123456789,987654321 设推送群\n  groups clear                   清空（清空后不推送群，仅同步 QQ 空间）\n  interval show                  查看采集节奏\n  interval <4|12>                设采集节奏：4=每4h(0/4/8/12/16/20点)  12=每天两次(0点/12点)"
+m14 = "WDSJ 采集节奏：每 ${cur} 小时（${cur2}）\n用法: /~owner wdsj interval <4|12>\n  4  → 0/4/8/12/16/20 点各采一次（细采样，请求量大）\n  12 → 每天两次（0 点 / 12 点；0 点那次同时推日榜）"
+m15 = "参数必须是 4 或 12（小时）"
+m16 = "只支持 4 或 12（小时）"
+m17 = "WDSJ 采集节奏已设为每 ${v} 小时（${v2}）；调度约 1 分钟内切换（无需重启）"
+m18 = "WDSJ 日榜推送群: ${gs}"
+m19 = "未设置推送群：日榜不推送任何群，仅同步 QQ 空间\n（用 /~owner wdsj groups set <群号1,群号2> 指定推送群）"
+m20 = "用法: /~owner wdsj groups set <群号1,群号2,...>"
+m21 = "WDSJ 日榜推送群已设为: ${gs}"
+m22 = "已清空推送群：日榜不再推送任何群，仅同步 QQ 空间"
+m23 = "未知: /~owner wdsj ${sub}"
+m24 = "用法: /~owner fault <show|on|off|test> [群号]\n  show            查看已开启故障推送的群\n  on <群号>       开启该群的故障推送\n  off <群号>      关闭该群的故障推送\n  test [群号]     发一条测试故障信息（不带群号=当前群）"
+m25 = "故障推送已开启的群: ${gs}"
+m26 = "未开启任何群的故障推送\n（用 /~owner fault on <群号> 开启）"
+m27 = "用法: /~owner fault ${sub} <群号>"
+m28 = "群 ${g} 已经是开启状态"
+m29 = "群 ${g} 未开启故障推送"
+m30 = "当前不在群聊，请指定群号: /~owner fault test <群号>"
+m31 = "发送到群 ${gid} 失败: ${e}"
+m32 = "已发送测试故障信息到群 ${gid}"
+m33 = "未知: /~owner fault ${sub}"
+m34 = "用法: /~owner ${action} <get|set|reset> [参数]\n/~owner ${action2} get [QQ]  查看用量\n/~owner ${action3} set <QQ> <N>  设上限\n/~owner ${action4} reset       重置"
+m35 = "用法: /~owner ${action} set <QQ> <N>"
+m36 = "已设置 QQ ${args} 每日${action}上限为 ${args2}"
+m37 = "已重置今日${action}用量"
+m38 = "未知: /~owner ${action} ${sub}"
+m39 = "未知操作: ${action}\n/~owner 查看帮助"
+
+fault_push = "已${state}群 ${g} 的故障推送"
+[_desc]
+m1 = "0/4/8/12/16/20 点各一次"
+m2 = "每天两次（0 点 / 12 点）"
+
+[cmd_memory]
+m1 = "【三层记忆 /~memory】\n  working      瞬时记忆（当前对话上下文）\n  short        短时记忆（最近30条）\n  long         长时记忆（持久化）\n  search <关键词>  搜索所有记忆\n  clear        清空短时记忆"
+m2 = "瞬时记忆为空"
+m3 = "【瞬时记忆 · 最近${msgs}条】"
+m4 = "用法: /~memory search <关键词>"
+m5 = "【短时记忆匹配】"
+m6 = "【长时记忆匹配】"
+m7 = "未找到含「${kw}」的记忆"
+m8 = "未知操作: ${action}\n/~memory 查看帮助"
+
+[cmd_nickname]
+m1 = "用法: /~nickname update"
+
+[cmd_friend_add]
+m1 = "当前没有待处理的好友请求喵~"
+
+[cmd_friend_reject]
+m1 = "当前没有待处理的好友请求喵~"
+
+[_owner_legacy]
+m1 = "未知操作: ${action}"
+
+[cmd_restart]
+m1 = "权限不足"
+m2 = "正在重启喵～"
+m3 = "正在重启喵～"
+
+[cmd_sys]
+m1 = "主人"
+m2 = "正在叫 PC 截屏喵，稍等一下下~"
+m3 = "正在叫 PC 截屏喵，稍等一下下~"
+m4 = "截屏失败（PC 客户端未连接或超时）"
+m5 = "截屏数据解码失败: ${e}"
+
+[cmd_dbsearch]
+m1 = "检索模块未启用喵~"
+m2 = "检索数据库未就绪（FTS5 缺失或初始化失败）喵~"
+m3 = "用法: /~回顾 <关键词>\n当前已索引 ${c} 条消息"
+m4 = "没找到和「${query}」相关的历史消息喵~"
+m5 = "【聊天回溯】关键词「${query}」命中 ${rows} 条:"
+
+[cmd_plugin]
+m1 = "插件系统未启用喵~ (${e})"
+m2 = "【插件列表】暂无插件"
+m3 = "【插件列表】"
+m4 = "子命令: list | install <名|url> | unload <名> | reload <名> | pack <名> | import <url> | update [名]"
+m5 = "用法: /~plugin install <插件名|.hmp直链>"
+m6 = "插件库查询失败: ${err}"
+m7 = "用法: /~plugin import <.hmp直链>"
+m8 = "用法: /~plugin unload <插件名>"
+m9 = "卸载失败: ${msg}"
+m10 = "用法: /~plugin reload <插件名>"
+m11 = "重载失败: ${msg}"
+m12 = "用法: /~plugin pack <插件名>"
+m13 = "${msg}\n已发送 .hmp 包到本聊天"
+m14 = "【插件更新检查】"
+m15 = "  ✅ ${name}: 已是最新 v${local}"
+m16 = "  ❓ ${name}: 库查询失败 ${err}"
+m17 = "插件库查询失败: ${err}"
+m18 = "未知子命令: ${sub}\n可用: list | install | unload | reload | pack | import | update"
+
+[_install_from]
+m1 = "无法识别插件名"
+
+[cmd_apy]
+m1 = "只有管理员可以审批喵~"
+m2 = "用法: /~apy <token> 同意|拒绝"
+m3 = "审批失败: ${e}"
+
+[cmd_key]
+m1 = "用法：/~key 兑换 <许可码>"
+m2 = "${msg}\n${desc}\n现在可以正常用了，发 /~key 看测试项列表"
+m3 = "${reason}，/~key 需要许可码才能用\n找管理员要一个，然后发：/~key 兑换 <许可码>\n许可码共三档：${kind}"
+m4 = "当前没有可用的测试项喵~"
+m5 = "【实验测试项】"
+m6 = "已激活"
+m7 = "已关闭"
+m8 = "（默认关闭）"
+m9 = "     关闭后：${affects}"
+m10 = "你的许可：${user_id}"
+m11 = "用法：/~key <名称> 激活 ｜ /~key <名称> off 恢复默认"
+m12 = "没有这个测试项喵~\n可用：${known}\n（也可以发 /~key 看列表）"
+m13 = "已激活测试项「${code}」喵~\n${desc}${tail}\n想恢复默认发：/~key ${code2} off"
+m14 = "已关闭测试项「${code}」，恢复默认行为喵~\n${affects}${tail}"
+m15 = "开启"
+m16 = "关闭"
+m17 = "「${code}」已恢复注册表默认（${default_state}）喵~"
+m18 = "不认识这个操作「${action}」喵~\n用法：/~key ${code} ｜ /~key ${code2} off ｜ /~key ${code3} reset"
+
+[cmd_motd]
+m1 = "用法: /~motd <服务器地址>[:端口]\n例: /~motd mc.hypixel.net\n原生协议查询，出在线人数/延迟/MOTD 状态卡"
+m2 = "这地址看起来不太对喵~ 换个正常的域名试试"
+m3 = "正在查询 ${address} 的状态喵..."
+m4 = "正在查询 ${address} 的状态喵..."
+m5 = "查询超时了喵~（30s）服务器可能无响应，稍后再试试"
+m6 = "查询出错了喵~ ${format_exc}"
+m7 = "查询失败了喵~ "
+m8 = " 可能离线或地址不对（Java 版服务器才能查）\n"
+
+[cmd_run]
+m1 = "用法: /~run py <代码> 运行Python\n/~run cpp <代码> 编译运行C++\n/~run sh <命令> 终端命令(仅管理员，如 /~run sh cd / && ls -l)\n/~run <描述> 自动生成代码并运行(如 /~run 创建10个md文件打包zip)"
+m2 = "sh 终端命令仅管理员可用喵~"
+m3 = "写一段可独立运行的 Python 脚本，关键结果用 print() 输出，UTF-8，只输出代码不写注释。"
+m4 = "代码生成失败，请稍后重试"
+m5 = "[无输出]"
+m6 = "\n[提示] 运行超时已强制终止"
+m7 = "\n[退出码] ${returncode}"
+m8 = "已发送 ${files_to_send} 个产物文件"
+m9 = "产物发送异常: ${e}"
+m10 = "[运行输出]\n${text}"
+
+sandbox_fail = "沙箱执行失败喵~ ${etype}: ${emsg}"
+[handle_command]
+m1 = " (插件: ${__plugin__})"
+
+[_daily_rank_payload]
+m1 = "洛花星雨 Nexus"
+
+[_build_outage_notice_html]
+m1 = "${_wdsj_slots_hint}（共 ${_wdsj_slots} 轮）"
+
+[_bot_name]
+m1 = "幻梦Bot"
+m2 = "幻梦Bot"
+
+[_arena_daily_payload]
+m1 = "洛花星雨 Nexus"
+
+[fault]
+state_on = "开启"
+state_off = "关闭"
+
+[common]
+unknown_error = "未知错误"
+unknown_courier = "某快递"
+unknown = "未知"
+unknown_mode = "未知模式"
+chess_default = "棋局"
+redeem_failed = "兑换失败"

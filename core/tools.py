@@ -141,6 +141,16 @@ TOOLS: list[dict] = [
                 "properties": {
                     "prompt": {"type": "string", "description": "画面描述（中文即可，越具体越好）"},
                     "size": {"type": "string", "description": "可选尺寸或比例，如 16:9 / 1:1 / 1024x1024，默认 16:9"},
+                    "model": {
+                        "type": "string",
+                        "enum": ["sunburst", "flare", "gpt-image-2", "gemini", "grok",
+                                 "grok2", "seedream", "seedream4"],
+                        "description": "可选绘图模型。sunburst=ChatGPT Image 2.5 Sunburst（默认，最稳）、"
+                                       "flare=ChatGPT Image 2.5 Flare、gpt-image-2、gemini=Gemini 3.1 Flash Image、"
+                                       "grok=Grok Imagine Quality、grok2=Grok Imagine 2.0、"
+                                       "seedream=豆包 Seedream 5.0 Pro、seedream4=豆包 Seedream 4.0。"
+                                       "用户没点名就不要传。",
+                    },
                 },
                 "required": ["prompt"],
             },
@@ -1309,7 +1319,9 @@ async def execute_tool(
         if not _p:
             return "请提供画面描述"
         _sz = (arguments.get("size") or "").strip()
-        args = ([_sz] if _sz else []) + [_p]
+        _md = (arguments.get("model") or "").strip()
+        # v2.3.104：模型名放最前（cmd_draw 按 token 识别，顺序不敏感）
+        args = ([_md] if _md else []) + ([_sz] if _sz else []) + [_p]
     elif tool_name == "weather":
         args = [arguments.get("city", "")]
     elif tool_name == "wdsj":
