@@ -57,6 +57,10 @@ def test_size():
     ck("4k 按 2k 处理", A._apply_resolution("1536x864", "4k") == "3072x1728")
     ck("1k 不变", A._apply_resolution("1536x864", "1k") == "1536x864")
     ck("未知档位不变", A._apply_resolution("1536x864", "abc") == "1536x864")
+    # 群里实测有人写 1080p（原来被当提示词塞进 prompt）
+    ck("1:1 + 1080p", A._size_for("1:1", 1080) == "1080x1080", A._size_for("1:1", 1080))
+    ck("16:9 + 1080p", A._size_for("16:9", 1080) == "1920x1080", A._size_for("16:9", 1080))
+    ck("4:3 + 1080p", A._size_for("4:3", 1080) == "1440x1080", A._size_for("4:3", 1080))
 
 
 def test_cmd_parse():
@@ -222,6 +226,9 @@ def test_sniff():
     ck("WebP", P.sniff_image_type(webp) == ("webp", "image/webp"), str(P.sniff_image_type(webp)))
     ck("GIF 拒绝", P.sniff_image_type(b"GIF89a" + b"\x00" * 16) is None)
     ck("空数据拒绝", P.sniff_image_type(b"") is None)
+    ck("安全审核识别", P.is_safety_error(
+        "Your request was rejected as a result of our safety system.") is True)
+    ck("普通错误不误判", P.is_safety_error("HTTP 502: 当前分组下没有可用渠道") is False)
 
 
 def test_size_fallback():

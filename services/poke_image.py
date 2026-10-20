@@ -320,6 +320,18 @@ def model_list_text(current: str = DEFAULT_MODEL) -> str:
     return "\n".join(lines)
 
 
+_SAFETY_KEYS = ("safety system", "safety", "content_policy", "content policy",
+                "content management", "敏感", "内容不合规", "违规")
+
+SAFETY_MSG = "内容被模型的安全审核拒绝（提示词触发了限制），换个说法或换个模型试试"
+
+
+def is_safety_error(text: str) -> bool:
+    """判断错误文本是否是"内容安全审核"（换模型也没用，只能改提示词）。"""
+    t = (text or "").lower()
+    return any(k in t for k in _SAFETY_KEYS)
+
+
 def _err_text(e: Exception) -> str:
     """异常 → 简短可读文本（优先带 HTTP 状态与响应体）。"""
     resp = getattr(e, "response", None)
@@ -385,6 +397,9 @@ async def generate(
                 #   上层据此立刻换模型，而不是掉到备用通道
                 channel_err = (r.status_code in (502, 503)
                                and ("渠道" in r.text or "channel" in r.text.lower()))
+                if is_safety_error(r.text):
+                    logger.warning("Poke 内容安全审核拒绝 model=%s", model)
+                    return {"error": SAFETY_MSG, "safety": True, "status": r.status_code}
                 return {"error": err, "channel_error": channel_err,
                         "status": r.status_code}
             data = r.json()
@@ -510,6 +525,9 @@ async def _handle_edit_resp(r, model: str, size: str | None) -> dict:
         err = f"HTTP {r.status_code}: {r.text[:240]}".replace("\n", " ")
         channel_err = (r.status_code in (502, 503)
                        and ("渠道" in r.text or "channel" in r.text.lower()))
+        if is_safety_error(r.text):
+            logger.warning("Poke 参考图生图被安全审核拒绝 model=%s", model)
+            return {"error": SAFETY_MSG, "safety": True, "status": r.status_code}
         return {"error": err, "channel_error": channel_err, "status": r.status_code}
     data = r.json()
     items = data.get("data") or []
