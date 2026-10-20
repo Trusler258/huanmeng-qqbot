@@ -51,8 +51,28 @@
   一行注入收尾 prompt；兜底文案同步改
 - 验证：单测 7/7（非主人 prompt 含「不是主人」+「禁止叫主人」；主人 prompt 含「是主人」）
 
+### 四、成本控制：档位标注 + 预估费用 + 配额收紧（同日第 2 轮，用户「这么贵」后补）
+- 起因：控制台看到 `doubao-seedream-5-0-pro` 2 次 = 32.81K token = **$1.72**（单张约 ¥6）
+- **写 2k 是主要放大项**（面积 4 倍 ⇒ token/费用约 4 倍），所以：
+  - 不写分辨率一律按 1k（1536x864），`2k` 必须显式写
+  - 命中 2k 时提交提示里附一行「2k 尺寸成本约为 1k 的 4 倍，嫌贵就省掉分辨率参数」
+- `/~draw model` 列表升级为「模型 + 相对能力 + 成本档位 + 单价 + 实测耗时」，
+  例：`sunburst 最稳最准，指令跟随最好｜贵 约¥1.5/张｜实测约41秒`
+  - 档位按 1k 单价阈值：≤¥0.3 便宜 / ≤¥1.0 中等 / 其余贵（gemini 便宜、gpt-image-2 中等、sunburst 与 seedream 贵）
+  - 能力描述是"同批相对定位"，耗时是本机实测，没实测的不写（不留编造数字）
+- **单价表进配置** `bot_config.toml` 新增 `[image]` + `[image.price]`：
+  `daily_limit = 3`、`default_model`、8 个模型的 1k 预估单价（键必须加引号，型号里有点号）
+  - 提交任务时提示「预计约 ¥X（档位）」；本机估算按 `面积 / 1536*864` 折算
+  - 配置按 mtime 缓存 → 改单价**不用重启**
+- **每日配额 5 → 3**（admin 不限）：`DEFAULT_DRAW_LIMIT=3` + 读 `[image] daily_limit`
+  - 存量用户旧记录里的 `limit=5` 会被配置覆盖回 3；`/~owner draw set` 手设的记 `custom=true`，不再被覆盖
+- 顺带修：设过「我的默认模型」后，命令行单次指定模型原先会被忽略（模型名被当提示词），
+  改成命令行优先
+- 验证：`tests/_test_poke_image.py` 60/60；服务器实跑 `/~draw model`、模型切换、
+  三种参数组合的提交提示（¥1.5 / ¥0.12 / ¥6 + 2k 提醒）均正确
+
 ### 验证
-- 单测：`tests/_test_poke_image.py` 40/40、`tests/_test_writing_addr.py` 7/7
+- 单测：`tests/_test_poke_image.py` 60/60、`tests/_test_writing_addr.py` 7/7
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
