@@ -67,6 +67,11 @@ class PluginManager:
             return False, f"插件 {name} 未被发现"
         return True, ""
 
+    def manifest_of(self, name: str):
+        """取某个插件的 manifest（未登记返回 None）；★ v2.3.101 权限层执行期复查用。"""
+        rec = self._records.get(name)
+        return rec.manifest if rec is not None else None
+
     def list(self) -> list[dict]:
         return [{
             "name": r.manifest.name,
@@ -75,6 +80,42 @@ class PluginManager:
             "state": r.state,
             "error": r.error,
         } for r in self._records.values()]
+
+    # ── 依赖（requires.plugins，v2.3.84）──────────────────
+    @staticmethod
+    def hard_deps(manifest: PluginManifest) -> list[str]:
+        """本插件的硬依赖插件名（缺失则不加载）。"""
+        req = getattr(manifest, "requires", None) or {}
+        deps = req.get("plugins") if isinstance(req, dict) else None
+        return [str(p) for p in deps] if isinstance(deps, list) else []
+
+    def missing_deps(self, name: str) -> list[str]:
+        """本插件声明了、但未被发现的硬依赖插件名。"""
+        rec = self._records.get(name)
+        if rec is None:
+            return []
+        return [d for d in self.hard_deps(rec.manifest) if d not in self._records]
+
+    def load_order(self) -> list[str]:
+        """拓扑排序：被依赖的插件先加载；存在环时按发现顺序兜底并告警。"""
+        order: list[str] = []
+        placed: set[str] = set()
+
+        def visit(n: str, stack: list[str]) -> None:
+            if n in placed or n not in self._records:
+                return
+            if n in stack:
+                logger.warning("插件依赖存在环: %s", " -> ".join(stack + [n]))
+                return
+            for d in self.hard_deps(self._records[n].manifest):
+                visit(d, stack + [n])
+            if n not in placed:
+                placed.add(n)
+                order.append(n)
+
+        for n in list(self._records):
+            visit(n, [])
+        return order
 
     # ── load ─────────────────────────────────────────────
     async def load(self, name: str) -> tuple[bool, str]:
@@ -247,10 +288,32 @@ class PluginManager:
 
     # ── 批量 ─────────────────────────────────────────────
     async def load_all(self) -> list[str]:
-        """加载并启用所有插件。单个失败不影响其他。返回成功列表。"""
+        """加载并启用所有插件。单个失败不影响其他。返回成功列表。
+
+        v2.3.84：按 `requires.plugins` 做拓扑排序（依赖先加载）；
+        硬依赖缺失或依赖未就绪的插件**跳过加载并告警**，不拖垮其他插件。
+        """
         self.discover()
         ok_names: list[str] = []
-        for name in list(self._records):
+        loaded: set[str] = set()
+        for name in self.load_order():
+            rec = self._records.get(name)
+            if rec is None:
+                continue
+            miss = self.missing_deps(name)
+            if miss:
+                rec.state = STATE_ERROR
+                rec.error = f"缺少依赖插件: {', '.join(miss)}"
+                logger.warning("插件 %s 跳过加载: 缺少依赖插件 %s", name, ", ".join(miss))
+                await self._emit_error(name, rec.error)
+                continue
+            not_ready = [d for d in self.hard_deps(rec.manifest) if d not in loaded]
+            if not_ready:
+                rec.state = STATE_ERROR
+                rec.error = f"依赖未就绪: {', '.join(not_ready)}"
+                logger.warning("插件 %s 跳过加载: 依赖未就绪 %s", name, ", ".join(not_ready))
+                await self._emit_error(name, rec.error)
+                continue
             ok, _ = await self.load(name)
             if not ok:
                 continue
@@ -258,6 +321,7 @@ class PluginManager:
             ok2, _ = await self.enable(name)
             if ok2:
                 ok_names.append(name)
+                loaded.add(name)
         return ok_names
 
     async def shutdown_all(self) -> None:

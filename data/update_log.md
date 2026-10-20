@@ -11,6 +11,29 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.101 — 插件工具「注册即授权」收紧（QQ 侧等价闭环）(2026.10.20)
+
+一句话总结：插件 `register_tool` 不再等于获得执行授权；未声明权限的插件工具不得占用核心工具名。
+
+对齐 KOOK v2.3.101（同日）。QQ 侧没有 `core/tool_runtime` 权限层，因此做最小等价闭环：
+
+1. **注册期校验**（`core/plugin/api.py`）
+   - 声明了 `permissions` → 必须是 `manifest.permissions` 的子集，否则**拒绝注册**
+   - 未声明 + **占用核心工具名**（`core.tools.TOOLS` 里的名字）→ **拒绝注册**
+   - 未声明 + 新工具名 → 放行但 WARNING（迁移期）
+   - `Capability` 新增 `perm_declared` / `owner_permissions`，区分"显式声明"与"用了缺省值"
+2. **执行期复查**（`core/tools.py::_plugin_tool_allowed`）
+   - 工具必须仍在 capability 注册表（插件卸载/禁用后不得继续可调）
+   - 未声明 + 核心名 → 拒绝执行
+   - 声明过的权限必须在**活的** `manifest.permissions` 内（被降权后旧注册项自动失效）
+3. `PluginManager.manifest_of(name)`：权限层执行期取活 manifest
+
+### 验证
+- 规则单测 7/7：未声明新名放行 / 未声明占核心名拒绝 / 已声明放行 /
+  manifest 收窄后拒绝 / 卸载后拒绝 / 注册期超集拒绝 / 注册期占核心名拒绝
+- 端到端：`execute_tool('roll_dice')` 仍正常返回「掷出了 3 点（6面骰），获得 1 积分」
+- 24 插件正常装载，无异常；`dice` 的 roll_dice 走迁移期放行并打 WARNING
+
 ## v2.3.100 — 空间触发只认原生 @ 标记 (2026.10.20)
 
 一句话总结：`.qzone` 只在评论含 QQ 原生 @ 标记（`@{uin:3682248514,...}`）时回复，
