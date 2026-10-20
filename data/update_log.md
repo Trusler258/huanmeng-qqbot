@@ -11,49 +11,41 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
-## v2.3.102 — 事件体系对齐 KOOK：消息生命周期 + Envelope + 订阅者超时 (2026.10.20)
+## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
 
-对齐 KOOK v2.3.102。QQ 侧无 `tool_runtime`，工具事件改为在 `_plugin_tool_allowed` 拒绝处发。
+> 本日三次改动按「一天一版本」合并为同一版本号（v2.3.103），不再连续 bump。
 
-1. **统一 Envelope**：`Event` 增加 `event_id` / `schema_version` / `trace_id` / `source` /
-   `plugin_id`，保留 `name` / `data` / `ts`；新增 `emit_event()` 统一出口
-2. **消息生命周期**（此前 `message.received/sent` 只有常量、零 emit）
-   - `message.received`（pipeline 入口，只带元数据不含正文）
-   - `message.ignored`（空消息 / 全不可见字符，带 reason）
-   - `message.processing`（预钩子之后）
-   - `message.replied`（send_sentences，= 已交给发送层）
-   - `message.sent` / `message.failed`（send_by_chat_type，发送层明确返回才发）
-3. **工具**：插件工具被拒时发 `tool.permission.denied`
-4. **插件/能力生命周期**：`plugin.loading` / `load_failed` / `enabled` / `disabled` +
-   `capability.registered` / `unregistered`
-5. **两个缺陷**：钩子 `except: pass` 改为 `logger.error(exc_info=True)`；
-   `publish` 协程订阅者加 10s 超时（超时取消 + 慢订阅者告警），未改成无约束 create_task
+### 一、修「插件注册工具即授权」权限漏洞
+`permission.py` 插件工具分支原无条件 `return True`，配合 `register_tool` 把缺省 permissions
+硬编码为 `[message.read, message.send]`，权限层无法区分"声明了"与"用缺省值"——
+**注册动作本身成了授权动作**，插件可绕过 HIGH 风险默认拒绝。
+修复：`Capability` 增 `perm_declared`/`owner_permissions`；注册期校验（声明必须是
+manifest.permissions 子集、未声明不得占用核心工具名）；执行期复查（仍在注册表 + 声明权限
+仍在活 manifest 内）；`DENIED_TOOLS` 保持最高优先。
+验证：单测 6/6（KOOK）/ 7/7（QQ）；`roll_dice` 迁移放行、`run_code` 走沙箱内部管控、
+`system_status` 仍拒绝。
 
-验证：单测 10/10；生命周期真跑 loading→loaded→capability.registered→enabled→disabled；
-24 插件正常
+### 二、事件体系：消息生命周期 + 统一 Envelope
+- `Event` 增 `event_id`/`schema_version`/`trace_id`/`source`/`plugin_id`，保留 `name`/`data`/`ts`
+- 新增 `emit_event()` 统一出口；`message.received/ignored/processing/replied/sent|failed` 接上真实发射
+  （此前 `message.*` 只有常量、零 emit；`sent` 只在发送层明确成功时发，不伪造）
+- `tool.*` 补 `execution_id`/`plugin`，新增 `tool.permission.denied`
+- 新增 `plugin.loading/load_failed/enabled/disabled`、`capability.registered/unregistered`
+- 修两个缺陷：管道钩子 `except: pass` → `logger.error(exc_info=True)`；
+  `publish` 协程订阅者加 10s 超时（超时取消 + 慢订阅者告警），未改成无约束 create_task
 
-## v2.3.101 — 插件工具「注册即授权」收紧（QQ 侧等价闭环）(2026.10.20)
-
-一句话总结：插件 `register_tool` 不再等于获得执行授权；未声明权限的插件工具不得占用核心工具名。
-
-对齐 KOOK v2.3.101（同日）。QQ 侧没有 `core/tool_runtime` 权限层，因此做最小等价闭环：
-
-1. **注册期校验**（`core/plugin/api.py`）
-   - 声明了 `permissions` → 必须是 `manifest.permissions` 的子集，否则**拒绝注册**
-   - 未声明 + **占用核心工具名**（`core.tools.TOOLS` 里的名字）→ **拒绝注册**
-   - 未声明 + 新工具名 → 放行但 WARNING（迁移期）
-   - `Capability` 新增 `perm_declared` / `owner_permissions`，区分"显式声明"与"用了缺省值"
-2. **执行期复查**（`core/tools.py::_plugin_tool_allowed`）
-   - 工具必须仍在 capability 注册表（插件卸载/禁用后不得继续可调）
-   - 未声明 + 核心名 → 拒绝执行
-   - 声明过的权限必须在**活的** `manifest.permissions` 内（被降权后旧注册项自动失效）
-3. `PluginManager.manifest_of(name)`：权限层执行期取活 manifest
+### 三、.hml 核心库机制 + hmcore@1.0.0
+- 位置定案：`libs/<name>/{hml.json,<name>/}`；分发 `<name>-<version>.hml`（tar.gz）
+- `core/hml.py`：ensure_libs_path / install / list / uninstall（拒绝路径穿越与符号链接，
+  覆盖前备份 `libs/.backup/`）；⚠️ sys.path 必须逐个库目录加入（同名目录会被当命名空间包）
+- `libs/hmcore`：`load_core`（收编 4 份逐字相同副本）/ `is_admin`（2 份）/ `PluginBase`（28 份脚手架）/ `TTLCache`
+- `scripts/build_hml.py`：打包 + 解包后真实 import 自校验
+- `bot.py`：插件加载前 `ensure_libs_path()`，日志「核心库已就绪: N 个 [...]」
+- `plugins/ping`：`_load_core` 改走 hmcore，保留本地 ImportError 兜底
 
 ### 验证
-- 规则单测 7/7：未声明新名放行 / 未声明占核心名拒绝 / 已声明放行 /
-  manifest 收窄后拒绝 / 卸载后拒绝 / 注册期超集拒绝 / 注册期占核心名拒绝
-- 端到端：`execute_tool('roll_dice')` 仍正常返回「掷出了 3 点（6面骰），获得 1 积分」
-- 24 插件正常装载，无异常；`dice` 的 roll_dice 走迁移期放行并打 WARNING
+- KOOK：单测 6/6 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；29 插件正常
+- QQ：单测 7/7 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；24 插件正常
 
 ## v2.3.100 — 空间触发只认原生 @ 标记 (2026.10.20)
 
