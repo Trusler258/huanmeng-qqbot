@@ -96,7 +96,8 @@ def test_cmd_parse():
     A.asyncio.create_task = lambda coro: (coro.close(), None)[1]
     try:
         r, tip = asyncio.run(run(["一只橘猫"]))
-        ck("默认模型 sunburst", "Sunburst" in tip, tip)
+        ck("默认走云雾通道", "云雾" in tip, tip)
+        ck("默认不报价格", "¥" not in tip, tip)
         ck("默认尺寸 16:9", "1536x864" in tip, tip)
         ck("默认无 md", "**" not in tip, tip)
 
@@ -150,7 +151,7 @@ def test_channel():
     real_gen = P.generate
     try:
         P.generate = fake_poke_ok
-        r = asyncio.run(A._gen_image("猫", "1536x864"))
+        r = asyncio.run(A._gen_image("猫", "1536x864", model="sunburst"))
         ck("poke 成功走主通道", (r or {}).get("provider") == "poke", str(r))
         ck("带回模型名", (r or {}).get("model") == "gpt-image-2.5-sunburst", str(r))
 
@@ -159,11 +160,11 @@ def test_channel():
     finally:
         P.generate = real_gen
 
-    # 不可用（无 key）：应尝试备用通道并失败（网络/凭据在本机无效也无妨，只要不抛）
+    # 没指定模型：即使没有 POKE_API_KEY 也应直接走云雾（不依赖 poke）
     real_key = os.environ.pop("POKE_API_KEY", "")
     try:
         r = asyncio.run(A._gen_image("猫", "512x512"))
-        ck("无 key 回退备用通道", isinstance(r, dict), str(r)[:120])
+        ck("未指定模型走云雾（不需要 poke key）", isinstance(r, dict), str(r)[:120])
     finally:
         if real_key:
             os.environ["POKE_API_KEY"] = real_key
@@ -188,7 +189,7 @@ def test_fallback_chain():
     try:
         P.generate = fake
         calls.clear()
-        r = asyncio.run(A._gen_image("猫", "1024x1536"))
+        r = asyncio.run(A._gen_image("猫", "1024x1536", model="sunburst"))
         ck("502 后换到有渠道的模型", (r or {}).get("model") == "gpt-image-2", str(r))
         ck("记录了原模型", (r or {}).get("switched_from") == "gpt-image-2.5-sunburst", str(r))
         ck("按链顺序试了 3 个", calls == ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
@@ -201,11 +202,26 @@ def test_fallback_chain():
 
         P.generate = fake_reject
         calls.clear()
-        r = asyncio.run(A._gen_image("猫", "1536x864"))
+        r = asyncio.run(A._gen_image("猫", "1536x864", model="sunburst"))
         ck("非渠道错误不换模型", len(calls) == 1, str(calls))
         ck("错误如实回传", "内容不合规" in (r or {}).get("error", ""), str(r))
     finally:
         P.generate = real
+
+
+def test_sniff():
+    """参考图类型嗅探：声明类型必须与内容一致（用户报过 400 参考图格式无效）。"""
+    from services import poke_image as P
+
+    print("[9] 参考图类型嗅探")
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    jpg = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+    webp = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 16
+    ck("PNG", P.sniff_image_type(png) == ("png", "image/png"), str(P.sniff_image_type(png)))
+    ck("JPEG", P.sniff_image_type(jpg) == ("jpg", "image/jpeg"), str(P.sniff_image_type(jpg)))
+    ck("WebP", P.sniff_image_type(webp) == ("webp", "image/webp"), str(P.sniff_image_type(webp)))
+    ck("GIF 拒绝", P.sniff_image_type(b"GIF89a" + b"\x00" * 16) is None)
+    ck("空数据拒绝", P.sniff_image_type(b"") is None)
 
 
 def test_size_fallback():
@@ -327,5 +343,6 @@ if __name__ == "__main__":
     test_cost_and_tier()
     test_quota_cfg()
     test_fallback_chain()
+    test_sniff()
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     raise SystemExit(0 if FAIL == 0 else 1)
