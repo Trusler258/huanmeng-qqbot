@@ -236,11 +236,37 @@ def _err_text(e: Exception, resp=None) -> str:
     return f"{type(e).__name__}: {s[:180]}"
 
 
-async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: str = "") -> dict | None:
-    """文生图（支持参考图） → 成功 {local_path}，失败 {"error": 文本}"""
+async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: str = "",
+                     model: str = "") -> dict | None:
+    """文生图（支持参考图） → 成功 {local_path}，失败 {"error": 文本}
+
+    通道优先级（v2.3.104 起）：
+      1. Poke2API（services/poke_image.py，8 个模型可选，默认 gpt-image-2.5-sunburst）
+      2. 原 CloudMist（AGNES_BASE/gpt-image-2）作为备用
+    参考图（/~draw + 引用图片）目前仍走原 CloudMist edits 通道。
+    """
     if reference_image_url:
         return await _gen_image_with_ref(prompt, size, reference_image_url)
 
+    last_err = ""
+    # ── 主通道：Poke2API ──
+    try:
+        from services import poke_image
+        if poke_image.available():
+            model_id = poke_image.resolve_model(model) or poke_image.DEFAULT_MODEL
+            r = await poke_image.generate(prompt, model=model_id, size=size)
+            if r.get("local_path"):
+                return {"local_path": r["local_path"], "provider": "poke",
+                        "model": r["model"], "size": r.get("size", size)}
+            last_err = r.get("error") or "Poke 返回空结果"
+            logger.warning("Poke 图片生成失败，转备用通道: %s", last_err)
+        else:
+            logger.warning("POKE_API_KEY 未配置，直接用备用通道")
+    except Exception as e:
+        last_err = _err_text(e)
+        logger.error("Poke 通道异常，转备用通道: %s", last_err, exc_info=True)
+
+    # ── 备用通道：CloudMist gpt-image-2 ──
     body = {
         "model": "gpt-image-2",
         "prompt": prompt,
@@ -258,19 +284,22 @@ async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: s
                 raw = base64.b64decode(img["b64_json"])
                 path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
                 path.write_bytes(raw)
-                return {"local_path": str(path)}
+                return {"local_path": str(path), "provider": "cloudmist",
+                        "model": "gpt-image-2", "size": size}
             url = img.get("url", "")
             if url:
                 path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
                 async with httpx.AsyncClient(timeout=60, verify=False) as c2:
                     r2 = await c2.get(url)
                     path.write_bytes(r2.content)
-                return {"url": url, "local_path": str(path)}
+                return {"url": url, "local_path": str(path), "provider": "cloudmist",
+                        "model": "gpt-image-2", "size": size}
             return {"error": f"响应中无图片数据: {str(data)[:180]}"}
     except Exception as e:
         err = _err_text(e)
-        logger.warning("文生图失败: %s", err)
-        return {"error": err}
+        logger.error("文生图失败（主备均失败）: 主=%s 备=%s", last_err, err)
+        prefix = f"主通道 {last_err} | 备用 {err}" if last_err else err
+        return {"error": prefix}
 
 
 async def _download_image(url: str, dest: Path) -> bool:
@@ -478,22 +507,24 @@ async def _bg_gen_video(user_id, group_id, is_group, prompt, image_url="",
 
 # ── 命令 ────────────────────────────────────────────────
 
-async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", left=0, limit=0):
+async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", left=0, limit=0,
+                        model=""):
     """后台图片生成——不阻塞聊天（模式同 _bg_gen_video）"""
     try:
-        result = await _gen_image(prompt, size, reference_image_url=ref_url)
+        result = await _gen_image(prompt, size, reference_image_url=ref_url, model=model)
         if result and not result.get("error"):
             remaining = commit_draw(user_id)
             await _send_media(result["local_path"], group_id, is_group, user_id, "image")
             limit_str = f"{limit}" if limit else "∞"
-            tip = f"[CQ:at,qq={user_id}] 画好了喵~ (今日用量 {remaining}/{limit_str})"
+            used = _model_display(result.get("model") or model)
+            tip = f"[CQ:at,qq={user_id}] 画好了喵~ ({used} | 今日用量 {remaining}/{limit_str})"
         elif result and result.get("error"):
             err = result["error"]
             tip = f"[CQ:at,qq={user_id}] 图片生成失败喵~ (不扣次数)\n错误: {err[:350]}"
         else:
             tip = f"[CQ:at,qq={user_id}] 图片生成失败喵~ 换一种描述试试？(不扣次数)"
     except Exception as e:
-        logger.warning("后台图片生成异常: %s", e)
+        logger.error("后台图片生成异常: %s", e, exc_info=True)
         tip = f"[CQ:at,qq={user_id}] 图片生成失败喵~ 换一种描述试试？(不扣次数)"
 
     from services.sender import send_by_chat_type
@@ -501,38 +532,130 @@ async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", l
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
 
+# ── 绘图模型偏好（v2.3.104）────────────────────────────
+_MODEL_PREF_FILE = Path(__file__).resolve().parent.parent / "data" / "draw_model.json"
+
+
+def _model_display(model: str) -> str:
+    """模型 ID / 别名 → 中文展示名。"""
+    try:
+        from services import poke_image
+        mid = poke_image.resolve_model(model) or (model or poke_image.DEFAULT_MODEL)
+        alias = poke_image.model_alias_of(mid)
+        label = poke_image.MODEL_LABELS.get(alias, mid)
+        return label.replace("（默认）", "")
+    except Exception:
+        return model or "GPT Image"
+
+
+def _load_model_pref(user_id: int) -> str:
+    """该用户选过的模型别名；没选过返回空串（用全局默认）。"""
+    try:
+        d = json.loads(_MODEL_PREF_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return str(d.get(str(user_id), "") or "")
+
+
+def _save_model_pref(user_id: int, alias: str) -> None:
+    try:
+        d = json.loads(_MODEL_PREF_FILE.read_text(encoding="utf-8"))
+        if not isinstance(d, dict):
+            d = {}
+    except Exception:
+        d = {}
+    if alias:
+        d[str(user_id)] = alias
+    else:
+        d.pop(str(user_id), None)
+    _MODEL_PREF_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _MODEL_PREF_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# 分辨率档位 → 尺寸倍数（以 1k 基准表为 1 倍）
+# ⚠️ 实测（2026-10-21）：2k 可用（sunburst 2048x2048 OK、seedream 2048x2048 OK，
+#    gemini 会静默降级回 1024）；4k 4096x4096 直接 502「模型请求格式无效」→ 按 2k 处理
+_RES_TIERS: dict[str, int] = {"1k": 1, "2k": 2, "4k": 2, "hd": 1, "2x": 2, "4x": 2}
+
+
+def _apply_resolution(size: str, tier: str) -> str:
+    """把 1k 基准尺寸按档位放大：1536x864 + 2k → 3072x1728。"""
+    scale = _RES_TIERS.get(tier.lower())
+    if not scale or scale == 1:
+        return size
+    try:
+        w, h = size.lower().split("x")
+        return f"{int(w) * scale}x{int(h) * scale}"
+    except Exception:
+        return size
+
+
 async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_message=""):
     """
-    /~draw <提示词>          文生图（默认 16:9）
-    /~draw 16:9 <提示词>     指定比例（1:1 3:2 2:3 16:9 9:16 4:3 3:4）
-    /~draw 1024x1024 <提示词> 指定像素尺寸
-    /~draw help              查看帮助
-    引用图片 + /~draw <提示词>  以引用图片为参考图生成
+    /~draw <提示词>                      文生图（默认 16:9，默认模型）
+    /~draw <模型> [比例] [分辨率] <提示词>  指定模型/比例/分辨率
+    /~draw 16:9 <提示词>                 指定比例（1:1 3:2 2:3 16:9 9:16 4:3 3:4）
+    /~draw 1024x1024 <提示词>            指定像素尺寸
+    /~draw 16:9 2k <提示词>              比例 + 分辨率档位（1k/2k/4k）
+    /~draw model                         查看可用模型
+    /~draw model <名字>                   切换我的默认模型
+    /~draw help                          查看帮助
+    引用图片 + /~draw <提示词>             以引用图片为参考图生成（走备用通道）
     """
     from utils.format_lang import format_lang
+    from services import poke_image
+
     if args and args[0].lower() == "help":
         return format_lang("help.detail.draw")
+
+    # /~draw model [名字]
+    if args and args[0].lower() in ("model", "模型"):
+        if len(args) == 1:
+            cur = poke_image.resolve_model(_load_model_pref(user_id)) or poke_image.DEFAULT_MODEL
+            return poke_image.model_list_text(cur)
+        raw = args[1]
+        mid = poke_image.resolve_model(raw)
+        if not mid:
+            return (f"没有这个模型: {raw}\n可选: " +
+                    "、".join(poke_image.MODELS.keys()))
+        alias = poke_image.model_alias_of(mid)
+        _save_model_pref(user_id, alias)
+        return f"已切换绘图模型: {_model_display(mid)}\n以后 /~draw 默认用它"
+
     if not args:
-        return "用法: /~draw <提示词>  如 /~draw 一只坐在樱花树下的猫娘\n/~draw 16:9 樱花猫娘  指定比例\n引用图片 + /~draw  以引用图片为参考图\n/~draw help 查看完整参数"
+        return ("用法: /~draw <提示词>  如 /~draw 一只坐在樱花树下的猫娘\n"
+                "/~draw <模型> [比例] [分辨率] <提示词>  如 /~draw flare 16:9 2k 樱花猫娘\n"
+                "/~draw model 查看/切换模型     /~draw 16:9 <提示词> 指定比例\n"
+                "引用图片 + /~draw  以引用图片为参考图")
 
     # 配额检查
     ok, left, limit = check_and_use_draw(user_id)
     if not ok:
         return f"今日画图次数已用完喵~ ({limit}/{limit})，明天再来吧！"
 
-    # 解析：第一个参数可能是比例/尺寸，其余是 prompt
-    size = "1536x864"  # 默认 16:9
+    # 解析：模型 / 比例 / 分辨率 / 尺寸，其余拼成 prompt
+    model_raw = _load_model_pref(user_id)          # 用户偏好模型（空=全局默认）
+    aspect = ""
+    resolution = ""
+    explicit_size = ""
     prompt_parts = []
     for a in args:
-        if "x" in a and a.replace("x", "").isdigit():
-            # 直接的 WxH 格式
-            size = a
-        elif a.lower() in _ASPECT_RATIOS or (":" in a and a.replace(":", "").isdigit()):
-            # 比例别名（16:9 / wide / square 等）
-            size = _resolve_size(a)
+        al = a.lower()
+        if not model_raw and poke_image.resolve_model(al):
+            model_raw = al
+        elif "x" in al and al.replace("x", "").isdigit() and len(al.split("x")) == 2:
+            explicit_size = al                      # 1024x1024
+        elif al in _RES_TIERS:
+            resolution = al                         # 1k / 2k / 4k
+        elif al in _ASPECT_RATIOS or (":" in al and al.replace(":", "").isdigit()):
+            aspect = al                             # 16:9 / wide / square
         else:
             prompt_parts.append(a)
     prompt = " ".join(prompt_parts) if prompt_parts else " ".join(args)
+
+    size = explicit_size or _resolve_size(aspect or "16:9")
+    size = _apply_resolution(size, resolution) if resolution else size
+    model_id = poke_image.resolve_model(model_raw) or poke_image.DEFAULT_MODEL
 
     # 提取引用图片作为参考图
     ref_url = ""
@@ -567,15 +690,16 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
     chat_id = group_id if is_group else user_id
     left_str = f"{left}" if limit else "∞"  # limit=0 表示 admin 无限
     limit_str = f"{limit}" if limit else "∞"
-    ref_hint = " [参考图]" if ref_url else ""
-    tip = f"开始生成图片{ref_hint}: [{prompt_short}] | 模型: GPT Image 2 | 任务ID: {task_id} | 比例: {size} | 今日用量: {left_str}/{limit_str}"
+    ref_hint = " [参考图·备用通道]" if ref_url else ""
+    tip = (f"开始生成图片{ref_hint}: [{prompt_short}] | 模型: {_model_display(model_id)}"
+           f" | 任务ID: {task_id} | 尺寸: {size} | 今日用量: {left_str}/{limit_str}")
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
     # 后台生成，不阻塞聊天（模式同 cmd_video）
     asyncio.create_task(_bg_gen_image(
         user_id, group_id, is_group, prompt, size,
-        ref_url=ref_url, left=left, limit=limit,
+        ref_url=ref_url, left=left, limit=limit, model=model_id,
     ))
     return f"图片生成任务已提交喵~ 好了会发出来 (任务ID: {task_id})"
 
