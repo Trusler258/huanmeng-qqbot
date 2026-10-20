@@ -303,10 +303,11 @@ def model_list_text(current: str = DEFAULT_MODEL) -> str:
 
     格式：显示名（默认） [别名]  ¥单价/张  档位/能力标签/耗时
     """
-    cur_alias = model_alias_of(current)
-    lines = [f"可用绘图模型（当前 {cur_alias}）"]
+    cur_alias = model_alias_of(current) if current else ""
+    head = f"当前 {cur_alias}" if cur_alias else "当前 云雾 GPT Image 2（默认）"
+    lines = [f"可用绘图模型，{head}"]
     for alias, mid in MODELS.items():
-        mark = "（默认）" if alias == cur_alias else ""
+        mark = "（当前）" if cur_alias and alias == cur_alias else ""
         label = MODEL_LABELS.get(alias, mid).replace("（默认）", "")
         tail = [tier_label(mid), MODEL_ABILITY.get(alias, "")]
         if alias in MODEL_SPEED:
@@ -412,6 +413,23 @@ async def generate(
         return {"error": err}
 
 
+def sniff_image_type(raw: bytes) -> tuple[str, str] | None:
+    """按文件头判断真实图片类型 → (扩展名, MIME)。只认 Poke edits 支持的 PNG/JPEG/WebP。
+
+    ⚠️ 不能直接用 QQ 图片的 .png 后缀声明类型：QQ 的图多是 JPEG，
+    声明成 image/png 会被服务端拒（400「内容与声明类型不一致」）。
+    """
+    if not raw:
+        return None
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return ("png", "image/png")
+    if raw[:3] == b"\xff\xd8\xff":
+        return ("jpg", "image/jpeg")
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return ("webp", "image/webp")
+    return None
+
+
 async def edit(
     prompt: str,
     model: str = DEFAULT_MODEL,
@@ -442,8 +460,14 @@ async def edit(
             data = {"model": model, "prompt": prompt, "n": "1"}
             if size:
                 data["size"] = size
-            with open(image_path, "rb") as f:
-                files = {"image": (Path(image_path).name, f.read(), "image/png")}
+            raw = Path(image_path).read_bytes()
+            sniffed = sniff_image_type(raw)
+            if not sniffed:
+                head = raw[:12]
+                return {"error": "参考图格式仅支持 PNG/JPEG/WebP，"
+                                 f"当前文件头 {head!r} 无法识别"}
+            ext, mime = sniffed
+            files = {"image": (f"ref.{ext}", raw, mime)}
             async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.post(url, data=data, files=files, headers=h)
                 out = await _handle_edit_resp(r, model, size)

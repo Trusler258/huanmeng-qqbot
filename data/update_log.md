@@ -89,8 +89,23 @@
 - 实测：`1024x1536` 竖图 sunburst→flare 各 502 → gpt-image-2 出图成功（62s）；
   参考图 edits（multipart）gpt-image-2 成功（44s）
 
+### 六、默认通道改回云雾，Poke 变可选 + 参考图类型修复
+- 用户要求「poke 作为可选，默认还是原来的云雾」。通道规则定稿：
+  - **没指定模型** → 云雾 CloudMist `gpt-image-2`（默认通道）
+  - **指定了模型**（`/~draw gemini …` 或 `/~draw model gemini` 偏好）→ Poke
+  - Poke 失败（含 502 无渠道）→ 回落云雾
+  - 新增 `/~draw model clear`（或 `默认`/`云雾`）→ 清偏好回到云雾
+  - 云雾单价未知 → 提示里**不显示「约 ¥X」**，只报模型与尺寸
+- 抽出 `_gen_cloudmist()` / `_gen_cloudmist_edit()`：文生图与参考图共用同一套默认规则
+- 修 400「参考图格式无效，仅支持内容与声明类型一致的 PNG、JPEG 或 WebP」：
+  原来 multipart 一律声明 `image/png`，但 QQ 图片多是 **JPEG** → 服务端判类型不一致直接拒。
+  新增 `poke_image.sniff_image_type()` 按**文件头**判 PNG/JPEG/WebP，用真实扩展名 + MIME 上传，
+  Poke edits 与云雾 edits 两条路都改成按真实类型声明
+- 实测：默认 → `provider=cloudmist, model=gpt-image-2`；参考图+无模型 → 云雾 edits 成功；
+  Poke edits + JPEG 嗅探 → 成功
+
 ### 验证
-- 单测：`tests/_test_poke_image.py` 73/73、`tests/_test_writing_addr.py` 7/7
+- 单测：`tests/_test_poke_image.py` 79/79、`tests/_test_writing_addr.py` 7/7
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20

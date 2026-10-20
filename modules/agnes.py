@@ -252,23 +252,54 @@ def _err_text(e: Exception, resp=None) -> str:
     return f"{type(e).__name__}: {s[:180]}"
 
 
+async def _gen_cloudmist(prompt: str, size: str = "1536x864") -> dict:
+    """云雾（CloudMist）gpt-image-2 —— 默认通道（老路子，用户指定"默认还是原来的云雾"）。"""
+    body = {"model": "gpt-image-2", "prompt": prompt, "n": 1, "size": size}
+    try:
+        # 复杂 prompt 可能超过 2 分钟，超时放宽到 300s
+        async with httpx.AsyncClient(timeout=300, verify=False) as c:
+            r = await c.post(f"{AGNES_BASE}/images/generations", json=body, headers=_headers())
+            r.raise_for_status()
+            data = r.json()
+            img = data.get("data", [{}])[0]
+            if img.get("b64_json"):
+                path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
+                path.write_bytes(base64.b64decode(img["b64_json"]))
+                return {"local_path": str(path), "provider": "cloudmist",
+                        "model": "gpt-image-2", "size": size}
+            url = img.get("url", "")
+            if url:
+                path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
+                async with httpx.AsyncClient(timeout=60, verify=False) as c2:
+                    r2 = await c2.get(url)
+                    path.write_bytes(r2.content)
+                return {"url": url, "local_path": str(path), "provider": "cloudmist",
+                        "model": "gpt-image-2", "size": size}
+            return {"error": f"响应中无图片数据: {str(data)[:180]}"}
+    except Exception as e:
+        err = _err_text(e)
+        logger.error("云雾文生图失败: %s", err)
+        return {"error": err}
+
+
 async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: str = "",
                      model: str = "") -> dict | None:
     """文生图（支持参考图） → 成功 {local_path}，失败 {"error": 文本}
 
-    通道优先级（v2.3.104 起）：
-      1. Poke2API（services/poke_image.py，8 个模型可选，默认 gpt-image-2.5-sunburst）
-      2. 原 CloudMist（AGNES_BASE/gpt-image-2）作为备用
-    参考图（/~draw + 引用图片）目前仍走原 CloudMist edits 通道。
+    通道规则（v2.3.104 定稿，用户要求"poke 作为可选，默认还是原来的云雾"）：
+      - **没指定模型** → 云雾 CloudMist `gpt-image-2`（默认通道）
+      - **指定了模型**（命令行 `/~draw gemini …` 或 `/~draw model gemini` 偏好）→ Poke2API
+      - Poke 失败（含 502「无渠道」）→ 回落云雾兜底
     """
     if reference_image_url:
         return await _gen_image_with_ref(prompt, size, reference_image_url, model)
 
+    if not (model or "").strip():
+        logger.info("未指定模型 → 云雾默认通道 gpt-image-2")
+        return await _gen_cloudmist(prompt, size)
+
+    # ── 指定模型：Poke（某模型「没有可用渠道」时按降级链换模型）──
     last_err = ""
-    # ── 主通道：Poke2API ──
-    # ★ v2.3.104：某模型「没有可用渠道」(502) 时按降级链换模型，而不是直接掉到备用通道
-    #   （2026-10-21 实测 gpt-image-2.5-sunburst/flare 曾整体 502，用户看到的就是备用通道的
-    #    "ChatGPT Image 2"，等于白换服务商）
     try:
         from services import poke_image
         if poke_image.available():
@@ -289,47 +320,22 @@ async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: s
                     logger.warning("Poke 失败且非渠道问题，不再换模型: %s", last_err)
                     return {"error": last_err}
                 logger.warning("Poke 模型 %s 无渠道，试下一个: %s", mid, str(last_err)[:80])
-            logger.warning("Poke 全部模型无渠道，转备用通道")
+            logger.warning("Poke 全部模型无渠道，回落云雾")
         else:
-            logger.warning("POKE_API_KEY 未配置，直接用备用通道")
+            logger.warning("POKE_API_KEY 未配置，回落云雾")
     except Exception as e:
         last_err = _err_text(e)
-        logger.error("Poke 通道异常，转备用通道: %s", last_err, exc_info=True)
+        logger.error("Poke 通道异常，回落云雾: %s", last_err, exc_info=True)
 
-    # ── 备用通道：CloudMist gpt-image-2 ──
-    body = {
-        "model": "gpt-image-2",
-        "prompt": prompt,
-        "n": 1,
-        "size": size,
-    }
-    try:
-        # gpt-image-2 复杂 prompt 生成可能超过 2 分钟，超时放宽到 300s
-        async with httpx.AsyncClient(timeout=300, verify=False) as c:
-            r = await c.post(f"{AGNES_BASE}/images/generations", json=body, headers=_headers())
-            r.raise_for_status()
-            data = r.json()
-            img = data.get("data", [{}])[0]
-            if img.get("b64_json"):
-                raw = base64.b64decode(img["b64_json"])
-                path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
-                path.write_bytes(raw)
-                return {"local_path": str(path), "provider": "cloudmist",
-                        "model": "gpt-image-2", "size": size}
-            url = img.get("url", "")
-            if url:
-                path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
-                async with httpx.AsyncClient(timeout=60, verify=False) as c2:
-                    r2 = await c2.get(url)
-                    path.write_bytes(r2.content)
-                return {"url": url, "local_path": str(path), "provider": "cloudmist",
-                        "model": "gpt-image-2", "size": size}
-            return {"error": f"响应中无图片数据: {str(data)[:180]}"}
-    except Exception as e:
-        err = _err_text(e)
-        logger.error("文生图失败（主备均失败）: 主=%s 备=%s", last_err, err)
-        prefix = f"主通道 {last_err} | 备用 {err}" if last_err else err
-        return {"error": prefix}
+    # ── 兜底：云雾 ──
+    out = await _gen_cloudmist(prompt, size)
+    if out.get("local_path"):
+        out["fallback_from"] = last_err or "poke"
+    else:
+        out["error"] = (f"Poke {last_err} | 云雾 {out.get('error')}"
+                        if last_err else out.get("error"))
+    return out
+
 
 
 async def _download_image(url: str, dest: Path) -> bool:
@@ -347,18 +353,84 @@ async def _download_image(url: str, dest: Path) -> bool:
         return False
 
 
+async def _gen_cloudmist_edit(prompt: str, size: str, ref_path: Path,
+                              ref_url: str = "") -> dict:
+    """云雾（CloudMist）/images/edits —— 参考图默认通道。
+
+    先 multipart 上传（按真实图片类型声明，QQ 图多是 JPEG），再退 JSON 图片 URL。
+    """
+    import io
+    last_err = ""
+    ref_path = Path(ref_path)
+
+    # 方式一：multipart 上传本地图（content-type 必须与内容一致，否则 400）
+    try:
+        raw = ref_path.read_bytes()
+        ext, mime = "png", "image/png"
+        try:
+            from services import poke_image as _pi
+            sniffed = _pi.sniff_image_type(raw)
+            if sniffed:
+                ext, mime = sniffed
+        except Exception:
+            pass
+        files = {"image": (f"ref.{ext}", io.BytesIO(raw), mime)}
+        form = {"model": "gpt-image-2", "prompt": prompt, "n": "1", "size": size}
+        async with httpx.AsyncClient(timeout=300, verify=False) as c:
+            h = {"Authorization": f"Bearer {_get_api_key()}"}  # multipart 不能带 JSON Content-Type
+            r = await c.post(f"{AGNES_BASE}/images/edits", data=form, files=files, headers=h)
+            if r.status_code == 404:
+                raise RuntimeError("edits endpoint not available")
+            r.raise_for_status()
+            img = r.json().get("data", [{}])[0]
+            if img.get("b64_json") or img.get("url"):
+                out = await _save_image_result(img)
+                out.update({"provider": "cloudmist", "model": "gpt-image-2", "size": size})
+                ref_path.unlink(missing_ok=True)
+                return out
+            last_err = f"响应中无图片数据: {str(img)[:150]}"
+    except Exception as e:
+        last_err = _err_text(e)
+        logger.warning("云雾 multipart edits 失败: %s，尝试 JSON URL 兜底", last_err)
+
+    # 方式二：JSON body {"image": url}（部分中转站支持）
+    if ref_url:
+        try:
+            body = {"model": "gpt-image-2", "prompt": prompt, "image": ref_url,
+                    "n": 1, "size": size}
+            async with httpx.AsyncClient(timeout=300, verify=False) as c:
+                r = await c.post(f"{AGNES_BASE}/images/edits", json=body, headers=_headers())
+                r.raise_for_status()
+                img = r.json().get("data", [{}])[0]
+                if img.get("b64_json") or img.get("url"):
+                    out = await _save_image_result(img)
+                    out.update({"provider": "cloudmist", "model": "gpt-image-2", "size": size})
+                    ref_path.unlink(missing_ok=True)
+                    return out
+                last_err = last_err or f"响应中无图片数据: {str(img)[:150]}"
+        except Exception as e:
+            last_err = last_err or _err_text(e)
+            logger.warning("云雾参考图生图失败: %s", last_err)
+
+    ref_path.unlink(missing_ok=True)
+    return {"error": last_err or "未知错误"}
+
+
 async def _gen_image_with_ref(prompt: str, size: str, ref_url: str,
                               model: str = "") -> dict | None:
-    """参考图生图：Poke edits 优先 → CloudMist edits 兜底，失败 {"error": 文本}"""
-    import io
+    """参考图生图：**默认云雾 edits**；指定模型才走 Poke edits；Poke 失败回落云雾。"""
     ref_path = DATA_DIR / f"ref_{uuid.uuid4().hex[:8]}.png"
     if not await _download_image(ref_url, ref_path):
         logger.warning("参考图下载失败，退回纯文生图")
         return await _gen_image(prompt, size, model=model)
 
+    # 没指定模型 → 云雾（默认通道）
+    if not (model or "").strip():
+        logger.info("参考图 + 未指定模型 → 云雾 edits（默认通道）")
+        return await _gen_cloudmist_edit(prompt, size, ref_path, ref_url)
+
+    # 指定模型 → Poke edits（带降级链）
     last_err = ""
-    # ★ v2.3.104：参考图也走 Poke（原来一律走 CloudMist，用户看到「ChatGPT Image 2」
-    #   就是这个原因）。同样带「无渠道换模型」。
     try:
         from services import poke_image
         if poke_image.available():
@@ -380,56 +452,18 @@ async def _gen_image_with_ref(prompt: str, size: str, ref_url: str,
                     break
                 logger.warning("Poke 参考图生图模型 %s 无渠道，试下一个", mid)
             else:
-                logger.warning("Poke edits 全部模型无渠道，转 CloudMist")
+                logger.warning("Poke edits 全部模型无渠道，回落云雾")
     except Exception as e:
         last_err = _err_text(e)
-        logger.error("Poke edits 异常，转 CloudMist: %s", last_err, exc_info=True)
-    # 方式一：官方 multipart /images/edits
-    try:
-        with open(ref_path, "rb") as f:
-            files = {"image": (ref_path.name, io.BytesIO(f.read()), "image/png")}
-            form = {
-                "model": "gpt-image-2",
-                "prompt": prompt,
-                "n": "1",
-                "size": size,
-            }
-            async with httpx.AsyncClient(timeout=300, verify=False) as c:
-                h = {"Authorization": f"Bearer {_get_api_key()}"}  # multipart 不能带 JSON Content-Type
-                r = await c.post(f"{AGNES_BASE}/images/edits", data=form, files=files, headers=h)
-                if r.status_code == 404:
-                    raise RuntimeError("edits endpoint not available")
-                r.raise_for_status()
-                img = r.json().get("data", [{}])[0]
-                if img.get("b64_json") or img.get("url"):
-                    return await _save_image_result(img)
-                last_err = f"响应中无图片数据: {str(img)[:150]}"
-    except Exception as e:
-        last_err = _err_text(e)
-        logger.warning("multipart edits 失败: %s，尝试 JSON URL 兜底", last_err)
+        logger.error("Poke edits 异常，回落云雾: %s", last_err, exc_info=True)
 
-    # 方式二：JSON body {"image": url}（部分中转站支持）
-    try:
-        body = {
-            "model": "gpt-image-2",
-            "prompt": prompt,
-            "image": ref_url,
-            "n": 1,
-            "size": size,
-        }
-        async with httpx.AsyncClient(timeout=300, verify=False) as c:
-            r = await c.post(f"{AGNES_BASE}/images/edits", json=body, headers=_headers())
-            r.raise_for_status()
-            img = r.json().get("data", [{}])[0]
-            if img.get("b64_json") or img.get("url"):
-                return await _save_image_result(img)
-            last_err = last_err or f"响应中无图片数据: {str(img)[:150]}"
-    except Exception as e:
-        last_err = last_err or _err_text(e)
-        logger.warning("参考图生图失败: %s", last_err)
-    finally:
-        ref_path.unlink(missing_ok=True)
-    return {"error": last_err or "未知错误"}
+    out = await _gen_cloudmist_edit(prompt, size, ref_path, ref_url)
+    if out.get("local_path") and last_err:
+        out["fallback_from"] = last_err
+    elif not out.get("local_path") and last_err:
+        out["error"] = f"Poke {last_err} | 云雾 {out.get('error')}"
+    return out
+
 
 
 async def _save_image_result(img: dict) -> dict:
@@ -575,13 +609,14 @@ async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", l
             await _send_media(result["local_path"], group_id, is_group, user_id, "image")
             _mid = result.get("model") or model
             _size = result.get("size") or size
-            # 完成提示也带模型/尺寸/预估花费（v2.3.104：原来只有模型名 + 999/∞）
-            try:
-                from services import poke_image as _pi
-                _cost = _pi._fmt_cny(_pi.estimate_cost(_mid, _size))
-                _cost_s = f"约 ¥{_cost}"
-            except Exception:
-                _cost_s = ""
+            # 完成提示带模型/尺寸/预估花费（云雾通道单价未知 → 不显示 ¥）
+            _cost_s = ""
+            if _mid:
+                try:
+                    from services import poke_image as _pi
+                    _cost_s = f"约 ¥{_pi._fmt_cny(_pi.estimate_cost(_mid, _size))}"
+                except Exception:
+                    _cost_s = ""
             quota_s = "不限" if not limit else f"{remaining}/{limit}"
             parts = [_model_display(_mid), str(_size)]
             if _cost_s:
@@ -610,7 +645,9 @@ _MODEL_PREF_FILE = Path(__file__).resolve().parent.parent / "data" / "draw_model
 
 
 def _model_display(model: str) -> str:
-    """模型 ID / 别名 → 中文展示名。"""
+    """模型 ID / 别名 → 中文展示名；空 = 默认云雾通道。"""
+    if not (model or "").strip():
+        return "云雾 GPT Image 2"
     try:
         from services import poke_image
         mid = poke_image.resolve_model(model) or (model or poke_image.DEFAULT_MODEL)
@@ -684,9 +721,13 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
     # /~draw model [名字]
     if args and args[0].lower() in ("model", "模型"):
         if len(args) == 1:
-            cur = poke_image.resolve_model(_load_model_pref(user_id)) or poke_image.DEFAULT_MODEL
+            # 没偏好就传空 → 列表头显示「云雾 GPT Image 2（默认通道）」
+            cur = poke_image.resolve_model(_load_model_pref(user_id)) or ""
             return poke_image.model_list_text(cur)
         raw = args[1]
+        if raw.lower() in ("clear", "reset", "默认", "云雾", "cloudmist"):
+            _save_model_pref(user_id, "")
+            return "已清除模型偏好，/~draw 回到默认云雾 GPT Image 2"
         mid = poke_image.resolve_model(raw)
         if not mid:
             return (f"没有这个模型: {raw}\n可选: " +
@@ -736,7 +777,8 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
 
     size = explicit_size or _resolve_size(aspect or "16:9")
     size = _apply_resolution(size, resolution) if resolution else size
-    model_id = poke_image.resolve_model(model_raw) or poke_image.DEFAULT_MODEL
+    # 空 = 没指定模型 → 默认云雾通道（Poke 只在指定模型时使用）
+    model_id = poke_image.resolve_model(model_raw) or ""
 
     # 提取引用图片作为参考图
     ref_url = ""
@@ -771,19 +813,23 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
     chat_id = group_id if is_group else user_id
     # limit=0 表示 admin 无限 → 直接显示「不限」，别再出现 999/∞
     quota_s = "不限" if not limit else f"{left}/{limit}"
-    ref_hint = " 参考图(备用通道)" if ref_url else ""
-    est = poke_image.estimate_text(model_id, size)
-    # 2k/4k 若真比 1k 贵才提示（多数模型同价，只有 seedream 5.0 Pro 翻倍）
+    ref_hint = " 参考图" if ref_url else ""
+    # 云雾通道（没指定模型）价格未知 → 不显示预估
+    est = ""
     big_hint = ""
-    try:
-        _note = poke_image.size_note(model_id, size)
-        if _note:
-            big_hint = "\n(" + _note + ")"
-    except Exception:
-        pass
+    if model_id:
+        est = poke_image.estimate_text(model_id, size)
+        try:
+            _note = poke_image.size_note(model_id, size)
+            if _note:
+                big_hint = "\n(" + _note + ")"
+        except Exception:
+            pass
+    head = f"模型 {_model_display(model_id)} | 尺寸 {size}"
+    if est:
+        head += f" | {est}"
     tip = (f"开始生成{ref_hint}: [{prompt_short}]\n"
-           f"模型 {_model_display(model_id)} | 尺寸 {size} | {est}"
-           f" | 今日 {quota_s} | ID {task_id}{big_hint}")
+           f"{head} | 今日 {quota_s} | ID {task_id}{big_hint}")
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
