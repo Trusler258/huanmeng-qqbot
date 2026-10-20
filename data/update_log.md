@@ -11,6 +11,27 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
+## v2.3.102 — 事件体系对齐 KOOK：消息生命周期 + Envelope + 订阅者超时 (2026.10.20)
+
+对齐 KOOK v2.3.102。QQ 侧无 `tool_runtime`，工具事件改为在 `_plugin_tool_allowed` 拒绝处发。
+
+1. **统一 Envelope**：`Event` 增加 `event_id` / `schema_version` / `trace_id` / `source` /
+   `plugin_id`，保留 `name` / `data` / `ts`；新增 `emit_event()` 统一出口
+2. **消息生命周期**（此前 `message.received/sent` 只有常量、零 emit）
+   - `message.received`（pipeline 入口，只带元数据不含正文）
+   - `message.ignored`（空消息 / 全不可见字符，带 reason）
+   - `message.processing`（预钩子之后）
+   - `message.replied`（send_sentences，= 已交给发送层）
+   - `message.sent` / `message.failed`（send_by_chat_type，发送层明确返回才发）
+3. **工具**：插件工具被拒时发 `tool.permission.denied`
+4. **插件/能力生命周期**：`plugin.loading` / `load_failed` / `enabled` / `disabled` +
+   `capability.registered` / `unregistered`
+5. **两个缺陷**：钩子 `except: pass` 改为 `logger.error(exc_info=True)`；
+   `publish` 协程订阅者加 10s 超时（超时取消 + 慢订阅者告警），未改成无约束 create_task
+
+验证：单测 10/10；生命周期真跑 loading→loaded→capability.registered→enabled→disabled；
+24 插件正常
+
 ## v2.3.101 — 插件工具「注册即授权」收紧（QQ 侧等价闭环）(2026.10.20)
 
 一句话总结：插件 `register_tool` 不再等于获得执行授权；未声明权限的插件工具不得占用核心工具名。

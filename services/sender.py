@@ -482,10 +482,20 @@ async def send_by_chat_type(
         user_id: 私聊时的用户ID（群聊时可省略）
     """
     if is_group:
-        return await send_group_msg(message, chat_id)
+        ok = await send_group_msg(message, chat_id)
     else:
         assert user_id is not None, "私聊发送必须提供 user_id"
-        return await send_private_msg(message, user_id)
+        ok = await send_private_msg(message, user_id)
+    # ★ v2.3.102：只有发送层明确返回成功才发 sent；失败发 failed（不伪造成功）
+    try:
+        from core.eventbus import emit_event
+        emit_event("message.sent" if ok else "message.failed", {
+            "chat_id": chat_id, "is_group": bool(is_group),
+            "chars": len(message or ""), "ok": bool(ok),
+        }, source="core.sender")
+    except Exception:
+        pass
+    return ok
 
 
 async def send_sentences(
@@ -513,6 +523,17 @@ async def send_sentences(
     logger.info("开始分批发送 %d 条句子 → chat=%d is_group=%s%s",
                len(sentences), chat_id, is_group,
                f" (含 {sum(1 for f in faces if f)} 张配图)" if faces else "")
+
+    # ★ v2.3.102：replied = 已交给发送层（不宣称平台确认成功）
+    try:
+        from core.eventbus import emit_event
+        emit_event("message.replied", {
+            "chat_id": chat_id, "is_group": bool(is_group),
+            "count": len(sentences or []),
+            "chars": sum(len(s or "") for s in (sentences or [])),
+        }, source="core.sender")
+    except Exception:
+        pass
 
     for i, sentence in enumerate(sentences):
         if i > 0:
