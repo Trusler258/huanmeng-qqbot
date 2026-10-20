@@ -123,6 +123,12 @@ def test_cmd_parse():
         ck("偏好生效", "Grok Imagine 2.0" in tip, tip)
         r = asyncio.run(A.cmd_draw(["model", "不存在"], 999001, 0, "t", False, 0))
         ck("未知模型报错", "没有这个模型" in r, r)
+
+        # ★ 设过偏好后，命令行仍要能单次换模型（曾把 "gemini" 当提示词）
+        A._save_model_pref(999001, "sunburst")
+        r, tip = asyncio.run(run(["gemini", "1:1", "猫"], clear=False))
+        ck("命令行覆盖偏好", "Gemini" in tip, tip)
+        ck("模型名不进提示词", "[猫]" in tip, tip)
         A._save_model_pref(999001, "")
     finally:
         A.asyncio.create_task = real_create
@@ -210,11 +216,58 @@ def test_size_fallback():
         httpx.AsyncClient = real
 
 
+def test_cost_and_tier():
+    """价格表 / 档位 / 能力标注（v2.3.104 第 2 轮）。"""
+    from services import poke_image as P
+
+    print("[6] 价格与能力标注")
+    ck("sunburst 1k 价", P.estimate_cost("sunburst", "1536x864") == 1.5,
+       str(P.estimate_cost("sunburst", "1536x864")))
+    ck("sunburst 2k 价 ≈4 倍", P.estimate_cost("sunburst", "3072x1728") == 6.0,
+       str(P.estimate_cost("sunburst", "3072x1728")))
+    ck("1024x1024 按面积折算", P.estimate_cost("sunburst", "1024x1024") <= 1.5)
+    ck("gemini 便宜", P.tier_label("gemini") == "便宜", P.tier_label("gemini"))
+    ck("gpt-image-2 中等", P.tier_label("gpt-image-2") == "中等", P.tier_label("gpt-image-2"))
+    ck("sunburst 贵", P.tier_label("sunburst") == "贵", P.tier_label("sunburst"))
+    ck("seedream 贵", P.tier_label("seedream") == "贵", P.tier_label("seedream"))
+    txt = P.estimate_text("gemini", "1536x864")
+    ck("预估文本含价格+档位", "¥" in txt and "便宜" in txt, txt)
+
+    body = P.model_list_text("gpt-image-2.5-sunburst")
+    ck("列表含能力描述", "最稳最准" in body, body[:200])
+    ck("列表含中文名（能力）", "中文语义" in body)
+    ck("列表含实测耗时", "实测约41秒" in body or "实测约 41" in body, body[:300])
+    ck("列表含单价", "约¥" in body)
+    ck("列表含 2k 成本提示", "2k" in body and "4 倍" in body)
+    ck("列表无 md", "**" not in body and "`" not in body)
+
+
+def test_quota_cfg():
+    """配额：默认 3 张、免重启跟随配置、owner 手设后不被覆盖。"""
+    from modules import agnes as A
+
+    print("[7] 配额配置化")
+    ck("默认上限来自配置 = 3", A._draw_limit() == 3, str(A._draw_limit()))
+    data = {"daily_reset": "", "users": {}}
+    left, limit = A._get_user_quota(data, 12345, A._draw_limit())
+    ck("新用户上限 3", limit == 3, str(limit))
+    # 模拟历史数据里固化过 limit=5（无 custom）→ 应被配置覆盖回 3
+    data["users"]["12345"]["limit"] = 5
+    left, limit = A._get_user_quota(data, 12345, A._draw_limit())
+    ck("旧记录跟随配置", limit == 3, str(limit))
+    # owner 手设后保留
+    data["users"]["12345"] = {"used": 0, "limit": 8, "custom": True}
+    left, limit = A._get_user_quota(data, 12345, A._draw_limit())
+    ck("custom 不被覆盖", limit == 8, str(limit))
+
+
 if __name__ == "__main__":
     test_resolve_model()
     test_size()
     test_cmd_parse()
     test_channel()
     test_size_fallback()
+    test_cost_and_tier()
+    test_quota_cfg()
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     raise SystemExit(0 if FAIL == 0 else 1)

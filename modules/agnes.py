@@ -59,8 +59,20 @@ def _video_headers() -> dict:
 # ── 配额管理 ────────────────────────────────────────────
 
 _QUOTA_DIR = Path(__file__).resolve().parent.parent / "data"
-DEFAULT_DRAW_LIMIT = 5  # 每人每天画图次数（admin 无限）
+DEFAULT_DRAW_LIMIT = 3  # 每人每天画图次数（admin 无限），可用 bot_config [image] daily_limit 覆盖
 DEFAULT_VIDEO_LIMIT = 4  # 每人每天视频次数
+
+
+def _draw_limit() -> int:
+    """当前画图每日上限（配置优先，读不到用 DEFAULT_DRAW_LIMIT）。"""
+    try:
+        from services import poke_image
+        v = poke_image._image_section().get("daily_limit")
+        if v is not None:
+            return max(1, int(v))
+    except Exception:
+        pass
+    return DEFAULT_DRAW_LIMIT
 
 
 def _load_quota(filename: str) -> dict:
@@ -88,10 +100,11 @@ def _check_daily_reset(data: dict) -> dict:
 
 
 def _get_user_quota(data: dict, user_id: int, default_limit: int) -> tuple[int, int]:
-    """返回 (剩余, 上限)"""
+    """返回 (剩余, 上限)。没 custom 标记时上限跟随配置（改 [image] daily_limit 立即生效）。"""
     uid = str(user_id)
     u = data.setdefault("users", {}).setdefault(uid, {"used": 0, "limit": default_limit})
-    u.setdefault("limit", default_limit)
+    if not u.get("custom"):
+        u["limit"] = default_limit
     left = u["limit"] - u.get("used", 0)
     return left, u["limit"]
 
@@ -99,9 +112,11 @@ def _get_user_quota(data: dict, user_id: int, default_limit: int) -> tuple[int, 
 def _use_quota(data: dict, user_id: int, default_limit: int = DEFAULT_DRAW_LIMIT) -> int:
     """扣除一次用量，返回剩余次数"""
     uid = str(user_id)
-    data.setdefault("users", {}).setdefault(uid, {"used": 0, "limit": default_limit})
-    data["users"][uid]["used"] = data["users"][uid].get("used", 0) + 1
-    return data["users"][uid]["limit"] - data["users"][uid]["used"]
+    u = data.setdefault("users", {}).setdefault(uid, {"used": 0, "limit": default_limit})
+    if not u.get("custom"):
+        u["limit"] = default_limit
+    u["used"] = u.get("used", 0) + 1
+    return u["limit"] - u["used"]
 
 
 def check_and_use_draw(user_id: int) -> tuple[bool, int, int]:
@@ -111,7 +126,7 @@ def check_and_use_draw(user_id: int) -> tuple[bool, int, int]:
         return True, 999, 0  # 0=无限，显示为 ∞
     data = _load_quota("draw.json")
     data = _check_daily_reset(data)
-    left, limit = _get_user_quota(data, user_id, DEFAULT_DRAW_LIMIT)
+    left, limit = _get_user_quota(data, user_id, _draw_limit())
     return left > 0, left, limit
 
 
@@ -122,7 +137,7 @@ def commit_draw(user_id: int) -> int:
         return 999
     data = _load_quota("draw.json")
     data = _check_daily_reset(data)
-    remaining = _use_quota(data, user_id, DEFAULT_DRAW_LIMIT)
+    remaining = _use_quota(data, user_id, _draw_limit())
     _save_quota("draw.json", data)
     return remaining
 
@@ -147,7 +162,7 @@ def owner_quota_get(kind: str, qq: str = "") -> str:
     """/~owner draw|video get [QQ]"""
     fn = f"{kind}.json"
     data = _check_daily_reset(_load_quota(fn))
-    lim = DEFAULT_DRAW_LIMIT if kind == "draw" else DEFAULT_VIDEO_LIMIT
+    lim = _draw_limit() if kind == "draw" else DEFAULT_VIDEO_LIMIT
     if qq:
         left, limit = _get_user_quota(data, int(qq), lim)
         return f"QQ {qq}: 已用 {limit-left}/{limit} (剩余 {left})"
@@ -162,8 +177,9 @@ def owner_quota_set(kind: str, qq: str, value: int):
     """/~owner draw|video set <QQ> <值>"""
     fn = f"{kind}.json"
     data = _check_daily_reset(_load_quota(fn))
-    data.setdefault("users", {}).setdefault(qq, {"used": 0, "limit": value})
-    data["users"][qq]["limit"] = value
+    u = data.setdefault("users", {}).setdefault(qq, {"used": 0, "limit": value})
+    u["limit"] = value
+    u["custom"] = True   # 标记手动设过 → 不再被 [image] daily_limit 覆盖
     _save_quota(fn, data)
 
 
@@ -620,7 +636,11 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
                     "、".join(poke_image.MODELS.keys()))
         alias = poke_image.model_alias_of(mid)
         _save_model_pref(user_id, alias)
-        return f"已切换绘图模型: {_model_display(mid)}\n以后 /~draw 默认用它"
+        est = poke_image.estimate_cost(mid, "1536x864")
+        return (f"已切换绘图模型：{_model_display(mid)}\n"
+                f"相对能力 {poke_image.MODEL_ABILITY.get(alias, '')}\n"
+                f"成本 {poke_image.tier_label(mid)}，1k 约 ¥{poke_image._fmt_cny(est)}/张\n"
+                f"以后 /~draw 默认用它")
 
     if not args:
         return ("用法: /~draw <提示词>  如 /~draw 一只坐在樱花树下的猫娘\n"
@@ -634,6 +654,8 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
         return f"今日画图次数已用完喵~ ({limit}/{limit})，明天再来吧！"
 
     # 解析：模型 / 比例 / 分辨率 / 尺寸，其余拼成 prompt
+    # ⚠️ 模型 token 优先于「我的偏好模型」——否则设过偏好后就无法单次换模型
+    model_from_args = ""
     model_raw = _load_model_pref(user_id)          # 用户偏好模型（空=全局默认）
     aspect = ""
     resolution = ""
@@ -641,8 +663,8 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
     prompt_parts = []
     for a in args:
         al = a.lower()
-        if not model_raw and poke_image.resolve_model(al):
-            model_raw = al
+        if not model_from_args and poke_image.resolve_model(al):
+            model_from_args = al
         elif "x" in al and al.replace("x", "").isdigit() and len(al.split("x")) == 2:
             explicit_size = al                      # 1024x1024
         elif al in _RES_TIERS:
@@ -651,6 +673,8 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
             aspect = al                             # 16:9 / wide / square
         else:
             prompt_parts.append(a)
+    if model_from_args:
+        model_raw = model_from_args
     prompt = " ".join(prompt_parts) if prompt_parts else " ".join(args)
 
     size = explicit_size or _resolve_size(aspect or "16:9")
@@ -690,9 +714,18 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
     chat_id = group_id if is_group else user_id
     left_str = f"{left}" if limit else "∞"  # limit=0 表示 admin 无限
     limit_str = f"{limit}" if limit else "∞"
-    ref_hint = " [参考图·备用通道]" if ref_url else ""
-    tip = (f"开始生成图片{ref_hint}: [{prompt_short}] | 模型: {_model_display(model_id)}"
-           f" | 任务ID: {task_id} | 尺寸: {size} | 今日用量: {left_str}/{limit_str}")
+    ref_hint = " 参考图(备用通道)" if ref_url else ""
+    est = poke_image.estimate_text(model_id, size)
+    # 2k 及以上额外提示成本（面积翻 4 倍）
+    big_hint = ""
+    try:
+        if poke_image._area_factor(size) >= 1.9:
+            big_hint = "\n(2k 尺寸成本约为 1k 的 4 倍，嫌贵就省掉分辨率参数)"
+    except Exception:
+        pass
+    tip = (f"开始生成{ref_hint}: [{prompt_short}]\n"
+           f"模型 {_model_display(model_id)} | 尺寸 {size} | {est}"
+           f" | 今日 {left_str}/{limit_str} | ID {task_id}{big_hint}")
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 
