@@ -286,6 +286,19 @@ class PluginTimer:
         self._tasks.clear()
 
 
+def _emit_cap_event(kind: str, cap) -> None:
+    """能力注册/注销事件（★ v2.3.102）。事件只做通知，权限授予不走事件。"""
+    try:
+        from core.eventbus import emit_event
+        emit_event(f"capability.{kind}", {
+            "capability_id": cap.id, "name": cap.name,
+            "category": cap.category, "runtime": cap.runtime,
+            "permissions": list(cap.permissions or []),
+        }, source="core.plugin", plugin_id=cap.source.split(":", 1)[-1] if cap.source else None)
+    except Exception:
+        pass
+
+
 class PluginCapability:
     """能力注册：让插件向 Core 注册 Command/Tool 能力。
 
@@ -317,6 +330,7 @@ class PluginCapability:
             source=f"plugin:{self._plugin}",
         )
         self._registry.register(cap)
+        _emit_cap_event("registered", cap)
         if handler is not None:
             self._registry.bind_handler(cap.id, handler)
             self._bind_command(name, handler)
@@ -380,6 +394,7 @@ class PluginCapability:
             owner_permissions=owner_perms,
         )
         self._registry.register(cap)
+        _emit_cap_event("registered", cap)
         self._registry.bind_tool_schema(cap.id, schema)
         if handler is not None:
             self._registry.bind_handler(cap.id, handler)
@@ -480,6 +495,14 @@ class PluginCapability:
 
     def unregister_all(self) -> None:
         for cid in self._registered:
+            # ★ v2.3.102：注销事件（拿不到 cap 对象时跳过，不影响注销）
+            try:
+                from core.capability.registry import get_capability_registry as _gcr
+                _cap = _gcr()._caps.get(cid)
+                if _cap is not None:
+                    _emit_cap_event("unregistered", _cap)
+            except Exception:
+                pass
             self._registry.unregister(cid)
         # 从 COMMAND_MAP 移除挂接的命令（★ 只移除仍属于本插件的 bridge）
         try:

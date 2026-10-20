@@ -450,6 +450,14 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.debug("process_message 收到未识别扩展参数: %s", list(extra_kwargs.keys()))
     import time as _tm
     _t_pipe_start = _tm.monotonic()   # ★ v2.0.4r 阶段打点：单条消息总耗时
+    # ★ v2.3.102 消息生命周期：只带元数据，不带正文全文（隐私）
+    from core.eventbus import emit_event as _emit_ev
+    _emit_ev("message.received", {
+        "chat_id": chat_id, "user_id": user_id, "is_group": bool(is_group),
+        "msg_type": msg_type, "length": len(msg_content or ""),
+        "has_quote": bool(quoted_msg),
+        "has_error_report": bool(error_report),
+    }, source="core.pipeline")
     from core.context_manager import get_context_mgr
     cfg = get_config()
     ctx = get_context_mgr()
@@ -476,7 +484,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             except asyncio.TimeoutError:
                 logger.warning("插件 pre-hook 超时跳过: %s", getattr(hook, "__name__", hook))
             except Exception:
-                pass
+                # ★ v2.3.102：此前 pass —— 钩子写错时完全无感知
+                logger.error("插件 pre-hook 执行失败（%s）",
+                             getattr(hook, "__name__", hook), exc_info=True)
 
     # 首次对话自动注册好感度
     from modules.fav import ensure_fav
@@ -491,6 +501,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # 空消息没有任何可回应的信息量，直接丢弃，连上下文都不记。
     if msg_type == "文字" and not (msg_content or "").strip():
         logger.info("[chat=%d] 空消息（无有效内容），已跳过", chat_id)
+        _emit_ev("message.ignored", {"chat_id": chat_id, "user_id": user_id,
+                                     "reason": "empty"}, source="core.pipeline")
         return
 
     # ------清洗不可见字符------
@@ -506,6 +518,8 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             msg_content = cleaned
         if not msg_content.strip():
             logger.info("[chat=%d] 消息全为不可见字符，跳过处理", chat_id)
+            _emit_ev("message.ignored", {"chat_id": chat_id, "user_id": user_id,
+                                         "reason": "invisible_only"}, source="core.pipeline")
             return
 
     # ------管理员提示词注入------
@@ -529,6 +543,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     msg_content = cleaned
                 else:
                     return
+
+    # ★ v2.3.102：真正进入处理管线（预钩子未拦截）
+    _emit_ev("message.processing", {"chat_id": chat_id, "user_id": user_id,
+                                   "is_group": bool(is_group), "msg_type": msg_type},
+             source="core.pipeline")
 
     # ------引用消息注入------
     if quoted_msg:
@@ -1358,7 +1377,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 except asyncio.TimeoutError:
                     logger.warning("插件 post-hook 超时跳过: %s", getattr(hook, "__name__", hook))
                 except Exception:
-                    pass
+                    # ★ v2.3.102：同上
+                    logger.error("插件 post-hook 执行失败（%s）",
+                                 getattr(hook, "__name__", hook), exc_info=True)
             if s is not None:
                 _filtered.append(s)
         sentences = _filtered

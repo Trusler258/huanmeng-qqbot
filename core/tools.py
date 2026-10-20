@@ -1273,6 +1273,14 @@ async def execute_tool(
             _ok, _why = _plugin_tool_allowed(tool_name)
             if not _ok:
                 logger.error("插件工具 %s 执行被拒: %s", tool_name, _why)
+                # ★ v2.3.102：拒绝事件（在真正执行之前，审计用）
+                try:
+                    from core.eventbus import emit_event
+                    emit_event("tool.permission.denied", {
+                        "tool": tool_name, "reason": _why,
+                    }, source="core.tools")
+                except Exception:
+                    pass
                 return f"[工具被拒绝] {_why}"
             try:
                 result = await plugin_handler(
