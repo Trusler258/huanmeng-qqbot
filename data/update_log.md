@@ -65,7 +65,9 @@ manifest.permissions 子集、未声明不得占用核心工具名）；执行�
   `user.qzone.qq.com` 触发下发（域不同，`p_skey` 只在该域下发）
 - `services/qzone.py`：新增 `_to_int()` 容错转换 —— 接口 `createTime` 有时返回「前天15:06」
   这类相对时间串，原 `int()` 直接 `ValueError` 把整次拉取打断；`uin` 也有 `o123456` 前缀
-- `plugins/qzone/main.py`：帮助/日志文案前缀改 `/~qzone`（原写死 `.qzone`，QQ 端串端）
+- `plugins/qzone/main.py`：帮助/日志文案前缀改 `/~qzone`（原写死 `.qzone`，QQ 端串端）；
+  同时去掉全部 Markdown 语法（`**加粗**`、反引号、`- ` 列表 → 改 `· `），QQ 不渲染 Markdown
+  只会原样显示符号
 - 实测：`check_cookie → 3682248514`，`my_feeds → 5 条`，首轮「空间基线完成：已记录 1 条评论」
 
 ### 验证
