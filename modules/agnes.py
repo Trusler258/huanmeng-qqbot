@@ -262,20 +262,34 @@ async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: s
     参考图（/~draw + 引用图片）目前仍走原 CloudMist edits 通道。
     """
     if reference_image_url:
-        return await _gen_image_with_ref(prompt, size, reference_image_url)
+        return await _gen_image_with_ref(prompt, size, reference_image_url, model)
 
     last_err = ""
     # ── 主通道：Poke2API ──
+    # ★ v2.3.104：某模型「没有可用渠道」(502) 时按降级链换模型，而不是直接掉到备用通道
+    #   （2026-10-21 实测 gpt-image-2.5-sunburst/flare 曾整体 502，用户看到的就是备用通道的
+    #    "ChatGPT Image 2"，等于白换服务商）
     try:
         from services import poke_image
         if poke_image.available():
-            model_id = poke_image.resolve_model(model) or poke_image.DEFAULT_MODEL
-            r = await poke_image.generate(prompt, model=model_id, size=size)
-            if r.get("local_path"):
-                return {"local_path": r["local_path"], "provider": "poke",
-                        "model": r["model"], "size": r.get("size", size)}
-            last_err = r.get("error") or "Poke 返回空结果"
-            logger.warning("Poke 图片生成失败，转备用通道: %s", last_err)
+            primary = poke_image.resolve_model(model) or poke_image.DEFAULT_MODEL
+            queue = [primary] + [m for m in poke_image.FALLBACK_CHAIN if m != primary]
+            for mid in queue:
+                r = await poke_image.generate(prompt, model=mid, size=size)
+                if r.get("local_path"):
+                    out = {"local_path": r["local_path"], "provider": "poke",
+                           "model": r["model"], "size": r.get("size", size)}
+                    if mid != primary:
+                        out["switched_from"] = primary
+                        logger.warning("Poke 模型 %s 无渠道，已自动换 %s", primary, mid)
+                    return out
+                last_err = r.get("error") or "Poke 返回空结果"
+                if not r.get("channel_error"):
+                    # 非渠道问题（内容审核 / 参数非法）→ 换模型也没用，直接如实报错
+                    logger.warning("Poke 失败且非渠道问题，不再换模型: %s", last_err)
+                    return {"error": last_err}
+                logger.warning("Poke 模型 %s 无渠道，试下一个: %s", mid, str(last_err)[:80])
+            logger.warning("Poke 全部模型无渠道，转备用通道")
         else:
             logger.warning("POKE_API_KEY 未配置，直接用备用通道")
     except Exception as e:
@@ -333,15 +347,43 @@ async def _download_image(url: str, dest: Path) -> bool:
         return False
 
 
-async def _gen_image_with_ref(prompt: str, size: str, ref_url: str) -> dict | None:
-    """参考图生图：multipart /images/edits 优先，JSON URL 兜底，失败 {"error": 文本}"""
+async def _gen_image_with_ref(prompt: str, size: str, ref_url: str,
+                              model: str = "") -> dict | None:
+    """参考图生图：Poke edits 优先 → CloudMist edits 兜底，失败 {"error": 文本}"""
     import io
     ref_path = DATA_DIR / f"ref_{uuid.uuid4().hex[:8]}.png"
     if not await _download_image(ref_url, ref_path):
         logger.warning("参考图下载失败，退回纯文生图")
-        return await _gen_image(prompt, size)
+        return await _gen_image(prompt, size, model=model)
 
     last_err = ""
+    # ★ v2.3.104：参考图也走 Poke（原来一律走 CloudMist，用户看到「ChatGPT Image 2」
+    #   就是这个原因）。同样带「无渠道换模型」。
+    try:
+        from services import poke_image
+        if poke_image.available():
+            primary = poke_image.resolve_model(model) or poke_image.DEFAULT_MODEL
+            queue = [primary] + [m for m in poke_image.FALLBACK_CHAIN if m != primary]
+            for mid in queue:
+                r = await poke_image.edit(prompt, model=mid, size=size,
+                                          image_path=ref_path, image_url=ref_url)
+                if r.get("local_path"):
+                    out = {"local_path": r["local_path"], "provider": "poke",
+                           "model": r["model"], "size": r.get("size", size)}
+                    if mid != primary:
+                        out["switched_from"] = primary
+                    ref_path.unlink(missing_ok=True)
+                    return out
+                last_err = r.get("error") or "Poke edits 返回空"
+                if not r.get("channel_error"):
+                    logger.warning("Poke 参考图生图失败（非渠道问题）: %s", last_err[:140])
+                    break
+                logger.warning("Poke 参考图生图模型 %s 无渠道，试下一个", mid)
+            else:
+                logger.warning("Poke edits 全部模型无渠道，转 CloudMist")
+    except Exception as e:
+        last_err = _err_text(e)
+        logger.error("Poke edits 异常，转 CloudMist: %s", last_err, exc_info=True)
     # 方式一：官方 multipart /images/edits
     try:
         with open(ref_path, "rb") as f:
@@ -531,9 +573,24 @@ async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", l
         if result and not result.get("error"):
             remaining = commit_draw(user_id)
             await _send_media(result["local_path"], group_id, is_group, user_id, "image")
-            limit_str = f"{limit}" if limit else "∞"
-            used = _model_display(result.get("model") or model)
-            tip = f"[CQ:at,qq={user_id}] 画好了喵~ ({used} | 今日用量 {remaining}/{limit_str})"
+            _mid = result.get("model") or model
+            _size = result.get("size") or size
+            # 完成提示也带模型/尺寸/预估花费（v2.3.104：原来只有模型名 + 999/∞）
+            try:
+                from services import poke_image as _pi
+                _cost = _pi._fmt_cny(_pi.estimate_cost(_mid, _size))
+                _cost_s = f"约 ¥{_cost}"
+            except Exception:
+                _cost_s = ""
+            quota_s = "不限" if not limit else f"{remaining}/{limit}"
+            parts = [_model_display(_mid), str(_size)]
+            if _cost_s:
+                parts.append(_cost_s)
+            parts.append(f"今日 {quota_s}")
+            tip = f"[CQ:at,qq={user_id}] 画好了喵~ " + " | ".join(parts)
+            _from = result.get("switched_from")
+            if _from:
+                tip += f"\n({_model_display(_from)} 当前无渠道，已自动换模型)"
         elif result and result.get("error"):
             err = result["error"]
             tip = f"[CQ:at,qq={user_id}] 图片生成失败喵~ (不扣次数)\n错误: {err[:350]}"
@@ -712,8 +769,8 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
     task_id = uuid.uuid4().hex[:8]
     prompt_short = prompt[:60] + "..." if len(prompt) > 60 else prompt
     chat_id = group_id if is_group else user_id
-    left_str = f"{left}" if limit else "∞"  # limit=0 表示 admin 无限
-    limit_str = f"{limit}" if limit else "∞"
+    # limit=0 表示 admin 无限 → 直接显示「不限」，别再出现 999/∞
+    quota_s = "不限" if not limit else f"{left}/{limit}"
     ref_hint = " 参考图(备用通道)" if ref_url else ""
     est = poke_image.estimate_text(model_id, size)
     # 2k/4k 若真比 1k 贵才提示（多数模型同价，只有 seedream 5.0 Pro 翻倍）
@@ -726,7 +783,7 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
         pass
     tip = (f"开始生成{ref_hint}: [{prompt_short}]\n"
            f"模型 {_model_display(model_id)} | 尺寸 {size} | {est}"
-           f" | 今日 {left_str}/{limit_str} | ID {task_id}{big_hint}")
+           f" | 今日 {quota_s} | ID {task_id}{big_hint}")
     from services.sender import send_by_chat_type
     await send_by_chat_type(tip, chat_id, is_group, user_id)
 

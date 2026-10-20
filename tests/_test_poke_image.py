@@ -169,6 +169,45 @@ def test_channel():
             os.environ["POKE_API_KEY"] = real_key
 
 
+def test_fallback_chain():
+    """无渠道(502)自动换模型；非渠道错误直接报错不换。"""
+    from modules import agnes as A
+    from services import poke_image as P
+
+    print("[8] 无渠道降级链")
+    calls = []
+    real = P.generate
+
+    async def fake(prompt, model=P.DEFAULT_MODEL, size=None, quality=None, timeout=0):
+        calls.append(model)
+        if model in ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare"):
+            return {"error": "HTTP 502: 当前分组下没有可用于该模型的渠道",
+                    "channel_error": True, "status": 502}
+        return {"local_path": "/tmp/x.png", "model": model, "size": size or "auto"}
+
+    try:
+        P.generate = fake
+        calls.clear()
+        r = asyncio.run(A._gen_image("猫", "1024x1536"))
+        ck("502 后换到有渠道的模型", (r or {}).get("model") == "gpt-image-2", str(r))
+        ck("记录了原模型", (r or {}).get("switched_from") == "gpt-image-2.5-sunburst", str(r))
+        ck("按链顺序试了 3 个", calls == ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
+                                          "gpt-image-2"], str(calls))
+
+        # 非渠道错误（内容审核）→ 不换模型
+        async def fake_reject(prompt, model=P.DEFAULT_MODEL, size=None, quality=None, timeout=0):
+            calls.append(model)
+            return {"error": "HTTP 400: 内容不合规", "channel_error": False, "status": 400}
+
+        P.generate = fake_reject
+        calls.clear()
+        r = asyncio.run(A._gen_image("猫", "1536x864"))
+        ck("非渠道错误不换模型", len(calls) == 1, str(calls))
+        ck("错误如实回传", "内容不合规" in (r or {}).get("error", ""), str(r))
+    finally:
+        P.generate = real
+
+
 def test_size_fallback():
     """poke_image.generate 对 size 被拒的自动降级（mock httpx）。"""
     import httpx
@@ -287,5 +326,6 @@ if __name__ == "__main__":
     test_size_fallback()
     test_cost_and_tier()
     test_quota_cfg()
+    test_fallback_chain()
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     raise SystemExit(0 if FAIL == 0 else 1)

@@ -74,6 +74,16 @@ MODEL_SPEED: dict[str, int] = {
 
 DEFAULT_MODEL = "gpt-image-2.5-sunburst"
 
+# 某模型「没有可用渠道」时的降级顺序（同属 Poke 通道，不换服务商）
+# 2026-10-21 实测：sunburst / flare 曾整体 502「当前分组下没有可用于该模型的渠道」
+FALLBACK_CHAIN: tuple[str, ...] = (
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare",
+    "gpt-image-2",
+    "gemini-3.1-flash-image",
+    "grok-imagine-image-quality",
+)
+
 # ── 价格与成本（控制台报价，USD/张，2026-10-21 01:16 采集）────────────
 # 结构：模型 ID → (1k, 2k, 4k) 美元单价。
 # ⚠️ **2k 并非都涨价**：gpt-image-2*/gemini/grok/seedream-4-0 的 2K 与 1K 同价，
@@ -370,7 +380,12 @@ async def generate(
                 err = f"HTTP {r.status_code}: {r.text[:240]}".replace("\n", " ")
                 logger.error("Poke 图片生成失败 model=%s size=%s :: %s",
                              model, size, err)
-                return {"error": err}
+                # ★ 502/503 + 「没有可用渠道」= 该模型当前无渠道（试别的尺寸也没用），
+                #   上层据此立刻换模型，而不是掉到备用通道
+                channel_err = (r.status_code in (502, 503)
+                               and ("渠道" in r.text or "channel" in r.text.lower()))
+                return {"error": err, "channel_error": channel_err,
+                        "status": r.status_code}
             data = r.json()
             items = data.get("data") or []
             if not items:
@@ -395,3 +410,99 @@ async def generate(
         logger.error("Poke 图片生成异常 model=%s size=%s: %s", model, size, err,
                      exc_info=True)
         return {"error": err}
+
+
+async def edit(
+    prompt: str,
+    model: str = DEFAULT_MODEL,
+    size: str | None = None,
+    image_path: str | Path | None = None,
+    image_url: str = "",
+    timeout: float = 300.0,
+) -> dict:
+    """参考图生图（/v1/images/edits）：先 multipart 上传，失败再试 JSON 图片 URL。
+
+    成功 {"local_path","url","model","size"}；失败 {"error", "channel_error"?}。
+    """
+    key = api_key()
+    if not key:
+        return {"error": "未配置 POKE_API_KEY（config/.env）"}
+    if not prompt.strip():
+        return {"error": "提示词为空"}
+    if not image_path and not image_url:
+        return {"error": "没有参考图"}
+
+    url = f"{base_url()}/v1/images/edits"
+    h = {"Authorization": f"Bearer {key}"}   # multipart 不能带 JSON Content-Type
+    last = ""
+
+    # ── 方式一：multipart 上传本地图 ──
+    if image_path:
+        try:
+            data = {"model": model, "prompt": prompt, "n": "1"}
+            if size:
+                data["size"] = size
+            with open(image_path, "rb") as f:
+                files = {"image": (Path(image_path).name, f.read(), "image/png")}
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.post(url, data=data, files=files, headers=h)
+                out = await _handle_edit_resp(r, model, size)
+                if out.get("local_path"):
+                    return out
+                last = out.get("error", "")
+                if out.get("channel_error"):
+                    return out
+                logger.warning("multipart edits 失败: %s，试 JSON 图片 URL", last[:140])
+        except Exception as e:
+            last = _err_text(e)
+            logger.warning("multipart edits 异常: %s，试 JSON 图片 URL", last[:140])
+
+    # ── 方式二：JSON 传图片 URL ──
+    if image_url:
+        try:
+            body = {"model": model, "prompt": prompt, "n": 1,
+                    "images": [{"image_url": image_url}]}
+            if size:
+                body["size"] = size
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.post(url, json=body,
+                                 headers={**h, "Content-Type": "application/json"})
+                out = await _handle_edit_resp(r, model, size)
+                if out.get("local_path"):
+                    return out
+                last = last or out.get("error", "")
+                if out.get("channel_error"):
+                    return out
+        except Exception as e:
+            last = last or _err_text(e)
+            logger.warning("JSON edits 异常: %s", last[:140])
+
+    return {"error": last or "参考图生图失败"}
+
+
+async def _handle_edit_resp(r, model: str, size: str | None) -> dict:
+    """解析 edits 响应（与 generations 同构）。"""
+    if r.status_code != 200:
+        err = f"HTTP {r.status_code}: {r.text[:240]}".replace("\n", " ")
+        channel_err = (r.status_code in (502, 503)
+                       and ("渠道" in r.text or "channel" in r.text.lower()))
+        return {"error": err, "channel_error": channel_err, "status": r.status_code}
+    data = r.json()
+    items = data.get("data") or []
+    if not items:
+        return {"error": f"响应无 data: {str(data)[:200]}"}
+    item = items[0] or {}
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / f"draw_{uuid.uuid4().hex[:8]}.png"
+    if item.get("b64_json"):
+        path.write_bytes(base64.b64decode(item["b64_json"]))
+    elif item.get("url"):
+        async with httpx.AsyncClient(timeout=120) as c:
+            r2 = await c.get(item["url"])
+            r2.raise_for_status()
+            path.write_bytes(r2.content)
+    else:
+        return {"error": f"响应无图片数据: {str(item)[:180]}"}
+    logger.info("Poke 参考图生图成功 model=%s size=%s -> %s", model, size, path.name)
+    return {"local_path": str(path), "url": item.get("url", ""),
+            "model": model, "size": size or "auto"}

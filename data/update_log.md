@@ -71,8 +71,26 @@
 - 验证：`tests/_test_poke_image.py` 68/68；服务器实跑列表、切换、三种组合的提交提示、
   seedream 2k 的加价提醒均正确
 
+### 五、通道可用性：502 自动换模型 + 参考图也走 Poke（当晚实战暴露）
+- 现象：用户 01:28 `/~draw 2:3 …`、01:30 `/~draw 16:9 2k …` 收到的都是
+  「画好了喵~ (ChatGPT Image 2 | 今日用量 999/∞)」→ 实际是 Poke 502 后掉了 CloudMist 备用通道
+- 根因：`gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` 当时**整体无渠道**，Poke 返回
+  502「当前分组下没有可用于该模型的渠道，重试无法解决」（**1 秒即返回，与尺寸无关**）。
+  同尺寸实测对照：`gpt-image-2` 62s 成功、`gemini-3.1-flash-image` 24s 成功
+- 修 1：`poke_image.generate()` 识别「502/503 + 渠道」→ 返回 `channel_error=True`
+- 修 2：`_gen_image()` 加降级链 `FALLBACK_CHAIN`
+  （sunburst → flare → gpt-image-2 → gemini → grok-quality），返回带 `switched_from`；
+  **非渠道错误**（内容审核、参数非法）直接如实报错，不换模型重复烧钱
+- 修 3：**参考图生图改走 Poke** `POST /v1/images/edits`（先 multipart 上传，失败退 JSON 图片 URL），
+  同样带降级链，全挂才回 CloudMist —— 原来参考图一律走 CloudMist，
+  「引用图 + /~draw」就等于绕开了 Poke
+- 修 4：完成提示统一 `画好了喵~ 模型 | 尺寸 | 约 ¥X | 今日 不限`
+  （admin 不再显示 999/∞；套用过降级时补一行「(X 当前无渠道，已自动换模型)」）
+- 实测：`1024x1536` 竖图 sunburst→flare 各 502 → gpt-image-2 出图成功（62s）；
+  参考图 edits（multipart）gpt-image-2 成功（44s）
+
 ### 验证
-- 单测：`tests/_test_poke_image.py` 60/60、`tests/_test_writing_addr.py` 7/7
+- 单测：`tests/_test_poke_image.py` 73/73、`tests/_test_writing_addr.py` 7/7
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
