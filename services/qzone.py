@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from typing import Any
 
 import httpx
@@ -100,7 +99,9 @@ class QzoneClient:
         self.uin: int = c["uin"]
         self.skey: str = c["skey"]
         self.p_skey: str = c["p_skey"]
-        self.gtk: int = calc_gtk(self.skey)
+        # ★ 2026-10-20：Qzone 接口的 g_tk 应按 **p_skey**（空间域的 bkn）计算；
+        #   只有 p_skey 缺失时才回退 skey —— 此前一直用 skey，空间接口会判 -3000「请先登录空间」。
+        self.gtk: int = calc_gtk(self.p_skey or self.skey)
         self.timeout = timeout
         self._cookie_header = cookie.strip()
 
@@ -228,6 +229,33 @@ class QzoneClient:
 
 
 # ── 解析助手（防御式：不同接口字段名不一致）────────────────
+def _to_int(v, default: int = 0) -> int:
+    """容错转 int：接口的 createTime 有时是「前天15:06」这类相对时间串 / 带 o 前缀的 uin。"""
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return default
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    s = str(v).strip()
+    if not s:
+        return default
+    if s[0] in "oO" and s[1:].isdigit():
+        s = s[1:]
+    elif s[0] == "-" and s[1:].isdigit():
+        s = s[1:]
+    elif s.isdigit():
+        pass
+    else:
+        return default
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return default
+
+
 def _extract_feeds(data: dict) -> list[dict]:
     """从 PC msglist / feeds3 两种结构里抽统一列表。"""
     items: list = []
@@ -258,16 +286,16 @@ def _extract_feeds(data: dict) -> list[dict]:
                     continue
                 comments.append({
                     "cid": str(c.get("tid") or c.get("commentid") or c.get("id") or ""),
-                    "uin": int(c.get("uin") or c.get("commentuin") or 0) or 0,
+                    "uin": _to_int(c.get("uin") or c.get("commentuin")),
                     "nick": str(c.get("nickname") or c.get("name") or ""),
                     "content": str(c.get("content") or ""),
-                    "time": int(c.get("createTime") or c.get("time") or 0) or 0,
+                    "time": _to_int(c.get("createTime") or c.get("time")),
                 })
         out.append({
             "tid": str(tid),
-            "uin": int(it.get("uin") or 0) or 0,
+            "uin": _to_int(it.get("uin")),
             "content": str(it.get("content") or ""),
-            "time": int(it.get("created_time") or it.get("createTime") or 0) or 0,
+            "time": _to_int(it.get("created_time") or it.get("createTime")),
             "comments": comments,
         })
     return out

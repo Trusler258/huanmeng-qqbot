@@ -56,6 +56,18 @@ manifest.permissions 子集、未声明不得占用核心工具名）；执行�
 - 限制（有意）：入口必须在包根；带同目录模块/资源的 15 个插件（gh/phi/wdsj/ping…）
   暂不能打包——需 `read_asset()` 迁移后才能进包
 
+### 五、Qzone 扫码登录打通 + 动态解析容错
+- 之前手抄的 cookie 只有 `skey` 没有 `p_skey`，空间接口一律 `-3000/-4001`（`g_tk` 由
+  `p_skey` 派生）。改用服务器端 Playwright 扫码：`/tmp/qz_login.py` 无头 Chromium 打开
+  `i.qq.com`，CDP `Page.captureScreenshot` 截二维码（绕开被墙 web font 导致的截图卡死），
+  等扫码后只落 `uin/skey/p_skey/p_uin`（`config/qzone_cookie.txt`，600 权限）
+- 判据收紧：必须拿到 `p_skey` 才算登录成功；若只有 `skey` 则自动跳一次
+  `user.qzone.qq.com` 触发下发（域不同，`p_skey` 只在该域下发）
+- `services/qzone.py`：新增 `_to_int()` 容错转换 —— 接口 `createTime` 有时返回「前天15:06」
+  这类相对时间串，原 `int()` 直接 `ValueError` 把整次拉取打断；`uin` 也有 `o123456` 前缀
+- `plugins/qzone/main.py`：帮助/日志文案前缀改 `/~qzone`（原写死 `.qzone`，QQ 端串端）
+- 实测：`check_cookie → 3682248514`，`my_feeds → 5 条`，首轮「空间基线完成：已记录 1 条评论」
+
 ### 验证
 - KOOK：单测 6/6 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；29 插件正常
 - QQ：单测 7/7 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；24 插件正常
