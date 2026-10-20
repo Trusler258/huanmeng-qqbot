@@ -278,6 +278,12 @@ async def _gen_cloudmist(prompt: str, size: str = "1536x864") -> dict:
             return {"error": f"响应中无图片数据: {str(data)[:180]}"}
     except Exception as e:
         err = _err_text(e)
+        try:
+            from services import poke_image as _pi
+            if _pi.is_safety_error(err):
+                err = _pi.SAFETY_MSG
+        except Exception:
+            pass
         logger.error("云雾文生图失败: %s", err)
         return {"error": err}
 
@@ -687,6 +693,30 @@ def _save_model_pref(user_id: int, alias: str) -> None:
 #    gemini 会静默降级回 1024）；4k 4096x4096 直接 502「模型请求格式无效」→ 按 2k 处理
 _RES_TIERS: dict[str, int] = {"1k": 1, "2k": 2, "4k": 2, "hd": 1, "2x": 2, "4x": 2}
 
+# 用户常写「1080p / 720p」——按**短边**定尺寸，配合比例算出 WxH
+# （群里实测有人写 `/~draw 1:1 1080p …`，原来 1080p 被当提示词塞进去了）
+_SHORT_SIDE: dict[str, int] = {"720p": 720, "1080p": 1080, "1440p": 1440}
+_ASPECT_WH: dict[str, tuple[int, int]] = {
+    "1:1": (1, 1), "3:2": (3, 2), "2:3": (2, 3), "16:9": (16, 9),
+    "9:16": (9, 16), "4:3": (4, 3), "3:4": (3, 4),
+    "square": (1, 1), "landscape": (3, 2), "wide": (16, 9),
+    "portrait": (2, 3), "tall": (9, 16),
+}
+
+
+def _size_for(aspect: str, short_side: int) -> str:
+    """按短边 + 比例算尺寸，取 8 的倍数：1:1+1080p → 1080x1080；16:9+1080p → 1920x1080。"""
+    a, b = _ASPECT_WH.get((aspect or "16:9").lower(), (16, 9))
+    if a >= b:
+        h = short_side
+        w = int(round(short_side * a / b))
+    else:
+        w = short_side
+        h = int(round(short_side * b / a))
+    w = max(64, (w // 8) * 8)
+    h = max(64, (h // 8) * 8)
+    return f"{w}x{h}"
+
 
 def _apply_resolution(size: str, tier: str) -> str:
     """把 1k 基准尺寸按档位放大：1536x864 + 2k → 3072x1728。"""
@@ -765,8 +795,8 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
             model_from_args = al
         elif "x" in al and al.replace("x", "").isdigit() and len(al.split("x")) == 2:
             explicit_size = al                      # 1024x1024
-        elif al in _RES_TIERS:
-            resolution = al                         # 1k / 2k / 4k
+        elif al in _RES_TIERS or al in _SHORT_SIDE:
+            resolution = al                         # 1k / 2k / 4k / 1080p / 720p
         elif al in _ASPECT_RATIOS or (":" in al and al.replace(":", "").isdigit()):
             aspect = al                             # 16:9 / wide / square
         else:
@@ -775,8 +805,14 @@ async def cmd_draw(args, user_id, group_id, sender_name, is_group, bot_qq, raw_m
         model_raw = model_from_args
     prompt = " ".join(prompt_parts) if prompt_parts else " ".join(args)
 
-    size = explicit_size or _resolve_size(aspect or "16:9")
-    size = _apply_resolution(size, resolution) if resolution else size
+    if explicit_size:
+        size = explicit_size
+    elif resolution in _SHORT_SIDE:
+        size = _size_for(aspect or "16:9", _SHORT_SIDE[resolution])
+    else:
+        size = _resolve_size(aspect or "16:9")
+        if resolution:
+            size = _apply_resolution(size, resolution)
     # 空 = 没指定模型 → 默认云雾通道（Poke 只在指定模型时使用）
     model_id = poke_image.resolve_model(model_raw) or ""
 
