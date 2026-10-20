@@ -387,6 +387,58 @@ def extract_inline_face(text: str) -> tuple:
     return clean, cq
 
 
+# ══ 跨轮复读去重（★ v2.3.97）══════════════════════════════════
+# 实测：同一句"真要认出来，得把图放大一根根顺着捋才行嘛"连着两轮一字不差发出。
+# DeepSeek-flash 在相似上下文里会退化成固定收尾句，光靠提示词管不住 → 代码层去重。
+_REPLY_RECENT: dict[int, list[str]] = {}
+
+
+def _dup_norm(s: str) -> str:
+    """归一化：去标点/空白/符号，只留字词与数字。"""
+    import re as _re
+    return _re.sub(r"[\s\W_]+", "", s or "").lower()
+
+
+def _dup_sim(a: str, b: str) -> float:
+    """字符 3-gram Jaccard 相似度。"""
+    if not a or not b:
+        return 0.0
+    if len(a) < 6 or len(b) < 6:
+        return 1.0 if a == b else 0.0     # 太短的句子只认完全相同
+    ga = {a[i:i + 3] for i in range(len(a) - 2)}
+    gb = {b[i:i + 3] for i in range(len(b) - 2)}
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / len(ga | gb)
+
+
+def _dedup_repeated_sentences(sentences: list, chat_id: int, *,
+                              limit: int = 40, threshold: float = 0.72) -> list:
+    """丢掉与最近回复高度重复的句子（跨轮 + 轮内）。全被丢掉时保留最后一句，宁可重复不沉默。"""
+    if not sentences:
+        return sentences
+    recent = _REPLY_RECENT.setdefault(int(chat_id), [])
+    out, kept = [], []
+    for s in sentences:
+        n = _dup_norm(s)
+        if not n:
+            continue
+        if any(_dup_sim(n, prev) >= threshold for prev in recent) or \
+           any(_dup_sim(n, k) >= threshold for k in kept):
+            logger.info("复读去重: 丢弃重复句 %r", (s or "")[:40])
+            continue
+        out.append(s)
+        kept.append(n)
+    if not out:
+        logger.warning("复读去重: 本轮全部重复，保留最后一句")
+        out = [sentences[-1]]
+        kept = [_dup_norm(sentences[-1])]
+    recent.extend(kept)
+    if len(recent) > limit:
+        del recent[:-limit]
+    return out
+
+
 async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
                           raw_event=None, raw_message="", quoted_msg="", error_report=None,
                           error_report_kind="mc", **extra_kwargs):
@@ -1361,11 +1413,28 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     #   （文本用 send_sentences 原样发；指令执行后输出就地发群里）
     async def _exec_flow_call(fc) -> object:
         """执行单个 JSON CALL 并按结果类型就地发送。返回原始结果。"""
-        cmd_text = f"/~{fc['name']} {fc['args']}".strip()
+        # ★ v2.3.97: legacy calls 的 args 常是 dict 字符串（{'description': '...'}），
+        #   直接拼进指令会把整个 dict 当正文（实测 ~draw {'description': '一只猫娘...'}）。
+        #   规则：先取正文类键，取不到就把各值拼起来。
+        _raw_args = str(fc.get("args") or "").strip()
+        if _raw_args.startswith("{"):
+            try:
+                import ast as _ast
+                _d = _ast.literal_eval(_raw_args)
+                if isinstance(_d, dict) and _d:
+                    _picked = ""
+                    for _k in ("prompt", "description", "query", "text", "content", "args", "q"):
+                        if _d.get(_k):
+                            _picked = str(_d[_k])
+                            break
+                    _raw_args = _picked or " ".join(str(v) for v in _d.values() if v)
+            except Exception:
+                pass
+        cmd_text = f"/~{fc['name']} {_raw_args}".strip()
         logger.info("JSON CALL(交错): %s (by=%s)", cmd_text, fc["caller_name"])
         # ★ v2.3.47: 工具调用提示与指令执行**同时**发出（原来统一堆在末尾，
         #   和指令输出脱节——用户 2026-09-18 12:35 明确要求同步）
-        _a = _pretty_call_args(fc.get("args"))
+        _a = _pretty_call_args(_raw_args)
         await send_by_chat_type(
             f"[工具调用: {fc['name']}{' ' + _a if _a else ''}]",
             chat_id, is_group=is_group,
@@ -1406,6 +1475,14 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                                     user_id=user_id if not is_group else None)
         return result
 
+    # ★ v2.3.97: 跨轮复读去重（在发送前、hooks 之后做，避免把 hook 改过的句子漏掉）
+    if sentences:
+        try:
+            sentences = _dedup_repeated_sentences(sentences, chat_id)
+            if _faces_per_sentence and len(_faces_per_sentence) > len(sentences):
+                _faces_per_sentence = _faces_per_sentence[:len(sentences)]
+        except Exception as _e:
+            logger.warning("复读去重失败（忽略）: %s", _e)
     if _interleaved and _flow_calls:
         _by_pos: dict = {}
         for fc in _flow_calls:
