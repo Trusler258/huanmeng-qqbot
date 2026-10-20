@@ -146,3 +146,6 @@ docs/kook_*
 docs/dead_code_report.md
 docs/i18n_scan_commands.md
 docs/commands_i18n.json
+
+# .hml 安装备份（运行时产生）
+libs/.backup/

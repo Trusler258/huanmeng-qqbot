@@ -61,6 +61,13 @@ class HuanmengBot:
         info("配置已加载 | bot=%s | host=%s:%d | debug=%s",
              self.cfg.bot_name, self.cfg.host, self.cfg.port, self.cfg.debug_mode)
 
+        # 决策模型状态（未配置/关闭 → 自动回退原判定逻辑，这里明确告知）
+        try:
+            from services import decision as _decision
+            info("决策模型 | %s", _decision.startup_notice())
+        except Exception as _e:
+            info("决策模型 | 加载失败（将使用原判定逻辑）: %s", _e)
+
         # 2. 初始化语言文件
         load_lang()
         info("语言文件已加载")
@@ -151,6 +158,15 @@ class HuanmengBot:
         # _asyncio.ensure_future(self._bg_tts_server())
         # _asyncio.ensure_future(self._bg_holiday())  # v2.0.4t: 已由 bg_tasks 插件负责
         info("后台任务: 提醒+日报+控制+昵称+地震+日志:58888+战绩+PC状态:58890+手机状态:58892")
+
+        # ★ .hml 核心库：把 libs/<name>/ 加入 sys.path（插件才能 import hmcore）
+        try:
+            from core.hml import ensure_libs_path
+            _libs = ensure_libs_path()
+            if _libs:
+                info("核心库已就绪: %d 个 %s", len(_libs), _libs)
+        except Exception as e:
+            warning(".hml 核心库加载降级: %s", e)
 
         # ★ 启动插件系统（ADDITIVE：单个插件失败不影响主流程）
         try:
@@ -380,7 +396,9 @@ class HuanmengBot:
                             raise RuntimeError("日榜卡片渲染失败")
                         cq = f"[CQ:image,file=file:///{out_path}]"
                         cfg = get_config()
-                        # ★ 发到所有群（优先用配置 wdsj.target_groups，否则全群）
+                        # ⚠️ 以下是**遗留实现**（2026-10-12 核实已停用，日志调度由 bg_tasks 插件负责）。
+                        #    注意语义已变更：本遗留版「target_groups 为空 → cfg.group_ids() 发全群」，
+                        #    现行 bg_tasks 版是「为空 → 不推送任何群，仅同步 QQ 空间」（用户 2026-10-12 确认）。
                         gids = cfg.config.get("wdsj", {}).get("target_groups", []) if hasattr(cfg, 'config') else []
                         if not gids:
                             gids = cfg.group_ids()
