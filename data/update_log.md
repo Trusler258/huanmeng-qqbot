@@ -138,8 +138,24 @@
 - 单测：`tests/_test_slang_pick.py` 17/17（词形边界 / 只注入命中 / 上限 / `learn_slang`
   往返 + 自清理），跑完不污染真实词表
 
+### 九、黑话词库迁 `data/slang.json`（结构化，为扩容铺路）
+- 唯一真相源改为 **`data/slang.json`**（63 条，含 `alias` / `circles` / `risk` /
+  `example` / `last_seen` / `added_by`）；原 `data/skills/15_slang.md` 改名
+  `15_slang.md.legacy` 仅供人读，文件头标「已废弃，改这里不生效」
+- `circles`（通用 / 游戏 / MC）用于**注入时给模型看语境做消歧**，暂不硬过滤
+  （群里没有可靠的"圈子画像"，硬过滤容易把该懂的梗也挡掉）
+- `risk=mild` 的词（如「破防」）注入时带**「慎用」**标记：能理解、不主动用
+- 新增 `scripts/migrate_slang.py`：md → JSON 一次性迁移（可重跑，`--write` 才落盘），
+  自动拆别名、剥例句、按分组填 `circles`、按词表填 `risk`
+- `_build_skill_refs` 里黑话注入**与 skills 章节解耦**：直接读 JSON，
+  即使 md 被删/改名照样注入（`added` 去重防重复）
+- `append_slang_term`（`learn_slang` 工具）改**写 JSON**：读-改-写 + mtime 缓存失效，
+  写完即时成为触发词；读不到 JSON 时**拒绝写入**（防覆盖整库）
+- 验证：单测 `tests/_test_slang_pick.py` **23/23**（JSON 字段 / 词形边界 / 只注入命中 /
+  上限 / learn 往返 + 自清理 / 与 skills 解耦）；服务器 63 条可读，注入正常，重启 0 错误
+
 ### 验证
-- 单测：`tests/_test_poke_image.py` 84/84、`tests/_test_slang_pick.py` 17/17、`tests/_test_writing_addr.py` 7/7
+- 单测：`tests/_test_poke_image.py` 84/84、`tests/_test_slang_pick.py` 23/23、`tests/_test_writing_addr.py` 7/7
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
