@@ -527,7 +527,7 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
 _SYSTEM_SECTIONS = frozenset((
     "prompt_header", "persona_lock", "group_format", "private_format",
     "command_tools", "fav_format", "fav_tiers", "self_awareness",
-    "anti_repeat", "private_tone",
+    "anti_repeat", "private_tone", "slang_unknown",
 ))
 # 已单独处理的可选章节（既不进 system 常驻，也不参与 _build_skill_refs 的关键词兜底注入）
 _OPTIONAL_SECTIONS = frozenset((

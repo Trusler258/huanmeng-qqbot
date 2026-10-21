@@ -40,6 +40,29 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "explain_slang",
+            "description": (
+                "查黑话/梗/网络缩写是什么意思。遇到看不懂的网络用语、缩写、梗、谐音、"
+                "圈内黑话时调用（先查本地词库，再查萌娘百科和联网词源）。"
+                "查到资料后，用你自己的话总结一句释义，再调用一次并填 meaning，就会进待审队列"
+                "（主人确认后才真正入库）。记住：看不懂就问这个词，不要凭猜测硬解释，"
+                "也不要对对方说「你这句接得没头没尾」这种点评。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string",
+                             "description": "要查的词本身，如 破防 / yyds / 给佬（不要整句）"},
+                    "meaning": {"type": "string",
+                                "description": "可选：你看完资料后总结的一句话释义。填了就直接进待审队列"},
+                },
+                "required": ["term"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "weather",
             "description": "查询城市天气。用户问天气/温度/下雨/穿什么时调用。",
             "parameters": {
@@ -455,6 +478,7 @@ def get_tool_schemas() -> list[dict]:
 DEFAULT_TOOL_TIMEOUT: float = 60.0
 TOOL_TIMEOUTS: dict[str, float] = {
     "search_web":  30.0,
+    "explain_slang": 45.0,
     "web_fetch":    30.0,
     "write_code":  120.0,
     "agent_think": 90.0,
@@ -1227,6 +1251,28 @@ async def execute_tool(
             arguments.get("category", "LLM 自学") or "LLM 自学",
         )
         return msg
+    if tool_name == "explain_slang":
+        # ★ v2.3.105: 不懂就查（本地词库 → 萌娘 → 联网词源），
+        #   结论只进 data/slang_pending.json 待审，不直接污染词库。
+        from services.slang_lookup import explain, format_explain, add_pending
+        _term = (arguments.get("term") or "").strip()
+        if not _term:
+            return "请提供要查的词"
+        _meaning = (arguments.get("meaning") or "").strip()
+        if _meaning:
+            # 第二轮：模型已总结好释义 → 直接进待审（不再重复联网）
+            ok, msg = add_pending(_term, _meaning, source="explain",
+                                  confidence="mid")
+            return msg if ok else f"{msg}（不影响你现在正常回话）"
+        try:
+            res = await explain(_term)
+        except Exception as e:
+            logger.error("查黑话失败: %s", e, exc_info=True)
+            return f"查「{_term}」出错了（不影响回话，别硬猜，可以问对方这啥梗）: {e}"
+        text = format_explain(res)
+        if res.get("status") == "found":
+            text += "\n（看完资料，用一句你自己的话总结释义，再调用一次 explain_slang 并填 meaning，就会进待审队列）"
+        return text
     if tool_name == "web_fetch":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
