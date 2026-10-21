@@ -1,0 +1,270 @@
+"""Markdown → Word(.docx) 导出 + 化学式真下标。
+
+为什么要有：
+  2026-10-21 群里要"人教版九年级化学第四单元试卷，导出为word"，bot 给了 .md，
+  用户拿 Word 打开满屏 `Na2CO3`（下角数字没下标）。md 里没法表达真下标，
+  只能靠 Word 的 run.font.subscript。
+
+化学式识别（避免把普通数字当化学式）：
+  1. 先用「元素符号 + 可选数字」或「(元素+数字)+数字」拼成 2 段以上的 token
+  2. 校验 token 里出现的元素符号**全在白名单**，且不同元素 ≥ 2 种
+     → Na2CO3 / NH4NO3 / Ca3(PO4)2 / CO(NH2)2 命中
+     → MP3（M 不是元素）、B2B（只有 1 种元素）、A4（A 不是元素）不命中
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+# 常见元素符号（覆盖中学化学 + 常见工业元素）
+_ELEMENTS = {
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si",
+    "P", "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni",
+    "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb",
+    "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I", "Xe",
+    "Cs", "Ba", "La", "Ce", "W", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Rn", "Ra",
+}
+
+# ⚠️ 括号里可能有两段以上元素："(PO4)" 的 P 后跟大写 O，`[A-Z][a-z]?\d*` 单个
+#    片段吃不掉（`[a-z]?` 不吃大写）→ 括号内必须允许重复片段，否则 Ca3(PO4)2
+#    只会匹配到 "PO4"，前面的 Ca3 和后面的 2 全丢（实测踩到）。
+_ATOM = r"[A-Z][a-z]?\d*"
+_GROUP = r"(?:" + _ATOM + r"|\((?:" + _ATOM + r")+\)\d*)"
+_CHEM_RE = re.compile(_GROUP + r"{2,}")
+
+# Unicode 下标字符（模型常直接写 Na₂CO₃）
+_SUB_CHARS = "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎"
+_SUB_MAP = {c: str(i) for i, c in enumerate("₀₁₂₃₄₅₆₇₈₉")}
+_REV_SUB = {str(i): c for i, c in enumerate("₀₁₂₃₄₅₆₇₈₉")}
+
+# ★ 用户要求「Word 里 LaTeX 就行」：模型常写 $\mathrm{Na_2CO_3}$ / $H_2O$。
+#   Word 本身不认 LaTeX（要手动 Alt+= 粘贴再转换），所以这里直接把它**渲染成真下标**，
+#   打开就是对的，用户不用再手工转公式。同时去掉 $ 和 \mathrm{} 这些残留符号。
+_LATEX_INLINE_RE = re.compile(r"\$([^$]{1,200})\$")
+_LATEX_WRAP_RE = re.compile(r"\\(?:mathrm|text|ce|mathbf|rm|mathit)\s*\{([^{}]*)\}")
+
+
+# 裸写的下标记号（模型不一定加 $）：Na_2CO_3、Ca_3(PO_4)_2
+_BARE_SUB_RE = re.compile(r"_\{(\d+)\}|_(\d)")
+
+
+def _bare_sub_to_unicode(text: str) -> str:
+    """把裸 LaTeX 下标（H_2O / Na_2CO_3）转成 Unicode 下标（H₂O）。
+
+    只在前一个字符属于"元素符号结尾"时才转 —— 否则 file_name_1、item_2
+    这类普通下划线标识符会被误伤。
+    """
+    if "_" not in text:
+        return text
+    out: list[str] = []
+    last = 0
+    for m in _BARE_SUB_RE.finditer(text):
+        prev = text[max(0, m.start() - 6):m.start()]
+        # 括号后的下标也认（Ca_3(PO_4)_2 的最后一个 _2）
+        if not re.search(r"[A-Z][a-z]?$|\)$", prev):
+            continue          # 不是元素符号/括号结尾 → 原样保留
+        digits = m.group(1) or m.group(2)
+        out.append(text[last:m.start()])
+        out.append("".join(_REV_SUB.get(c, c) for c in digits))
+        last = m.end()
+    if not out:
+        return text
+    out.append(text[last:])
+    return "".join(out)
+
+
+def _latex_inline_to_plain(m) -> str:
+    """$...$ 里的 LaTeX → 带 Unicode 下标的纯文本。"""
+    body = m.group(1)
+    body = _LATEX_WRAP_RE.sub(r"\1", body)
+    # _{23} → ₂₃
+    body = re.sub(r"_\{(\d+)\}",
+                  lambda x: "".join(_REV_SUB.get(c, c) for c in x.group(1)), body)
+    # _2 → ₂
+    body = re.sub(r"_(\d)", lambda x: _REV_SUB.get(x.group(1), x.group(1)), body)
+    # ^{2} / ^2 → 普通数字（Word 上标这里不做，避免和下标规则打架）
+    body = re.sub(r"\^\{?(\d)\}?", r"\1", body)
+    # 剩下的 \ 命令直接去掉反斜杠，保留可读文字
+    body = re.sub(r"\\[a-zA-Z]+", "", body)
+    return body.strip()
+
+
+def _is_chem(token: str) -> bool:
+    """token 是否是真化学式（白名单元素 + 至少 2 种元素）。"""
+    if len(token) < 2:
+        return False
+    syms = re.findall(r"[A-Z][a-z]?", token)
+    if len(set(syms)) < 2:
+        return False
+    return all(s in _ELEMENTS for s in syms)
+
+
+def split_runs(text: str) -> list[tuple[str, bool]]:
+    """把一段文本切成 [(片段, 是否下标)]。
+
+    化学式里的数字、以及文本里已有的 Unicode 下标字符 → 下标。
+    """
+    if not text:
+        return []
+    # LaTeX 内联公式先降级成 Unicode 下标文本（再走下面的化学式/下标逻辑）
+    if "$" in text:
+        text = _LATEX_INLINE_RE.sub(_latex_inline_to_plain, text)
+    if "_" in text:
+        text = _bare_sub_to_unicode(text)
+    out: list[tuple[str, bool]] = []
+    pos = 0
+
+    def push(seg: str, sub: bool) -> None:
+        if not seg:
+            return
+        if out and out[-1][1] == sub:
+            out[-1] = (out[-1][0] + seg, sub)
+        else:
+            out.append((seg, sub))
+
+    def emit_plain(seg: str) -> None:
+        """普通文本：把 Unicode 下标字符挑出来单独标下标。"""
+        buf = []
+        for ch in seg:
+            if ch in _SUB_CHARS:
+                if buf:
+                    push("".join(buf), False)
+                    buf = []
+                push(_SUB_MAP.get(ch, ""), True)
+            else:
+                buf.append(ch)
+        if buf:
+            push("".join(buf), False)
+
+    for m in _CHEM_RE.finditer(text):
+        tok = m.group(0)
+        if not _is_chem(tok):
+            continue
+        emit_plain(text[pos:m.start()])
+        # token 内部：数字 → 下标
+        for part in re.finditer(r"(\d+)|([^\d]+)", tok):
+            if part.group(1):
+                push(part.group(1), True)
+            else:
+                push(part.group(2), False)
+        pos = m.end()
+    emit_plain(text[pos:])
+    return out
+
+
+# ── Markdown → docx ──────────────────────────────────────
+
+_FONT_CN = "宋体"
+_FONT_EN = "Times New Roman"
+
+
+def _set_font(run, size_pt: float | None = None, bold: bool = False) -> None:
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+    run.font.name = _FONT_EN
+    rpr = run._element.get_or_add_rPr()
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        from docx.oxml import OxmlElement
+        rfonts = OxmlElement("w:rFonts")
+        rpr.append(rfonts)
+    rfonts.set(qn("w:eastAsia"), _FONT_CN)
+    if size_pt:
+        run.font.size = Pt(size_pt)
+    run.bold = bold
+
+
+def _write_para(doc, text: str, style: str | None = None, size_pt: float = 10.5,
+                bold: bool = False, indent_first: bool = False) -> None:
+    p = doc.add_paragraph(style=style) if style else doc.add_paragraph()
+    if indent_first:
+        p.paragraph_format.first_line_indent = p.style.font.size or None
+        from docx.shared import Pt
+        p.paragraph_format.first_line_indent = Pt(size_pt * 2)
+    for seg, is_sub in split_runs(text):
+        r = p.add_run(seg)
+        _set_font(r, size_pt=size_pt, bold=bold)
+        if is_sub:
+            r.font.subscript = True
+    return p
+
+
+def md_to_docx(md_text: str, out_path: str | Path, title: str = "") -> bool:
+    """把 markdown 文本写成 .docx。成功 True，失败 False（失败原因写日志）。"""
+    try:
+        from docx import Document
+        from docx.shared import Pt
+    except Exception as e:  # pragma: no cover
+        logger.error("python-docx 不可用，无法导出 word: %s", e)
+        return False
+
+    try:
+        doc = Document()
+        # 默认正文样式
+        doc.styles["Normal"].font.name = _FONT_EN
+        doc.styles["Normal"].font.size = Pt(10.5)
+
+        # 标题（文件名去掉扩展名），正文里若已有同名首行则跳过重复
+        lines = (md_text or "").split("\n")
+        head = title.strip()
+        if lines and lines[0].strip():
+            first = lines[0].strip().lstrip("#").strip()
+            if head and first == head:
+                lines = lines[1:]
+        if head:
+            h = doc.add_paragraph()
+            h.alignment = 1  # 居中
+            r = h.add_run(head)
+            _set_font(r, size_pt=16, bold=True)
+            h.paragraph_format.space_after = Pt(10)
+
+        for raw in lines:
+            line = raw.rstrip()
+            s = line.strip()
+            if not s:
+                continue
+            # 分隔线
+            if re.fullmatch(r"[-*_]{3,}", s):
+                continue
+            # 标题
+            m = re.match(r"^(#{1,6})\s+(.*)$", s)
+            if m:
+                level = min(len(m.group(1)), 4)
+                txt = m.group(2).strip()
+                size = {1: 15, 2: 13.5, 3: 12, 4: 11}[level]
+                p = doc.add_paragraph()
+                p.paragraph_format.space_before = Pt(8)
+                p.paragraph_format.space_after = Pt(4)
+                for seg, is_sub in split_runs(txt):
+                    r = p.add_run(seg)
+                    _set_font(r, size_pt=size, bold=True)
+                    if is_sub:
+                        r.font.subscript = True
+                continue
+            # 无序列表
+            m = re.match(r"^[-*+]\s+(.*)$", s)
+            if m:
+                _write_para(doc, m.group(1), style="List Bullet")
+                continue
+            # 表格行（简单处理：竖线分隔的跳过表头分隔线，其余按制表符分隔成一行）
+            if s.startswith("|") and s.endswith("|"):
+                if re.fullmatch(r"\|[\s:|-]+\|", s):
+                    continue
+                cells = [c.strip() for c in s.strip("|").split("|")]
+                _write_para(doc, "　".join(cells))
+                continue
+            # 普通段落（试卷题号、选项行都走这里，保留原样，不自动编号）
+            _write_para(doc, s)
+
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        doc.save(str(out_path))
+        logger.info("docx 导出成功: %s（%d 段）", Path(out_path).name, len(doc.paragraphs))
+        return True
+    except Exception as e:
+        logger.error("docx 导出失败: %s", e, exc_info=True)
+        return False
