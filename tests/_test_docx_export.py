@@ -239,6 +239,32 @@ def test_omml_size():
        f"m:r={n_run} rPr={xml.count('<w:rPr>')}")
 
 
+
+
+def test_latex_symbols():
+    print("[11] 裸 LaTeX 符号 / 括号幂")
+    from services.docx_export import split_runs_ex
+    txt = lambda t: "".join(x for x, _ in split_runs_ex(t))
+    ck("\\ge → ≥", txt(r"(k-2)2\ge 0") == "(k-2)2≥ 0", txt(r"(k-2)2\ge 0"))
+    ck("\\le → ≤", "≤" in txt(r"x \le 5"))
+    ck("\\neq → ≠", "≠" in txt(r"y \neq 3"))
+    ck("\\sqrt{3} → √3", "√3" in txt(r"\sqrt{3}"))
+    ck("\\frac{a}{b} → (a)/(b)", "(1)/(2)" in txt(r"\frac{1}{2}"))
+    ck("\\alpha → α", "α" in txt(r"\alpha+\beta"))
+    ck("\\therefore → ∴", "∴" in txt(r"\therefore x=1"))
+    ck("无反斜杠残留", "\\" not in txt(r"\ge \le \alpha \sqrt{2}"))
+    ck("\\mathbb{R} → ℝ", txt(r"k \in \mathbb{R}") == "k ∈ ℝ", txt(r"k \in \mathbb{R}"))
+    ck("\\text{且} 剥壳", txt(r"\text{且} x>0") == "且 x>0", txt(r"\text{且} x>0"))
+    ck("\\mathrm 剥壳", "mol" in txt(r"\mathrm{mol}"))
+
+    r = split_runs_ex("(k-2)2")
+    ck(")后数字是上标", ("2", "sup") in r, str(r))
+    r = split_runs_ex("(x-1)(x-3)=0")
+    ck(")( 不相邻不误判", all(k == "n" for _, k in r), str(r))
+    r = split_runs_ex("Ca3(PO4)2")
+    ck("化学式的 )2 仍是下标", ("2", "sub") in r, str(r))
+
+
 if __name__ == "__main__":
     test_chem_detect()
     test_subscript()
@@ -250,5 +276,6 @@ if __name__ == "__main__":
     test_superscript()
     test_math_vars()
     test_omml_size()
+    test_latex_symbols()
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     raise SystemExit(0 if FAIL == 0 else 1)

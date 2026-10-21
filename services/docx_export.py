@@ -79,6 +79,8 @@ def _is_chem(token: str) -> bool:
 _SUP_RE = re.compile(r"\^\{([^{}]{1,20})\}|\^([A-Za-z0-9\u0370-\u03ff])")
 # 裸写的下标：a_1 / a_n / a_{n+1}（数学变量，不是化学式）
 _SUB_MARK_RE = re.compile(r"_\{([^{}]{1,12})\}|_([A-Za-z0-9\u0370-\u03ff])")
+# 右括号后紧跟的数字是幂：(k-2)2 → (k-2)²（模型常漏写 ^，实测答案里出现过）
+_PAREN_SUP_RE = re.compile(r"\)(\d{1,2})(?!\d)")
 # "_" 前面必须是「独立单字母」（a_1）或「元素符号」（Ca_3 / PO_4），或右括号。
 # ⚠️ 不能写成 [A-Za-z]{1,2}$ —— 会把 my_var_2 的 _v 当成下标（实测踩到）。
 _VAR_BEFORE_SUB_RE = re.compile(
@@ -90,10 +92,52 @@ _LATEX_ESC = {
 }
 
 
+# 裸文本里的 LaTeX 数学符号（模型有时不包 $，直接写 \ge、\times）
+# 不转的话 Word 里就是字面 "\ge"（2026-10-21 实测：(k-2)2\ge 0 漏出来）
+_LATEX_SYMBOLS = {
+    "\\geqslant": "≥", "\\leqslant": "≤", "\\geq": "≥", "\\leq": "≤",
+    "\\ge": "≥", "\\le": "≤",
+    "\\neq": "≠", "\\ne": "≠", "\\equiv": "≡", "\\approx": "≈",
+    "\\pm": "±", "\\mp": "∓", "\\times": "×", "\\div": "÷",
+    "\\cdot": "·", "\\infty": "∞", "\\propto": "∝",
+    "\\therefore": "∴", "\\because": "∵", "\\angle": "∠",
+    "\\triangle": "△", "\\perp": "⊥", "\\parallel": "∥",
+    "\\notin": "∉", "\\subset": "⊂", "\\subseteq": "⊆",
+    "\\supset": "⊃", "\\in": "∈", "\\cup": "∪", "\\cap": "∩",
+    "\\emptyset": "∅", "\\varnothing": "∅", "\\forall": "∀", "\\exists": "∃",
+    "\\sum": "∑", "\\prod": "∏", "\\int": "∫", "\\partial": "∂",
+    "\\rightarrow": "→", "\\leftarrow": "←", "\\to": "→",
+    "\\Rightarrow": "⇒", "\\Leftrightarrow": "⇔", "\\iff": "⇔",
+    "\\ldots": "…", "\\cdots": "⋯", "\\dots": "…", "\\circ": "°",
+    "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ",
+    "\\theta": "θ", "\\lambda": "λ", "\\mu": "μ", "\\pi": "π",
+    "\\sigma": "σ", "\\omega": "ω", "\\varphi": "φ", "\\rho": "ρ",
+    "\\quad": " ", "\\qquad": "  ",
+}
+
+
 def _strip_latex_escapes(text: str) -> str:
+    # 数集：\mathbb{R} → ℝ（模型写 k∈\mathbb{R} 很常见）
+    if "\\mathbb" in text:
+        _bb = {"R": "ℝ", "N": "ℕ", "Z": "ℤ", "Q": "ℚ", "C": "ℂ"}
+        text = re.sub(r"\\mathbb\{([RNZQC])\}",
+                      lambda m: _bb.get(m.group(1), m.group(1)), text)
+    # 带参数的先处理：\sqrt{x} → √x，\frac{a}{b} → (a)/(b)
+    if "\\sqrt" in text:
+        text = re.sub(r"\\sqrt\{([^{}]*)\}", r"√\1", text)
+        text = re.sub(r"\\sqrt\s*([A-Za-z0-9])", r"√\1", text)
+    if "\\frac" in text:
+        text = re.sub(r"\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}", r"(\1)/(\2)", text)
+    for k in sorted(_LATEX_SYMBOLS, key=len, reverse=True):
+        if k in text:
+            text = text.replace(k, _LATEX_SYMBOLS[k])
     for k, v in _LATEX_ESC.items():
         if k in text:
             text = text.replace(k, v)
+    # 通用带参命令：\text{且} / \mathrm{mol} → 只留花括号里的内容
+    text = re.sub(r"\\[a-zA-Z]+\{([^{}]*)\}", r"\1", text)
+    # 兜底：没认出来的命令去掉反斜杠，至少不留 "\xxx" 字面
+    text = re.sub(r"\\([a-zA-Z]+)", r"\1", text)
     return text
 
 
@@ -154,21 +198,36 @@ def split_runs_ex(text: str) -> list[tuple[str, str]]:
         if p3 < len(seg):
             emit_chars(seg[p3:])
 
+    def emit_paren_sup(seg: str) -> None:
+        """右括号后的数字当上标：(k-2)2 → (k-2)²。"""
+        if not seg or ")" not in seg:
+            emit_sub(seg)
+            return
+        p4 = 0
+        for m in _PAREN_SUP_RE.finditer(seg):
+            if m.start() > p4:
+                emit_sub(seg[p4:m.start()])
+            push(")", "n")
+            push(m.group(1), "sup")
+            p4 = m.end()
+        if p4 < len(seg):
+            emit_sub(seg[p4:])
+
     def emit_plain(seg: str) -> None:
-        """普通文本：先挑裸上标（x^2），再挑裸下标（a_1），剩下的走字符流。"""
+        """普通文本：先挑裸上标（x^2），再挑 )数字，再挑裸下标（a_1），剩下走字符流。"""
         if not seg:
             return
         if "^" not in seg:
-            emit_sub(seg)
+            emit_paren_sup(seg)
             return
         p2 = 0
         for m in _SUP_RE.finditer(seg):
             if m.start() > p2:
-                emit_sub(seg[p2:m.start()])
+                emit_paren_sup(seg[p2:m.start()])
             push(m.group(1) or m.group(2), "sup")
             p2 = m.end()
         if p2 < len(seg):
-            emit_sub(seg[p2:])
+            emit_paren_sup(seg[p2:])
 
     for m in _CHEM_RE.finditer(text):
         tok = m.group(0)
