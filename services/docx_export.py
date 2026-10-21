@@ -104,63 +104,187 @@ def _is_chem(token: str) -> bool:
     return all(s in _ELEMENTS for s in syms)
 
 
-def split_runs(text: str) -> list[tuple[str, bool]]:
-    """把一段文本切成 [(片段, 是否下标)]。
+# 裸写的上标（数学公式里 x^2 很常见，模型常不带 $）
+_SUP_RE = re.compile(r"\^\{([^{}]{1,20})\}|\^([A-Za-z0-9\u0370-\u03ff])")
 
-    化学式里的数字、以及文本里已有的 Unicode 下标字符 → 下标。
+
+def split_runs_ex(text: str) -> list[tuple[str, str]]:
+    """把一段文本切成 [(片段, 类型)]，类型：n 普通 / sub 下标 / sup 上标。
+
+    处理顺序：LaTeX 内联公式降级 → 裸 LaTeX 下标 → 化学式数字 + Unicode 下标 + 裸上标。
     """
     if not text:
         return []
-    # LaTeX 内联公式先降级成 Unicode 下标文本（再走下面的化学式/下标逻辑）
     if "$" in text:
         text = _LATEX_INLINE_RE.sub(_latex_inline_to_plain, text)
     if "_" in text:
         text = _bare_sub_to_unicode(text)
-    out: list[tuple[str, bool]] = []
+    out: list[tuple[str, str]] = []
     pos = 0
 
-    def push(seg: str, sub: bool) -> None:
+    def push(seg: str, kind: str) -> None:
         if not seg:
             return
-        if out and out[-1][1] == sub:
-            out[-1] = (out[-1][0] + seg, sub)
+        if out and out[-1][1] == kind:
+            out[-1] = (out[-1][0] + seg, kind)
         else:
-            out.append((seg, sub))
+            out.append((seg, kind))
 
-    def emit_plain(seg: str) -> None:
-        """普通文本：把 Unicode 下标字符挑出来单独标下标。"""
+    def emit_chars(seg: str) -> None:
+        """字符流：Unicode 下标字符 → sub。"""
         buf = []
         for ch in seg:
             if ch in _SUB_CHARS:
                 if buf:
-                    push("".join(buf), False)
+                    push("".join(buf), "n")
                     buf = []
-                push(_SUB_MAP.get(ch, ""), True)
+                push(_SUB_MAP.get(ch, ""), "sub")
             else:
                 buf.append(ch)
         if buf:
-            push("".join(buf), False)
+            push("".join(buf), "n")
+
+    def emit_plain(seg: str) -> None:
+        """普通文本：先挑裸上标（x^2），段内再处理 Unicode 下标。"""
+        if not seg:
+            return
+        if "^" not in seg:
+            emit_chars(seg)
+            return
+        p2 = 0
+        for m in _SUP_RE.finditer(seg):
+            if m.start() > p2:
+                emit_chars(seg[p2:m.start()])
+            push(m.group(1) or m.group(2), "sup")
+            p2 = m.end()
+        if p2 < len(seg):
+            emit_chars(seg[p2:])
 
     for m in _CHEM_RE.finditer(text):
         tok = m.group(0)
         if not _is_chem(tok):
             continue
         emit_plain(text[pos:m.start()])
-        # token 内部：数字 → 下标
         for part in re.finditer(r"(\d+)|([^\d]+)", tok):
             if part.group(1):
-                push(part.group(1), True)
+                push(part.group(1), "sub")
             else:
-                push(part.group(2), False)
+                push(part.group(2), "n")
         pos = m.end()
     emit_plain(text[pos:])
     return out
+
+
+def split_runs(text: str) -> list[tuple[str, bool]]:
+    """兼容旧接口：[(片段, 是否下标)]（上标在这里按普通文本返回）。"""
+    return [(seg, kind == "sub") for seg, kind in split_runs_ex(text)]
 
 
 # ── Markdown → docx ──────────────────────────────────────
 
 _FONT_CN = "宋体"
 _FONT_EN = "Times New Roman"
+
+
+# ══════════════════════════════════════════════════════════
+# 复杂 LaTeX 公式 → Word 原生公式对象（OMML）
+# ══════════════════════════════════════════════════════════
+# 为什么不能只用下标：下标只能表达 Na2CO3 这种原子式。分式、根号、求和、积分、
+# 矩阵在 Word 里必须是 OMML（<m:oMath>）对象，纯文字下标做不出来。
+# 链路：LaTeX --latex2mathml--> MathML --mathml2omml--> OMML，插进 run。
+# 两个包没装/转换失败 → 自动退回"降级成下标文字"，不至于整篇失败。
+
+_MATH_INLINE_RE = re.compile(r"\$\$([^$]+?)\$\$|\$([^$\n]+?)\$|\\\[(.+?)\\\]|\\\((.+?)\\\)",
+                             re.S)
+# 出现这些命令 = 简单下标搞不定，必须走 OMML
+_COMPLEX_MATH_RE = re.compile(
+    r"\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|iint|oint|lim|begin|end|matrix|"
+    r"binom|overline|underline|vec|hat|bar|partial|nabla|alpha|beta|gamma|delta|"
+    r"theta|lambda|mu|sigma|pi|omega|times|cdot|div|pm|leq|geq|neq|approx|"
+    r"infty|rightarrow|leftarrow|Rightarrow|to|quad|left|right)",
+    re.IGNORECASE,
+)
+
+
+def _omml_available() -> bool:
+    try:
+        import latex2mathml.converter  # noqa: F401
+        import mathml2omml  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _latex_to_omml(latex: str) -> str:
+    """LaTeX → OMML 字符串（失败抛异常）。"""
+    import latex2mathml.converter as _l2m
+    import mathml2omml as _m2o
+    return _m2o.convert(_l2m.convert(latex))
+
+
+def _append_omml(paragraph, latex: str) -> bool:
+    """把公式作为 Word 原生公式对象插进段落。成功 True。"""
+    try:
+        from docx.oxml import parse_xml
+        om = _latex_to_omml(latex)
+        if not om or "<m:oMath" not in om:
+            return False
+        om = om.replace(
+            "<m:oMath",
+            '<m:oMath xmlns:m="http://schemas.openxmlformats.org/'
+            'officeDocument/2006/math"',
+            1,
+        )
+        paragraph._p.append(parse_xml(om))
+        return True
+    except Exception as e:
+        logger.warning("公式转 OMML 失败（改回文本下标）: %s | %s", latex[:40], e)
+        return False
+
+
+def split_math_segments(text: str) -> list[tuple[str, bool]]:
+    """按 $...$ / $$...$$ / \\[..\\] / \\(..\\) 切成 [(片段, 是否公式)]。"""
+    if not text or ("$" not in text and "\\[" not in text and "\\(" not in text):
+        return [(text, False)] if text else []
+    out: list[tuple[str, bool]] = []
+    pos = 0
+    for m in _MATH_INLINE_RE.finditer(text):
+        body = m.group(1) or m.group(2) or m.group(3) or m.group(4) or ""
+        if not body.strip():
+            continue
+        if m.start() > pos:
+            out.append((text[pos:m.start()], False))
+        out.append((body.strip(), True))
+        pos = m.end()
+    if pos < len(text):
+        out.append((text[pos:], False))
+    return out
+
+
+def _is_complex_math(latex: str) -> bool:
+    """是否必须用 OMML（简单下标交给文字下标更自然）。"""
+    return bool(_COMPLEX_MATH_RE.search(latex or ""))
+
+
+def _write_runs(paragraph, text: str, size_pt: float = 10.5, bold: bool = False) -> None:
+    """把一行文本写进段落：公式走 OMML，其余走文字 + 化学式下标。"""
+    omml_ok = _omml_available()
+    for seg, is_math in split_math_segments(text):
+        if is_math:
+            if omml_ok and _is_complex_math(seg) and _append_omml(paragraph, seg):
+                continue
+            # 简单公式（Na_2CO_3 这种）或 OMML 不可用 → 降级成下标文字
+            # 先剥掉 \mathrm{...} / \text{...} 字体壳，否则会变成字面文字
+            text_part = _LATEX_WRAP_RE.sub(r"\1", seg)
+        else:
+            text_part = seg
+        for piece, kind in split_runs_ex(text_part):
+            r = paragraph.add_run(piece)
+            _set_font(r, size_pt=size_pt, bold=bold)
+            if kind == "sub":
+                r.font.subscript = True
+            elif kind == "sup":
+                r.font.superscript = True
 
 
 def _set_font(run, size_pt: float | None = None, bold: bool = False) -> None:
@@ -186,11 +310,7 @@ def _write_para(doc, text: str, style: str | None = None, size_pt: float = 10.5,
         p.paragraph_format.first_line_indent = p.style.font.size or None
         from docx.shared import Pt
         p.paragraph_format.first_line_indent = Pt(size_pt * 2)
-    for seg, is_sub in split_runs(text):
-        r = p.add_run(seg)
-        _set_font(r, size_pt=size_pt, bold=bold)
-        if is_sub:
-            r.font.subscript = True
+    _write_runs(p, text, size_pt=size_pt, bold=bold)
     return p
 
 
@@ -240,11 +360,7 @@ def md_to_docx(md_text: str, out_path: str | Path, title: str = "") -> bool:
                 p = doc.add_paragraph()
                 p.paragraph_format.space_before = Pt(8)
                 p.paragraph_format.space_after = Pt(4)
-                for seg, is_sub in split_runs(txt):
-                    r = p.add_run(seg)
-                    _set_font(r, size_pt=size, bold=True)
-                    if is_sub:
-                        r.font.subscript = True
+                _write_runs(p, txt, size_pt=size, bold=True)
                 continue
             # 无序列表
             m = re.match(r"^[-*+]\s+(.*)$", s)
@@ -257,6 +373,15 @@ def md_to_docx(md_text: str, out_path: str | Path, title: str = "") -> bool:
                     continue
                 cells = [c.strip() for c in s.strip("|").split("|")]
                 _write_para(doc, "　".join(cells))
+                continue
+            # ★ 块级公式（整行只有一个 $$...$$ 或 \\[...\\]）→ 单独居中段落
+            _blk = re.fullmatch(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]", s, re.S)
+            if _blk:
+                body = (_blk.group(1) or _blk.group(2) or "").strip()
+                p = doc.add_paragraph()
+                p.alignment = 1
+                if not (_omml_available() and _append_omml(p, body)):
+                    _write_runs(p, body, size_pt=11)
                 continue
             # 普通段落（试卷题号、选项行都走这里，保留原样，不自动编号）
             _write_para(doc, s)

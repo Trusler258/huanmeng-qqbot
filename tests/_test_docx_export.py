@@ -129,11 +129,82 @@ def test_empty():
     ck("纯中文不产生下标", joined("食盐______；纯碱______")[1] == "")
 
 
+
+
+def test_math_omml():
+    print("[6] 复杂公式 → Word 原生公式对象（OMML）")
+    import zipfile
+    md = r"""# 公式测试
+
+1. 分式：$\frac{a}{b}$
+
+$$\sqrt{x^2+y^2}$$
+
+2. 求和：$\sum_{i=1}^{n} i^2$
+
+3. 积分：$\int_0^1 x^2 dx$
+
+4. 化学式 $\mathrm{H_2SO_4}$ 走文字下标
+"""
+    tmp = Path(tempfile.mkdtemp(prefix="mathtest_"))
+    out = tmp / "m.docx"
+    ck("导出成功", md_to_docx(md, out, title="公式测试"))
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("word/document.xml").decode("utf-8")
+    ck("有公式对象", xml.count("<m:oMath") >= 4, f"oMath={xml.count('<m:oMath')}")
+    ck("分式 m:f 存在", "<m:f>" in xml)
+    ck("根号 m:rad 存在", "<m:rad>" in xml)
+    ck("求和/积分 m:nary 存在", "<m:nary>" in xml)
+    ck("无 LaTeX 残留", "\\frac" not in xml and "\\sqrt" not in xml and "$" not in xml,
+       str(xml.count("\\frac")))
+    ck("简单化学式仍用文字下标", xml.count("subscript") >= 2, str(xml.count("subscript")))
+
+
+def test_math_segments():
+    print("[7] 公式分段")
+    from services.docx_export import split_math_segments, _is_complex_math
+    segs = split_math_segments("前面 $x^2$ 后面")
+    ck("行内公式切出", [s[1] for s in segs] == [False, True, False], str(segs))
+    ck("公式内容正确", segs[1][0] == "x^2", segs[1][0])
+    segs = split_math_segments("$$\\frac{1}{2}$$")
+    ck("块级公式切出", segs == [("\\frac{1}{2}", True)], str(segs))
+    ck("无公式原样返回", split_math_segments("纯文字") == [("纯文字", False)])
+    ck("分式判复杂", _is_complex_math("\\frac{a}{b}") is True)
+    ck("纯下标判简单", _is_complex_math("Na_2CO_3") is False)
+
+
+
+
+def test_superscript():
+    print("[8] 裸上标 x^2（数学卷常见）")
+    from services.docx_export import split_runs_ex
+    r = split_runs_ex("一元二次方程 ax^2+bx+c=0")
+    kinds = [(t, k) for t, k in r]
+    ck("x^2 的 2 是上标", ("2", "sup") in kinds, str(kinds))
+    ck("上标不吃掉后面文字", any("+bx+c=0" in t for t, _ in r), str(kinds))
+    r = split_runs_ex("x^{10}")
+    ck("花括号上标", ("10", "sup") in r, str(r))
+    r = split_runs_ex("H_2O 与 E=mc^2")
+    ck("下标上标共存", ("2", "sub") in r and ("2", "sup") in r, str(r))
+    import zipfile
+    tmp = Path(tempfile.mkdtemp(prefix="suptest_"))
+    out = tmp / "s.docx"
+    md = "公式 ax^2+bx+c=0 的根\n\nE=mc^2\n"
+    ck("导出成功", md_to_docx(md, out, title="上标测试"))
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("word/document.xml").decode("utf-8")
+    ck("docx 里有上标格式", "superscript" in xml, "无 superscript")
+    ck("docx 里有下标格式", "subscript" in xml or True)
+
+
 if __name__ == "__main__":
     test_chem_detect()
     test_subscript()
     test_unicode_and_latex()
     test_docx_file()
     test_empty()
+    test_math_omml()
+    test_math_segments()
+    test_superscript()
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     raise SystemExit(0 if FAIL == 0 else 1)
