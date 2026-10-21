@@ -165,8 +165,26 @@
 - 验证：69 条可读；「给佬/小给/蕾丝边/拉拉/百合」命中，「我给你发文件/拉黑他/拉群了」不命中；
   JSON 按 mtime 缓存 → **改词库不用重启**
 
+### 十一、黑话查证：`explain_slang` 工具 + `/~slang` 指令（不懂就问，不装懂）
+- 新增 `services/slang_lookup.py`：本地词库 → 萌娘百科 → 联网词源，三级查证
+  - 萌娘只放行 `opensearch`（rest/页面被 Cloudflare 403），只能证明"有条目"，
+    释义仍靠搜索，所以萌娘只算一个来源、不单独定论
+  - 可信度按**独立来源数**判：萌娘有条目 + 至少两个不同站点 → 高；单站点 → 存疑
+    （梗的源头本来就常在论坛/贴吧，单帖内部都能自相矛盾，不数"权威站点"）
+- 新增工具 `explain_slang(term, meaning?)`，两轮用法：
+  ① 只给 term → 返回资料摘要（≤3 条、每条 150 字）
+  ② 模型概括出释义后再调一次并填 meaning → 进**待审队列**（`data/slang_pending.json`）
+  ★ 不直接写 `slang.json`：联网摘要混营销号说法，一次错就永久错
+- 新增 `/~slang` 指令：`<词>` 查词 / `pending` 看待审 / `ok N` 收录（管理员）/ `no N` 丢弃
+- `00_core.md` 新增常驻节 `slang_unknown`：看不懂的词先查再说话，
+  禁止"你这句接得没头没尾"式点评；查不到就直接问"这啥梗"
+- 入库前拦一道：单字（给/拉）、纯符号、超 16 字一律拒，附原因
+- 实测：绝绝子 → 萌娘+百度百科+新浪 三源一致，百科给出双义（夸赞/反讽），
+  第二轮入待审；牢大 → 萌娘+NGA/豆瓣/贴吧；破防 → 直接命中本地词库
+- 单测 `tests/_test_slang_lookup.py` 39/39
+
 ### 验证
-- 单测：`tests/_test_poke_image.py` 84/84、`tests/_test_slang_pick.py` 23/23、`tests/_test_writing_addr.py` 7/7
+- 单测：`tests/_test_poke_image.py` 84/84、`tests/_test_slang_pick.py` 23/23、`tests/_test_slang_lookup.py` 39/39、`tests/_test_writing_addr.py` 7/7
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20

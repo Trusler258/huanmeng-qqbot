@@ -4130,6 +4130,55 @@ async def cmd_key(args, user_id, group_id, sender_name, is_group, bot_qq):
     return format_lang("cmd_key.m18", action=action, code=code, code2=code, code3=code)
 
 
+async def cmd_slang(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """/~slang — 黑话查询与待审队列（/~slang <词> | pending | ok N | no N）"""
+    from services import slang_lookup as SL
+
+    sub = (args[0].strip() if args else "").lower()
+
+    if not sub or sub in ("help", "帮助"):
+        return (
+            "黑话查证（/~slang）\n"
+            "· /~slang <词>  查这个词（本地词库 → 萌娘 → 联网词源）\n"
+            "· /~slang pending  看待审队列（bot 自己查到的结论）\n"
+            "· /~slang ok <序号>  收录进词库（仅管理员）\n"
+            "· /~slang no <序号>  丢弃（仅管理员）\n"
+            f"当前待审 {SL.pending_count()} 条"
+        )
+
+    if sub in ("pending", "待审", "列表"):
+        return SL.format_pending(10)
+
+    if sub in ("ok", "yes", "收录", "过"):
+        if not get_config().is_admin(user_id):
+            return "只有主人能审词库喵~"
+        try:
+            idx = int(args[1])
+        except (IndexError, ValueError):
+            return "用法：/~slang ok <序号>（序号看 /~slang pending）"
+        ok, msg = SL.approve(idx)
+        return msg
+
+    if sub in ("no", "reject", "丢弃", "删"):
+        if not get_config().is_admin(user_id):
+            return "只有主人能审词库喵~"
+        try:
+            idx = int(args[1])
+        except (IndexError, ValueError):
+            return "用法：/~slang no <序号>"
+        ok, msg = SL.reject(idx)
+        return msg
+
+    # 其余情况：把剩下的参数当词查（支持带空格的说法，取整段）
+    term = " ".join(args).strip()
+    try:
+        res = await SL.explain(term)
+    except Exception as e:
+        logger.error("查黑话失败: %s", e, exc_info=True)
+        return f"查「{term}」失败了喵~ {e}"
+    return SL.format_explain(res)
+
+
 async def cmd_motd(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~motd <服务器地址>[:端口] — Minecraft 服务器状态卡（原生协议 ping + HTML 渲染）"""
     if not args:
@@ -4379,6 +4428,10 @@ COMMAND_MAP: dict[str, callable] = {
     # ── SQLite 全文检索（聊天回溯）──
     "dbsearch":   cmd_dbsearch,
     "回顾":       cmd_dbsearch,
+    # ── 黑话查证 / 待审词库 ──
+    "slang":      cmd_slang,
+    "梗":         cmd_slang,
+    "黑话":       cmd_slang,
     # ── 插件系统 ──
     "plugin":     cmd_plugin,
     "插件":       cmd_plugin,
