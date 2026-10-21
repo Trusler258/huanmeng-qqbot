@@ -223,11 +223,11 @@ TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "write_code",
-            "description": "按用户要求生成文件并发送给用户。写代码/做游戏/网页/脚本 → language 填对应编程语言；把资料整理成文档、总结成报告、生成 md/txt 文件发送 → language 填 markdown 或 text。用户明确说了「发送文件/发出来/整理成文档」时必须调用本工具，不要只把内容打在聊天里。",
+            "description": "按用户要求生成文件并发送给用户。写代码/做游戏/网页/脚本 → language 填对应编程语言；把资料整理成文档、总结成报告 → language 填 markdown 或 text；用户说导出 word / 要能直接打印的文档（试卷、通知、报告）→ language 填 docx。用户明确说了「发送文件/发出来/整理成文档」时必须调用本工具，不要只把内容打在聊天里。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "language": {"type": "string", "enum": ["python", "javascript", "html", "css", "java", "c++", "c#", "go", "rust", "typescript", "markdown", "text"], "description": "编程语言；文档用 markdown（.md）或 text（.txt）"},
+                    "language": {"type": "string", "enum": ["python", "javascript", "html", "css", "java", "c++", "c#", "go", "rust", "typescript", "markdown", "text", "docx"], "description": "编程语言；文档用 markdown（.md）/ text（.txt）/ docx（Word，真排版 + 化学式真下标）"},
                     "description": {"type": "string", "description": "需求描述。写文档时把要整理的【具体内容/素材】一并写进来（例如刚搜到的新闻要点），只写「整理成md」会生成空壳"},
                 },
                 "required": ["language", "description"],
@@ -571,9 +571,11 @@ async def _write_code(
         "rust": "rs", "typescript": "ts",
         # ★ v2.3.81c: 文档类——"整理成 md 文档/报告发送"走同一条发文件通道
         "markdown": "md", "md": "md", "text": "txt", "txt": "txt",
+        # ★ v2.3.104: word 导出（2026-10-21 群聊：用户要"导出为word"，只给了 .md）
+        "docx": "docx", "doc": "docx", "word": "docx",
     }
     ext = ext_map.get(language, "txt")
-    is_doc = ext in ("md", "txt")
+    is_doc = ext in ("md", "txt", "docx")
 
     from services.llm import call_llm
     from core.config import get_config
@@ -643,9 +645,25 @@ async def _write_code(
     logger.info("write_code: 解析到 %d 个文件: %s", len(files), list(files.keys()))
 
     tmp = Path(tempfile.mkdtemp(prefix="bot_code_"))
+    # fname → 实际要发送的路径（docx 会换成排版好的 .docx）
+    paths: dict[str, str] = {}
     for fname, content in files.items():
-        (tmp / fname).write_text(content, encoding="utf-8")
+        src = tmp / fname
+        src.write_text(content, encoding="utf-8")
         logger.info("write_code: 写入 %s (%d 字节)", fname, len(content.encode("utf-8")))
+        if ext == "docx" or fname.lower().endswith(".docx"):
+            # ★ v2.3.104: markdown 正文 → 真 Word（化学式数字设成下标）
+            from services.docx_export import md_to_docx
+            stem = Path(fname).stem
+            target = tmp / f"{stem}.docx"
+            if md_to_docx(content, target, title=stem):
+                paths[target.name] = str(target)
+            else:
+                # 转 docx 失败 → 至少把 md 发出去，别让用户空手
+                paths[f"{stem}.md"] = str(src)
+                logger.error("docx 转换失败，退回 markdown 发送")
+        else:
+            paths[fname] = str(src)
 
     # ── 编译 + 运行 ──
     run_result = ""
@@ -659,18 +677,18 @@ async def _write_code(
 
     from services.sender import send_file
     send_msgs = []
-    if len(files) == 1:
-        fname = list(files.keys())[0]
+    if len(paths) == 1:
+        fname = list(paths.keys())[0]
         logger.info("write_code: 发送单文件 %s", fname)
-        ok = await send_file(str(tmp / fname), group_id if is_group else user_id, is_group)
+        ok = await send_file(paths[fname], group_id if is_group else user_id, is_group)
         send_msgs.append(f"已发送 {fname}" if ok else "文件发送失败")
     else:
         zip_path = tmp / "code.zip"
         with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
-            for fname in sorted(files.keys()):
-                zf.write(str(tmp / fname), fname)
+            for fname in sorted(paths.keys()):
+                zf.write(paths[fname], fname)
         ok = await send_file(str(zip_path), group_id if is_group else user_id, is_group)
-        send_msgs.append(f"已发送 {len(files)} 个文件的 zip" if ok else "zip 发送失败")
+        send_msgs.append(f"已发送 {len(paths)} 个文件的 zip" if ok else "zip 发送失败")
 
     if run_result:
         send_msgs.append(run_result)

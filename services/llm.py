@@ -113,12 +113,11 @@ logger = get_logger("llm")
 # 永远轮不到 write_code 去真正生成文件，结果只会把内容打在聊天里。
 # 这里只决定"是否多给几轮"，普通对话仍走搜完即答的快路径。
 _DELIVERABLE_FILE_RE = re.compile(
-    r"(整理|汇总|总结|生成|导出|制作|做成|编成|写成)[^，。！？!?]{0,8}?"
-    r"(md|markdown|txt|文档|文件|报告|表格|清单|资料|日报|周报)",
+    r"(整理|汇总|总结|生成|导出|制作|做成|编成|写成|做个|弄个|做个|出一份|写个|弄)[^，。！？!?]{0,8}?"
+    r"(md|markdown|txt|docx|doc|word|pdf|ppt|pptx|excel|xlsx|文档|文件|报告|表格|清单|资料|日报|周报)",
     re.IGNORECASE,
 )
 _WRITE_TOOL_NAMES = ("write_code",)
-
 
 def _needs_deliverable_file(msg: str) -> bool:
     """用户是不是要"把资料整理成文档/报告并发出来"？"""
@@ -2000,6 +1999,13 @@ def _build_history_messages(msg_history: list[str], bot_name: str) -> list[dict]
 _TOOL_PROMISE_RE = re.compile(
     r"(搜一下|搜搜|搜下|搜一搜|搜索一下|我去搜|帮我搜|帮你搜|让我搜"
     r"|查一下|查查|查下|查询一下|我去查|帮你查|让我查|我去给你查)"
+    # ★ v2.3.104：产出文件类承诺。事故（2026-10-21）：用户要 word 试卷，bot 连回两轮
+    #   「我重新生成一份，你等会儿」「好了，下标都改成真下标了，文件这就发你」，
+    #   两轮 tool_calls 都是 0，用户等到的是空气。原正则只认"查/搜"，这两句全漏。
+    r"|我(?:这就|马上|立刻)?(?:重新|再)?(?:生成|做|写|弄|整理|导出)一?份"
+    r"|文件[^，。！？]{0,6}(?:这就|马上|发你|给你|重新发)"
+    r"|等我[^，。！？]{0,8}(?:弄|做|改|生成|整理|导出)"
+    r"|(?:这就|马上|立刻)(?:重新)?(?:发|传|给)你"
 )
 
 
@@ -2144,6 +2150,42 @@ async def generate_multi_reply_with_tools(
                     len(_tcs), [t["name"] for t in _tcs],
                 )
 
+        # ★ v2.3.104（修 v2.3.89 的位置错误）：承诺补救必须放在 `if not tool_calls`
+        #   **之前**。原来补在 if 内部、紧跟跳出循环的那句 —— 补回来的 tool_calls
+        #   永远不会被执行，等于白补一次调用还照样发空话（2026-10-21 群聊
+        #   「文件这就发你」走的正是这条路径，两轮 tool_calls 都是 0）。
+        if (round_idx == 0 and not result.tool_calls and not _promise_retried
+                and _looks_like_tool_promise(result.content)):
+            _promise_retried = True
+            logger.warning(
+                "检测到「承诺调用工具但 calls 为空」→ 补一轮强制调用 | 原文=%s",
+                (result.content or "")[:70])
+            try:
+                _retry_msgs = list(msgs) + [
+                    {"role": "assistant", "content": result.content},
+                    {"role": "user", "content":
+                        "你上一句说要去做/已经做好了，但这一轮一次工具都没调用，"
+                        "对方会一直等不到东西。现在立刻调用对应工具把它做完："
+                        "要产出文件就调 write_code（word 用 language=docx），"
+                        "要查资料就调 search_web。不要再只说「我这就去做」「文件发你」。"},
+                ]
+                _r2 = await call_llm_with_tools(
+                    reply_model, _retry_msgs, tools,
+                    max_tokens=max_tokens, temperature=0.4,
+                    scene="reply_tools", thinking=thinking,
+                    frequency_penalty=_REPLY_FREQ_PENALTY,
+                )
+                if _r2 is not None and _r2.tool_calls:
+                    result.tool_calls = _r2.tool_calls
+                    if (_r2.content or "").strip():
+                        result.content = _r2.content
+                    logger.info("承诺补调用成功 → %s",
+                                [t.get("name") for t in result.tool_calls])
+                else:
+                    logger.info("承诺补调用仍未产生工具调用 → 放行原回复（fail-open）")
+            except Exception as _e:
+                logger.warning("承诺补调用异常 → 放行原回复: %s", _e)
+
         if not result.tool_calls:
             if not (result.content or "").strip():
                 if round_idx == 0:
@@ -2226,38 +2268,6 @@ async def generate_multi_reply_with_tools(
                             # 有纯文本兜底），也不要空手而归
                             logger.warning("json_mode 补救失败，保留首次原始输出")
 
-            # ★ v2.3.89: 承诺落空补救（放在 break 之前 —— 这是最后的补救机会）
-            #   模型承诺"我搜一下/帮你查查"但 calls 为空时，原逻辑会把这句空头承诺
-            #   直接当最终回复发出去（2026-10-14 实测：`我搜一下再跟你说` 后管道即结束）。
-            #   这里补一次独立调用要求它真的调工具；**仍无调用/异常就放行原回复**（fail-open，
-            #   绝不吞掉回复、不改变已验证过的 content）。
-            if (round_idx == 0 and not _promise_retried
-                    and _looks_like_tool_promise(result.content)):
-                _promise_retried = True
-                logger.warning(
-                    "检测到「承诺调用工具但 calls 为空」→ 补一轮强制调用 | 原文=%s",
-                    (result.content or "")[:70])
-                try:
-                    _retry_msgs = list(msgs) + [
-                        {"role": "assistant", "content": result.content},
-                        {"role": "user", "content":
-                            "你上一句说了要去查/搜，但这一轮并没有真的调用工具。"
-                            "现在就调用对应工具（把要查的内容作为参数传进去），不要再只说话。"},
-                    ]
-                    _r2 = await call_llm_with_tools(
-                        reply_model, _retry_msgs, tools,
-                        max_tokens=max_tokens, temperature=0.4,
-                        scene="reply_tools", thinking=thinking,
-                        frequency_penalty=_REPLY_FREQ_PENALTY,
-                    )
-                    if _r2 is not None and _r2.tool_calls:
-                        result.tool_calls = _r2.tool_calls
-                        logger.info("承诺补调用成功 → %s",
-                                    [t.get("name") for t in result.tool_calls])
-                    else:
-                        logger.info("承诺补调用仍未产生工具调用 → 放行原回复（fail-open）")
-                except Exception as _e:
-                    logger.warning("承诺补调用异常 → 放行原回复: %s", _e)
             break
 
         # ★ v2.0.4y(2026-09-04): 轮1有工具调用且 content 是短自然语 → 先发先导语。

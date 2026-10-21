@@ -183,8 +183,31 @@
   第二轮入待审；牢大 → 萌娘+NGA/豆瓣/贴吧；破防 → 直接命中本地词库
 - 单测 `tests/_test_slang_lookup.py` 39/39
 
+### 十二、word 导出 + 化学式真下标 + 空口承诺拦截（群聊实测暴露）
+一次群聊暴露三件事：用户要「导出为word」拿到 .md；下角数字没下标；bot 连说两轮
+「我重新生成一份」「文件这就发你」，日志里 **两轮 tool_calls 都是 0**，用户等到空气。
+
+- 新增 `services/docx_export.py`：markdown → 真 .docx（python-docx）
+  - 标题/小标题/列表/表格行分别处理，中文宋体 + 西文 Times New Roman，标题居中
+  - **化学式真下标**：`Na2CO3` → Na₂CO₃ 那种下标 run（`run.font.subscript = True`）
+    · 识别靠「元素符号白名单 + 至少 2 种不同元素」，MP3/B2B/A4/3D 不会误判
+    · 括号化学式 `Ca3(PO4)2`、`(NH4)2SO4`、`CO(NH2)2` 全覆盖
+    · Unicode 下标（Na₂CO₃）、LaTeX 记号（`$\mathrm{Na_2CO_3}$`、裸写 `Na_2CO_3`）一并转真下标
+      → 用户说「word 里 LaTeX 就行」，但 Word 不认 LaTeX（要手动 Alt+= 再转换），
+        这里直接渲染成下标，打开即正确
+  - 转换失败自动退回发 .md，不让用户空手
+- `write_code` 支持 `language=docx`（`doc`/`word` 同义），发送段改用 `paths` 映射
+- **修 v2.3.89 的致命位置错误**：承诺补救代码原本放在 `if not tool_calls` 内部、
+  紧跟跳出循环那句 —— 补回来的 tool_calls 永远不会被执行，等于白补一次调用还照样发空话。
+  现移到 `if not tool_calls` **之前**，补救成功由执行段接手
+- 承诺正则扩充：原来只认「查/搜」，现补「我重新生成一份 / 文件这就发你 / 等我弄好 /
+  这就发你」；负样本（我做了个梦、我看看哦）不误判
+- 交付物意图正则补 word/docx/pdf/excel/ppt + 「做个/弄个/写个」动词
+- 实测：真实生成 word 试卷 90 段 / 24 处真下标，`Na2CO3 + 2HCl = 2NaCl + H2O + CO2↑`
+  的化学方程式下标全部正确、系数 2 未被误标；单测 39/39 + 20/20
+
 ### 验证
-- 单测：`tests/_test_poke_image.py` 84/84、`tests/_test_slang_pick.py` 23/23、`tests/_test_slang_lookup.py` 39/39、`tests/_test_writing_addr.py` 7/7
+- 单测：`_test_poke_image.py` 84/84、`_test_slang_pick.py` 23/23、`_test_slang_lookup.py` 39/39、`_test_writing_addr.py` 7/7、`_test_docx_export.py` 39/39、`_test_promise.py` 20/20
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
