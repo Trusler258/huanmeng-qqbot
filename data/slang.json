@@ -1,0 +1,876 @@
+{
+  "_meta": {
+    "version": 1,
+    "updated_at": "2026-10-21",
+    "source": "data/slang.json（唯一真相源；原 15_slang.md 仅作人读备份）",
+    "fields": {
+      "name": "主词（触发判定用它和 alias）",
+      "alias": "别名，同义，命中任一个即视为该条",
+      "circles": "圈子标签，注入时展示给模型做消歧（不硬过滤）",
+      "risk": "safe / mild（mild=骂人或擦边，只理解不主动用）",
+      "meaning": "释义",
+      "example": "例句，可为空",
+      "source": "原分组/出处",
+      "last_seen": "最近一次在群里出现（半衰期用）",
+      "added_by": "migrated / manual / learn"
+    }
+  },
+  "entries": [
+    {
+      "name": "YYDS",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "永远的神。顶级夸奖。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "NSDD",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "你说得对（拼音首字母）。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "W",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "win 的缩写，表示\"赢了/太棒了/认可\"",
+      "example": "这波操作，W。",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "L",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "lose，表示\"输了/拉胯/失败\"。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "M3",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "You know what I'm saying 的谐音，= \"你懂我意思吧\"。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "Siu4",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "粤语\"笑死\"谐音，表示很好笑。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "MNYY",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "Must Need 要有，= \"生活必需品/必须拥有\"。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "SLDPK",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "笑到扑街（粤语，笑到摔地上），表示笑死。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "PUA",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "原指搭讪学，网络中指精神打压/操控（贬义）",
+      "example": "别 PUA 我。",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "已读不回",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "对方看了消息却不回复。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "破防",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "mild",
+      "meaning": "心理防线被突破，情绪瞬间崩溃或破大防。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "硬控",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "原指游戏强制控制技能，现形容强烈吸引力让人移不开眼",
+      "example": "被这段视频硬控 30 秒。",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "触",
+      "alias": [
+        "触烂"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "英文 true 谐音，表\"极对/超级认同/极致\"。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "包得",
+      "alias": [
+        "包的"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "保证、肯定、没问题、稳了。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "要确欸",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "\"你要确定欸\"的简写，表对对方行为表示质疑/傻眼。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "各各",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "聚餐各付各的（AA 制）。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "估咩",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "Google Maps 缩写。",
+      "example": "",
+      "source": "缩写/字母梗",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "卡皮巴拉",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "水豚的昵称，形容人情绪稳定、呆萌治愈、不内耗。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "晕碳",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "吃大量碳水后血糖波动导致的昏昏欲睡。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "很解",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "很扫兴、很下头，让人瞬间冷静。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "很躁",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "很烦躁、不耐烦。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "很玄",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "敷衍回应，暗指背后有特殊原因说不清。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "蒸笼 city",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "形容盛夏闷热得像蒸笼的城市。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "活人感",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "指人真实鲜活、有情绪，不伪装、不 AI 式客套。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "脑腐",
+      "alias": [
+        "brainrot"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "沉迷低质网络内容导致的精神状态下降；也形容对某事物的痴迷（如\"XX 脑腐\"）。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "蛋雕",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "谐音\"丢掉\"（台语），表把东西舍去/放弃某个想法。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "泉",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "台语\"溅\"谐音，形容吹牛、夸大其词",
+      "example": "别泉了。",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "贴脸开大",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "原为游戏术语（近距离放大招），现指直接针对对方痛点发起攻击。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "破大防",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "比\"破防\"程度更重，彻底崩溃。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "choke",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "关键时刻掉链子、失误（电竞术语泛化）。",
+      "example": "",
+      "source": "语气/状态词",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "菜",
+      "alias": [
+        "菜鸡"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "技术差（自嘲或调侃）。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "送人头",
+      "alias": [
+        "白给"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "主动送死、白送（游戏泛化）。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "老六",
+      "alias": [],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "阴险猥琐、喜欢蹲人蹲点的人（原 CS:GO 打法）。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "开黑",
+      "alias": [],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "组队一起玩游戏。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "带飞",
+      "alias": [
+        "躺赢"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "大神带节奏赢 / 自己躺着赢。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "上分",
+      "alias": [
+        "掉分"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "排位分数上升 / 下降。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "手残",
+      "alias": [],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "操作跟不上反应，打不好操作类游戏。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "欧皇",
+      "alias": [
+        "非酋"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "运气极好 / 极差（抽卡、掉落）。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "空枪",
+      "alias": [
+        "空大"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "放大招却打空（泛化：把事情搞砸）。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "退役选手",
+      "alias": [],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "调侃自己或他人操作退步。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "双排",
+      "alias": [
+        "车队"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "双人组队 / 多人固定车队。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "击杀王",
+      "alias": [
+        "金牌打手等榜单称呼"
+      ],
+      "circles": [
+        "游戏"
+      ],
+      "risk": "safe",
+      "meaning": "指游戏内数据称号。",
+      "example": "",
+      "source": "游戏圈泛化（QQ 群高频率）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "破基岩",
+      "alias": [
+        "基岩层"
+      ],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "Minecraft 世界最底层无法破坏的方块；\"破基岩\"是技术操作。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "粘液块电梯",
+      "alias": [
+        "鞘翅",
+        "下界合金"
+      ],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "Minecraft 常见道具/机制。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "AFK",
+      "alias": [],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "离开键盘（挂机）。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "TNT 炮",
+      "alias": [
+        "红石科技"
+      ],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "自动化装置。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "生存",
+      "alias": [
+        "创造",
+        "极限"
+      ],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "游戏模式简称。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "端游",
+      "alias": [
+        "Java 版",
+        "基岩版"
+      ],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "版本区分。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "炸服",
+      "alias": [],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "服务器崩溃。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "卡服",
+      "alias": [],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "服务器卡顿。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "氪金",
+      "alias": [],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "花钱买游戏内物品。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "肝",
+      "alias": [],
+      "circles": [
+        "MC"
+      ],
+      "risk": "safe",
+      "meaning": "花大量时间刷资源（肝帝=刷子之王）。",
+      "example": "",
+      "source": "MC 圈黑话（幻梦服务的主要人群）",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "世一",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "世界第一的简称。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "大癲",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "十分夸张、离奇。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "6 翻了",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "形容 Very cool。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "稳如老狗",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "非常稳定可靠（戏谑）。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "什么鬼",
+      "alias": [
+        "什么玩意"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "表惊讶（疑惑）。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "离谱",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "超出常理。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "无敌",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "太强了。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "绷不住",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "忍不住笑/忍不住了。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "蚌埠住了",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "谐音\"绷不住了\"，忍不住笑。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "双厨狂喜",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "两个都喜欢的东西同时出现，狂喜。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    },
+    {
+      "name": "电子包浆",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "safe",
+      "meaning": "反复流传的网络梗/图，像文物包浆一样被\"盘\"久了。",
+      "example": "",
+      "source": "社交/吹水",
+      "last_seen": "2026-10-21",
+      "added_by": "migrated"
+    }
+  ]
+}

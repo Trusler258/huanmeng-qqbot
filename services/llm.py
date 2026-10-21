@@ -265,6 +265,9 @@ def _load_skill_sections() -> dict[str, str]:
 
 
 _SKILLS_DIR = Path(__file__).resolve().parent.parent / "data" / "skills"
+# ★ v2.3.105：黑话词库唯一真相源迁到 JSON（原 15_slang.md 降级为人读备份）
+_SLANG_JSON = Path(__file__).resolve().parent.parent / "data" / "slang.json"
+_slang_json_cache: tuple[int, int, list] | None = None
 
 # ── 技能元数据（v2.3.64）───────────────────────────────────────
 # 背景：老实现的热加载规则是「章节名出现在用户消息里才加载」（`k.lower() in low`），
@@ -606,14 +609,48 @@ _SLANG_EXCLUDE = frozenset({
 _slang_terms_cache: tuple[int, int, tuple[str, ...]] | None = None
 
 
-def _parse_slang_terms(dict_text: str) -> tuple[str, ...]:
-    """从词典正文解析触发词表。
+def _slang_entries() -> list[dict]:
+    """读 data/slang.json 的 entries（按 mtime+size 缓存，改文件即时生效）。"""
+    global _slang_json_cache
+    try:
+        st = _SLANG_JSON.stat()
+    except OSError:
+        return []
+    if (_slang_json_cache and _slang_json_cache[0] == st.st_mtime_ns
+            and _slang_json_cache[1] == st.st_size):
+        return _slang_json_cache[2]
+    try:
+        import json as _json
+        data = _json.loads(_SLANG_JSON.read_text(encoding="utf-8"))
+        entries = data.get("entries") or []
+        if not isinstance(entries, list):
+            entries = []
+        entries = [e for e in entries if isinstance(e, dict) and e.get("name")]
+        _slang_json_cache = (st.st_mtime_ns, st.st_size, entries)
+        return entries
+    except Exception as e:
+        logger.warning("读取 data/slang.json 失败（回退 md 词典）: %s", e)
+        return []
 
-    规则：取 `- XXX：释义` 行中 `：` 之前的词，按 ` / ` 拆分；
-    过滤掉过短（<2 字符）与 _SLANG_EXCLUDE 里的词。返回小写元组。
+
+def _parse_slang_terms(dict_text: str) -> tuple[str, ...]:
+    """解析触发词表（★ JSON 优先，md 仅作回退）。
+
+    JSON：取每条 name + alias，过滤过短（<2）与 _SLANG_EXCLUDE，返回小写元组。
+    md 回退：取 `- XXX：释义` 里 `：` 之前的词，按 ` / ` 拆分。
     """
     terms: list[str] = []
     seen: set[str] = set()
+    _entries = _slang_entries()
+    if _entries:
+        for e in _entries:
+            for w in [e.get("name", "")] + list(e.get("alias") or []):
+                low = str(w).strip().lower()
+                if len(low) < 2 or low in _SLANG_EXCLUDE or low in seen:
+                    continue
+                seen.add(low)
+                terms.append(low)
+        return tuple(terms)
     for raw in (dict_text or "").split("\n"):
         line = raw.strip()
         if not line.startswith("- "):
@@ -641,6 +678,18 @@ def _parse_slang_terms(dict_text: str) -> tuple[str, ...]:
 def _slang_terms() -> tuple[str, ...]:
     """取触发词表（按词典文件 mtime+size 缓存，改词典即时生效）"""
     global _slang_terms_cache
+    # ★ 优先 slang.json；读不到再回退 15_slang.md
+    try:
+        st = _SLANG_JSON.stat()
+        if (_slang_terms_cache and _slang_terms_cache[0] == st.st_mtime_ns
+                and _slang_terms_cache[1] == st.st_size):
+            return _slang_terms_cache[2]
+        terms = _parse_slang_terms("")
+        if terms:
+            _slang_terms_cache = (st.st_mtime_ns, st.st_size, terms)
+            return terms
+    except OSError:
+        pass
     try:
         p = _SKILLS_DIR / "15_slang.md"
         st = p.stat()
@@ -690,11 +739,35 @@ def _slang_term_hit(low_msg: str, term: str) -> bool:
 def _slang_pick(dict_text: str, low_msg: str, limit: int = _SLANG_MAX_HITS) -> str:
     """命中的词条 → 只回这几条（★ 不再整章注入）。
 
-    旧行为：命中任一黑话就把整个词典（65 条 ≈ 4.7KB）塞进参考，
-    词库扩到千条后会直接把 prompt 撑爆。现在只给命中的那几行，并带分组标签。
+    优先读 data/slang.json（带 circles 圈子标签 + risk 慎用标记），
+    读不到才回退解析 md 正文（老格式 `- 词1 / 词2：释义`）。
     返回空串表示没命中。
     """
-    lines: list[str] = []
+    entries = _slang_entries()
+    if entries:
+        lines: list[str] = []
+        for e in entries:
+            words = [e.get("name", "")] + list(e.get("alias") or [])
+            if not any(_slang_term_hit(low_msg, str(w)) for w in words if w):
+                continue
+            tags: list[str] = []
+            circles = e.get("circles") or []
+            if circles:
+                tags.append("/".join(str(c) for c in circles))
+            if e.get("risk") == "mild":
+                tags.append("慎用")
+            suffix = f"（{'，'.join(tags)}）" if tags else ""
+            line = f"· {e.get('name')}：{str(e.get('meaning') or '').strip()}{suffix}"
+            ex = str(e.get("example") or "").strip()
+            if ex:
+                line += f" 例：{ex}"
+            lines.append(line)
+            if len(lines) >= limit:
+                break
+        return (_SLANG_HEADER + "\n" + "\n".join(lines)) if lines else ""
+
+    # ---- md 回退（老格式）----
+    lines = []
     group = ""
     for raw in (dict_text or "").split("\n"):
         line = raw.strip()
@@ -726,9 +799,9 @@ def _slang_hit(dict_text: str, low_msg: str) -> bool:
 
 
 def append_slang_term(term: str, meaning: str, category: str = "LLM 自学") -> tuple[bool, str]:
-    """向黑话词典追加一条（供 learn_slang 工具与 /~slang 指令调用）。
+    """向黑话词库追加一条（供 learn_slang 工具与 /~slang 指令调用）。
 
-    追加后该词自动成为触发词（词表按 mtime 缓存失效重算），无需改代码。
+    ★ v2.3.105：写入 data/slang.json（唯一真相源），写完即时成为触发词。
     返回 (是否成功, 说明)。
     """
     term = (term or "").strip()
@@ -737,30 +810,47 @@ def append_slang_term(term: str, meaning: str, category: str = "LLM 自学") -> 
         return False, "词与释义都不能为空"
     if len(term) > 24 or len(meaning) > 200:
         return False, "词最长 24 字、释义最长 200 字"
-    if any(c in term for c in "：:\n") or any(c in meaning for c in "\n"):
+    if any(c in term for c in "：:\n") or "\n" in meaning:
         return False, "词里不能有冒号或换行，释义不能有换行"
-    try:
-        p = _SKILLS_DIR / "15_slang.md"
-        text = p.read_text(encoding="utf-8")
-        # 已存在同名词（忽略大小写）→ 不重复追加
-        if term.lower() in {t.lower() for t in _parse_slang_terms(text)}:
+
+    global _slang_json_cache, _slang_terms_cache
+    low = term.lower()
+    for e in _slang_entries():
+        names = [str(e.get("name", "")).lower()]
+        names += [str(a).lower() for a in (e.get("alias") or [])]
+        if low in names:
             return False, f"「{term}」已在词典里"
-        entry = f"- {term}：{meaning}"
-        if not text.endswith("\n"):
-            text += "\n"
-        if category and category not in text:
-            text += f"\n## {category}\n\n{entry}\n"
-        else:
-            text += entry + "\n"
-        p.write_text(text, encoding="utf-8")
-        # 让词表缓存立即失效（mtime 可能同秒）
-        global _slang_terms_cache
-        _slang_terms_cache = None
-        logger.info("黑话词典新增: %s（%s）", term, category)
-        return True, f"已收录「{term}」"
+
+    import json as _json
+    try:
+        raw = _json.loads(_SLANG_JSON.read_text(encoding="utf-8")) if _SLANG_JSON.exists() else {}
+        if not isinstance(raw, dict):
+            raw = {}
     except Exception as e:
-        logger.warning("追加黑话词条失败: %s", e)
+        logger.error("读取 slang.json 失败，拒绝写入以免覆盖: %s", e, exc_info=True)
+        return False, f"读词库失败: {e}"
+
+    today = _time.strftime("%Y-%m-%d")
+    ents = raw.get("entries") or []
+    ents.append({
+        "name": term, "alias": [], "circles": ["通用"], "risk": "safe",
+        "meaning": meaning, "example": "", "source": category or "LLM 自学",
+        "last_seen": today, "added_by": "learn",
+    })
+    raw["entries"] = ents
+    meta = raw.setdefault("_meta", {})
+    meta["updated_at"] = today
+    try:
+        _SLANG_JSON.parent.mkdir(parents=True, exist_ok=True)
+        _SLANG_JSON.write_text(_json.dumps(raw, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+    except Exception as e:
+        logger.error("写入 slang.json 失败: %s", e, exc_info=True)
         return False, f"写入失败: {e}"
+    _slang_json_cache = None
+    _slang_terms_cache = None
+    logger.info("黑话词库新增: %s（%s）→ data/slang.json", term, category)
+    return True, f"已收录「{term}」"
 
 
 def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
@@ -804,6 +894,19 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
     #   没写元数据的章节：专用章节（_OPTIONAL_SECTIONS）只走 needs/调用路径不瞎匹配，
     #   其余仍按旧规则兜底。命中结果与 needs 路径去重（_add）。
     low = (msg or "").lower()
+
+    # ★ v2.3.105：黑话注入与 skills 章节解耦 —— 词库真相源是 data/slang.json，
+    #   即使 15_slang.md 被删/改名也照样注入（命中才给命中条目）。
+    try:
+        _slang_txt = _slang_pick("", low)
+        if _slang_txt and "slang_dict" not in added:
+            parts.append(_slang_txt)
+            added.add("slang_dict")
+            logger.debug("黑话命中注入 %d 条 / %d 字", _slang_txt.count("\n· ") + 1,
+                         len(_slang_txt))
+    except Exception as _e:
+        logger.warning("黑话注入失败（忽略）: %s", _e)
+
     for k, v in sec.items():
         if k in _SYSTEM_SECTIONS or k in _INTERNAL_SECTIONS or not v:
             continue

@@ -1,9 +1,10 @@
-"""黑话注入改造单测（v2.3.105）：只注入命中条目 + ASCII 边界。
+"""黑话注入单测（v2.3.105）：JSON 词库 + 只注入命中条目 + ASCII 边界。
 
 跑法：python tests/_test_slang_pick.py
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -12,6 +13,8 @@ sys.path.insert(0, str(ROOT))
 
 PASS = 0
 FAIL = 0
+JSON_PATH = ROOT / "data" / "slang.json"
+TEST_TERM = "测试词abc"
 
 
 def ck(name, cond, extra=""):
@@ -24,11 +27,35 @@ def ck(name, cond, extra=""):
         print(f"  FAIL {name} {extra}")
 
 
-def main():
-    from services.llm import _slang_pick, _slang_term_hit, _SLANG_MAX_HITS
-    from services.llm import _SKILLS_DIR
+def _drop_test_term():
+    """从 slang.json 删掉单测词，避免污染真实词库。"""
+    from services import llm
+    try:
+        raw = json.loads(JSON_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    ents = [e for e in (raw.get("entries") or [])
+            if str(e.get("name", "")).lower() != TEST_TERM]
+    if len(ents) != len(raw.get("entries") or []):
+        raw["entries"] = ents
+        JSON_PATH.write_text(json.dumps(raw, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        llm._slang_json_cache = None
+        llm._slang_terms_cache = None
 
-    print("[1] 词形判定（ASCII 边界）")
+
+def main():
+    from services.llm import (_slang_pick, _slang_term_hit, _slang_entries,
+                              _slang_terms, _SLANG_MAX_HITS, _build_skill_refs)
+
+    print("[1] 词库已迁 JSON")
+    ents = _slang_entries()
+    ck("JSON 可读", len(ents) > 50, str(len(ents)))
+    ck("字段齐全", all(k in ents[0] for k in
+                   ("name", "alias", "circles", "risk", "meaning", "last_seen")), str(ents[0]))
+    ck("触发词含别名", len(_slang_terms()) >= len(ents), f"{len(_slang_terms())} vs {len(ents)}")
+
+    print("[2] 词形判定（ASCII 边界）")
     ck("独立 ascii 命中", _slang_term_hit("这波 yyds", "yyds") is True)
     ck("粘连不命中", _slang_term_hit("yydsxxxx", "yyds") is False)
     ck("长串内部不命中", _slang_term_hit("fileid=Ehrdefghij", "def") is False)
@@ -37,39 +64,39 @@ def main():
     ck("排除表生效", _slang_term_hit("这个触屏", "触") is False)
     ck("太短不算", _slang_term_hit("w", "w") is False)
 
-    print("[2] 只注入命中条目")
-    text = (_SKILLS_DIR / "15_slang.md").read_text(encoding="utf-8")
-    pick = _slang_pick(text, "我破防了")
+    print("[3] 只注入命中条目（JSON 渲染）")
+    pick = _slang_pick("", "我破防了")
     ck("命中非空", bool(pick), pick[:80])
     ck("带表头说明", pick.startswith("【本轮黑话参考】"), pick[:40])
-    ck("只含命中的条目", pick.count("\n· ") == 0 or pick.count("\n· ") <= 2, pick)
-    ck("体积远小于整章", len(pick) < len(text) * 0.5, f"{len(pick)} vs {len(text)}")
     ck("含破防释义", "破防" in pick, pick)
+    ck("带圈子标签", "（" in pick and "）" in pick, pick)
+    ck("mild 标慎用", "慎用" in pick, pick)
+    ck("体积可控", len(pick) < 400, str(len(pick)))
 
-    print("[3] 未命中 / 上限")
-    none = _slang_pick(text, "今天天气不错我去吃饭了")
-    ck("未命中返回空", none == "", none[:60])
-    many = _slang_pick(text, "yyds 破防 硬控 包得 触烂 估咩 各各 已读不回 要确欸")
-    ck("多条命中受上限约束", many.count("\n· ") + 1 <= _SLANG_MAX_HITS, str(many.count("\n· ") + 1))
+    print("[4] 未命中 / 上限")
+    ck("未命中返回空", _slang_pick("", "今天天气不错我去吃饭了") == "")
+    many = _slang_pick("", "yyds 破防 硬控 包得 触烂 估咩 各各 已读不回")
+    ck("多条命中受上限约束", many.count("\n· ") + 1 <= _SLANG_MAX_HITS,
+       str(many.count("\n· ") + 1))
 
-    print("[4] learn_slang 追加后立刻能命中（并自清理）")
+    print("[5] learn_slang 写 JSON 并即时生效")
     from services.llm import append_slang_term
-    p_slang = _SKILLS_DIR / "15_slang.md"
-    ok, msg = append_slang_term("测试词abc", "单测用词", "单测")
+    ok, msg = append_slang_term(TEST_TERM, "单测用词", "单测")
     ck("追加成功", ok is True, msg)
     if ok:
-        _t2 = p_slang.read_text(encoding="utf-8")
-        ck("新词可命中", "测试词abc" in _slang_pick(_t2, "这啥测试词abc"), "未命中")
-    # 无条件清理（含空分组标题），避免污染真实词表
-    kept = [l for l in p_slang.read_text(encoding="utf-8").split("\n")
-            if "测试词abc" not in l and l.strip() != "## 单测"]
-    p_slang.write_text("\n".join(kept).rstrip("\n") + "\n", encoding="utf-8")
-    ck("已清理测试词", "测试词abc" not in p_slang.read_text(encoding="utf-8"))
+        ck("即时可命中", TEST_TERM in _slang_pick("", f"这啥{TEST_TERM}"), "未命中")
+        _drop_test_term()
+        ck("已清理测试词", TEST_TERM not in json.dumps(
+            json.loads(JSON_PATH.read_text(encoding="utf-8")), ensure_ascii=False))
+    else:
+        _drop_test_term()
 
-    total = len(_slang_pick(text, "我破防了"))
-    print(f"\n注入体积：整章 {len(text)} 字 → 命中一条 {total} 字"
-          f"（压缩到 {total * 100 // len(text)}%）")
-    print(f"结果: {PASS} 通过 / {FAIL} 失败")
+    print("[6] 与 skills 解耦：注入不依赖 15_slang.md")
+    out = _build_skill_refs(set(), True, "这波操作 yyds 吧")
+    ck("_build_skill_refs 有黑话段", "本轮黑话参考" in out, out[:120])
+    ck("无黑话时该段不出现", "本轮黑话参考" not in _build_skill_refs(set(), True, "今天天气不错"))
+
+    print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     return 0 if FAIL == 0 else 1
 
 
