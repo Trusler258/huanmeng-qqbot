@@ -221,8 +221,27 @@
 - `_write_runs()` 统一入口：公式段 → OMML，文本段 → 化学式/Unicode/LaTeX 下标
 - 实测：高一数学卷真实生成，含分式/根号/求和/积分；单测 52/52
 
+### 十四、行内公式对齐 + 数学变量下标（用户看文档提的两个问题）
+用户反馈：① `定积分 [公式] 的值为` 里公式没在句子中上下居中；
+② `等差数列 \{a_n\} 中，a_1=2，a_n=20` 的 LaTeX 原样漏出来，`S10` 也没下标。
+
+- **公式对齐**：OMML 的 `m:r` 原先没带 `w:rPr` → Word 用默认 11pt / Cambria Math 之前的字体，
+  而正文是 10.5pt 宋体（`w:sz=21` 半磅），两者基线对不上。
+  新增 `_omml_set_size()`：给每个 `m:r` 补 `w:rPr`（Cambria Math + 与正文同字号 + szCs），
+  放大 `w:sz` 到跟正文一致，行内就不再忽高忽低
+- **数学变量下标**：原 `_bare_sub_to_unicode` 只认化学式元素（`[A-Z][a-z]?`），
+  `a_1` / `a_n` / `S_n` 这类小写变量全漏。改成 run 级直接出下标（不再经 Unicode 中转，
+  因为字母下标 Unicode 不全）：
+  - 判据 `(?<![A-Za-z])[A-Za-z]$ | (?<![A-Za-z])[A-Z][A-Za-z]?$ | \)$`
+  - ⚠️ 不能用 `[A-Za-z]{1,2}$` —— 会把 `my_var_2` 的 `_v` 当成下标（实测踩到）
+  - `file_name_1` / `my_var_2` / `item_x` 全部不再误伤
+- **LaTeX 转义**：`\{ \} \% \& \# \$ \_` 归一化成字面符号，`\{a_n\}` → `{aₙ}`
+- 化学式吃掉 token 后紧跟的下标（`CO_3` / `PO_4`）单独接手，否则 `_3` 落到下一段时
+  看不到前面的元素符号 → 漏转
+- 实测：`Ca_3(PO_4)_2` / `Na_2CO_3` / `H_2SO_4` 下标齐全；单测 73/73
+
 ### 验证
-- 单测：`_test_poke_image.py` 84/84、`_test_slang_pick.py` 23/23、`_test_slang_lookup.py` 39/39、`_test_writing_addr.py` 7/7、`_test_docx_export.py` 59/59、`_test_promise.py` 20/20
+- 单测：`_test_poke_image.py` 84/84、`_test_slang_pick.py` 23/23、`_test_slang_lookup.py` 39/39、`_test_writing_addr.py` 7/7、`_test_docx_export.py` 73/73、`_test_promise.py` 20/20
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20

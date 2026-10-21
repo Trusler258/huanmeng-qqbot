@@ -49,35 +49,6 @@ _LATEX_INLINE_RE = re.compile(r"\$([^$]{1,200})\$")
 _LATEX_WRAP_RE = re.compile(r"\\(?:mathrm|text|ce|mathbf|rm|mathit)\s*\{([^{}]*)\}")
 
 
-# 裸写的下标记号（模型不一定加 $）：Na_2CO_3、Ca_3(PO_4)_2
-_BARE_SUB_RE = re.compile(r"_\{(\d+)\}|_(\d)")
-
-
-def _bare_sub_to_unicode(text: str) -> str:
-    """把裸 LaTeX 下标（H_2O / Na_2CO_3）转成 Unicode 下标（H₂O）。
-
-    只在前一个字符属于"元素符号结尾"时才转 —— 否则 file_name_1、item_2
-    这类普通下划线标识符会被误伤。
-    """
-    if "_" not in text:
-        return text
-    out: list[str] = []
-    last = 0
-    for m in _BARE_SUB_RE.finditer(text):
-        prev = text[max(0, m.start() - 6):m.start()]
-        # 括号后的下标也认（Ca_3(PO_4)_2 的最后一个 _2）
-        if not re.search(r"[A-Z][a-z]?$|\)$", prev):
-            continue          # 不是元素符号/括号结尾 → 原样保留
-        digits = m.group(1) or m.group(2)
-        out.append(text[last:m.start()])
-        out.append("".join(_REV_SUB.get(c, c) for c in digits))
-        last = m.end()
-    if not out:
-        return text
-    out.append(text[last:])
-    return "".join(out)
-
-
 def _latex_inline_to_plain(m) -> str:
     """$...$ 里的 LaTeX → 带 Unicode 下标的纯文本。"""
     body = m.group(1)
@@ -106,6 +77,24 @@ def _is_chem(token: str) -> bool:
 
 # 裸写的上标（数学公式里 x^2 很常见，模型常不带 $）
 _SUP_RE = re.compile(r"\^\{([^{}]{1,20})\}|\^([A-Za-z0-9\u0370-\u03ff])")
+# 裸写的下标：a_1 / a_n / a_{n+1}（数学变量，不是化学式）
+_SUB_MARK_RE = re.compile(r"_\{([^{}]{1,12})\}|_([A-Za-z0-9\u0370-\u03ff])")
+# "_" 前面必须是「独立单字母」（a_1）或「元素符号」（Ca_3 / PO_4），或右括号。
+# ⚠️ 不能写成 [A-Za-z]{1,2}$ —— 会把 my_var_2 的 _v 当成下标（实测踩到）。
+_VAR_BEFORE_SUB_RE = re.compile(
+    r"(?<![A-Za-z])[A-Za-z]$|(?<![A-Za-z])[A-Z][A-Za-z]?$|\)$")
+# LaTeX 转义字符（模型常写 \{a_n\}，不处理就会原样显示反斜杠）
+_LATEX_ESC = {
+    "\\{": "{", "\\}": "}", "\\%": "%", "\\&": "&",
+    "\\#": "#", "\\$": "$", "\\_": "_",
+}
+
+
+def _strip_latex_escapes(text: str) -> str:
+    for k, v in _LATEX_ESC.items():
+        if k in text:
+            text = text.replace(k, v)
+    return text
 
 
 def split_runs_ex(text: str) -> list[tuple[str, str]]:
@@ -117,8 +106,8 @@ def split_runs_ex(text: str) -> list[tuple[str, str]]:
         return []
     if "$" in text:
         text = _LATEX_INLINE_RE.sub(_latex_inline_to_plain, text)
-    if "_" in text:
-        text = _bare_sub_to_unicode(text)
+    if "\\" in text:
+        text = _strip_latex_escapes(text)
     out: list[tuple[str, str]] = []
     pos = 0
 
@@ -144,21 +133,42 @@ def split_runs_ex(text: str) -> list[tuple[str, str]]:
         if buf:
             push("".join(buf), "n")
 
+    def emit_sub(seg: str) -> None:
+        """段内挑裸下标：a_1 / a_n / a_{n+1} → sub run。
+
+        化学式数字另有 _CHEM_RE 处理，这里只管「变量_下标」写法。
+        """
+        if not seg:
+            return
+        if "_" not in seg:
+            emit_chars(seg)
+            return
+        p3 = 0
+        for m in _SUB_MARK_RE.finditer(seg):
+            if not _VAR_BEFORE_SUB_RE.search(seg[:m.start()]):
+                continue          # file_name_1 这类标识符不动
+            if m.start() > p3:
+                emit_chars(seg[p3:m.start()])
+            push(m.group(1) or m.group(2), "sub")
+            p3 = m.end()
+        if p3 < len(seg):
+            emit_chars(seg[p3:])
+
     def emit_plain(seg: str) -> None:
-        """普通文本：先挑裸上标（x^2），段内再处理 Unicode 下标。"""
+        """普通文本：先挑裸上标（x^2），再挑裸下标（a_1），剩下的走字符流。"""
         if not seg:
             return
         if "^" not in seg:
-            emit_chars(seg)
+            emit_sub(seg)
             return
         p2 = 0
         for m in _SUP_RE.finditer(seg):
             if m.start() > p2:
-                emit_chars(seg[p2:m.start()])
+                emit_sub(seg[p2:m.start()])
             push(m.group(1) or m.group(2), "sup")
             p2 = m.end()
         if p2 < len(seg):
-            emit_chars(seg[p2:])
+            emit_sub(seg[p2:])
 
     for m in _CHEM_RE.finditer(text):
         tok = m.group(0)
@@ -171,6 +181,12 @@ def split_runs_ex(text: str) -> list[tuple[str, str]]:
             else:
                 push(part.group(2), "n")
         pos = m.end()
+        # ★ 紧跟化学式的下标写法（CO_3 / PO_4）：化学式吃掉 "CO" 后，
+        #   若不在这里接手，"_3" 落到 emit_plain 时已看不到前面的元素符号 → 漏转
+        _tail = re.match(r"_\{?([A-Za-z0-9]{1,3})\}?", text[pos:])
+        if _tail:
+            push(_tail.group(1), "sub")
+            pos += _tail.end()
     emit_plain(text[pos:])
     return out
 
@@ -222,17 +238,37 @@ def _latex_to_omml(latex: str) -> str:
     return _m2o.convert(_l2m.convert(latex))
 
 
-def _append_omml(paragraph, latex: str) -> bool:
+# OMML 里每个公式 run 的开口（后面可能紧跟 <m:rPr>）
+_OMML_RUN_RE = re.compile(r"<m:r>(<m:rPr>(?:(?!</m:rPr>).)*</m:rPr>)?")
+
+
+def _omml_set_size(om: str, size_pt: float) -> str:
+    """给每个 m:r 补 w:rPr（Cambria Math + 与正文同字号）。
+
+    ⚠️ 不补的话公式沿用 Word 默认字号（11pt），而正文是 10.5pt：
+    公式比文字大一号，行内看起来忽高忽低、跟文字不在一条基线上（用户实测反馈）。
+    """
+    hp = max(2, int(round(float(size_pt) * 2)))     # w:sz 单位是半磅
+    rpr = (
+        '<w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/>'
+        f'<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/></w:rPr>'
+    )
+    return _OMML_RUN_RE.sub(lambda m: "<m:r>" + (m.group(1) or "") + rpr, om)
+
+
+def _append_omml(paragraph, latex: str, size_pt: float = 10.5) -> bool:
     """把公式作为 Word 原生公式对象插进段落。成功 True。"""
     try:
         from docx.oxml import parse_xml
         om = _latex_to_omml(latex)
         if not om or "<m:oMath" not in om:
             return False
+        om = _omml_set_size(om, size_pt)
         om = om.replace(
             "<m:oMath",
             '<m:oMath xmlns:m="http://schemas.openxmlformats.org/'
-            'officeDocument/2006/math"',
+            'officeDocument/2006/math"'
+            ' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"',
             1,
         )
         paragraph._p.append(parse_xml(om))
@@ -271,7 +307,7 @@ def _write_runs(paragraph, text: str, size_pt: float = 10.5, bold: bool = False)
     omml_ok = _omml_available()
     for seg, is_math in split_math_segments(text):
         if is_math:
-            if omml_ok and _is_complex_math(seg) and _append_omml(paragraph, seg):
+            if omml_ok and _is_complex_math(seg) and _append_omml(paragraph, seg, size_pt):
                 continue
             # 简单公式（Na_2CO_3 这种）或 OMML 不可用 → 降级成下标文字
             # 先剥掉 \mathrm{...} / \text{...} 字体壳，否则会变成字面文字
@@ -380,7 +416,7 @@ def md_to_docx(md_text: str, out_path: str | Path, title: str = "") -> bool:
                 body = (_blk.group(1) or _blk.group(2) or "").strip()
                 p = doc.add_paragraph()
                 p.alignment = 1
-                if not (_omml_available() and _append_omml(p, body)):
+                if not (_omml_available() and _append_omml(p, body, 11)):
                     _write_runs(p, body, size_pt=11)
                 continue
             # 普通段落（试卷题号、选项行都走这里，保留原样，不自动编号）

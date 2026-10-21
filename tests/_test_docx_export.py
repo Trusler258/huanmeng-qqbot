@@ -197,6 +197,48 @@ def test_superscript():
     ck("docx 里有下标格式", "subscript" in xml or True)
 
 
+
+
+def test_math_vars():
+    print("[9] 数学变量下标 / LaTeX 转义（用户报的场景）")
+    from services.docx_export import split_runs_ex
+    r = split_runs_ex(r"等差数列 \{a_n\} 中，a_1=2，a_n=20")
+    txt = "".join(t for t, _ in r)
+    kinds = [(t, k) for t, k in r]
+    ck("\\{ \\} 转义成 { }", "\\{" not in txt and "\\}" not in txt, txt)
+    ck("a_n 的 n 是下标", ("n", "sub") in kinds, str(kinds))
+    ck("a_1 的 1 是下标", ("1", "sub") in kinds, str(kinds))
+    ck("文字没被吞", "等差数列" in txt and "a1=2" in txt, txt)
+
+    # 标识符不能误伤
+    for t in ("file_name_1", "my_var_2", "item_x"):
+        kinds = split_runs_ex(t)
+        ck(f"{t} 不误判下标", all(k == "n" for _, k in kinds), str(kinds))
+
+    # 化学式带下划线写法
+    kinds = split_runs_ex("Ca_3(PO_4)_2 和 Na_2CO_3")
+    subs = "".join(t for t, k in kinds if k == "sub")
+    ck("Ca_3(PO_4)_2 下标齐全", subs.startswith("342"), subs)
+    ck("Na_2CO_3 下标齐全", subs.endswith("23"), subs)
+
+
+def test_omml_size():
+    print("[10] 公式字号与正文一致（行内对齐）")
+    import zipfile
+    md = "4. 定积分 $\\int_0^1 x^2 dx$ 的值为\n"
+    tmp = Path(tempfile.mkdtemp(prefix="omsize_"))
+    out = tmp / "z.docx"
+    ck("导出成功", md_to_docx(md, out, title="字号测试"))
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("word/document.xml").decode("utf-8")
+    ck("有公式对象", "<m:oMath" in xml)
+    ck("公式 run 带字号 sz=21", 'w:sz w:val="21"' in xml, "无 21 半磅")
+    ck("公式用 Cambria Math", "Cambria Math" in xml)
+    n_run = xml.count("<m:r>")
+    ck("每个 m:r 都有 w:rPr", n_run > 0 and xml.count("<w:rPr>") >= n_run,
+       f"m:r={n_run} rPr={xml.count('<w:rPr>')}")
+
+
 if __name__ == "__main__":
     test_chem_detect()
     test_subscript()
@@ -206,5 +248,7 @@ if __name__ == "__main__":
     test_math_omml()
     test_math_segments()
     test_superscript()
+    test_math_vars()
+    test_omml_size()
     print(f"\n结果: {PASS} 通过 / {FAIL} 失败")
     raise SystemExit(0 if FAIL == 0 else 1)
