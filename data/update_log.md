@@ -206,8 +206,23 @@
 - 实测：真实生成 word 试卷 90 段 / 24 处真下标，`Na2CO3 + 2HCl = 2NaCl + H2O + CO2↑`
   的化学方程式下标全部正确、系数 2 未被误标；单测 39/39 + 20/20
 
+### 十三、复杂 LaTeX 公式 → Word 原生公式对象（OMML）
+用户问「复杂的 latex 公式咋办」——下标只能表达 Na2CO3，分式/根号/求和/积分做不出来。
+
+- 事实前提：docx 里公式存的是 **OMML**（`<m:oMath>`），LaTeX 只是 Word 公式框的输入法，
+  文件层面没有"LaTeX 模式"。所以不能让 Word「自己认 LaTeX」，必须转 OMML。
+- 链路：`latex2mathml.converter` → MathML → `mathml2omml` → OMML，`parse_xml` 插进段落
+  - 新依赖：`latex2mathml` + `mathml2omml`（纯 Python，服务器已装）
+  - 未装/转换失败 → 自动退回文字下标，整篇不会因此失败
+- **按复杂度分流**（`_is_complex_math`）：
+  - 含 `\\frac / \\sqrt / \\sum / \\int / \\lim / \\alpha …` → OMML 公式对象
+  - 只是下标（`Na_2CO_3`、`$\\mathrm{H_2SO_4}$`）→ 文字下标，行距更自然
+- 支持 `$...$` 行内、`$$...$$` 与 `\\[...\\]` 块级（块级单独成段、居中）
+- `_write_runs()` 统一入口：公式段 → OMML，文本段 → 化学式/Unicode/LaTeX 下标
+- 实测：高一数学卷真实生成，含分式/根号/求和/积分；单测 52/52
+
 ### 验证
-- 单测：`_test_poke_image.py` 84/84、`_test_slang_pick.py` 23/23、`_test_slang_lookup.py` 39/39、`_test_writing_addr.py` 7/7、`_test_docx_export.py` 39/39、`_test_promise.py` 20/20
+- 单测：`_test_poke_image.py` 84/84、`_test_slang_pick.py` 23/23、`_test_slang_lookup.py` 39/39、`_test_writing_addr.py` 7/7、`_test_docx_export.py` 59/59、`_test_promise.py` 20/20
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
 
 ## v2.3.103 — 插件安全 + 事件体系 + .hml 核心库（当日合并）— 2026.10.20
