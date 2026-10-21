@@ -871,6 +871,95 @@
       "source": "社交/吹水",
       "last_seen": "2026-10-21",
       "added_by": "migrated"
+    },
+    {
+      "name": "给佬",
+      "alias": [
+        "给捞",
+        "基佬"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "mild",
+      "meaning": "gay 的音译（给= gay），配上「佬」的戏谑说法。多用于玩笑调侃，被这么叫的人可能觉得被冒犯，别拿来骂人",
+      "example": "这也太给佬了",
+      "source": "用户补充",
+      "added_by": "manual",
+      "last_seen": "2026-10-21"
+    },
+    {
+      "name": "小给",
+      "alias": [
+        "给给",
+        "男给给"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "mild",
+      "meaning": "对年轻 gay 的调侃称呼，叠词「给给」偏亲昵，正式说法是「给男」",
+      "example": "他是小给",
+      "source": "用户补充",
+      "added_by": "manual",
+      "last_seen": "2026-10-21"
+    },
+    {
+      "name": "给达",
+      "alias": [
+        "gaydar"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "mild",
+      "meaning": "gaydar 的音译，指「一眼看出对方是不是 gay」的直觉",
+      "example": "我给他达响了",
+      "source": "用户补充",
+      "added_by": "manual",
+      "last_seen": "2026-10-21"
+    },
+    {
+      "name": "拉拉",
+      "alias": [
+        "拉子"
+      ],
+      "circles": [
+        "通用"
+      ],
+      "risk": "mild",
+      "meaning": "lesbian 的音译，指女同性恋（「拉子」偏港台用法）",
+      "example": "她俩是拉拉",
+      "source": "用户补充",
+      "added_by": "manual",
+      "last_seen": "2026-10-21"
+    },
+    {
+      "name": "蕾丝边",
+      "alias": [],
+      "circles": [
+        "通用"
+      ],
+      "risk": "mild",
+      "meaning": "lesbian 的另一个音译变体，同「拉拉」；注意别和「蕾丝裙」混了",
+      "example": "",
+      "source": "用户补充",
+      "added_by": "manual",
+      "last_seen": "2026-10-21"
+    },
+    {
+      "name": "百合",
+      "alias": [],
+      "circles": [
+        "通用",
+        "ACG"
+      ],
+      "risk": "safe",
+      "meaning": "ACG 语境指女性之间的恋爱关系（源自日本），是作品类型词，不完全等同于现实里的 les",
+      "example": "这本是百合向的",
+      "source": "用户补充",
+      "added_by": "manual",
+      "last_seen": "2026-10-21"
     }
   ]
 }

@@ -154,6 +154,17 @@
 - 验证：单测 `tests/_test_slang_pick.py` **23/23**（JSON 字段 / 词形边界 / 只注入命中 /
   上限 / learn 往返 + 自清理 / 与 skills 解耦）；服务器 63 条可读，注入正常，重启 0 错误
 
+### 十、词库补「性取向谐音词族」+ 新增 `scripts/add_slang_entries.py`
+- 用户补充「给 = gay 音译」「拉（拉）= lesbian 音译」，按词源核实后入库 6 条：
+  `给佬`(给捞/基佬)、`小给`(给给/男给给)、`给达`(gaydar)、`拉拉`(拉子)、`蕾丝边`、`百合`
+  - 全部 `risk=mild`（涉及性取向，玩笑用法可能冒犯，注入带「慎用」），
+    仅 `百合` 为 `safe`（ACG 作品类型词，不指向真人）
+- ★ **单字绝不能做触发词**：`给`/`拉` 在"我给你发""拉黑""拉群""拉胯"里高频出现，
+  只收多字组合；`蕾丝` 也不作 alias（会命中「蕾丝裙」）
+- 新增 `scripts/add_slang_entries.py`：批量追加条目（预览 / `--write` 落盘，自动判重）
+- 验证：69 条可读；「给佬/小给/蕾丝边/拉拉/百合」命中，「我给你发文件/拉黑他/拉群了」不命中；
+  JSON 按 mtime 缓存 → **改词库不用重启**
+
 ### 验证
 - 单测：`tests/_test_poke_image.py` 84/84、`tests/_test_slang_pick.py` 23/23、`tests/_test_writing_addr.py` 7/7
 - 服务器：py_compile 通过；真实出图（默认/gemini/seedream4）均成功；bot.service 正常
