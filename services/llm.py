@@ -653,12 +653,76 @@ def _slang_terms() -> tuple[str, ...]:
         return _slang_terms_cache[2] if _slang_terms_cache else ()
 
 
+_SLANG_MAX_HITS = 12
+_SLANG_HEADER = (
+    "【本轮黑话参考】下面只是理解对方用的释义，不是说话风格要求："
+    "不要为了用而用，不要改变句长/称呼/语气；对方没问意思就别解释，"
+    "正常把它当理解背景即可。"
+)
+
+
+def _slang_term_hit(low_msg: str, term: str) -> bool:
+    """单个词是否命中消息。
+
+    ★ v2.3.105：ASCII 词要求前后不是字母数字 —— 否则 'm3' 会命中 QQ 文件下载
+    URL、'w'/'l' 会命中英文单词内部（老版本只能靠 _SLANG_EXCLUDE 硬排除）。
+    中文词仍按子串判断（'破防了' 要能命中 '破防'）。
+    """
+    t = (term or "").strip().lower()
+    if len(t) < 2 or t in _SLANG_EXCLUDE:
+        return False
+    if t.isascii():
+        start = 0
+        while True:
+            i = low_msg.find(t, start)
+            if i < 0:
+                return False
+            before = low_msg[i - 1] if i > 0 else ""
+            after = low_msg[i + len(t)] if i + len(t) < len(low_msg) else ""
+            b_ok = not (before.isascii() and before.isalnum())
+            a_ok = not (after.isascii() and after.isalnum())
+            if b_ok and a_ok:
+                return True
+            start = i + 1
+    return t in low_msg
+
+
+def _slang_pick(dict_text: str, low_msg: str, limit: int = _SLANG_MAX_HITS) -> str:
+    """命中的词条 → 只回这几条（★ 不再整章注入）。
+
+    旧行为：命中任一黑话就把整个词典（65 条 ≈ 4.7KB）塞进参考，
+    词库扩到千条后会直接把 prompt 撑爆。现在只给命中的那几行，并带分组标签。
+    返回空串表示没命中。
+    """
+    lines: list[str] = []
+    group = ""
+    for raw in (dict_text or "").split("\n"):
+        line = raw.strip()
+        if line.startswith("## "):
+            group = line[3:].strip()
+            continue
+        if not line.startswith("- "):
+            continue
+        head = line[2:]
+        sep = "：" if "：" in head else (":" if ":" in head else "")
+        if not sep:
+            continue
+        word_part, meaning = head.split(sep, 1)
+        aliases = [p.strip().strip("`*「」\"'") for p in word_part.split("/")]
+        if not any(_slang_term_hit(low_msg, a) for a in aliases if a):
+            continue
+        tag = f"（{group}）" if group else ""
+        lines.append(f"· {word_part.strip()}：{meaning.strip()}{tag}")
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return ""
+    return _SLANG_HEADER + "\n" + "\n".join(lines)
+
+
 def _slang_hit(dict_text: str, low_msg: str) -> bool:
-    """判断消息是否命中黑话词表（词表由词典文件派生）"""
-    for w in _slang_terms():
-        if w in low_msg:
-            return True
-    return False
+    """是否命中黑话（保留旧接口，内部走 _slang_pick）。"""
+    return bool(_slang_pick(dict_text, low_msg, limit=1))
 
 
 def append_slang_term(term: str, meaning: str, category: str = "LLM 自学") -> tuple[bool, str]:
@@ -748,8 +812,14 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
         #   避免模型不懂流行语答非所问。词表在文件尾部维护，命中即全量注入（词典约 60 词，
         #   体积可接受；命中一次后 LLM 整轮参考，不重复注入）。
         if k == "slang_dict":
-            if _slang_hit(v, low):
-                _add(k)
+            # ★ v2.3.105：只注入命中的词条（原来整章注入，词库一扩就爆 prompt）
+            _pick = _slang_pick(v, low)
+            if _pick and "slang_dict" not in added:
+                parts.append(_pick)
+                added.add("slang_dict")
+                logger.debug("黑话命中注入 %d 条（%.1fKB → 约 %d 字）",
+                             _pick.count("\n· ") + 1,
+                             len(v) / 1024, len(_pick))
             continue
         _meta = _skill_meta.get(k) or {}
         _kws = _meta.get("keywords") or ()
