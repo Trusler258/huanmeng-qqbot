@@ -63,13 +63,25 @@ bot 回「画图这事儿得管理权限，我这边开不了呀」（实际原�
 改成：允许一个动作/表情（一条最多一个、多数回复不需要、不连续两条带动作、
 不反复用"歪了歪头""晃了晃尾巴"模板旁白），并明确写出具体设定细节供自然调用。
 
+### 六、修：常驻章节"声明了但没拼进去"
+`_SYSTEM_SECTIONS` 只是**常驻声明**，真正拼 system 的是 `_build_system_text` 里
+一个**硬编码的 `core_parts` 列表**，两者不同步就等于白写。
+
+实测：`slang_unknown`（v2.3.105 加的「看不懂先查、别点评对方表达」）自加入起
+**从未进过 system** —— 规则写了，但从来没生效过。这轮把
+`slang_unknown` / `topic_fatigue` / `ignore_right` 一起补进 `core_parts`。
+system 长度 7268 → 8110。
+
+⚠️ 以后新增常驻节必须**同时改两处**：`_SYSTEM_SECTIONS` 和 `core_parts`。
+
 ### 验证
 - 单测 `tests/_test_chat_feel.py` 20/20（合并阈值、工具调用不合并、
   CQ/明文 @、多 @、疑问词不误判、指令判定链路）
 - 单测 `tests/_test_topic_fatigue.py` 30/30（相似度、分级、30 分钟 TTL、
   短消息不计、分群隔离、忽略时长夹取、主人不可忽略）
-- 服务器：两个新提示词节解析成功且在白名单（441 / 212 字）、
-  工具总数 20 无重名、重启 0 error
+- 服务器：`_build_system_text` 实测 7 项全过（两节已进入 system、
+  20 字规则已删、元话语禁令在、工具名在），system 7268 → 8110 字
+- 工具总数 20 无重名；bot.service active、58890 正常、重启 0 error
 - 服务器 py_compile 通过，bot.service 正常，0 error
 
 ## v2.3.104 — 绘图接入 Poke2API 多模型 + 写作收尾称谓修正 (2026.10.21)
