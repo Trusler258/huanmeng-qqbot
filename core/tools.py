@@ -436,6 +436,18 @@ def get_tool_schemas() -> list[dict]:
     """
     schemas = list(TOOLS)
 
+    # ★ v2.3.107: `/~key topic_fatigue off` 时把"闹脾气"整条链路一起关掉。
+    #   用户的诉求是"不要不耐烦特效"，只关话题疲劳但留着 ignore_user 的话，
+    #   模型仍可能自己判定"他烦我"→ 静默对方几分钟，观感一样是闹脾气。
+    #   关掉后这张 schema 不出现，模型无从调用（delete 只是从候选表移除，不影响既有状态）。
+    try:
+        from modules.features import is_enabled as _feat_on
+        if not _feat_on("topic_fatigue"):
+            schemas = [s for s in schemas
+                       if ((s or {}).get("function") or {}).get("name") != "ignore_user"]
+    except Exception:
+        pass
+
     # ★ v2.3.64: 把技能索引动态拼进 load_skill 的描述，让模型知道有哪些 skill 可按需拉取。
     #   深拷贝后再改——schemas 是 list(TOOLS) 浅拷贝，直接改会污染模块级 TOOLS。
     try:
