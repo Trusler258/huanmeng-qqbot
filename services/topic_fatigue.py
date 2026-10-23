@@ -107,19 +107,20 @@ def _peek(chat_id: int) -> tuple[int, int, int]:
 
 
 def advice(level: int, hits: int, span: int) -> str:
-    """给模型的提示（注入上下文，不是发给用户的）。"""
+    """给模型的提示（注入上下文，不是发给用户的）。
+
+    文案在 `config/prompts.toml` 的 `[topic_fatigue]`（提示词不进 .py）。
+    """
     if level <= 0:
         return ""
-    if level == 1:
-        return (f"这话题已经来回 {hits} 次、{span} 分钟了。你有点腻，可以随口提一句"
-                f"「这个刚说过吧」，但别翻脸。")
-    if level == 2:
-        return (f"同一话题第 {hits} 次、持续 {span} 分钟，你已经明显不耐烦了。"
-                f"用一句话打断或换个话题，**不要**再认真重复一遍你的立场；"
-                f"也不要分析「你绕来绕去」这种话。")
-    return (f"这个话题纠缠了 {hits} 次、{span} 分钟，你已经很烦。"
-            f"可以直接说「不聊这个了」「换个话题」或者撒娇抱怨一句；"
-            f"对方还要继续逼的话，就调用 ignore_user 静默他 10 分钟。")
+    try:
+        from utils.prompts import prompt as _prompt
+        tpl = _prompt("topic_fatigue", "level%d" % level)
+    except Exception:
+        tpl = ""
+    if not tpl:
+        return ""
+    return tpl.format(hits=hits, span=span)
 
 
 def reset(chat_id: int) -> None:
