@@ -36,6 +36,43 @@ def _record_recent_image(chat_id: int, url: str, desc: str, sender: str) -> None
     del lst[:-3]  # 只留最近 3 张
 
 
+# 行首的 @ 提及：CQ 码形态 或 明文「@昵称」
+_LEADING_MENTION_RE = re.compile(
+    r"^\s*(?:\[CQ:at,qq=\d+[^\]]*\]|@\S{1,24}[\s,，:：]*)")
+
+# 剥离后若带这些疑问词，视为「在问这条指令是什么」而不是「要执行它」
+_CMD_QUESTION_HINTS = ("是啥", "啥意思", "什么意思", "怎么用", "咋用",
+                       "是什么", "干嘛的", "啥用", "咋回事")
+
+
+def _strip_leading_mentions(text: str, limit: int = 3) -> str:
+    """剥掉消息开头的 @ 提及，返回可用于指令判定的文本。
+
+    ★ v2.3.106：群里常见「@幻梦 /~draw 1:1 …」，原逻辑要求 text 以 /~ 开头，
+    带 @ 就判成普通聊天 → 走 LLM，答非所问（2026-10-22 01:12 实测）。
+    只剥开头、且剥完必须以 / 开头才返回新值；带疑问词的（「/~draw 是啥意思」）
+    视为提问，不剥，避免白白执行一条指令（画图还会扣配额）。
+    """
+    if not text:
+        return text
+    if text.lstrip()[:1] not in ("@", "["):
+        return text
+    probe = text
+    for _ in range(max(1, limit)):
+        nxt = _LEADING_MENTION_RE.sub("", probe, count=1)
+        if nxt == probe:
+            break
+        probe = nxt
+    if probe == text:
+        return text
+    probe = probe.lstrip()
+    if not probe.startswith("/"):
+        return text
+    if any(h in probe for h in _CMD_QUESTION_HINTS):
+        return text
+    return probe
+
+
 class EventDispatcher:
     """
     事件分发器。
@@ -316,6 +353,17 @@ class EventDispatcher:
         bot_qq = cfg.bot_qq
 
         # ═══ 白名单与权限检查（最优先，连日志都不记）═══
+        # ★ v2.3.106: 先剥掉消息开头的 @机器人 再判定指令。
+        #   群里常见「@幻梦 /~draw 1:1 …」，原来开头是 @ 就判成普通聊天 → 走 LLM，
+        #   bot 回一句「画图这事儿得管理权限，我这边开不了呀」（2026-10-22 01:12 实测，
+        #   实际是配额用完 + 没引用参考图，回答完全跑偏）。
+        if msg_type == "文字":
+            _stripped = _strip_leading_mentions(msg_content)
+            if _stripped != msg_content:
+                logger.debug("剥离前导 @ 后识别为指令: %r → %r",
+                             msg_content[:40], _stripped[:40])
+                msg_content = _stripped
+
         is_command = msg_type == "文字" and (
             msg_content.startswith("/~") or msg_content.startswith("/#") or
             (msg_content.startswith("/") and len(msg_content) > 1 and msg_content[1:2] not in "~#/ ")
