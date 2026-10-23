@@ -412,6 +412,23 @@ def _dup_sim(a: str, b: str) -> float:
     return len(ga & gb) / len(ga | gb)
 
 
+def _merge_short_replies(sentences: list, has_calls: bool = False,
+                         has_flow: bool = False, max_chars: int = 70) -> tuple[list, bool]:
+    """短回复合并成一条（返回 (新列表, 是否合并)）。
+
+    ★ v2.3.106：2026-10-22 群聊实测，121 条回复里有 52 对相邻间隔 <3 秒
+    —— 一条完整回复被切成 2~4 条连发，中间夹着别人的话，读起来像卡带。
+    规则：纯聊天（无工具调用、无交错调用）且总字数 <= max_chars → 合成一条。
+    有工具调用时不合并：调用提示必须单独成条，与正文分离。
+    """
+    if has_calls or has_flow or len(sentences) <= 1:
+        return sentences, False
+    total = sum(len(s or "") for s in sentences)
+    if total > max_chars:
+        return sentences, False
+    return ["".join(sentences)], True
+
+
 def _dedup_repeated_sentences(sentences: list, chat_id: int, *,
                               limit: int = 40, threshold: float = 0.72) -> list:
     """丢掉与最近回复高度重复的句子（跨轮 + 轮内）。全被丢掉时保留最后一句，宁可重复不沉默。"""
@@ -1397,6 +1414,19 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         logger.info("note 专用回复裁到 1 句（原 %d 句），丢弃: %s",
                     len(sentences), [s[:30] for s in sentences[1:]])
         sentences = sentences[:1]
+
+    # ★ v2.3.106: 短回复不拆条（详见 _merge_short_replies 注释）
+    try:
+        _before = len(sentences)
+        sentences, _merged = _merge_short_replies(
+            sentences, has_calls=bool(executed_calls), has_flow=bool(_flow_calls))
+        if _merged:
+            logger.info("短回复合并为 1 条（原 %d 句）", _before)
+            if _faces_per_sentence:
+                # 合并后只保留第一张非空配图，避免多图堆在一条里
+                _faces_per_sentence = [next((f for f in _faces_per_sentence if f), None)]
+    except Exception as _e:
+        logger.warning("短回复合并失败（忽略）: %s", _e)
 
     old_task = ctx.cancel_old_task(chat_id)
     if old_task:
