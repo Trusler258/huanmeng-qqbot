@@ -25,18 +25,25 @@ def ck(name, cond, detail=""):
 
 def test_merge():
     from core.pipeline import _merge_short_replies
-    print("[1] 短回复合并")
+    print("[1] 碎片合并（v2.3.107：只并碎片，不并完整句）")
 
+    # ⚠️ 反向断言：两句完整的话**不许**被压成一条（v2.3.106 的 70 字阈值已废）
     s, merged = _merge_short_replies(["会一点啦，写个小脚本还行～", "太复杂的得慢慢琢磨"])
-    ck("两句 30 字合并", merged and s == ["会一点啦，写个小脚本还行～太复杂的得慢慢琢磨"], str(s))
+    ck("两句完整的话不合并", (not merged) and len(s) == 2, str(s))
 
     s, merged = _merge_short_replies(["嗯。", "好。"])
-    ck("超短两句合并", merged and len(s) == 1, str(s))
+    ck("纯应答碎片合并", merged and len(s) == 1, str(s))
+
+    s, merged = _merge_short_replies(["嗯", "今天群里好安静啊，都没人说话"])
+    ck("碎片并进正文", merged and len(s) == 1 and s[0].startswith("嗯"), str(s))
+
+    s, merged = _merge_short_replies(["在呢在呢", "刚在忙别的", "你说啥"])
+    ck("连续碎片不刷屏", merged and len(s) <= 2, str(s))
 
     long_a = "我叫幻梦，十六岁，浅蓝到银白渐变的猫耳和尾巴，琥珀色眼睛，头发上别着星星发夹。"
     long_b = "平时爱被摸头、看小说，也会写点 Python 小脚本，群里能搭把手的有查天气、查地震、搜资料。"
     s, merged = _merge_short_replies([long_a, long_b])
-    ck("超 70 字不合并", (not merged) and len(s) == 2, "总长 %d" % (len(long_a) + len(long_b)))
+    ck("长句不合并", (not merged) and len(s) == 2, "总长 %d" % (len(long_a) + len(long_b)))
 
     s, merged = _merge_short_replies(["a", "b"], has_calls=True)
     ck("有工具调用不合并", (not merged) and len(s) == 2, str(s))

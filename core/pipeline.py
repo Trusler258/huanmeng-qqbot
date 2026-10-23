@@ -412,21 +412,64 @@ def _dup_sim(a: str, b: str) -> float:
     return len(ga & gb) / len(ga | gb)
 
 
-def _merge_short_replies(sentences: list, has_calls: bool = False,
-                         has_flow: bool = False, max_chars: int = 70) -> tuple[list, bool]:
-    """短回复合并成一条（返回 (新列表, 是否合并)）。
+# ── 应答碎片（单独成条等于刷屏）──────────────────────────────────
+# 真人不把"嗯"单独发一条，但会把一句完整的话单独发一条。
+# 所以这里只合并**碎片**，不再按总字数一刀切。
+_FRAGMENT_CHARS = 4        # 有效字 ≤4 → 一律算碎片（"嗯""在呢在呢"）
+_FRAGMENT_MAX = 12         # ≤12 字且是纯应答词 → 也算碎片
+_FRAGMENT_WORDS = frozenset({
+    "嗯", "哦", "啊", "哈", "好", "对", "是", "行", "在", "嗯嗯", "哦哦", "哈哈",
+    "好哒", "好的", "嗯呢", "哦好", "是呀", "对呀", "在的", "来了", "没有", "不是",
+    "没错", "可以", "收到", "知道了", "咋了", "怎么了", "你说", "然后呢", "是吧",
+})
 
-    ★ v2.3.106：2026-10-22 群聊实测，121 条回复里有 52 对相邻间隔 <3 秒
-    —— 一条完整回复被切成 2~4 条连发，中间夹着别人的话，读起来像卡带。
-    规则：纯聊天（无工具调用、无交错调用）且总字数 <= max_chars → 合成一条。
+
+def _is_fragment(text: str) -> bool:
+    """这句是不是"不该单独占一条消息"的碎片。"""
+    core = re.sub(r"[^\w\u4e00-\u9fff]", "", text or "")
+    if not core:
+        return True
+    if len(core) <= _FRAGMENT_CHARS:
+        return True
+    return len(core) <= _FRAGMENT_MAX and core in _FRAGMENT_WORDS
+
+
+def _merge_short_replies(sentences: list, has_calls: bool = False,
+                         has_flow: bool = False) -> tuple[list, bool]:
+    """把应答碎片并进相邻句子（返回 (新列表, 是否合并)）。
+
+    ★ v2.3.106 曾按「总字数 ≤70 全合并」，理由是 20-22 实测 121 条回复里
+    52 对相邻间隔 <3 秒（一条被切成 2~4 条连发）。
+
+    ★ v2.3.107 改回「只合并碎片」。原因是那个阈值太粗：模型给的两句完整话
+    （各 20~30 字、总共不到 70）会被压成一条，配合当时 93% 判 short 的长度
+    约束，群里观感直接变成「永远只有一句话」。
+
+    现在的拆分边界由 services/rhythm.py 在生成前指定（一条 / 连发 / 长消息），
+    事后的合并只做一件事：别让"嗯""哦好"这种碎片单独占一条消息。
     有工具调用时不合并：调用提示必须单独成条，与正文分离。
     """
     if has_calls or has_flow or len(sentences) <= 1:
         return sentences, False
-    total = sum(len(s or "") for s in sentences)
-    if total > max_chars:
-        return sentences, False
-    return ["".join(sentences)], True
+
+    out: list[str] = []
+    merged = False
+    for s in sentences:
+        t = (s or "").strip()
+        if not t:
+            continue
+        if out and _is_fragment(t):
+            out[-1] = f"{out[-1].rstrip('，,、～~ ')} {t}"
+            merged = True
+        else:
+            out.append(t)
+
+    # 首句是碎片（"嗯" + 正文）→ 并到后一句，别让碎片打头
+    if len(out) >= 2 and _is_fragment(out[0]):
+        out[1] = f"{out[0].rstrip('，,、～~ ')} {out[1]}"
+        out.pop(0)
+        merged = True
+    return out, merged
 
 
 def _dedup_repeated_sentences(sentences: list, chat_id: int, *,
@@ -987,7 +1030,6 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # deep 命中（知识/原理/对比/长问句提问）→ 开启思考模式；闲聊/指令 → 关闭（更快更省）
     thinking = False
     _force_tool = None          # ★ v2.3.89（B）决策模型选中的工具 → FC 第0轮强制调用
-    reply_len = None            # ★ v2.3.96 决策模型判定的回复长度档位 short/mid/long
     try:
         from services.llm import _detect_skill_needs
         needs = _detect_skill_needs(full_msg, is_group)   # 关键词版（兜底）
@@ -996,7 +1038,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         if _dec_task is not None:
             try:
                 _dn, _dprobs, _dtool, _dlen = await asyncio.wait_for(_dec_task, timeout=_dec_mod.call_timeout())
-                reply_len = _dlen
+                # _dlen（长度档位）v2.3.107 起不再使用：改由 services/rhythm.py 抽样形态
                 if _dn is not None:
                     # ★ v2.3.88 决策模型启用且成功 → **以它为准，不再并集**。
                     #   并集会让关键词版的 "deep" 把闲聊也强开思考模式（实测
@@ -1032,6 +1074,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # 报错上报用起点：失败时只认这之后产生的错误记录，
     # 避免把上一轮/别的群遗留的旧错误当成这次的报错（全局只存最近一条）
     _llm_err_since = _tm.time()
+    # ★ v2.3.107：发言节奏 —— 不再按「字数档位」压长度，改为抽形态。
+    #   真人不是每轮定长：有时一个字，有时连发三条，有时一段长话。
+    #   形态由 services/rhythm.py 按对方消息性质 + 最近几轮历史 + 反向惯性抽样，
+    #   再把对应的节奏提示注入 system（文案在 config/prompts.toml 的 [rhythm]）。
+    _rhythm = {"shape": "one", "hint": "", "sentences": 1}
+    try:
+        from services.rhythm import plan as _rhythm_plan
+        _rhythm = _rhythm_plan(chat_id, full_msg, needs)
+    except Exception as _re:
+        logger.warning("节奏规划失败（回落默认形态）: %s", _re)
     sentences, fav_change, llm_calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, _ = await generate_multi_reply_with_tools(
         msg_history=msg_history_for_llm, speaker_name=display_name, current_msg=full_msg,
         bot_name=cfg.bot_name, system_prompt=system_prompt_for_llm, reply_model=cfg.reply_model,
@@ -1043,7 +1095,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         thought_shown_cb=_make_thought_cb(thought_ctx),
         needs=needs,
         force_tool=_force_tool,
-        reply_length=reply_len,
+        rhythm_hint=_rhythm.get("hint") or "",
     )
     logger.debug("PIPE LLM生成完成 耗时%.2fs → %d句 (total %.2fs)",
                  _tm.monotonic() - _t_pipe_start, len(sentences) if sentences else 0,
@@ -1429,18 +1481,25 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     len(sentences), [s[:30] for s in sentences[1:]])
         sentences = sentences[:1]
 
-    # ★ v2.3.106: 短回复不拆条（详见 _merge_short_replies 注释）
+    # ★ v2.3.107: 只合并碎片（详见 _merge_short_replies 注释）
     try:
         _before = len(sentences)
         sentences, _merged = _merge_short_replies(
             sentences, has_calls=bool(executed_calls), has_flow=bool(_flow_calls))
         if _merged:
-            logger.info("短回复合并为 1 条（原 %d 句）", _before)
+            logger.info("碎片合并: %d 句 → %d 句", _before, len(sentences))
             if _faces_per_sentence:
                 # 合并后只保留第一张非空配图，避免多图堆在一条里
                 _faces_per_sentence = [next((f for f in _faces_per_sentence if f), None)]
+        # 回填节奏状态：下一轮据此做「反向惯性」（别连着几轮同一个长度）
+        try:
+            from services.rhythm import record as _rhythm_record
+            _rhythm_record(chat_id, _rhythm.get("shape", "one"),
+                           sum(len(s or "") for s in sentences))
+        except Exception as _re:
+            logger.debug("节奏回填跳过: %s", _re)
     except Exception as _e:
-        logger.warning("短回复合并失败（忽略）: %s", _e)
+        logger.warning("碎片合并失败（忽略）: %s", _e)
 
     old_task = ctx.cancel_old_task(chat_id)
     if old_task:
