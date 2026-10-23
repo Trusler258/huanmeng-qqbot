@@ -224,15 +224,31 @@ _ROUTE_QUESTIONS = {
 # ── 工具选择（B：让决策模型指定该调哪个工具）────────────────────────
 # 选项**从真实工具表动态派生** → 插件 register_tool 新增的工具自动纳入，无需改这里。
 
+# 不进「功能路由」候选表的工具（情绪表达类，只能由模型自主调用）
+# 详见 tool_options() 的文档字符串（2026-10-23 静默事故）
+_TOOL_ROUTE_EXCLUDE = {"ignore_user"}
+
 def tool_options(cap: int = 40) -> dict:
-    """{工具名: 一句话说明}，取自 core.tools 的工具表（内置 + 插件动态注册）。"""
+    """{工具名: 一句话说明}，取自 core.tools 的工具表（内置 + 插件动态注册）。
+
+    ⚠️ `ignore_user` 这类**情绪表达**工具必须排除。
+
+    2026-10-23 线上事故：这道选择题把整张工具表都列了进去，其中包含
+    `ignore_user`。一个群友反复纠缠同一话题并命令"以后别说中文"，决策模型
+    判断"最该调用的工具 = ignore_user (0.929)"，超过 tool_force_threshold(0.7)
+    → **强制调用**，把该用户静默 15 分钟。用户连喊三条消息全部无人应答，
+    群里其他人开始说"睡着了""幻梦亖惹"。
+
+    `ignore_user` 是"生气了不想理人"的表达手段，只能由模型在对话中自主决定，
+    绝不能进功能路由的候选表——一进候选表就必然被误选。
+    """
     opts: dict[str, str] = {}
     try:
         from core.tools import get_tool_schemas
         for s in get_tool_schemas():
             fn = (s or {}).get("function") or {}
             name = fn.get("name")
-            if not name:
+            if not name or name in _TOOL_ROUTE_EXCLUDE:
                 continue
             desc = (fn.get("description") or "").replace("\n", " ").strip()
             opts[name] = desc[:cap] or name
@@ -264,16 +280,19 @@ def think_on_tools() -> bool:
         return True
 
 
-# ★ v2.3.96：回复长度档位。真人聊天绝大多数是短句，模型默认爱写"小作文"，
-#   所以用决策模型在生成前先定档，再由 llm 侧以【本轮长度】注入 system。
+# ★ v2.3.96：回复长度档位。
+# ⚠️ v2.3.107 起**主流程不再用它压长度**（见 services/rhythm.py）。
+#   原因：题目里那句「宁可短——真人聊天大多是几个字到两句话」把模型调成了
+#   极端偏心，2026-10-23 线上 86 次判定里 short 占 80 次（93%），配合事后
+#   合并，群里观感变成「永远只有一句话」。这里保留中性描述，免得回滚踩同坑。
 #   ⚠️ choice 的 criteria 必须是 record（数组会 422）。
 _Q_REPLY_LEN = {
     "type": "choice",
-    "instructions": "这条消息该回多长？（宁可短——真人聊天大多是几个字到两句话）",
+    "instructions": "这条消息大概需要多长的回复？（按内容需要判断，不要默认偏短）",
     "criteria": {
-        "短": "一两句就够：打招呼、应答、语气词、随口一问、已经答过的事",
-        "中": "三四句：要解释一句、带点情绪反应、或者有来有回",
-        "长": "四句以上：对方明确要详细/原理/步骤/举例/教程",
+        "短": "一句到两句能说完：应答、语气词、顺手接个话",
+        "中": "三到五句：要解释一句、带点情绪反应、或者有来有回",
+        "长": "需要展开：对方明确要详细/原理/步骤/举例/教程，或要讲清一件事",
     },
 }
 
@@ -312,7 +331,10 @@ async def route(message, *, threshold: float = 0.5, timeout: float = _TIMEOUT,
     wp = (ans.get("which_tool") or {}).get("probabilities") or {}
     if wp:
         name, conf = max(wp.items(), key=lambda kv: kv[1])
-        if name != "无" and float(conf) >= tool_force_threshold():
+        # 兜底二次过滤：候选表已排除，这里再挡一次（防模型回显/插件重名）
+        if name in _TOOL_ROUTE_EXCLUDE:
+            logger.warning("决策模型选了路由禁用工具 %s（已忽略）", name)
+        elif name != "无" and float(conf) >= tool_force_threshold():
             tool = {"name": name, "confidence": round(float(conf), 4)}
     # ★ v2.3.96：回复长度档位（真人聊天大多很短，默认往「短」偏）
     length = None

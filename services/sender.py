@@ -498,13 +498,25 @@ async def send_by_chat_type(
     return ok
 
 
+def _typing_delay(text: str, lo: float = 0.9, hi: float = 2.0) -> float:
+    """句间等待：基础随机抖动 + 按本条字数估算的「打字时间」。
+
+    真人连发几条时，间隔不是固定的：短句几乎秒接，二十来字的一句要打几秒。
+    原来固定 0.5~1.5s 偏快，读起来像一次性把整段吐出来。
+    """
+    import random
+    base = random.uniform(lo, hi)
+    typing = min(len(text or "") * 0.06, 2.4)   # 20 字 ≈ +1.2s，封顶 2.4s
+    return round(min(base + typing, 5.0), 2)
+
+
 async def send_sentences(
     sentences: list[str],
     chat_id: int,
     is_group: bool,
     user_id: int | None = None,
-    min_interval: float = 0.5,
-    max_interval: float = 1.5,
+    min_interval: float = 0.9,
+    max_interval: float = 2.0,
     faces: list[str | None] | None = None,
     face_interval: float = 0.35,
 ):
@@ -518,7 +530,6 @@ async def send_sentences(
     """
     from core.config import get_config
     cfg = get_config()
-    import random
 
     logger.info("开始分批发送 %d 条句子 → chat=%d is_group=%s%s",
                len(sentences), chat_id, is_group,
@@ -537,7 +548,7 @@ async def send_sentences(
 
     for i, sentence in enumerate(sentences):
         if i > 0:
-            delay = random.uniform(min_interval, max_interval)
+            delay = _typing_delay(sentence, min_interval, max_interval)
             logger.debug("句间等待 %.2fs (#%d/%d)", delay, i + 1, len(sentences))
             await asyncio.sleep(delay)
 

@@ -2061,7 +2061,8 @@ async def generate_multi_reply_with_tools(
     thought_shown_cb=None,
     needs: set | None = None,
     force_tool: str | None = None,
-    reply_length: str | None = None,   # ★ v2.3.96 short/mid/long（决策模型判定）
+    reply_length: str | None = None,   # ★ v2.3.96 short/mid/long（已被 rhythm_hint 取代，保留兼容）
+    rhythm_hint: str = "",             # ★ v2.3.107 本轮节奏提示（services/rhythm.py 抽样）
 ) -> tuple[list[str], int, list, str, str, list | None, str, int | None, str | None, str, dict]:
     """
     跟 generate_multi_reply 一样，但先走 FC 工具调用。
@@ -2092,11 +2093,14 @@ async def generate_multi_reply_with_tools(
         force_tool = None
     if force_tool:
         logger.info("FC: 第0轮强制调用工具 %s", force_tool)
-    # ★ v2.3.96：决策模型判定的「本轮长度」→ 直接追加到 system_prompt。
-    #   不额外插一条 system 消息（部分 provider 只允许单条 system，会 400）。
-    #   目的：压住模型的"小作文"倾向——真人聊天是碎的。
-    if reply_length:
-        # 文案在 config/prompts.toml 的 [len_hint]（提示词不进 .py）
+    # ★ v2.3.107：发言节奏提示（一条 / 连发 n 条 / 一条长消息 / 一短一长）。
+    #   取代 v2.3.96 的固定长度档位——那套把 93% 的轮次压成「一两句话」。
+    #   形态由调用方按内容与历史抽样决定，这里只负责注入。
+    if rhythm_hint:
+        system_prompt = f"{system_prompt}\n\n{rhythm_hint}"
+        logger.debug("注入本轮节奏: %s", rhythm_hint[:40])
+    elif reply_length:
+        # 回滚兼容：没给节奏时退回旧的长度档位（文案在 config/prompts.toml [len_hint]）
         _len_hint = _prompt("len_hint", reply_length)
         if _len_hint:
             system_prompt = f"{system_prompt}\n\n{_len_hint}"
