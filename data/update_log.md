@@ -74,6 +74,26 @@ system 长度 7268 → 8110。
 
 ⚠️ 以后新增常驻节必须**同时改两处**：`_SYSTEM_SECTIONS` 和 `core_parts`。
 
+### 七、提示词外置：不再硬编码在 .py 里
+项目规矩：**提示词不进 .py**。这轮把新加的和最长的几段迁到 `config/prompts.toml`。
+
+- 新增 `utils/prompts.py`（读取 + 缓存，按 mtime 失效，改完不用重启）
+  —— 放独立模块是为了避开 `services/llm.py → core.tools` 的循环导入
+- 新增 `config/prompts.toml`，已收录：`[len_hint]`（本轮长度约束）、
+  `[promise_retry]`（承诺落空的纠正语）、`[tool_fail]`、`[topic_fatigue]`（三档话术）、
+  `[doc_exam]` / `[doc_digest]`（write_code 的出题/整理 system prompt）
+- `services/llm.py` / `core/tools.py` / `services/topic_fatigue.py` 只保留取值调用
+
+顺带修一条把模型压成电报腔的规则：`llm.py` 原来每轮注入
+「单句不超过 15/20/25 字」（按 short/mid/long），和 00_core 的字数规则叠加，
+把回复压成干巴巴的技术说明 —— 2026-10-23 用户贴「感觉失去人格了」，就是这个。
+现在只控**句数**，不控单句字数。
+
+⚠️ 仍散落在 .py 里的（待后续按批迁）：`core/pipeline.py` 9 处（搜索转述、
+系统注入指令、@用户列表）、`core/context_manager.py` 摘要提示词、
+`core/ctx_usage.py` 2 处、`core/dispatcher.py` 1 处、`core/tools.py` 的工具
+description 若干（属 schema 契约，迁移需动结构）。
+
 ### 验证
 - 单测 `tests/_test_chat_feel.py` 20/20（合并阈值、工具调用不合并、
   CQ/明文 @、多 @、疑问词不误判、指令判定链路）
@@ -82,6 +102,8 @@ system 长度 7268 → 8110。
 - 服务器：`_build_system_text` 实测 7 项全过（两节已进入 system、
   20 字规则已删、元话语禁令在、工具名在），system 7268 → 8110 字
 - 工具总数 20 无重名；bot.service active、58890 正常、重启 0 error
+- 提示词外置实测：6 个段全部可读（doc_exam 485 字、doc_digest 444 字、LaTeX 反斜杠完整），
+  .py 里 5 处关键词已全部清除；_test_docx_export 87/87 不受影响
 - 服务器 py_compile 通过，bot.service 正常，0 error
 
 ## v2.3.104 — 绘图接入 Poke2API 多模型 + 写作收尾称谓修正 (2026.10.21)

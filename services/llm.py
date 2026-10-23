@@ -28,6 +28,13 @@ def _load_reply_schema() -> dict:
     return _REPLY_SCHEMA
 
 
+# ── 内部提示词（config/prompts.toml）──────────────────────
+# ★ 项目规矩：**提示词不进 .py**。角色/风格类在 data/skills/*.md，
+#   流程性短提示（长度约束、纠错话术）放 config/prompts.toml。
+#   读取实现放在 utils/prompts.py（避免 core.tools ←→ services.llm 循环导入）。
+from utils.prompts import prompt as _prompt  # noqa: E402
+
+
 def _normalize_reply_json(data: dict) -> dict:
     """按 schema 自动补缺、clamp 范围、校验类型"""
     s = _load_reply_schema().get("fields", {})
@@ -2089,11 +2096,8 @@ async def generate_multi_reply_with_tools(
     #   不额外插一条 system 消息（部分 provider 只允许单条 system，会 400）。
     #   目的：压住模型的"小作文"倾向——真人聊天是碎的。
     if reply_length:
-        _len_hint = {
-            "short": "【本轮长度】最多 1~2 句，单句不超过 15 字。别铺垫、别总结、别解释自己在做什么。",
-            "mid": "【本轮长度】2~4 句，单句不超过 20 字。别分点、别写成小作文。",
-            "long": "【本轮长度】可以 4~8 句，但仍用短句（单句不超过 25 字），别分点、别加标题。",
-        }.get(reply_length)
+        # 文案在 config/prompts.toml 的 [len_hint]（提示词不进 .py）
+        _len_hint = _prompt("len_hint", reply_length)
         if _len_hint:
             system_prompt = f"{system_prompt}\n\n{_len_hint}"
             logger.debug("注入本轮长度约束: %s", reply_length)
@@ -2172,11 +2176,10 @@ async def generate_multi_reply_with_tools(
             try:
                 _retry_msgs = list(msgs) + [
                     {"role": "assistant", "content": result.content},
-                    {"role": "user", "content":
-                        "你上一句说要去做/已经做好了，但这一轮一次工具都没调用，"
-                        "对方会一直等不到东西。现在立刻调用对应工具把它做完："
-                        "要产出文件就调 write_code（word 用 language=docx），"
-                        "要查资料就调 search_web。不要再只说「我这就去做」「文件发你」。"},
+                    # 文案在 config/prompts.toml 的 [promise_retry]（提示词不进 .py）
+                    {"role": "user", "content": _prompt(
+                        "promise_retry", "user",
+                        "你上一句说要去做，但这一轮没调用任何工具。现在立刻调用工具把它做完。")},
                 ]
                 _r2 = await call_llm_with_tools(
                     reply_model, _retry_msgs, tools,
