@@ -699,6 +699,20 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ------记忆检索+好感度+上下文组装------
     full_msg = f"[{role_tag}] {display_name}发了: {msg_content}"
+
+    # ------话题疲劳（v2.3.106）------
+    # 同一话题被反复拉扯时给模型加一句"你已经腻了/烦了"，由它决定怎么打断。
+    # 只统计、不拦截；TTL 30 分钟，隔天不会带着旧账。
+    try:
+        from services.topic_fatigue import note as _tf_note, advice as _tf_advice
+        _lv, _hits, _span = _tf_note(chat_id, msg_content, user_id)
+        if _lv >= 1:
+            _hint = _tf_advice(_lv, _hits, _span)
+            logger.info("话题疲劳 L%d (%d 次 / %d 分钟) chat=%d", _lv, _hits, _span, chat_id)
+            full_msg += f"\n【话题疲劳 L{_lv}】{_hint}"
+    except Exception as _e:
+        logger.debug("话题疲劳统计失败（忽略）: %s", _e)
+
     related_memories = get_top_memories(msg_content, ctx.get_context(chat_id), chat_id=chat_id)
     fav_val = get_fav(chat_id, user_id, is_group)
 
@@ -1439,10 +1453,16 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if executed_calls and not _interleaved:
         call_hints = []
         for name, args_str in executed_calls:
+            # ★ v2.3.106: ignore_user 不暴露给用户看。
+            #   "生气不搭理人"是情绪表达，弹一条「[工具调用: ignore_user 10]」
+            #   等于当场把戏演砸了（工具提示对别的指令是功能，对这个是破功）。
+            if name == "ignore_user":
+                continue
             _a = _pretty_call_args(args_str)
             # args 为空时不留尾空格（原来会拼出 "[工具调用: reward ]"）
             call_hints.append(f"[工具调用: {name}{' ' + _a if _a else ''}]")
-        sentences.append("\n".join(call_hints))
+        if call_hints:
+            sentences.append("\n".join(call_hints))
 
     # v2.1.12: 主回复首句 + [已思考N秒]（先导语未挂过才挂，且思考时长满足阈值）
     # v2.1.18: 移到 create_task **之前**——原来在任务创建后才改 sentences，

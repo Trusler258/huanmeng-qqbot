@@ -19,6 +19,29 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "ignore_user",
+            "description": (
+                "暂时不理某个人。当对方反复纠缠同一个话题、明显在挑衅/刷屏、或者你已经"
+                "明确说过不想聊了他还在继续时调用。调用后这段时间里你会收不到他的消息。"
+                "只在真的烦了或被打扰时用，不要因为观点不同、被反驳就忽略人；"
+                "也不能对主人用。调用前后你仍然要正常说一句（比如「不聊这个了」）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "minutes": {
+                        "type": "integer",
+                        "description": "忽略多久（分钟），默认 10，建议 5~30，最长 120",
+                    },
+                    "reason": {"type": "string", "description": "简短原因（自己看，不发出去）"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "learn_slang",
             "description": (
                 "把新学到的网络黑话/梗记进知识库，以后就能看懂这类说法。"
@@ -1286,6 +1309,29 @@ async def execute_tool(
     cmd_name = _TOOL_CMD_MAP.get(tool_name)
 
     # 自有实现（不走 COMMAND_MAP）
+    if tool_name == "ignore_user":
+        # v2.3.106：让 bot 自己决定"要不要静默某人"。
+        # services/self_ignore.py 早就有 is_ignored/ignore_user，但全项目没人调用（死代码）——
+        # 2026-10-22 群里被人整晚挑衅，bot 只能一条条认真回，就是这个缺口。
+        from services.self_ignore import ignore_user as _ignore_user
+        from core.config import get_config as _get_cfg
+        try:
+            _cfg = _get_cfg()
+            if user_id and int(user_id) == int(getattr(_cfg, "admin_qq", 0) or 0):
+                return "不能忽略主人，换个方式表达不满"
+        except Exception:
+            pass
+        try:
+            _mins = int(arguments.get("minutes") or 10)
+        except Exception:
+            _mins = 10
+        _mins = max(1, min(120, _mins))
+        _applied = _ignore_user(user_id, _mins)
+        logger.info("自我忽略: %s(%s) %d 分钟 | 原因=%s",
+                    sender_name, user_id, _applied,
+                    (arguments.get("reason") or "")[:60])
+        return f"已忽略对方 {_applied} 分钟"
+
     if tool_name == "learn_slang":
         # v2.3.24: 让 bot 把新学到的网络黑话记进 data/skills/15_slang.md，
         # 追加后立即成为词典触发词（词表按文件 mtime 自动失效重算）
