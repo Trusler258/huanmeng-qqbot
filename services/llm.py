@@ -502,6 +502,13 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         _self_aware,
         _sponsors,
         sec.get("anti_repeat", ""),
+        # ★ v2.3.106 修：core_parts 是**硬编码列表**，`_SYSTEM_SECTIONS` 只是"常驻声明"，
+        #   两者不同步就等于白写。实测 `slang_unknown`（v2.3.105 加的"看不懂先查、
+        #   别点评对方表达"）自加入起从未进入 system —— 规则写了但没生效。
+        #   新增常驻节必须同时改这里，光加进 _SYSTEM_SECTIONS 不够。
+        sec.get("slang_unknown", ""),
+        sec.get("topic_fatigue", ""),
+        sec.get("ignore_right", ""),
         sec.get("private_tone", "") if (not is_group and not custom_persona) else "",
     ]
     # v2.1.17: 允许在任意常驻章节里用 {bot_name} 占位——换名字部署时只改配置，
