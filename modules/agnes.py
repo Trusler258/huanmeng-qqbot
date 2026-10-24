@@ -11,6 +11,8 @@ import asyncio
 import base64
 import json
 import os
+import threading
+import time
 import uuid
 import httpx
 from datetime import datetime, timezone, timedelta
@@ -31,6 +33,126 @@ AGNES_VIDEO_BASE = "https://apihub.agnes-ai.com/v1"
 CST = timezone(timedelta(hours=8))
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "agnes_output"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ── 生成任务持久化（v2.3.107）────────────────────────────────
+# 背景：`_bg_gen_image` / `_bg_gen_video` 是进程内 create_task，一重启就没了。
+#   2026-10-25 实测：00:39:56 群里提交「夜煞与光煞」16:9 2k，00:40:27 我重启 bot
+#   → 任务蒸发，用户等了半天什么也没有，只能手工补发。
+#
+# 做法：开工时把任务写进 data/agnes_tasks.json，结束（成功/失败）删掉；
+#       启动时扫剩下的 running 任务重跑并补发。
+#
+# ⚠️ 配额是**成功后** `commit_draw()` 才扣，所以恢复重跑不会重复扣次数；
+#    但崩溃前那次 API 调用如果已经发出去了，重跑就是第二次计费 —— 这是
+#    持久化的固有代价，只在进程异常退出时发生（正常重启 = 优雅关闭，任务照跑）。
+# ⚠️ 不要改成"恢复时假装成功直接补发旧结果"：进程死了图根本没拿到。
+_TASK_FILE = Path(__file__).resolve().parent.parent / "data" / "agnes_tasks.json"
+_TASK_TTL = 30 * 60          # 超过 30 分钟的挂起任务不再自动重跑（用户多半已重发）
+_task_lock = threading.Lock()
+
+
+def _tasks_load() -> list[dict]:
+    try:
+        raw = _TASK_FILE.read_text(encoding="utf-8")
+        rows = json.loads(raw) if raw.strip() else []
+        return rows if isinstance(rows, list) else []
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        logger.warning("读取生成任务表失败（当作空）: %s", e)
+        return []
+
+
+def _tasks_save(rows: list[dict]) -> None:
+    """原子写：先写 .tmp 再 replace，避免断电留半截 JSON。"""
+    try:
+        _TASK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _TASK_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_TASK_FILE)
+    except Exception as e:
+        logger.error("写入生成任务表失败: %s", e, exc_info=True)
+
+
+def task_begin(kind: str, **payload) -> str:
+    """登记一个进行中的生成任务，返回 task_id。"""
+    tid = uuid.uuid4().hex[:12]
+    row = {"id": tid, "kind": kind, "status": "running",
+           "created": time.time(), **payload}
+    with _task_lock:
+        rows = _tasks_load()
+        rows.append(row)
+        # 顺手清掉一天前的僵尸记录，防文件无限增长
+        cut = time.time() - 24 * 3600
+        rows = [r for r in rows if float(r.get("created") or 0) >= cut]
+        _tasks_save(rows)
+    logger.info("生成任务登记: %s kind=%s", tid, kind)
+    return tid
+
+
+def task_end(task_id: str) -> None:
+    with _task_lock:
+        rows = _tasks_load()
+        rows = [r for r in rows if r.get("id") != task_id]
+        _tasks_save(rows)
+
+
+def pending_tasks() -> list[dict]:
+    return [r for r in _tasks_load() if r.get("status") == "running"]
+
+
+async def resume_pending() -> int:
+    """启动时补做上次被重启打断的生成任务。返回恢复数量。
+
+    调用时机：ws 已连上之后（plugins/agnes/main.py::on_enable 里延迟几秒）。
+    """
+    rows = pending_tasks()
+    if not rows:
+        return 0
+    from services.sender import send_by_chat_type
+
+    resumed = 0
+    for t in rows:
+        tid = t.get("id") or ""
+        kind = t.get("kind") or "image"
+        uid = int(t.get("user_id") or 0)
+        gid = int(t.get("group_id") or 0)
+        is_group = bool(t.get("is_group"))
+        chat_id = gid if is_group else uid
+        label = "图" if kind == "image" else "视频"
+        try:
+            if time.time() - float(t.get("created") or 0) > _TASK_TTL:
+                logger.warning("生成任务 %s 已过期（%s），不重跑", tid, label)
+                await send_by_chat_type(
+                    f"[CQ:at,qq={uid}] 之前那张{label}因为重启丢了，太久了就没自动重做，"
+                    f"要的话再发一次指令喵", chat_id, is_group, uid)
+                continue
+            logger.info("恢复生成任务 %s kind=%s user=%s", tid, kind, uid)
+            await send_by_chat_type(
+                f"[CQ:at,qq={uid}] 刚才重启把你那张{label}打断了，我重新做一次，等一下下~",
+                chat_id, is_group, uid)
+            if kind == "image":
+                await _bg_gen_image(
+                    uid, gid, is_group, t.get("prompt") or "",
+                    t.get("size") or "", ref_url=t.get("ref_url") or "",
+                    left=int(t.get("left") or 0), limit=int(t.get("limit") or 0),
+                    model=t.get("model") or "")
+            else:
+                await _bg_gen_video(
+                    uid, gid, is_group, t.get("prompt") or "",
+                    image_url=t.get("image_url") or "",
+                    width=int(t.get("width") or 1152),
+                    height=int(t.get("height") or 768),
+                    num_frames=int(t.get("num_frames") or 241),
+                    frame_rate=int(t.get("frame_rate") or 24))
+            resumed += 1
+        except Exception as e:
+            logger.error("恢复生成任务 %s 失败: %s", tid, e, exc_info=True)
+        finally:
+            task_end(tid)
+    return resumed
+
 
 
 def _get_api_key() -> str:
@@ -581,7 +703,13 @@ async def _send_media(local_path: str, group_id: int, is_group: bool, user_id: i
 
 async def _bg_gen_video(user_id, group_id, is_group, prompt, image_url="",
                          width=1152, height=768, num_frames=241, frame_rate=24):
-    """后台视频生成——不阻塞聊天"""
+    """后台视频生成——不阻塞聊天
+
+    ★ v2.3.107：同 _bg_gen_image，开工登记任务、结束删除，重启后可恢复。
+    """
+    _tid = task_begin("video", user_id=user_id, group_id=group_id, is_group=is_group,
+                      prompt=prompt, image_url=image_url, width=width, height=height,
+                      num_frames=num_frames, frame_rate=frame_rate)
     try:
         result = await _gen_video(prompt, image_url=image_url,
                                   width=width, height=height,
@@ -600,14 +728,24 @@ async def _bg_gen_video(user_id, group_id, is_group, prompt, image_url="",
 
     from services.sender import send_by_chat_type
     chat_id = group_id if is_group else user_id
-    await send_by_chat_type(tip, chat_id, is_group, user_id)
+    try:
+        await send_by_chat_type(tip, chat_id, is_group, user_id)
+    finally:
+        task_end(_tid)
 
 
 # ── 命令 ────────────────────────────────────────────────
 
 async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", left=0, limit=0,
                         model=""):
-    """后台图片生成——不阻塞聊天（模式同 _bg_gen_video）"""
+    """后台图片生成——不阻塞聊天（模式同 _bg_gen_video）
+
+    ★ v2.3.107：开工先登记到 data/agnes_tasks.json，结束（无论成败）删除。
+      重启后由 resume_pending() 捡回来重做，见文件头「生成任务持久化」注释。
+    """
+    _tid = task_begin("image", user_id=user_id, group_id=group_id, is_group=is_group,
+                      prompt=prompt, size=size, ref_url=ref_url, model=model,
+                      left=left, limit=limit)
     try:
         result = await _gen_image(prompt, size, reference_image_url=ref_url, model=model)
         if result and not result.get("error"):
@@ -643,7 +781,11 @@ async def _bg_gen_image(user_id, group_id, is_group, prompt, size, ref_url="", l
 
     from services.sender import send_by_chat_type
     chat_id = group_id if is_group else user_id
-    await send_by_chat_type(tip, chat_id, is_group, user_id)
+    try:
+        await send_by_chat_type(tip, chat_id, is_group, user_id)
+    finally:
+        # 不管发没发出去，任务都算结束（失败已在 tip 里告诉用户了）
+        task_end(_tid)
 
 
 # ── 绘图模型偏好（v2.3.104）────────────────────────────

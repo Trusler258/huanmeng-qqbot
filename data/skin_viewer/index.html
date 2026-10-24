@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>skin render</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script src="vendor/skinview3d.bundle.js"></script>
+<script>
+  // 由 Python 侧替换：__W__ / __H__ / __ZOOM__
+  const W = __W__, H = __H__;
+  const canvas = document.getElementById("c");
+  const viewer = new skinview3d.SkinViewer({
+    canvas: canvas,
+    width: W,
+    height: H,
+    preserveDrawingBuffer: true,   // toDataURL 必须开
+    fov: 45,
+    zoom: __ZOOM__,
+    autoRotate: false,
+    animation: new skinview3d.IdleAnimation(),  // 保持内部 rAF 循环，同时带一点呼吸感
+    nameTag: null,
+  });
+
+  // 相机交给 skinview3d / OrbitControls 管，手动改 position 会被 controls 覆盖
+  window.__viewer = viewer;
+  window.__ready = true;
+
+  // 逐帧旋转并取图。返回 PNG dataURL 数组。
+  window.loadAndShoot = async (skinUrl, frames, cycles = 1) => {
+    await viewer.loadSkin(skinUrl);
+    viewer.playerWrapper.rotation.y = 0;
+    const total = Math.PI * 2 * cycles;
+    const step = total / frames;
+    const out = [];
+    for (let i = 0; i < frames; i++) {
+      viewer.playerWrapper.rotation.y = i * step;
+      // 等两帧确保 renderer 已重绘
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      out.push(canvas.toDataURL("image/png"));
+    }
+    return out;
+  };
+</script>
+</body>
+</html>

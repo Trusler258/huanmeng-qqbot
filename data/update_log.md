@@ -11,11 +11,11 @@
 >    （面板上线、架构重写这一类）。**同一天的多次改动合并进同一个版本条目**（内部用
 >    ### 一、二、三 分小节），不要一天涨好几格。拿不准就按 patch 走。
 
-## v2.3.106 — @别人之后带指令不触发（已修） (2026.10.25)
+## v2.3.106 — @别人后指令不触发 + 生成任务持久化 + 皮肤 GIF 插件 (2026.10.25)
 
-一句话总结：`@某人 /指令` 里的指令不再被认成聊天，昵称带斜杠、QQ 插零宽字符都能认出来。
+一句话总结：`@某人 /指令` 能认了；重启不再把正在做的图弄丢；新增 `/~skin` 出皮肤旋转 GIF。
 
-### 两个成因
+### 一、@别人之后带指令不触发（已修）
 
 用户报「@其他人的时候后面带指令不触发，比如 `@//rick/ /mc`」。查下来是
 `_strip_leading_mentions()` 的两个盲区：
@@ -36,7 +36,52 @@
 ⚠️ 边界守住了：`@//rick/ 你好呀`、`@幻梦 他说 /~draw 很好用`、`他说 /~draw 不错`
 一律**不**当指令，避免把闲聊里的指令名误执行。带疑问词的（`/~draw 是啥意思`）照旧不剥。
 
-### 验证
+### 二、生成任务持久化（重启不再丢图）
+
+起因：2026-10-25 00:39:56 群里发 `/~draw 16:9 2k 夜煞与光煞…`，插件已提交任务；
+00:40:27 我重启 bot → `_bg_gen_image` 是进程内 `create_task`，任务随进程蒸发，
+用户等到的是空气（后来只能手工补发一张）。
+
+- 新增 `data/agnes_tasks.json`：开工写一条 `status=running`，结束（成功/失败）删掉
+- `modules/agnes.py::task_begin/task_end/resume_pending`
+- `plugins/agnes/main.py::on_enable` 延迟 8 秒（等 ws 连上）调 `resume_pending()`
+  · 先给用户发「刚才重启打断了，我重新做一次」
+  · 超过 30 分钟的挂起任务不重跑，改发「太久了，要的话再发一次」
+- ⚠️ 配额是**成功后** `commit_draw()` 才扣，所以恢复重跑不会重复扣次数；
+  但崩溃前那次 API 若已发出，重跑就是第二次计费 —— 只在进程异常退出时发生
+
+### 三、新插件 `/~skin`：MC 皮肤 30fps 旋转 GIF
+
+参考 `Trae-CN/temp_20261024_01/mc-skin-preview`（skinview3d 的 Web 预览）搬成离屏渲染。
+
+用法（不需要任何前置对话）：
+```
+/~skin Notch                 查正版 ID，转一圈发出来
+引用一张 64x64 皮肤图 + /~skin   用那张图
+```
+
+- `services/skin_render.py`
+  · 取皮肤：minotar → mc-heads → Mojang UUID + crafatar，逐个兜底；校验必须是
+    64x64 / 64x32，防止拿到错误页 HTML
+  · 渲染：Chromium 打开 `data/skin_viewer/index.html`（内联 skinview3d），
+    在页面内**一次循环**转 360°、逐帧 `canvas.toDataURL`，避免 120 次 IPC 往返
+  · 合成：统一 bbox 裁边 → 统一缩放 → 全局调色板量化（避免逐帧调色板导致颜色跳）
+  · 输出：`fps=30`、4 秒一圈（120 帧/每帧 3°）、宽 300、1.7MB 左右
+- ⚠️ **不能用卡片那套 Chromium 参数**：`changelog` 的启动参数含 `--disable-gpu` +
+  `--disable-software-rasterizer`，会把 WebGL 关掉、skinview3d 直接白屏。
+  这里单独 launch，加 `--use-angle=swiftshader --enable-unsafe-swiftshader` 走软件 WebGL，
+  并在页面里显式检测 `getContext('webgl')` 失败就报错，不静默出白图
+- `plugins/skin/`：命令 `skin`（别名 皮肤/skingif/skin3d），立即回「在做了，约 20 秒」，
+  生成完直接把 GIF 发出来；失败把原因发出来，不静默
+
+### 验证（持久化 + 皮肤）
+- `modules/agnes.py` 任务表：登记 → pending=1 → 删除 → pending=0
+- `services/skin_render.py` 服务器实跑：Notch 皮肤 120 帧 / **16~26 秒** / **1.7~1.9MB**；
+  抽 4 个角度核对（正/侧/背/斜），皮肤第二层、手臂 4px 宽度、明暗都正确
+- 端到端：`幻梦bot [image]` 已出现在群 2000000002
+- 插件加载 25 个（含 skin），bot.service active，0 error
+
+### 验证（@剥离部分）
 
 - `tests/_test_chat_feel.py` **30/30**，新增 8 条用例（斜杠昵称、中文昵称、零宽、
   @QQ号、多@、以及 2 条「不许误触发」的反向断言）
