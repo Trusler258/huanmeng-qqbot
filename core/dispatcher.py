@@ -40,6 +40,11 @@ def _record_recent_image(chat_id: int, url: str, desc: str, sender: str) -> None
 _LEADING_MENTION_RE = re.compile(
     r"^\s*(?:\[CQ:at,qq=\d+[^\]]*\]|@\S{1,24}[\s,，:：]*)")
 
+# 零宽字符：QQ 常在「@」与昵称/正文之间塞 U+200B/U+FEFF 防解析。
+# ⚠️ 它们在正则里属于 \S（非空白），会让「@\S+」把零宽吃进昵称、
+# 或者让剥完的文本看着不以 / 开头 —— 2026-10-25 用户报「@别人 + 指令不触发」的成因之一。
+_INVISIBLE_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
+
 # 剥离后若带这些疑问词，视为「在问这条指令是什么」而不是「要执行它」
 _CMD_QUESTION_HINTS = ("是啥", "啥意思", "什么意思", "怎么用", "咋用",
                        "是什么", "干嘛的", "啥用", "咋回事")
@@ -52,19 +57,44 @@ def _strip_leading_mentions(text: str, limit: int = 3) -> str:
     带 @ 就判成普通聊天 → 走 LLM，答非所问（2026-10-22 01:12 实测）。
     只剥开头、且剥完必须以 / 开头才返回新值；带疑问词的（「/~draw 是啥意思」）
     视为提问，不剥，避免白白执行一条指令（画图还会扣配额）。
+
+    ★ v2.3.107（2026-10-25 用户报「@其他人后面带指令不触发」）两处增强：
+
+    ① **昵称本身含斜杠**（例 `@//rick/ /mc`）。`@\\S{1,24}` 只会剥到第一个空白，
+       剥完剩 `/rick/ /mc`（看着像指令、实际是昵称残渣）→ 不以 / 开头 → 判成聊天。
+       现在改成：如果 @ 后第一个 token 里有 `/`，就以「空白 + /」为切点，
+       后面那段才是指令。
+
+    ② **零宽字符**。QQ 会在 @ 与正文之间插 U+200B/U+FEFF，`\\S` 把它们当有效字符，
+       导致「剥不干净」或「`\\u200b/mc` 不以 / 开头」。先统一剔除再判。
+
+    两种情况都只在**行首是 @ 提及**时生效，普通聊天里出现的 `/xxx` 一律不动。
     """
     if not text:
         return text
-    if text.lstrip()[:1] not in ("@", "["):
+
+    clean = _INVISIBLE_RE.sub("", text)
+    if clean.lstrip()[:1] not in ("@", "["):
         return text
-    probe = text
-    for _ in range(max(1, limit)):
-        nxt = _LEADING_MENTION_RE.sub("", probe, count=1)
-        if nxt == probe:
-            break
-        probe = nxt
-    if probe == text:
-        return text
+
+    probe = clean
+
+    # 增强①：昵称含斜杠 → 按「空白 + /」切开
+    m_head = re.match(r"^\s*@(\S{1,40})", probe)
+    if m_head and "/" in m_head.group(1):
+        cut = re.search(r"\s+(?=/)", probe)
+        if not cut:
+            return text
+        probe = probe[cut.end():]
+    else:
+        for _ in range(max(1, limit)):
+            nxt = _LEADING_MENTION_RE.sub("", probe, count=1)
+            if nxt == probe:
+                break
+            probe = nxt
+        if probe == clean:
+            return text
+
     probe = probe.lstrip()
     if not probe.startswith("/"):
         return text

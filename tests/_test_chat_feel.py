@@ -77,6 +77,20 @@ def test_strip():
     ck("@在中间不动", _strip_leading_mentions("看看 @幻梦 /~help")
        == "看看 @幻梦 /~help")
 
+    # ★ v2.3.107：@ 别人 + 指令（用户 2026-10-25 报「不触发」）
+    print("    -- @别人后带指令 --")
+    ck("昵称带斜杠", _strip_leading_mentions("@//rick/ /mc") == "/mc")
+    ck("昵称带斜杠+中文昵称", _strip_leading_mentions("@//rick/ 天在水 /mc") == "/mc")
+    ck("零宽字符", _strip_leading_mentions("@//rick/ \u200b/mc") == "/mc")
+    ck("零宽在@后", _strip_leading_mentions("@幻梦\u200b /~luck") == "/~luck")
+    ck("@QQ号", _strip_leading_mentions("@123456789 /mc") == "/mc")
+    ck("多个@", _strip_leading_mentions("@a @b /mc") == "/mc")
+    # 不能误触发：昵称带斜杠但后面没有指令
+    ck("斜杠昵称+闲聊不动", _strip_leading_mentions("@//rick/ 你好呀")
+       == "@//rick/ 你好呀")
+    ck("句中指令不误触发", _strip_leading_mentions("@幻梦 他说 /~draw 很好用")
+       == "@幻梦 他说 /~draw 很好用")
+
 
 def test_command_detect():
     """模拟 dispatcher 的判定：剥完是 /~ 开头即指令。"""
