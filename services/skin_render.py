@@ -356,11 +356,9 @@ async def _shoot_anim(skin_path: Path, anim: str, frames: int, cycles: int,
                         fly_rx = math.sin(ph * 2) * 0.05
                     else:
                         fly_y, fly_rx = None, None
-                    await page.evaluate("([a]) => window.seek(a)",
-                                        [[progress, yaw, fly_y, fly_rx, "image/jpeg", 0.9]])
-                    # ⚠️ 用页面截图而不是 canvas.toDataURL：后者读不到刚渲染的内容
-                    shot = await page.screenshot()   # 整页（页面尺寸=画布尺寸）
-                    out.append("data:image/jpeg;base64," + base64.b64encode(shot).decode())
+                    out.append(await page.evaluate(
+                        "([a]) => window.seek(a)",
+                        [[progress, yaw, fly_y, fly_rx, "image/jpeg", 0.9]]))
                 return out
             finally:
                 await browser.close()
@@ -464,10 +462,9 @@ async def render_action_gif(skin_path: Path, action: str = "walk", *,
     t0 = time.monotonic()
     try:
         cycles = _ACTION_CYCLES.get(key, 1)
-        urls = await _shoot(skin_path, "shootAnim",
-                            [key, frames, lay["yaw"], "image/jpeg", 0.9, cycles],
-                            width=lay["w"], height=lay["h"], zoom=lay["zoom"],
-                            cape_path=cape_path, speed=_ANIM_SPEED)
+        urls = await _shoot_anim(skin_path, key, frames, cycles, lay["yaw"],
+                                 width=lay["w"], height=lay["h"], zoom=lay["zoom"],
+                                 cape_path=cape_path)
     except Exception as e:
         logger.error("动作渲染失败(%s): %s", key, e, exc_info=True)
         return None, f"渲染失败: {e}"

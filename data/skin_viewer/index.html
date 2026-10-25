@@ -149,20 +149,50 @@
       catch (e) { console.warn("cape load failed", e); }
     }
     const key = anim || "idle";
-    viewer.animation = (ANIMS[key] || ANIMS.idle)();
-    // speed 控制动画推进速率。
-    // 内置动画按**真实时间**推进（每帧渲染要 ~100ms），而 GIF 按 30fps 播放，
-    // 不降速就会快 3~4 倍；这里传 0.0333 / 实测每帧耗时，让两边对上。
-    viewer.animation.speed = (speed === undefined || speed === null) ? 1 : speed;
+    if (POSES[key]) {
+      // ★ 关键：挂一个 paused 的动画 —— 只为让 viewer 继续跑渲染循环，
+      //   但 update() 第一行就 return，绝不会用内置动画覆盖我们写的骨骼。
+      //   （speed=0 不行：update 仍会执行 animate；paused=true 才彻底不跑）
+      viewer.animation = new skinview3d.IdleAnimation();
+      viewer.animation.paused = true;
+    } else {
+      viewer.animation = (ANIMS[key] || ANIMS.idle)();
+      viewer.animation.speed = (speed === undefined || speed === null) ? 1 : speed;
+    }
     __phase = 0;
+    window.__pose = !!POSES[key];
     viewer.playerWrapper.rotation.x = 0;
     viewer.playerWrapper.rotation.y = 0;
     viewer.playerWrapper.position.y = 0;
     window.__anim = key;
+    window.__pl = findPlayer();
     await raf2();
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 250));
     await raf2();
     return true;
+  };
+
+  // 逐帧取动作帧：写死相位 → 摆骨骼 → 等一帧让 viewer 自己渲染 → 取图。
+  // 相位只由帧序号决定，与真实耗时无关，因此整段覆盖整数周期时首尾天然闭合。
+  window.seek = async (arr) => {
+    const [progress, yaw, flyY, flyRx, mime, q] = arr;
+    const v = window.__viewer;
+    __phase = progress;
+    if (yaw !== null && yaw !== undefined) v.playerWrapper.rotation.y = yaw;
+    if (flyY !== null && flyY !== undefined) {
+      v.playerWrapper.position.y = flyY;
+      v.playerWrapper.rotation.x = flyRx || 0;
+    }
+    const pose = POSES[window.__anim];
+    const pl = window.__pl;
+    if (pose && pl && pl.skin) {
+      pose(pl);                        // 纯姿态，不依赖任何动画对象
+      await raf2();                    // animation 已 paused → 不会被覆盖，viewer 渲染我们的姿态
+    } else if (v.animation) {
+      v.animation.progress = progress;
+      await raf2();
+    }
+    return snap(mime, q);
   };
 
   // 固定视角播放动作：内置动画自动推进（真实时间），每帧等一次 rAF
