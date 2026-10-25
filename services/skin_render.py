@@ -170,6 +170,47 @@ async def fetch_skin(name: str, dest: Path | None = None) -> tuple[Path | None, 
     return None, f"找不到玩家「{name}」的皮肤（可能不是正版 ID，或穿了默认皮肤）"
 
 
+async def fetch_cape(name: str, dest: Path | None = None) -> tuple[Path | None, str]:
+    """按正版 ID 取披风纹理（Mojang 账号资料里的 CAPE）。没有披风返回 (None, 原因)。
+
+    披风不在皮肤 PNG 里，必须走 session server 的 textures 属性。
+    """
+    import json as _json
+    uuid = await _mojang_uuid(name)
+    if not uuid:
+        return None, "查不到这个 ID（披风要正版账号）"
+    try:
+        async with httpx.AsyncClient(timeout=15, headers={"User-Agent": _UA}) as c:
+            r = await c.get(
+                f"https://sessionserver.mojang.com/session/minecraft/profile/{uuid}")
+            if r.status_code != 200:
+                return None, f"账号资料查询失败（HTTP {r.status_code}）"
+            props = ((r.json() or {}).get("properties") or [])
+            url = ""
+            for prop in props:
+                if prop.get("name") != "textures":
+                    continue
+                try:
+                    data = _json.loads(base64.b64decode(prop.get("value") or ""))
+                except Exception:
+                    continue
+                url = (((data.get("textures") or {}).get("CAPE") or {}).get("url")) or ""
+                if url:
+                    break
+            if not url:
+                return None, "这个账号没挂披风"
+            ir = await c.get(url)
+            if ir.status_code != 200 or not ir.content:
+                return None, "披风图下载失败"
+            dest = dest or (OUT_DIR / f"cape_{name}_{int(time.time())}.png")
+            dest.write_bytes(ir.content)
+            logger.info("披风下载成功: %s (%d bytes)", name, len(ir.content))
+            return dest, ""
+    except Exception as e:
+        logger.warning("取披风失败: %s", e)
+        return None, f"取披风失败: {e}"
+
+
 async def download_skin(url: str, dest: Path | None = None) -> tuple[Path | None, str]:
     """直接下载一张皮肤图（QQ 图片 URL）。"""
     dest = dest or (OUT_DIR / f"skin_url_{int(time.time())}.png")
@@ -197,7 +238,8 @@ def _build_page(width: int, height: int, zoom: float) -> str:
 
 
 async def _shoot(skin_path: Path, script: str, args: list, *,
-                 width: int, height: int, zoom: float) -> list[str]:
+                 width: int, height: int, zoom: float,
+                 cape_path: Path | None = None) -> list[str]:
     """打开渲染页 → prepare(皮肤, 动作) → 执行 script(args) → 返回帧 dataURL 列表。"""
     from playwright.async_api import async_playwright
     try:
@@ -210,6 +252,10 @@ async def _shoot(skin_path: Path, script: str, args: list, *,
     page_file.write_text(_build_page(width, height, zoom), encoding="utf-8")
     data_url = "data:image/png;base64," + base64.b64encode(
         skin_path.read_bytes()).decode()
+    cape_url = ""
+    if cape_path:
+        cape_url = "data:image/png;base64," + base64.b64encode(
+            cape_path.read_bytes()).decode()
 
     try:
         async with async_playwright() as pw:
@@ -225,8 +271,8 @@ async def _shoot(skin_path: Path, script: str, args: list, *,
                     "return !!(c.getContext('webgl2') || c.getContext('webgl')); }")
                 if not ok:
                     raise RuntimeError("浏览器没有可用的 WebGL（SwiftShader 未生效）")
-                await page.evaluate("([u, a]) => window.prepare(u, a)",
-                                    [data_url, str(args[0] or "idle")])
+                await page.evaluate("([u, a, c]) => window.prepare(u, a, c)",
+                                    [data_url, str(args[0] or "idle"), cape_url])
                 out = await page.evaluate(f"([a]) => window.{script}(...a)", [args[1:]])
                 return list(out or [])
             finally:
@@ -296,13 +342,15 @@ def _compose_gif(data_urls: list[str], out_path: Path, fps: int,
 # ── 三个公开入口 ──────────────────────────────────────────
 
 async def render_spin_gif(skin_path: Path, *, fps: int = 30, seconds: float = 2.0,
-                          target_w: int = 300) -> tuple[Path | None, str]:
+                          target_w: int = 300,
+                          cape_path: Path | None = None) -> tuple[Path | None, str]:
     """绕一圈的旋转 GIF（30fps，默认 3 秒 / 90 帧 / 每帧 4°）。"""
     frames = max(12, int(round(fps * seconds)))
     t0 = time.monotonic()
     try:
         urls = await _shoot(skin_path, "shootSpin", ["still", frames, "image/jpeg", 0.9],
-                            width=_CANVAS_W, height=int(_CANVAS_W * 1.3), zoom=_ZOOM)
+                            width=_CANVAS_W, height=int(_CANVAS_W * 1.3), zoom=_ZOOM,
+                            cape_path=cape_path)
     except Exception as e:
         logger.error("旋转渲染失败: %s", e, exc_info=True)
         return None, f"渲染失败: {e}"
@@ -320,7 +368,8 @@ async def render_spin_gif(skin_path: Path, *, fps: int = 30, seconds: float = 2.
 
 async def render_action_gif(skin_path: Path, action: str = "walk", *,
                             fps: int = 30, seconds: float = 1.6,
-                            target_w: int = 300) -> tuple[Path | None, str]:
+                            target_w: int = 300,
+                            cape_path: Path | None = None) -> tuple[Path | None, str]:
     """固定 3/4 视角播放一个动作的 GIF（走/跑/飞…）。"""
     key = action_key(action) or "walk"
     frames = max(12, int(round(fps * seconds)))
@@ -329,7 +378,8 @@ async def render_action_gif(skin_path: Path, action: str = "walk", *,
     try:
         urls = await _shoot(skin_path, "shootAnim",
                             [key, frames, lay["yaw"], "image/jpeg", 0.9],
-                            width=lay["w"], height=lay["h"], zoom=lay["zoom"])
+                            width=lay["w"], height=lay["h"], zoom=lay["zoom"],
+                            cape_path=cape_path)
     except Exception as e:
         logger.error("动作渲染失败(%s): %s", key, e, exc_info=True)
         return None, f"渲染失败: {e}"
@@ -346,14 +396,16 @@ async def render_action_gif(skin_path: Path, action: str = "walk", *,
     return path, ""
 
 
-async def render_three_views(skin_path: Path, *, target_h: int = 420
+async def render_three_views(skin_path: Path, *, target_h: int = 420,
+                             cape_path: Path | None = None
                              ) -> tuple[Path | None, str]:
     """三视图：正面 / 右侧 / 背面 横拼成一张 PNG。"""
     t0 = time.monotonic()
     angles = [0.0, 1.5707963, 3.1415927]
     try:
-        urls = await _shoot(skin_path, "shootAngles", ["idle", angles, "image/png", 1],
-                            width=_CANVAS_W, height=int(_CANVAS_W * 1.3), zoom=_ZOOM)
+        urls = await _shoot(skin_path, "shootAngles", ["still", angles, "image/png", 1],
+                            width=_CANVAS_W, height=int(_CANVAS_W * 1.3), zoom=_ZOOM,
+                            cape_path=cape_path)
     except Exception as e:
         logger.error("三视图渲染失败: %s", e, exc_info=True)
         return None, f"渲染失败: {e}"

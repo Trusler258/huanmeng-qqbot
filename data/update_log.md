@@ -114,6 +114,20 @@
 （`IdleAnimation` + `speed = 0`）专供旋转展示用；`idle` 保留给动作动图。
 验证方法：固定角度连取 5 帧比哈希 —— `still` 5 帧全同（unique=1），`idle` 5 帧全不同（unique=5）。
 
+**不发提示，直接出图**（用户 09:32：「不是说了不要提示吗」）：
+`/~skin` 原来会先回一句「在做了，…几秒出图」，用户要的是**完全静默**。
+改为 `return None`（指令层约定：无返回值 = 不回复），后台生成完直接把图发出来；
+只有参数为空时才回用法，失败时才回错误。
+
+**披风可选**（用户 09:32：「三视图怎么不带披风…带披风后面加 capes 不带就这样默认」）：
+- 加 `capes` / `披风` 参数才加载披风，默认不带
+- 披风不在皮肤 PNG 里，要走 `sessionserver.mojang.com/.../profile/<uuid>` 的
+  `properties[textures].CAPE.url`（base64 解出 JSON），再下载纹理
+- 页面上 `viewer.loadCape(dataUrl)`；取不到披风（例如 Notch 没挂披风）就按无披风照常出图，
+  不额外打扰用户
+- 引用图片模式没有 UUID，无法取披风，忽略该参数
+- 实测 jeb_：正面看不到、侧面红色披风垂在身后、背面完全展开，效果正确
+
 ### 验证（持久化 + 皮肤）
 - `modules/agnes.py` 任务表：登记 → pending=1 → 删除 → pending=0
 - `services/skin_render.py` 服务器实跑：Notch 皮肤 120 帧 / **16~26 秒** / **1.7~1.9MB**；

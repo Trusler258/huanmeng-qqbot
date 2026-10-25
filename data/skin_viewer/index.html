@@ -68,8 +68,13 @@
   window.__ready = true;
 
   // 载入皮肤 + 指定动作
-  window.prepare = async (skinUrl, anim) => {
+  window.prepare = async (skinUrl, anim, capeUrl) => {
     await viewer.loadSkin(skinUrl);
+    // 披风可选：不传就不加载（默认无披风）
+    if (capeUrl) {
+      try { await viewer.loadCape(capeUrl); }
+      catch (e) { console.warn("cape load failed", e); }
+    }
     viewer.animation = (ANIMS[anim] || ANIMS.idle)();
     viewer.playerWrapper.rotation.y = 0;
     viewer.playerWrapper.position.y = 0;
