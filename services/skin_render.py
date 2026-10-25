@@ -301,7 +301,7 @@ async def render_spin_gif(skin_path: Path, *, fps: int = 30, seconds: float = 2.
     frames = max(12, int(round(fps * seconds)))
     t0 = time.monotonic()
     try:
-        urls = await _shoot(skin_path, "shootSpin", ["idle", frames, "image/jpeg", 0.9],
+        urls = await _shoot(skin_path, "shootSpin", ["still", frames, "image/jpeg", 0.9],
                             width=_CANVAS_W, height=int(_CANVAS_W * 1.3), zoom=_ZOOM)
     except Exception as e:
         logger.error("旋转渲染失败: %s", e, exc_info=True)

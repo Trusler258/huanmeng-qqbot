@@ -52,6 +52,9 @@
   const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
   const ANIMS = {
+    // still：冻结姿态，用于「纯旋转」展示 —— IdleAnimation 有呼吸和手臂微摆，
+    // 转圈时手还在动，用户要求这种图必须完全静止（2026-10-25）
+    still: () => { const a = new skinview3d.IdleAnimation(); a.speed = 0; return a; },
     idle: () => new skinview3d.IdleAnimation(),
     walk: () => { const a = new skinview3d.WalkingAnimation(); a.speed = 1; return a; },
     run: () => { const a = new skinview3d.RunningAnimation(); a.speed = 1; return a; },

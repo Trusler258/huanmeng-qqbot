@@ -109,6 +109,11 @@
   否则 GIF 第一帧还是站姿、开头会闪一下
 - 用法：`/~skin Notch walk`、`/~skin Notch 三视图`（动作词放前面也认）
 
+**旋转必须完全静止**（用户 09:27：「这旋转的动图怎么手还在摆,应该是完全静止的旋转」）：
+默认用的 `IdleAnimation` 带呼吸和手臂微摆，转圈时手一直在动。新增 `still` 动作
+（`IdleAnimation` + `speed = 0`）专供旋转展示用；`idle` 保留给动作动图。
+验证方法：固定角度连取 5 帧比哈希 —— `still` 5 帧全同（unique=1），`idle` 5 帧全不同（unique=5）。
+
 ### 验证（持久化 + 皮肤）
 - `modules/agnes.py` 任务表：登记 → pending=1 → 删除 → pending=0
 - `services/skin_render.py` 服务器实跑：Notch 皮肤 120 帧 / **16~26 秒** / **1.7~1.9MB**；
