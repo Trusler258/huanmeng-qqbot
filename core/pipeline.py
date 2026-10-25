@@ -104,7 +104,7 @@ def _make_interim_sender(chat_id: int, is_group: bool, user_id: int,
                 if sent_lead is not None:
                     sent_lead.append(part)
         except Exception:
-            logger.warning("先导语发送失败: %s", str(text)[:30], exc_info=True)
+            logger.warning("先导语发送失败: %s", str(text), exc_info=True)
     return _send
 
 
@@ -139,7 +139,7 @@ def _dedup_against_lead(sentences: list[str], sent_lead: list[str]) -> list[str]
                 dup = True
                 break
         if dup:
-            logger.info("先导语去重: 丢弃重复句 '%s'", s[:40])
+            logger.info("先导语去重: 丢弃重复句 '%s'", s)
         else:
             out.append(s)
     return out or sentences
@@ -485,7 +485,7 @@ def _dedup_repeated_sentences(sentences: list, chat_id: int, *,
             continue
         if any(_dup_sim(n, prev) >= threshold for prev in recent) or \
            any(_dup_sim(n, k) >= threshold for k in kept):
-            logger.info("复读去重: 丢弃重复句 %r", (s or "")[:40])
+            logger.info("复读去重: 丢弃重复句 %r", (s or ""))
             continue
         out.append(s)
         kept.append(n)
@@ -613,7 +613,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if quoted_msg:
         quote_line = f"[引用原文] {quoted_msg}"
         ctx.append_to_context(chat_id, _ctx_safe(quote_line, 300))
-        logger.info("📎 引用消息已注入上下文 [%d]: '%s'...", chat_id, quoted_msg[:50])
+        logger.info("📎 引用消息已注入上下文 [%d]: '%s'...", chat_id, quoted_msg)
 
     # ------上下文记录------
     role_tag = cfg.get_user_tag(user_id, chat_id if is_group else 0)
@@ -658,7 +658,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         #   代码保真）——旧正则在第一个换行截断，多行代码只剩第一行
         if _re.match(r'/~\s*run\b', full_cmd):
             full_cmd = msg_content
-        logger.info("指令拦截: '%s' from=%s", full_cmd[:80].replace("\n", " | "), sender_name)
+        logger.info("指令拦截: '%s' from=%s", full_cmd.replace("\n", " | "), sender_name)
         await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message)
         return
 
@@ -954,7 +954,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 import json as _json
                 persona_json = _json.dumps(custom, ensure_ascii=False)
                 system_prompt_for_llm = f"PERSONA:::{persona_json}:::{cfg.system_prompt}"
-                logger.debug("私聊人格注入(全替换) [%d]: core=%s...", user_id, custom.get("core", "")[:40])
+                logger.debug("私聊人格注入(全替换) [%d]: core=%s", user_id, custom.get("core", ""))
             else:
                 # 无 persona：清除记忆覆盖
                 set_persona_override(user_id, None)
@@ -1026,7 +1026,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                 user_id=user_id, group_id=chat_id, sender_name=sender_name,
                 is_group=is_group, bot_qq=bot_qq,
             )
-            logger.info("代码生成管道完成: chat=%d result=%s", chat_id, result[:80])
+            logger.info("代码生成管道完成: chat=%d result=%s", chat_id, result)
             return
         except Exception as e:
             logger.warning("代码生成管道失败: %s，回退正常生成", e)
@@ -1137,7 +1137,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     filtered = []
     for s in sentences:
         if _ctx_pattern.match(s):
-            logger.warning("LLM 回显上下文格式，已过滤: '%s'", s[:60])
+            logger.warning("LLM 回显上下文格式，已过滤: '%s'", s)
             continue
         filtered.append(s)
     if not filtered:
@@ -1190,7 +1190,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             _found = _cmd_re.findall(_line)
             if _found:
                 logger.warning("回复正文含指令语法，已清理（不执行）: %s | 行: %s",
-                               [f"/~{n}" for n, _ in _found][:3], _line[:60])
+                               [f"/~{n}" for n, _ in _found], _line)
                 _line = _cmd_re.sub("", _line).strip()
                 if not _line:
                     continue
@@ -1486,7 +1486,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     #   与下面「纯 note 不触发追加回复」(_note_only) 同源，都是 note 专属的静默处理。
     if executed_calls and all(name == "note" for name, _ in executed_calls) and len(sentences) > 1:
         logger.info("note 专用回复裁到 1 句（原 %d 句），丢弃: %s",
-                    len(sentences), [s[:30] for s in sentences[1:]])
+                    len(sentences), [s for s in sentences[1:]])
         sentences = sentences[:1]
 
     # ★ v2.3.107: 只合并碎片（详见 _merge_short_replies 注释）
@@ -1723,7 +1723,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     if isinstance(r, str) and r.startswith("[CALL错误]"):
                         continue
                     short = r[:200] + "..." if len(r) > 200 else r
-                    logger.info("CALL结果: %s", short[:80])
+                    logger.info("CALL结果: %s", short)
 
             # ★ v2.3.6: 结果自带图片（如 /~赞赏 的赞赏码）→ 原样直发，不进 LLM 转述。
             #   根因：转述必丢 CQ 码——LLM 不会把 [CQ:image,file=…] 原样吐回来，
@@ -1736,7 +1736,7 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             if _cq_texts:
                 for r in _cq_texts:
                     ctx.append_to_context(chat_id, f"[系统] 调用结果: {_ctx_safe(r)}")
-                    logger.info("CALL结果含图，直发（跳过 LLM 转述）: %s", r[:60])
+                    logger.info("CALL结果含图，直发（跳过 LLM 转述）: %s", r)
                     await send_by_chat_type(r, chat_id if is_group else chat_id,
                                            is_group=True if is_group else False,
                                            user_id=user_id if not is_group else None)

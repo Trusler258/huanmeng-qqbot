@@ -57,7 +57,7 @@ async def search_levels(
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, params=params)
             if resp.status_code != 200:
-                logger.error("[TUFAPI] 搜索失败 HTTP %d: %s", resp.status_code, resp.text[:200])
+                logger.error("[TUFAPI] 搜索失败 HTTP %d: %s", resp.status_code, resp.text)
                 return {"results": [], "total": 0, "hasMore": False, "error": f"HTTP {resp.status_code}"}
             
             data = resp.json()
@@ -203,7 +203,7 @@ async def download_image(url: str, save_path: Path) -> bool:
     Returns:
         是否下载成功
     """
-    logger.info("[TUFAPI] 下载图片: %s → %s", url[:60], save_path.name)
+    logger.info("[TUFAPI] 下载图片: %s → %s", url, save_path.name)
     
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:

@@ -370,7 +370,7 @@ def fetch_content(url: str, timeout: float = 6.0, max_chars: int = 2500) -> str 
         resp.encoding = resp.apparent_encoding or "utf-8"
         html = resp.text
     except Exception as e:
-        logger.debug("抓取失败 [%s]: %s", url[:50], e)
+        logger.debug("抓取失败 [%s]: %s", url, e)
         return None
 
     title = ""
@@ -489,7 +489,7 @@ class AgentSearch:
         t0 = time.time()
         optimized, main, keywords, year = preprocess_query(raw_query)
         logger.info("[Agent搜索] 原始='%s' → 优化='%s' 年份=%s",
-                    raw_query[:40], optimized[:60], year)
+                    raw_query, optimized, year)
 
         results = self._search_all_sources(optimized, main, limit, **filters)
 

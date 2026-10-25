@@ -69,7 +69,7 @@ async def is_writing_request(msg: str, chat_history: list[str] | None = None) ->
             max_tokens=10, temperature=0.1, timeout=5.0,
         )
         label = (result or "").strip().lower()
-        logger.info("意图判断: '%s' → %s", msg[:40], label)
+        logger.info("意图判断: '%s' → %s", msg, label)
         return "writing" in label
     except Exception as e:
         logger.debug("意图判断失败, 回退关键词: %s", e)

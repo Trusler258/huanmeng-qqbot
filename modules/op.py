@@ -570,7 +570,7 @@ async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
         if len(value) > 2000:
             return f"{sub} 描述过长（上限2000字），请精简后重试喵~"
         set_persona_field(user_id, sub, value, cur_ver)
-        logger.info("用户 %d 设置 persona.%s: %s...", user_id, sub, value[:40])
+        logger.info("用户 %d 设置 persona.%s: %s", user_id, sub, value)
         return f"{sub} 已设置喵～\n\n如需恢复默认: /~persona reset\n如需清空记忆: /~persona memory reset"
 
     # 默认：单文本设 core（兼容旧用法 /~persona <text>）
@@ -578,7 +578,7 @@ async def cmd_persona(args, user_id, group_id, sender_name, is_group, bot_qq):
     if len(persona) > 2000:
         return "人格描述过长（上限2000字），请精简后重试喵~"
     set_persona_field(user_id, "core", persona, cur_ver)
-    logger.info("用户 %d 设置 persona.core: %s...", user_id, persona[:40])
+    logger.info("用户 %d 设置 persona.core: %s", user_id, persona)
     return f"核心人格已设置喵～\n\n当前人格:\n{persona[:2000]}\n\n如需恢复默认: /~persona reset"
 
 

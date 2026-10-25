@@ -432,7 +432,7 @@ async def _download_tuf_level(level_data: dict, save_dir: Path) -> Optional[Path
     filename = f"{safe_name}_{level_id}.tuf"
     save_path = save_dir / filename
 
-    logger.info("[TUFDownload] 下载谱面: %s → %s", dl_link[:60], filename)
+    logger.info("[TUFDownload] 下载谱面: %s → %s", dl_link, filename)
 
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:

@@ -224,7 +224,7 @@ class QzoneClient:
             code_i = 0
         ok = code_i == 0 or bool(data.get("data")) or bool(data.get("msglist"))
         if not ok:
-            logger.warning("Qzone 写入返回非 0：%s", str(data)[:200])
+            logger.warning("Qzone 写入返回非 0：%s", str(data))
         return ok
 
 

@@ -136,16 +136,16 @@ async def decide(state, questions: dict, *, timeout: float = _TIMEOUT):
                 json=payload,
             )
         if r.status_code != 200:
-            logger.warning("决策模型 HTTP %s（fail-open）: %s", r.status_code, (r.text or "")[:120])
+            logger.warning("决策模型 HTTP %s（fail-open）: %s", r.status_code, (r.text or ""))
             return None
         data = r.json() or {}
         ans = data.get("answers")
         if not isinstance(ans, dict):
-            logger.warning("决策模型响应无 answers（fail-open）: %s", str(data)[:120])
+            logger.warning("决策模型响应无 answers（fail-open）: %s", str(data))
             return None
         return ans
     except Exception as e:  # noqa: BLE001 —— fail-open：绝不把异常抛给主流程
-        logger.warning("决策模型调用失败（fail-open）: %s: %s", type(e).__name__, str(e)[:120])
+        logger.warning("决策模型调用失败（fail-open）: %s: %s", type(e).__name__, str(e))
         return None
 
 

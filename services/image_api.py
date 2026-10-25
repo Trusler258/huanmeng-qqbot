@@ -79,11 +79,11 @@ class ImageCache:
         if time.time() - timestamp > _CACHE_TTL_SECONDS:
             del self._cache[md5_hash]
             self._dirty = True
-            logger.debug("缓存过期(MD5=%s...)", md5_hash[:12])
+            logger.debug("缓存过期(MD5=%s)", md5_hash)
             return None
         
         desc = entry.get("desc", "")
-        logger.info("图片识别缓存命中 MD5=%s... → '%s...'", md5_hash[:12], desc[:40])
+        logger.info("图片识别缓存命中 MD5=%s → '%s'", md5_hash, desc)
         return desc
 
     def set(self, md5_hash: str, description: str):
@@ -147,7 +147,7 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
     cache = _get_cache()
     
     # ── Step 1: 下载图片（异步）──
-    logger.info("[chat=%d] 开始下载图片: %s...", chat_id, image_url[:60])
+    logger.info("[chat=%d] 开始下载图片: %s", chat_id, image_url)
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(image_url)
@@ -166,7 +166,7 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
         return cached_desc
 
     # ── Step 3: 调用视觉 LLM ──
-    logger.info("[chat=%d] 调用视觉模型识别图片 (MD5=%s...) model=%s", chat_id, md5_hex[:12], image_model.name)
+    logger.info("[chat=%d] 调用视觉模型识别图片 (MD5=%s) model=%s", chat_id, md5_hex, image_model.name)
     try:
         client = OpenAI(api_key=image_model.key, base_url=image_model.url, timeout=20.0)
         
@@ -248,7 +248,7 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
             logger.debug("[chat=%d] 剥离 %d 字符的 <think> 块", chat_id, len(description) - len(think_stripped))
             description = think_stripped
         if reasoning:
-            logger.debug("[chat=%d] 推理链 reasoning_content (%d chars): %s...", chat_id, len(reasoning), reasoning[:100])
+            logger.debug("[chat=%d] 推理链 reasoning_content (%d chars): %s", chat_id, len(reasoning), reasoning)
             # ★ 兜底：content 空但 reasoning 有内容时（推理模型），从 reasoning 提取描述
             if not description.strip():
                 import re as _re2
@@ -257,11 +257,11 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
                 _cleaned = _cleaned.strip().replace("\n", " ")
                 if _cleaned:
                     description = _cleaned[:200]
-                    logger.info("[chat=%d] 从推理链提取描述 (model=%s): %s...", chat_id, image_model.name, description[:50])
-        logger.info("[chat=%d] 图片识别成功 (model=%s): %s...", chat_id, image_model.name, description[:50])
+                    logger.info("[chat=%d] 从推理链提取描述 (model=%s): %s", chat_id, image_model.name, description)
+        logger.info("[chat=%d] 图片识别成功 (model=%s): %s", chat_id, image_model.name, description)
 
     except asyncio.TimeoutError:
-        logger.error("图片识别超时(25s), model=%s, MD5=%s...", image_model.name, md5_hex[:12])
+        logger.error("图片识别超时(25s), model=%s, MD5=%s", image_model.name, md5_hex)
         raise Exception(f"图片识别超时(25s), model={image_model.name}")
     except Exception as e:
         logger.error("图片识别失败: %s (model=%s)", e, image_model.name)
@@ -273,7 +273,7 @@ async def recognize_image(image_url: str, image_model: ModelConfig, chat_id: int
         # ★ 写入图片仓库
         _save_to_repo(md5_hex, description.strip(), author="", chat_id=0)
     else:
-        logger.warning("图片识别结果为空，不缓存 (MD5=%s... model=%s)", md5_hex[:12], image_model.name)
+        logger.warning("图片识别结果为空，不缓存 (MD5=%s model=%s)", md5_hex, image_model.name)
     return description
 
 
@@ -301,7 +301,7 @@ def _save_to_repo(md5_hex: str, description: str, author: str = "", chat_id: int
         }
         with open(_REPO_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        logger.debug("图片仓库追加: MD5=%s... → '%s'", md5_hex[:12], description[:30])
+        logger.debug("图片仓库追加: MD5=%s → '%s'", md5_hex, description)
     except Exception as e:
         logger.warning("图片仓库写入失败: %s", e)
 

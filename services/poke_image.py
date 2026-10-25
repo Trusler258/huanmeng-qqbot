@@ -380,7 +380,7 @@ async def generate(
                 low = r.text.lower()
                 if any(k in low for k in ("size", "resolution", "尺寸", "格式无效")):
                     logger.warning("模型 %s 拒绝 size=%s，退回 auto 重试: %s",
-                                   model, body.get("size"), r.text[:120])
+                                   model, body.get("size"), r.text)
                     body.pop("size", None)
                     r = await c.post(
                         f"{base_url()}/v1/images/generations",
@@ -491,10 +491,10 @@ async def edit(
                 last = out.get("error", "")
                 if out.get("channel_error"):
                     return out
-                logger.warning("multipart edits 失败: %s，试 JSON 图片 URL", last[:140])
+                logger.warning("multipart edits 失败: %s，试 JSON 图片 URL", last)
         except Exception as e:
             last = _err_text(e)
-            logger.warning("multipart edits 异常: %s，试 JSON 图片 URL", last[:140])
+            logger.warning("multipart edits 异常: %s，试 JSON 图片 URL", last)
 
     # ── 方式二：JSON 传图片 URL ──
     if image_url:
@@ -514,7 +514,7 @@ async def edit(
                     return out
         except Exception as e:
             last = last or _err_text(e)
-            logger.warning("JSON edits 异常: %s", last[:140])
+            logger.warning("JSON edits 异常: %s", last)
 
     return {"error": last or "参考图生图失败"}
 

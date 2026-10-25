@@ -81,7 +81,7 @@ def add_note(chat_id, text: str) -> str:
 
     kind = _privacy_kind(text)
     if kind:
-        logger.warning("拒绝记录疑似隐私(%s): %s", kind, text[:40])
+        logger.warning("拒绝记录疑似隐私(%s): %s", kind, text)
         return f"这条含疑似{kind}，涉及隐私我就不记了"
 
     lines = _load_lines(chat_id)
@@ -96,7 +96,7 @@ def add_note(chat_id, text: str) -> str:
     if len(lines) > MAX_NOTES:
         lines = lines[-MAX_NOTES:]
     _save_lines(chat_id, lines)
-    logger.info("新增笔记 chat=%s: %s", chat_id, text[:60])
+    logger.info("新增笔记 chat=%s: %s", chat_id, text)
     return f"已记下：{text}"
 
 
@@ -160,7 +160,7 @@ def update_note(chat_id, index: int, new_text: str) -> str:
     tag = datetime.now().strftime("%m-%d")
     lines[index - 1] = f"- [{tag}] {new_text}"
     _save_lines(chat_id, lines)
-    logger.info("修改笔记 chat=%s #%d: %s → %s", chat_id, index, old[:30], new_text[:60])
+    logger.info("修改笔记 chat=%s #%d: %s → %s", chat_id, index, old, new_text)
     return f"已改第{index}条：{old} → {new_text}"
 
 

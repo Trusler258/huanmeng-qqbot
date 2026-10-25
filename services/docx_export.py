@@ -333,7 +333,7 @@ def _append_omml(paragraph, latex: str, size_pt: float = 10.5) -> bool:
         paragraph._p.append(parse_xml(om))
         return True
     except Exception as e:
-        logger.warning("公式转 OMML 失败（改回文本下标）: %s | %s", latex[:40], e)
+        logger.warning("公式转 OMML 失败（改回文本下标）: %s | %s", latex, e)
         return False
 
 

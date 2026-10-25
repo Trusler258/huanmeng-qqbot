@@ -384,7 +384,7 @@ async def update_one(key: str, msgs: list[str], date_str: str,
 
     fields = _parse_fields(raw or "")
     if not fields:
-        logger.warning("画像更新解析失败 key=%s raw=%r", key, (raw or "")[:120])
+        logger.warning("画像更新解析失败 key=%s raw=%r", key, (raw or ""))
         return False
 
     # 昵称优先用配置里的（分群昵称比 LLM 猜的准）；配置拿不到才用 LLM 的

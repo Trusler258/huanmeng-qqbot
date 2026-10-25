@@ -58,7 +58,7 @@ async def download_file(url: str, save_path: str, timeout: float = 30.0) -> bool
             logger.info("本地复制成功: %s (%d bytes)", save_path, os.path.getsize(save_path))
             return True
 
-        logger.info("下载: %s → %s", url[:80], save_path)
+        logger.info("下载: %s → %s", url, save_path)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url)
             response.raise_for_status()
@@ -209,7 +209,7 @@ async def process_error_report(file_url: str, filename: str, sender_name: str) -
         logger.debug("文件名不含关键词: %s (decoded: %s)", filename, unquote(filename))
         return None
 
-    logger.info("检测到错误报告: %s (url=%s...)", filename, file_url[:60])
+    logger.info("检测到错误报告: %s (url=%s)", filename, file_url)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         zip_path = os.path.join(tmp_dir, "error_report.zip")
@@ -364,7 +364,7 @@ async def process_text_file(file_url: str, filename: str, max_len: int = 12000) 
     """
     if not (is_text_file(filename)):
         return None
-    logger.info("检测到可读文件: %s (url=%s...)", filename, file_url[:60])
+    logger.info("检测到可读文件: %s (url=%s)", filename, file_url)
     with tempfile.TemporaryDirectory() as tmp_dir:
         safe_name = os.path.basename(filename) or "input.bin"
         fpath = os.path.join(tmp_dir, "input_" + safe_name)

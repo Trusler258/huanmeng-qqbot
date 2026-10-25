@@ -17,7 +17,7 @@ _presets: dict[int, str] = {}
 def set_preset(chat_id: int, text: str):
     """设置某个聊天会话的系统提示词注入"""
     _presets[chat_id] = text
-    logger.info("提示词注入 [%d]: %s...", chat_id, text[:60])
+    logger.info("提示词注入 [%d]: %s", chat_id, text)
 
 
 def get_preset(chat_id: int) -> str:

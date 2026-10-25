@@ -1545,7 +1545,7 @@ async def call_llm(
         max_tokens = None
 
     logger.info("调用LLM [%s] url=%s tokens=%s temp=%.1f timeout=%.1fs",
-                 model_cfg.name[:20], model_cfg.url.split('/')[-2] if '/' in model_cfg.url else model_cfg.url[:20],
+                 model_cfg.name, model_cfg.url.split('/')[-2] if '/' in model_cfg.url else model_cfg.url,
                  str(max_tokens), temperature, timeout)
     
     start_time = loop.time()
@@ -1577,7 +1577,7 @@ async def call_llm(
         
         if not text:
             logger.warning("LLM [%s] 返回空内容 | finish_reason=%s | 耗时%.1fs",
-                         model_cfg.name[:20], finish, elapsed)
+                         model_cfg.name, finish, elapsed)
             if json_mode and finish == "stop":
                 # ★ v2.0.4w: 严格 JSON —— DeepSeek json_object 偶发空返回。
                 #   不再立刻降级普通模式（降级=放弃严格JSON，容易再吐纯文本），
@@ -1620,14 +1620,14 @@ async def call_llm(
         
         preview = text[:50] + ("..." if len(text) > 50 else "")
         logger.info("LLM [%s] 返回 %d字符 耗时%.1fs → \"%s\"",
-                   model_cfg.name[:20], len(text), elapsed, preview.replace("\n", "\\n"))
+                   model_cfg.name, len(text), elapsed, preview.replace("\n", "\\n"))
         _record_call_success(model_cfg)
         return text
     except asyncio.TimeoutError:
         elapsed = loop.time() - start_time
         tb = traceback.format_exc()
         logger.error("LLM [%s] 调用超时 (%.1fs/%.1fs)\n%s",
-                     model_cfg.name[:20], elapsed, timeout, tb)
+                     model_cfg.name, elapsed, timeout, tb)
         _record_llm_error(scene, model_cfg.name, {
             "kind": "TimeoutError", "code": None,
             "summary": "请求超时（%.1fs / 上限 %.1fs）" % (elapsed, timeout),
@@ -1641,7 +1641,7 @@ async def call_llm(
         tb = traceback.format_exc()
         # 完整栈既进日志也留档（用户要求聊天里能看到整个栈）
         logger.error("LLM [%s] 调用失败 (%.1fs): %s | %s\n%s",
-                     model_cfg.name[:20], elapsed, err["summary"], err["hint"], tb)
+                     model_cfg.name, elapsed, err["summary"], err["hint"], tb)
         _record_llm_error(scene, model_cfg.name, err, tb)
         _record_call_failure(model_cfg)
         return ""
@@ -1738,8 +1738,8 @@ async def call_llm_with_tools(
                     "arguments": args,
                 })
             logger.info("LLM [%s] → tool_calls: %s",
-                       model_cfg.name[:20],
-                       [(t["name"], str(t["arguments"])[:60]) for t in tc_list])
+                       model_cfg.name,
+                       [(t["name"], str(t["arguments"])) for t in tc_list])
 
         # 记录 token 消耗（FC 轮同样记录，命中率归因用）
         try:
@@ -1765,7 +1765,7 @@ async def call_llm_with_tools(
     except asyncio.TimeoutError:
         tb = traceback.format_exc()
         logger.error("LLM FC [%s] 超时（%.1fs）\n%s",
-                     model_cfg.name[:20], timeout, tb)
+                     model_cfg.name, timeout, tb)
         _record_llm_error(scene, model_cfg.name, {
             "kind": "TimeoutError", "code": None,
             "summary": "FC 轮次请求超时（上限 %.1fs）" % timeout,
@@ -1777,7 +1777,7 @@ async def call_llm_with_tools(
         err = _classify_llm_error(e, timeout)
         tb = traceback.format_exc()
         logger.error("LLM FC [%s] 失败: %s | %s\n%s",
-                     model_cfg.name[:20], err["summary"], err["hint"], tb)
+                     model_cfg.name, err["summary"], err["hint"], tb)
         _record_llm_error(scene, model_cfg.name, err, tb)
         _record_call_failure(model_cfg)
         return ToolCallResult(content="", tool_calls=[])
@@ -2025,10 +2025,23 @@ _TOOL_PROMISE_RE = re.compile(
 )
 
 
+# ★ v2.3.107：假设式/条件式/提议式不算承诺。
+#   事故（2026-10-26 01:41 群 2000000003）：bot 回「你要真嘴馋，我帮你查查附近有什么好吃的」，
+#   被 `帮你查` 命中 → 触发强制补调用 → 模型在没有用户诉求的情况下自己挑了 write_code，
+#   凭空生成「群友发言记录.docx」发进群。这句是提议，不是"我现在就去做"。
+_CONDITIONAL_RE = re.compile(
+    r"(要真|要是|如果|假如|假设|真想|想看|想听|想玩|的话|要不要|想不想"
+    r"|需要[就的]|哪天|下次|以后|回头|改天|可以帮|能帮|要不要帮)"
+)
+# 句子切分（保留内容，不跨句判断条件）
+_SENT_SPLIT_RE = re.compile(r"[。！？!?~～\n]+")
+
+
 def _looks_like_tool_promise(content: str | None) -> bool:
-    """回复内容里是否**承诺了要调用工具（查/搜）**。
+    """回复内容里是否**承诺了要调用工具（查/搜/出文件）**。
 
     只解析 replies 文本，避免匹配到 JSON 的键名（如 "calls"）。
+    ★ v2.3.107：按句判断，句内带条件/假设/提议词的一律不算承诺。
     """
     if not content:
         return False
@@ -2040,7 +2053,38 @@ def _looks_like_tool_promise(content: str | None) -> bool:
             txt = " ".join(str(x) for x in rs if isinstance(x, str))
         except Exception:
             pass  # 解析失败就用原文找
-    return bool(_TOOL_PROMISE_RE.search(txt))
+    for sent in _SENT_SPLIT_RE.split(txt):
+        if not sent or not _TOOL_PROMISE_RE.search(sent):
+            continue
+        if _CONDITIONAL_RE.search(sent):
+            # 「你要真嘴馋，我帮你查查」→ 提议，跳过
+            continue
+        return True
+    return False
+
+
+def _promise_tool_subset(tools: list, current_msg: str, content: str | None) -> list:
+    """承诺补调用时能用的工具子集。
+
+    ★ v2.3.107：原来把**全部工具**丢回去重来，模型会凭空挑一个（事故里挑了 write_code）。
+    这里只留与"上一句承诺的动作"相符的工具：
+      · write_code 仅在用户确实要文件、或承诺句里提到文件/代码时才给
+      · note / ignore_user 这类与承诺无关的指令类工具一律剔除
+    """
+    _text = f"{current_msg or ''} {content or ''}"
+    allow_file = _needs_deliverable_file(current_msg or "") or bool(
+        re.search(r"(文件|文档|代码|脚本|网页|页面|程序|附件|md|markdown|docx|word|txt)",
+                  _text, re.IGNORECASE))
+    out = []
+    for t in tools or []:
+        fn = (t or {}).get("function") or {}
+        name = fn.get("name") or ""
+        if name == "write_code" and not allow_file:
+            continue
+        if name in ("note", "ignore_user", "agent_think"):
+            continue
+        out.append(t)
+    return out or tools
 
 
 async def generate_multi_reply_with_tools(
@@ -2098,7 +2142,7 @@ async def generate_multi_reply_with_tools(
     #   形态由调用方按内容与历史抽样决定，这里只负责注入。
     if rhythm_hint:
         system_prompt = f"{system_prompt}\n\n{rhythm_hint}"
-        logger.debug("注入本轮节奏: %s", rhythm_hint[:40])
+        logger.debug("注入本轮节奏: %s", rhythm_hint)
     elif reply_length:
         # 回滚兼容：没给节奏时退回旧的长度档位（文案在 config/prompts.toml [len_hint]）
         _len_hint = _prompt("len_hint", reply_length)
@@ -2176,17 +2220,19 @@ async def generate_multi_reply_with_tools(
             _promise_retried = True
             logger.warning(
                 "检测到「承诺调用工具但 calls 为空」→ 补一轮强制调用 | 原文=%s",
-                (result.content or "")[:70])
+                (result.content or ""))
             try:
                 _retry_msgs = list(msgs) + [
                     {"role": "assistant", "content": result.content},
                     # 文案在 config/prompts.toml 的 [promise_retry]（提示词不进 .py）
                     {"role": "user", "content": _prompt(
                         "promise_retry", "user",
-                        "你上一句说要去做，但这一轮没调用任何工具。现在立刻调用工具把它做完。")},
+                        "你上一句说要去做，但这一轮没调用任何工具。只调用与上一句所述动作一致的工具，不要另起一件不相干的事。")},
                 ]
+                # ★ v2.3.107：只给与承诺相符的工具，防模型凭空挑 write_code 生成文件
+                _retry_tools = _promise_tool_subset(tools, current_msg, result.content)
                 _r2 = await call_llm_with_tools(
-                    reply_model, _retry_msgs, tools,
+                    reply_model, _retry_msgs, _retry_tools,
                     max_tokens=max_tokens, temperature=0.4,
                     scene="reply_tools", thinking=thinking,
                     frequency_penalty=_REPLY_FREQ_PENALTY,
@@ -2216,7 +2262,7 @@ async def generate_multi_reply_with_tools(
                 )
                 if json_raw and json_raw.strip():
                     result.content = json_raw
-                    logger.info("json_mode 兜底成功: %s...", json_raw[:80])
+                    logger.info("json_mode 兜底成功: %s", json_raw)
                 else:
                     logger.error("json_mode 兜底仍失败，放弃")
                     break
@@ -2278,7 +2324,7 @@ async def generate_multi_reply_with_tools(
                         json_raw = await call_llm(reply_model, msgs, max_tokens=max(max_tokens or 0, 4000), temperature=0.3, json_mode=True, frequency_penalty=_REPLY_FREQ_PENALTY)  # v2.0.4w
                         if json_raw and json_raw.startswith("{"):
                             result.content = json_raw
-                            logger.info("json_mode 补救成功: %s...", json_raw[:80])
+                            logger.info("json_mode 补救成功: %s", json_raw)
                         else:
                             # 补救也失败：宁可留首次的残缺内容（下游 _parse_reply
                             # 有纯文本兜底），也不要空手而归
@@ -2320,12 +2366,12 @@ async def generate_multi_reply_with_tools(
                         await thought_shown_cb(round(result.reasoning_duration))
                     except Exception:
                         logger.warning("FC: 思考标记回调失败: %s", exc_info=True)
-                logger.info("FC: 轮1先导语先发 (%d字): %s", len(lead), lead[:60])
+                logger.info("FC: 轮1先导语先发 (%d字): %s", len(lead), lead)
                 try:
                     await interim_cb(lead)
                     lead_sent = True
                 except Exception:
-                    logger.warning("FC: 先导语发送失败: %s...", lead[:30], exc_info=True)
+                    logger.warning("FC: 先导语发送失败: %s", lead, exc_info=True)
 
         logger.info("FC: 轮%d 检测到 %d 个工具调用", round_idx + 1, len(result.tool_calls))
         # ★ v2.3.42: 保留进历史的轮 content 必须与"用户实际看到的"一致。
@@ -2736,7 +2782,7 @@ def _parse_reply(
 
     except json.JSONDecodeError:
         if not quiet:
-            logger.warning("JSON解析失败，尝试修复: %s...", raw[:80])
+            logger.warning("JSON解析失败，尝试修复: %s", raw)
         try:
             # 先尝试补全截断的 JSON（加缺失的 }]）
             fixed = raw.rstrip()
@@ -3001,7 +3047,7 @@ async def generate_multi_reply(
         logger.warning("多句回复生成为空，将使用 fallback")
         return [], 0, [], "", "", "", None, None, "user", {}, [], []
 
-    logger.debug("多句生成原始输出: %s", raw[:200])
+    logger.debug("多句生成原始输出: %s", raw)
 
     # ------JSON解析（含防幻觉清洗）------
     try:
@@ -3057,7 +3103,7 @@ async def generate_multi_reply(
                    len(replies), fav_change, len(calls), mood, action or "-")
         return replies, fav_change, calls, face_cq, mood, mood_detail, action, at_qq, mode_switch, origin, actor, instructs
     except json.JSONDecodeError:
-        logger.warning("JSON解析失败，尝试修复: %s...", raw[:80])
+        logger.warning("JSON解析失败，尝试修复: %s", raw)
         # 修复 JSON 中最常见错误：replies 数组里未转义的双引号
         try:
             # 1. 用正则定位 replies 数组
@@ -3097,7 +3143,7 @@ async def generate_multi_reply(
                             return parts, fav_change, [], "", "", None, "", None, None, "user", {}
         except Exception:
             pass
-        logger.warning("修复也失败，回退旧格式: %s...", raw[:80])
+        logger.warning("修复也失败，回退旧格式: %s", raw)
         raw = raw.replace("\\n", "\n")
         raw_cleaned, fav_change = _extract_fav_change(raw)
         sentences = _clean_sentences(raw_cleaned)
@@ -3137,7 +3183,7 @@ async def judge_interest(
         return 0
     interest = int(digits)
     interest = min(10, max(0, interest))
-    logger.debug("精细兴趣度判断: msg='%s...' → %d/10", msg[:30], interest)
+    logger.debug("精细兴趣度判断: msg='%s' → %d/10", msg, interest)
     return interest
 
 
@@ -3165,7 +3211,7 @@ async def judge_should_reply_cheap(
         scene="judge",
     )
     should = result.strip() == "1"
-    logger.debug("廉价判断模型: msg='%s...' → %s", msg[:30], "REPLY" if should else "SKIP")
+    logger.debug("廉价判断模型: msg='%s' → %s", msg, "REPLY" if should else "SKIP")
     return should
 
 
@@ -3192,7 +3238,7 @@ async def judge_need_search(
         scene="judge_search",
     )
     need = result.strip() == "1"
-    logger.debug("搜索判断: msg='%s...' → %s", msg[:30], "SEARCH" if need else "NO_SEARCH")
+    logger.debug("搜索判断: msg='%s' → %s", msg, "SEARCH" if need else "NO_SEARCH")
     return need
 
 
@@ -3218,8 +3264,8 @@ async def call_judgment_pipeline(
     #   防止"每条群消息白等超时秒数"把 per-group 串行队列堵死（指令也被拖）。
     if has_cheap and is_model_circuit_open(cheap_model):
         _interest, _cheap, _arch = _fallback_judge(msg, personality)
-        logger.warning("熔断[%s] 生效 → 规则兜底: msg='%s...' cheap=%s interest=%d (剩%.0fs)",
-                       cheap_model.name.split("/")[-1][:24], msg[:20], _cheap, _interest,
+        logger.warning("熔断[%s] 生效 → 规则兜底: msg='%s' cheap=%s interest=%d (剩%.0fs)",
+                       cheap_model.name.split("/")[-1], msg, _cheap, _interest,
                        max(0.0, _CIRCUIT.get(_circuit_key(cheap_model), {}).get("open_until", 0) - _time.time()))
         return _interest, _cheap, _arch
 
@@ -3293,7 +3339,7 @@ async def _judge_combined(
     )
     result = await call_llm(model, [{"role": "user", "content": prompt}], max_tokens=20, temperature=0.4, timeout=5.0)  # v2.0.4r: 15s→5s
     result = result.strip()
-    logger.debug("合并判断: '%s...' → '%s'", msg[:30], result)
+    logger.debug("合并判断: '%s' → '%s'", msg, result)
     # ★ v2.0.4r: call_llm 失败返回 ""（与模型说"0|0|0"同形）。这里区分：
     #   空串/无法解析 = 调用失败 → 走规则兜底并返回，避免误判"不该回"而静默
     if not result:
@@ -3330,7 +3376,7 @@ async def call_summary_model(
     )
     
     if result:
-        logger.info("对话摘要生成: %s...", result[:50])
+        logger.info("对话摘要生成: %s", result)
     else:
         logger.warning("对话摘要生成为空")
     

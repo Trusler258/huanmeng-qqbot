@@ -1134,9 +1134,9 @@ async def _read_url(url: str) -> str | None:
         _txt = ((_page or {}).get("content") or "").strip()
         if len(_txt) >= 200:
             _title = ((_page or {}).get("title") or "").strip()
-            logger.info("DS Fetch 命中: %s → %d 字符", url[:50], len(_txt))
+            logger.info("DS Fetch 命中: %s → %d 字符", url, len(_txt))
             return (f"# {_title}\n\n{_txt}" if _title else _txt)[:12000]
-        logger.info("DS Fetch 未取到正文，回退本地抓取: %s", url[:50])
+        logger.info("DS Fetch 未取到正文，回退本地抓取: %s", url)
     except Exception as e:
         logger.warning("DS Fetch 异常: %s，回退本地抓取", e)
 
@@ -1154,7 +1154,7 @@ async def _read_url(url: str) -> str | None:
     if not raw_text or len(raw_text.strip()) < 200:
         decoded = _decode_js_challenge(url)
         if decoded:
-            logger.info("JS 挑战页解码成功: %s (%d字)", url[:40], len(decoded))
+            logger.info("JS 挑战页解码成功: %s (%d字)", url, len(decoded))
             raw_text = decoded
 
     if not raw_text or len(raw_text.strip()) < 200:
@@ -1171,7 +1171,7 @@ async def _read_url(url: str) -> str | None:
             rendered = await page.evaluate("() => document.body ? document.body.innerText : ''")
             await page.close()
             if rendered and len(rendered.strip()) > len(raw_text or ""):
-                logger.info("Chromium 渲染兜底成功: %s (%d字)", url[:40], len(rendered))
+                logger.info("Chromium 渲染兜底成功: %s (%d字)", url, len(rendered))
                 raw_text = rendered.strip()[:6000]
         except Exception as e:
             logger.warning("Chromium 渲染兜底失败: %s", e)
@@ -1207,7 +1207,7 @@ async def _read_url(url: str) -> str | None:
             timeout=20.0,
         )
         if summary and summary.strip():
-            logger.info("网页摘要完成: %s (%d→%d字)", url[:50], len(raw_text), len(summary))
+            logger.info("网页摘要完成: %s (%d→%d字)", url, len(raw_text), len(summary))
             return summary.strip()
     except Exception as e:
         logger.warning("LLM 摘要失败，返回原文: %s", e)
@@ -1282,6 +1282,22 @@ def _extract_stats(player: str, stat: str, raw: str) -> str:
     return " | ".join(lines) if lines else "无数据"
 
 
+# ── write_code 前置闸：用户到底要不要文件 ──────────────────
+# 事故（2026-10-26 01:41 群 2000000003）：模型被强制补调用后凭空挑了 write_code，
+# 生成「群友发言记录.docx」发群。闸门只看"用户这句话有没有提文件/代码"，
+# 有就放行（哪怕描述是模型自己组织的素材），没有就拒，让模型回去正常说话。
+_FILE_REQUEST_RE = re.compile(
+    r"(文件|文档|附件|代码|脚本|程序|网页|页面|游戏|函数|算法|爬虫|插件"
+    r"|md|markdown|txt|docx|doc|word|pdf|ppt|pptx|excel|xlsx|表格|报告|清单|课件"
+    r"|写个|写一个|写份|写段|做一个|做个|实现|整理成|汇总成|导出|生成一份|生成个)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_file_request(msg: str | None) -> bool:
+    return bool(_FILE_REQUEST_RE.search(msg or ""))
+
+
 async def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -1319,7 +1335,7 @@ async def execute_tool(
         _applied = _ignore_user(user_id, _mins)
         logger.info("自我忽略: %s(%s) %d 分钟 | 原因=%s",
                     sender_name, user_id, _applied,
-                    (arguments.get("reason") or "")[:60])
+                    (arguments.get("reason") or ""))
         return f"已忽略对方 {_applied} 分钟"
 
     if tool_name == "learn_slang":
@@ -1357,6 +1373,14 @@ async def execute_tool(
     if tool_name == "web_fetch":
         return await _read_url(arguments.get("url", ""))
     if tool_name == "write_code":
+        # ★ v2.3.107 硬闸：用户这句话根本没提文件/代码时，一律不生成。
+        #   事故（2026-10-26 01:41 群 2000000003）：承诺补调用把全部工具丢回给模型，
+        #   模型凭空挑了 write_code，生成「群友发言记录.docx」直接发群，用户一脸问号。
+        if original_msg and not _looks_like_file_request(original_msg):
+            logger.warning("write_code 拒绝：用户消息没有文件/代码诉求 | msg=%s",
+                           original_msg)
+            return ("[已跳过] 用户这句话没有要文件或代码，别为了凑工具调用去生成文件。"
+                    "用一句话正常回答即可。")
         _lang = arguments.get("language", "python") or "python"
         _arg_desc = arguments.get("description", "")
         # ★ v2.3.81c: 文档类必须用 LLM 传来的 description——里面带着要整理的素材

@@ -74,9 +74,9 @@ def _spawn_detached(chat_id: int, kwargs: dict) -> None:
             try:
                 await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
             except asyncio.TimeoutError:
-                logger.error("[队列] 群%d 旁路命令超时(>%.0fs)已放弃: '%s...'",
+                logger.error("[队列] 群%d 旁路命令超时(>%.0fs)已放弃: '%s'",
                              chat_id, _GROUP_MSG_TIMEOUT,
-                             str(kwargs.get("msg_content", ""))[:40])
+                             str(kwargs.get("msg_content", "")))
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -85,8 +85,8 @@ def _spawn_detached(chat_id: int, kwargs: dict) -> None:
     task = asyncio.ensure_future(_runner())
     _detached_tasks.add(task)
     task.add_done_callback(_detached_tasks.discard)
-    logger.info("[队列] 群%d 重命令转旁路并发（在跑 %d 条）: '%s...'",
-                chat_id, len(_detached_tasks), str(kwargs.get("msg_content", ""))[:30])
+    logger.info("[队列] 群%d 重命令转旁路并发（在跑 %d 条）: '%s'",
+                chat_id, len(_detached_tasks), str(kwargs.get("msg_content", "")))
 
 
 async def _group_worker(chat_id: int, queue: asyncio.PriorityQueue):
@@ -121,11 +121,11 @@ async def _group_worker(chat_id: int, queue: asyncio.PriorityQueue):
                 await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
                 _dt = _time.monotonic() - _t0
                 if _dt > 5:
-                    logger.info("[队列] 群%d 消息处理完成 耗时%.1fs: '%s...'",
-                                chat_id, _dt, str(kwargs.get("msg_content", ""))[:30])
+                    logger.info("[队列] 群%d 消息处理完成 耗时%.1fs: '%s'",
+                                chat_id, _dt, str(kwargs.get("msg_content", "")))
             except asyncio.TimeoutError:
-                logger.error("[队列] 群%d 消息处理超时(>%.0fs)已强制跳过: '%s...' → 继续下一条",
-                             chat_id, _GROUP_MSG_TIMEOUT, str(kwargs.get("msg_content", ""))[:40])
+                logger.error("[队列] 群%d 消息处理超时(>%.0fs)已强制跳过: '%s' → 继续下一条",
+                             chat_id, _GROUP_MSG_TIMEOUT, str(kwargs.get("msg_content", "")))
         except asyncio.CancelledError:
             raise
         except Exception as e:

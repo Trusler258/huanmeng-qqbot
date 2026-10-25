@@ -447,7 +447,7 @@ async def _gen_image(prompt: str, size: str = "1536x864", reference_image_url: s
                     # 非渠道问题（内容审核 / 参数非法）→ 换模型也没用，直接如实报错
                     logger.warning("Poke 失败且非渠道问题，不再换模型: %s", last_err)
                     return {"error": last_err}
-                logger.warning("Poke 模型 %s 无渠道，试下一个: %s", mid, str(last_err)[:80])
+                logger.warning("Poke 模型 %s 无渠道，试下一个: %s", mid, str(last_err))
             logger.warning("Poke 全部模型无渠道，回落云雾")
         else:
             logger.warning("POKE_API_KEY 未配置，回落云雾")
@@ -576,7 +576,7 @@ async def _gen_image_with_ref(prompt: str, size: str, ref_url: str,
                     return out
                 last_err = r.get("error") or "Poke edits 返回空"
                 if not r.get("channel_error"):
-                    logger.warning("Poke 参考图生图失败（非渠道问题）: %s", last_err[:140])
+                    logger.warning("Poke 参考图生图失败（非渠道问题）: %s", last_err)
                     break
                 logger.warning("Poke 参考图生图模型 %s 无渠道，试下一个", mid)
             else:

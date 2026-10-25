@@ -274,7 +274,7 @@ def save_memory(text: str, sender_name: str, user_id: int, chat_id: int):
     label = get_role_label(user_id)
     new_line = f"- [{label}] {text} ({datetime.now().strftime('%Y-%m-%d')})"
     append_memory(chat_id, new_line)
-    logger.info("[%d] 新增长期记忆: %s...", chat_id, text[:50])
+    logger.info("[%d] 新增长期记忆: %s", chat_id, text)
 
 
 def save_search_memory(query: str, result: str, sender_name: str, user_id: int, chat_id: int):

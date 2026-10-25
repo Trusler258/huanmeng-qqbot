@@ -113,7 +113,7 @@ def add_reminder(
     _REMIND_FILE.write_text(json.dumps(all_reminders, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info("提醒已添加: id=%s target=%d content='%s' user=%d",
-               rid, target_time, content[:30], user_id)
+               rid, target_time, content, user_id)
     return record
 
 
@@ -181,7 +181,7 @@ async def remind_checker_loop():
                     else:
                         await send_private_msg(msg, r["user_id"])
                     logger.info("提醒已发送: id=%s user=%d content='%s'",
-                               r["id"], user_id, content_text[:30])
+                               r["id"], user_id, content_text)
                 except Exception as e:
                     logger.error("提醒发送失败 id=%s: %s", r["id"], e)
 

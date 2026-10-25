@@ -608,7 +608,7 @@ async def cmd_testok(args, user_id, group_id, sender_name, is_group, bot_qq):
 async def cmd_jsonraw(args, user_id, group_id, sender_name, is_group, bot_qq):
     """/~jsonraw <对话内容> → 输出 LLM 原始 JSON"""
     text = " ".join(args) if args else "喵"
-    logger.info("指令 /~jsonraw 触发 user=%d text='%s'", user_id, text[:40])
+    logger.info("指令 /~jsonraw 触发 user=%d text='%s'", user_id, text)
     from services.llm import call_llm
     from core.config import get_config
     cfg = get_config()
@@ -727,7 +727,7 @@ async def cmd_search(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     query = " ".join(args)
     chat_id = group_id if is_group else user_id
-    logger.info("指令 /~search 触发 query='%s' limit=%d source=%s user=%d", query[:30], limit, source, user_id)
+    logger.info("指令 /~search 触发 query='%s' limit=%d source=%s user=%d", query, limit, source, user_id)
 
     result = await perform_search(query, sender_name=sender_name, user_id=user_id,
                                    chat_id=chat_id, limit=limit, source=source, is_group=is_group)
@@ -1031,7 +1031,7 @@ async def _lolicon_fetch_and_send(
         if len(_IMG_SENT_PIDS) > _IMG_SENT_PIDS_MAX:
             _IMG_SENT_PIDS.clear()  # 超上限直接清空，简单可靠
 
-        logger.info("[%s] 获取到图片: %s... (pid=%s)", cmd_tag, image_url[:80], item.get("pid"))
+        logger.info("[%s] 获取到图片: %s (pid=%s)", cmd_tag, image_url, item.get("pid"))
 
         # Step 2: 下载图片（必须带 Referer: https://www.pixiv.net/，走 i.pixiv.re 反代）
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True,
@@ -1273,7 +1273,7 @@ async def cmd_remind(args, user_id, group_id, sender_name, is_group, bot_qq):
     target_dt = datetime.fromtimestamp(ts)
     time_display = target_dt.strftime("%m月%d日 %H:%M")
     logger.info("指令 /~remind 触发: user=%d time=%s content='%s'",
-               user_id, time_display, content_part[:30])
+               user_id, time_display, content_part)
     return format_lang("cmd_remind.m1", time_display=time_display, content_part=content_part[:40])
 
 
@@ -1941,7 +1941,7 @@ async def cmd_translate(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     text = " ".join(args[1:])
 
-    logger.info("翻译: %s → %s, text='%s'", text[:30], lang, text[:50])
+    logger.info("翻译: %s → %s, text='%s'", text, lang, text)
 
     # 用廉价模型做翻译
     from services.llm import call_llm

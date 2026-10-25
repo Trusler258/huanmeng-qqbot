@@ -192,7 +192,7 @@ class WSConnectionManager:
                             return None
 
             except Exception as e:
-                logger.warning("[API] call_api 异常: action=%s error=%s (将重试一次)", action, str(e)[:80])
+                logger.warning("[API] call_api 异常: action=%s error=%s (将重试一次)", action, str(e))
                 self._ws = None
                 # 重连后重试一次
                 if await self._ensure_connected():
@@ -553,7 +553,7 @@ async def send_sentences(
             await asyncio.sleep(delay)
 
         await _send_and_record(sentence, chat_id, is_group, user_id, cfg)
-        logger.debug("已发送第 %d/%d 条: %s...", i + 1, len(sentences), sentence[:30])
+        logger.debug("已发送第 %d/%d 条: %s", i + 1, len(sentences), sentence)
 
         # 该句配图：紧跟着发，短暂停顿让它落在同一条消息的气口上
         if faces and i < len(faces) and faces[i]:

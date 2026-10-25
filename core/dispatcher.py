@@ -134,7 +134,7 @@ class EventDispatcher:
             import traceback
             logger.error("dispatch 异常(前%d): %s\n%s\nTRACEBACK:\n%s",
                 self._msg_count, e,
-                raw_message[:300] if raw_message else None,
+                raw_message if raw_message else None,
                 traceback.format_exc())
 
     async def _dispatch_inner(self, raw_message: str) -> None:
@@ -143,7 +143,7 @@ class EventDispatcher:
         try:
             event = json.loads(raw_message)
         except (json.JSONDecodeError, TypeError):
-            logger.warning("无法解析 JSON (第%d条消息): %s...", self._msg_count, raw_message[:80])
+            logger.warning("无法解析 JSON (第%d条消息): %s", self._msg_count, raw_message)
             return
 
         post_type = event.get("post_type") or event.get("post_type", "")
@@ -391,7 +391,7 @@ class EventDispatcher:
             _stripped = _strip_leading_mentions(msg_content)
             if _stripped != msg_content:
                 logger.debug("剥离前导 @ 后识别为指令: %r → %r",
-                             msg_content[:40], _stripped[:40])
+                             msg_content, _stripped)
                 msg_content = _stripped
 
         is_command = msg_type == "文字" and (
@@ -610,7 +610,7 @@ class EventDispatcher:
                     if _desc_full and _desc_full.strip():
                         _short = _desc_full[:150].replace("\n", " ")
                         msg_content = f'{msg_content}\n[图片]:描述"{_short}"（这是群里刚发过的图）'
-                        logger.info("[chat=%d] 图片上下文关联: 近期图(%s...) → %d字注入", chat_id, _r_url[:50], len(_desc_full))
+                        logger.info("[chat=%d] 图片上下文关联: 近期图(%s) → %d字注入", chat_id, _r_url, len(_desc_full))
                 except Exception as e:
                     logger.warning("图片上下文关联失败: %s", e)
 
@@ -684,7 +684,7 @@ class EventDispatcher:
                         logger.info("📎 引用图片描述已注入: %d字", len(img_desc))
             
             if quoted_text and not error_report_content:
-                logger.info("📎 引用原文 (%d字): '%s...'", len(quoted_text), quoted_text[:50])
+                logger.info("📎 引用原文 (%d字): '%s'", len(quoted_text), quoted_text)
             elif not quoted_text and not error_report_content:
                 logger.warning("📎 无法获取引用消息内容 (id=%s)", reply_id)
 
@@ -740,7 +740,7 @@ class EventDispatcher:
                 description = await recognize_image(image_url_or_path, cfg.image_model, chat_id=chat_id)
                 if description and description.strip():
                     short_desc = description[:80].replace("\n", " ")
-                    logger.info("[chat=%d] 图片@同步识别完成: '%s...' (%d字)", chat_id, short_desc, len(description))
+                    logger.info("[chat=%d] 图片@同步识别完成: '%s' (%d字)", chat_id, short_desc, len(description))
                     _record_recent_image(chat_id, image_url_or_path, description, sender_name)
                     # 注入上下文
                     from core.context_manager import get_context_mgr
@@ -761,7 +761,7 @@ class EventDispatcher:
                 if not description or not description.strip():
                     return
                 short_desc = description[:80].replace("\n", " ")
-                logger.info("[chat=%d] 图片后台识别完成: '%s...' (%d字)", chat_id, short_desc, len(description))
+                logger.info("[chat=%d] 图片后台识别完成: '%s' (%d字)", chat_id, short_desc, len(description))
                 _record_recent_image(chat_id, image_url_or_path, description, sender_name)
                 # 注入上下文
                 # ★ v2.1.12 fix: 后台识别是异步的，完成时可能已过了几条消息。
@@ -995,8 +995,8 @@ class EventDispatcher:
                     filename = file_data.get("name", "")
                     
                     if file_url and filename:
-                        logger.info("📎 从消息段检测到文件: filename=%s url=%s...", 
-                                   filename, file_url[:80])
+                        logger.info("📎 从消息段检测到文件: filename=%s url=%s", 
+                                   filename, file_url)
                         return {"url": file_url, "filename": filename}
         
         # 方法2: 从 raw_message 的 CQ 码中解析文件（NapCat 常见格式）
@@ -1012,8 +1012,8 @@ class EventDispatcher:
             file_url = url_match.group(1) if url_match else ""
             
             if file_url and filename:
-                logger.info("📎 从 CQ 码检测到文件: filename=%s url=%s...", 
-                           filename, file_url[:80])
+                logger.info("📎 从 CQ 码检测到文件: filename=%s url=%s", 
+                           filename, file_url)
                 return {"url": file_url, "filename": filename}
             elif filename:
                 # 有文件名但没有URL，可能需要通过 file_id 下载
@@ -1026,7 +1026,7 @@ class EventDispatcher:
                     file_info = await mgr.call_api("get_file", {"file_id": file_id})
                     if file_info and file_info.get("url"):
                         file_url = file_info["url"]
-                        logger.info("📎 通过 file_id 获取到 URL: %s...", file_url[:80])
+                        logger.info("📎 通过 file_id 获取到 URL: %s", file_url)
                         return {"url": file_url, "filename": filename}
         
         return None
@@ -1076,7 +1076,7 @@ class EventDispatcher:
         if not img_url:
             return None
 
-        logger.info("📎 引用消息包含图片，开始识别: %s...", img_url[:60])
+        logger.info("📎 引用消息包含图片，开始识别: %s", img_url)
         try:
             from services.image_api import recognize_image
             from core.config import get_config

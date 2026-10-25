@@ -128,7 +128,7 @@ class LocalMultiSearch:
                 if snippet:  # 有内容才算成功
                     return self._format_entry(1, title, snippet, resp.url)
             except Exception as e:
-                logger.debug("baike 尝试失败 [%s]: %s", url[:60], e)
+                logger.debug("baike 尝试失败 [%s]: %s", url, e)
                 continue
         return ""
 
@@ -164,7 +164,7 @@ class PageScraper:
             resp.encoding = resp.apparent_encoding or "utf-8"
             html = resp.text
         except Exception as e:
-            logger.warning("页面请求失败 [%s]: %s", url[:60], e)
+            logger.warning("页面请求失败 [%s]: %s", url, e)
             return None
 
         # 优先用 readability 提取正文（自动去除导航/广告/侧边栏）
@@ -189,7 +189,7 @@ class PageScraper:
             main = soup.find("article") or soup.find("main") or soup.find("body") or soup
             text = main.get_text(strip=True, separator="\n")
         except Exception as e:
-            logger.warning("readability 提取失败 [%s]: %s", url[:60], e)
+            logger.warning("readability 提取失败 [%s]: %s", url, e)
             soup = BeautifulSoup(html, "html.parser")
             title = soup.title.string.strip() if soup.title and soup.title.string else ""
             main = soup.find("article") or soup.find("main") or soup.find("body") or soup
@@ -212,7 +212,7 @@ class PageScraper:
             text = cut + "\n...(内容已截断)"
 
         result = f"【{title}】\n{text}"
-        logger.info("页面提取完成: %s (%d字)", url[:50], len(result))
+        logger.info("页面提取完成: %s (%d字)", url, len(result))
         return result
 
 

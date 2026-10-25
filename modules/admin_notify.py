@@ -18,12 +18,12 @@ async def notify_admin(text: str) -> bool:
     cfg = get_config()
     admin = getattr(cfg, "admin_qq", 0) or 0
     if not admin:
-        logger.debug("admin_notify: 未配置 admin_qq，跳过通知: %s", text[:40])
+        logger.debug("admin_notify: 未配置 admin_qq，跳过通知: %s", text)
         return False
     try:
         from services.sender import send_private_msg
         await send_private_msg(text, admin)
-        logger.info("admin_notify -> %s: %s", admin, text[:60].replace("\n", " "))
+        logger.info("admin_notify -> %s: %s", admin, text.replace("\n", " "))
         return True
     except Exception as e:
         logger.warning("admin_notify 发送失败: %s", e)

@@ -65,12 +65,12 @@ async def perform_search(
     # 承接句无实体词：把前文并入 query 前缀
     if context and len(query.strip()) <= 8 and _is_continuation(query):
         merged = f"{context[:200]} | 聚焦搜索：{query}"
-        logger.info("搜索承接句，合并上下文补主题: query=%r → %r", query[:30], merged[:80])
+        logger.info("搜索承接句，合并上下文补主题: query=%r → %r", query, merged)
         query = merged
     # ── Step 1: 缓存命中检查 ──
     cached = get_cached_search(query)
     if cached:
-        logger.info("搜索缓存命中: '%s...'", query[:30])
+        logger.info("搜索缓存命中: '%s'", query)
         return cached
 
     from services.sender import send_by_chat_type
@@ -81,7 +81,7 @@ async def perform_search(
     #   摘要 / 权威度 / 发布时间。旧的 Responses API web_search 常常并不真联网
     #   （回"我无法实时联网"或旧记忆），本接口已取代它作为主路径。
     from modules.web_search import is_no_search_text
-    logger.info("执行 DeepSeek Search: '%s...' (user=%s)", query[:40], sender_name)
+    logger.info("执行 DeepSeek Search: '%s' (user=%s)", query, sender_name)
     result_text = None
     try:
         from services.ds_tools import ds_search, format_search_text
@@ -102,7 +102,7 @@ async def perform_search(
     if result_text is None:
         try:
             from modules.web_search import agent_search
-            logger.info("DeepSeek Search 无结果，AnySearch 回退: '%s...'", query[:40])
+            logger.info("DeepSeek Search 无结果，AnySearch 回退: '%s'", query)
             fallback = await asyncio.to_thread(
                 agent_search, query, limit, False,
                 freshness=freshness, content_type=content_type,
@@ -115,11 +115,11 @@ async def perform_search(
     # ── Step 3: Agent 搜索（回退）──
     if result_text is None:
         set_search_cache(query, result_text)
-        logger.info("DeepSeek Search 无结果: '%s...'", query[:40])
+        logger.info("DeepSeek Search 无结果: '%s'", query)
         return f"{search_tip}\n\n暂无搜索结果。"
 
     if not result_text:
-        logger.info("搜索无结果: '%s...'", query[:30])
+        logger.info("搜索无结果: '%s'", query)
         return None
 
     # 截断保护（★ v2.3.81e: 400/3000 → 500/4000，让多路结果别被腰斩）
@@ -128,7 +128,7 @@ async def perform_search(
         result_text = result_text[:max_len] + "..."
 
     result_text = f"{search_tip}\n\n{result_text}"
-    logger.info("搜索完成: '%s...' → %d字符\n%s", query[:30], len(result_text), result_text[:800])
+    logger.info("搜索完成: '%s' → %d字符\n%s", query, len(result_text), result_text)
 
     # ── Step 3: 写入缓存 + 记忆 ──
     realtime = is_realtime_query(query)
@@ -175,23 +175,23 @@ async def auto_search_if_needed(
         r'搜[索到]了?[什么啥]', r'不要.*[网上去]?找',
     ]
     if any(re.search(p, msg_lower) for p in no_search_patterns):
-        logger.info("自动搜索跳过（用户拒搜）: '%s...'", msg[:30])
+        logger.info("自动搜索跳过（用户拒搜）: '%s'", msg)
         return None
 
     # 快速关键词匹配
     if keyword_need_search(msg):
-        logger.info("自动搜索触发（关键词）: '%s...'", msg[:30])
+        logger.info("自动搜索触发（关键词）: '%s'", msg)
         return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group, context=context)
 
     # 实时话题判断
     if is_realtime_query(msg):
-        logger.info("自动搜索触发（实时话题）: '%s...'", msg[:30])
+        logger.info("自动搜索触发（实时话题）: '%s'", msg)
         return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group, context=context)
 
     # 回退到模型判断（较慢，仅前面都没命中时）；承接句必须带上下文才能判断"搜什么"
     need_model = await _needs_search_judge(msg, context)
     if need_model:
-        logger.info("自动搜索触发（模型判断）: '%s...'", msg[:30])
+        logger.info("自动搜索触发（模型判断）: '%s'", msg)
         return await perform_search(msg, sender_name=sender_name, user_id=user_id, chat_id=chat_id, is_group=is_group, context=context)
 
     return None

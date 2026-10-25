@@ -116,7 +116,7 @@ async def ds_search(
         payload["ori_question"] = ori_question[:128]
     data = await _post("/v1/tools/search", payload, timeout=timeout)
     results = data.get("results") or []
-    logger.info("DS Search: '%s' → %d 条", q[:40], len(results))
+    logger.info("DS Search: '%s' → %d 条", q, len(results))
     return results
 
 
@@ -174,11 +174,11 @@ async def ds_fetch(url: str, timeout: float = 45.0) -> dict | None:
     try:
         data = await _post("/v1/tools/fetch", {"url": u[:8192]}, timeout=timeout)
     except Exception as e:
-        logger.warning("DS Fetch 失败 %s: %s", u[:60], e)
+        logger.warning("DS Fetch 失败 %s: %s", u, e)
         return None
     content = (data.get("content") or "").strip()
     if not content:
-        logger.info("DS Fetch 无正文: %s", u[:60])
+        logger.info("DS Fetch 无正文: %s", u)
         return None
-    logger.info("DS Fetch: %s → %d 字符", u[:60], len(content))
+    logger.info("DS Fetch: %s → %d 字符", u, len(content))
     return {"title": (data.get("title") or "").strip(), "content": content}
