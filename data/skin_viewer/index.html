@@ -28,8 +28,8 @@
   });
 
   // 离屏 2D canvas：把 WebGL 画面合成到渐变背景上，再编码。
-  // 这么做有两个好处：JPEG 编码比 PNG 快得多（导出速度的主要瓶颈），
-  // 而且能带上 CSS/渐变背景（WebGL canvas 本身是不透明的）。
+  // 这么做一是 JPEG 编码远快于 PNG（导出速度的主要瓶颈），
+  // 二是能带上渐变背景（WebGL canvas 本身不透明）。
   const outCanvas = document.createElement("canvas");
   outCanvas.width = W;
   outCanvas.height = H;
@@ -51,68 +51,131 @@
   const raf = () => new Promise((r) => requestAnimationFrame(r));
   const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-  const ANIMS = {
-    // still：冻结姿态，用于「纯旋转」展示 —— IdleAnimation 有呼吸和手臂微摆，
-    // 转圈时手还在动，用户要求这种图必须完全静止（2026-10-25）
-    still: () => { const a = new skinview3d.IdleAnimation(); a.speed = 0; return a; },
-    idle: () => new skinview3d.IdleAnimation(),
+  // ══ 相位驱动的自定义姿态 ═════════════════════════════════════
+  // ⚠️ 为什么不用内置 WalkingAnimation / RunningAnimation 的自动推进：
+  //   skinview3d 按**真实时间**累加 progress，而这里每帧渲染要 ~100ms（SwiftShader），
+  //   48 帧累计 4.8 秒的动作被塞进 1.6 秒的 GIF 播放 → 观感明显加速，
+  //   而且采样段不是整周期，首尾接不上、不像循环。
+  // 现在相位 __phase 由 shootAnim 按 i/frames 逐帧写死：
+  //   动作只取决于帧序号，与真实耗时无关；整段正好覆盖整数个周期 → 首尾天然闭合。
+  let __phase = 0;
+
+  const POSES = {
+    // 走路：完整复刻 bundle 里 WalkingAnimation.animate 的公式（t = 8 * progress）
+    walk: (pl) => {
+      const t = 8 * __phase;
+      const s = pl.skin;
+      s.leftLeg.rotation.x = 0.5 * Math.sin(t);
+      s.rightLeg.rotation.x = 0.5 * Math.sin(t + Math.PI);
+      s.leftArm.rotation.x = 0.5 * Math.sin(t + Math.PI);
+      s.rightArm.rotation.x = 0.5 * Math.sin(t);
+      const k = 0.02 * Math.PI;
+      s.leftArm.rotation.z = 0.03 * Math.cos(t) + k;
+      s.rightArm.rotation.z = 0.03 * Math.cos(t + Math.PI) - k;
+      s.head.rotation.y = 0.2 * Math.sin(t / 4);
+      s.head.rotation.x = 0.1 * Math.sin(t / 5);
+      if (pl.cape) pl.cape.rotation.x = 0.06 * Math.sin(t / 1.5) + 0.06 * Math.PI;
+    },
+    // 跑步：摆幅更大（1.3 rad）、频率更快（t = 15 * progress），身体略前倾
+    run: (pl) => {
+      const t = 15 * __phase;
+      const s = pl.skin;
+      s.leftLeg.rotation.x = 1.3 * Math.cos(t + Math.PI);
+      s.rightLeg.rotation.x = 1.3 * Math.cos(t);
+      s.leftArm.rotation.x = 1.3 * Math.cos(t);
+      s.rightArm.rotation.x = 1.3 * Math.cos(t + Math.PI);
+      s.leftArm.rotation.z = 0.05;
+      s.rightArm.rotation.z = -0.05;
+      s.head.rotation.y = 0;
+      s.head.rotation.x = 0.08;
+      if (pl.cape) pl.cape.rotation.x = 0.4 + 0.08 * Math.sin(t);
+    },
+    // 飞行：手臂前伸，轻微上下摆动（真正的高度变化由 wrapper.position.y 另做）
+    fly: (pl) => {
+      const t = 2 * __phase;
+      const s = pl.skin;
+      s.leftArm.rotation.x = -1.35 + 0.08 * Math.sin(t);
+      s.rightArm.rotation.x = -1.35 + 0.08 * Math.sin(t + Math.PI);
+      s.leftLeg.rotation.x = 0.12 * Math.sin(t);
+      s.rightLeg.rotation.x = 0.12 * Math.sin(t + Math.PI);
+      s.head.rotation.x = -0.12;
+      if (pl.cape) pl.cape.rotation.x = 0.65 + 0.1 * Math.sin(t);
+    },
+  };
+
+  // 姿态动作借用的内置动画类（只用它的壳，animate 已被覆盖）
+  const POSE_CLASS = {
     walk: () => { const a = new skinview3d.WalkingAnimation(); a.speed = 1; return a; },
     run: () => { const a = new skinview3d.RunningAnimation(); a.speed = 1; return a; },
-    fly: () => new skinview3d.IdleAnimation(),   // 竖直悬浮，靠下面的浮动做出飞行感
+    fly: () => { const a = new skinview3d.IdleAnimation(); a.speed = 1; return a; },
+  };
+
+  // 其他动作仍走内置动画（只要相位静止即可，不需要精确周期）
+  const ANIMS = {
+    walk: () => { const a = new skinview3d.WalkingAnimation(); a.speed = 1; return a; },
+    run: () => { const a = new skinview3d.RunningAnimation(); a.speed = 1; return a; },
+    fly: () => { const a = new skinview3d.IdleAnimation(); a.speed = 1; return a; },
+    idle: () => new skinview3d.IdleAnimation(),
     wave: () => new skinview3d.WaveAnimation(),
     swim: () => new skinview3d.SwimAnimation(),
     crouch: () => new skinview3d.CrouchAnimation(),
     hit: () => new skinview3d.HitAnimation(),
+    still: () => new skinview3d.IdleAnimation(),
   };
+
+  // 内置动画的 progress 周期（t = k*progress → 周期 2π/k）
+  const PERIODS = { idle: Math.PI, still: Math.PI, wave: 2.0, swim: 1.3,
+                    hit: 0.3490659, crouch: Math.PI,
+                    walk: 2 * Math.PI / 8, run: 2 * Math.PI / 15, fly: Math.PI };
+
+  window.__viewer = viewer;      // 诊断/工具函数要用（重写时漏掉过，坑了一整轮）
+
+  function findPlayer() {
+    const v = window.__viewer;
+    if (v.playerObject && v.playerObject.skin) return v.playerObject;
+    let found = null;
+    try {
+      v.playerWrapper.traverse((o) => { if (!found && o && o.skin) found = o; });
+    } catch (e) { /* ignore */ }
+    return found;
+  }
 
   window.__ready = true;
 
-  // 载入皮肤 + 指定动作
-  window.prepare = async (skinUrl, anim, capeUrl) => {
+  window.prepare = async (skinUrl, anim, capeUrl, speed) => {
     await viewer.loadSkin(skinUrl);
-    // 披风可选：不传就不加载（默认无披风）
     if (capeUrl) {
       try { await viewer.loadCape(capeUrl); }
       catch (e) { console.warn("cape load failed", e); }
     }
-    viewer.animation = (ANIMS[anim] || ANIMS.idle)();
+    const key = anim || "idle";
+    viewer.animation = (ANIMS[key] || ANIMS.idle)();
+    // speed 控制动画推进速率。
+    // 内置动画按**真实时间**推进（每帧渲染要 ~100ms），而 GIF 按 30fps 播放，
+    // 不降速就会快 3~4 倍；这里传 0.0333 / 实测每帧耗时，让两边对上。
+    viewer.animation.speed = (speed === undefined || speed === null) ? 1 : speed;
+    __phase = 0;
+    viewer.playerWrapper.rotation.x = 0;
     viewer.playerWrapper.rotation.y = 0;
     viewer.playerWrapper.position.y = 0;
-    viewer.playerWrapper.rotation.x = 0;
-    window.__anim = anim || "idle";
-    // 动作有过渡（飞行要花几百毫秒把身体放平），等稳定再开拍，
-    // 否则第一帧还是站姿、GIF 开头会闪一下
+    window.__anim = key;
     await raf2();
-    await new Promise((r) => setTimeout(r, 650));
+    await new Promise((r) => setTimeout(r, 300));
     await raf2();
     return true;
   };
 
-  // 旋转一圈取帧（playerWrapper 转，动作照常播）
-  window.shootSpin = async (frames, mime, q) => {
-    const out = [];
-    const step = (Math.PI * 2) / frames;
-    for (let i = 0; i < frames; i++) {
-      viewer.playerWrapper.rotation.y = i * step;
-      await raf2();
-      out.push(snap(mime, q));
-    }
-    return out;
-  };
-
-  // 固定视角播放动作：yaw 是绕 Y 轴的基础角度（3/4 侧视更好看腿）
-  window.shootAnim = async (frames, yaw, mime, q) => {
+  // 固定视角播放动作：内置动画自动推进（真实时间），每帧等一次 rAF
+  window.shootAnim = async (frames, yaw, mime, q, cycles) => {
     viewer.playerWrapper.rotation.y = yaw;
     const out = [];
     for (let i = 0; i < frames; i++) {
-      await raf();           // 动画靠内部时钟推进，一帧一次就够
-      // 飞行：FlyingAnimation 只是把身体放平、姿态几乎不动，
-      // 补一个缓慢的上下浮动，否则 GIF 会像一张静态图（实测 48 帧只有 3 个不同画面）
       if (window.__anim === "fly") {
-        const ph = (i / frames) * Math.PI * 2;
-        viewer.playerWrapper.position.y = Math.sin(ph) * 3.4;   // 上下浮动
-        viewer.playerWrapper.rotation.x = Math.sin(ph * 2) * 0.10; // 轻微前后俯仰
+        const ph = (i / frames) * Math.PI * 2 * (cycles || 1);
+        viewer.playerWrapper.position.y = Math.sin(ph) * 3.2;
+        viewer.playerWrapper.rotation.x = Math.sin(ph * 2) * 0.05;
       }
+      await raf();
       out.push(snap(mime, q));
     }
     return out;

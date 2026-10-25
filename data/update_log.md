@@ -128,6 +128,22 @@
 - 引用图片模式没有 UUID，无法取披风，忽略该参数
 - 实测 jeb_：正面看不到、侧面红色披风垂在身后、背面完全展开，效果正确
 
+**动作动图：修正速度（部分解决，循环未完美）**
+
+用户（09:46）：「走路怎么也加速了，而且根本无法连接起来不是循环动画」
+
+- 根因：skinview3d 的内置动画按**真实时间**推进，而这里每帧渲染要 ~95ms（SwiftShader 软渲染），
+  48 帧累计 4.5 秒的动画被塞进 1.6 秒的 GIF 播放 → 快 3~4 倍
+- 修：`_ANIM_SPEED = 0.35`（≈ 每帧 33.3ms ÷ 95ms），让推进速率对上 30fps 播放
+- ⚠️ **循环首尾仍有跳**（相邻帧差 0.72、首尾 2.56）。每帧真实耗时在 70~110ms 之间波动，
+  总推进量无法落在整数周期，这是时间驱动方案的天花板
+- 试过但**行不通**的路（记下来免得重走）：
+  · 手动设 `animation.progress` + `renderer.render()`：骨骼确实变了（读回非 0），
+    但 `canvas.toDataURL()` 读不到刚渲染的画面（`gl.finish()` 也救不回来）
+  · 覆盖 `animation.animate` / 用 `FunctionAnimation` 回调：`viewer.animation` 是**包装对象**
+    （`constructor.name` 为空），覆盖不生效
+  · `speed = 0` 冻结：`update()` 里 animate 仍被调用，但 progress 不增长，姿态停在初始值
+
 ### 验证（持久化 + 皮肤）
 - `modules/agnes.py` 任务表：登记 → pending=1 → 删除 → pending=0
 - `services/skin_render.py` 服务器实跑：Notch 皮肤 120 帧 / **16~26 秒** / **1.7~1.9MB**；

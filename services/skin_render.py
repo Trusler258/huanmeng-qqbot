@@ -97,6 +97,25 @@ def _layout(action: str | None) -> dict:
 _CANVAS_W = _LAYOUTS["default"]["w"]
 _ZOOM = _LAYOUTS["default"]["zoom"]
 
+# 每个动作在 GIF 里放几个完整周期。
+# 目的是**速度接近真人**，同时保证帧数够（48 帧里分几周期，每周期至少 12 帧）。
+#   walk 周期约 0.8s（真人步频），run 约 0.53s
+_ACTION_CYCLES = {"walk": 2, "run": 3, "swim": 2, "wave": 1, "hit": 2,
+                  "idle": 1, "fly": 1, "crouch": 1}
+
+# 一个完整动作周期对应的 progress 增量（bundle 里 t = k*progress → 周期 2π/k）。
+# 与 index.html 里的 PERIODS 必须保持一致。
+# 动画推进速率：内置动画按真实时间走，每帧渲染约 0.09~0.10s，
+# 而 GIF 按 30fps（33ms/帧）播放 → 不降速会快 3 倍左右。
+# 取 0.0333/0.095 ≈ 0.35。
+_ANIM_SPEED = 0.35
+
+_PERIODS = {"idle": 3.14159265, "still": 3.14159265, "fly": 3.14159265,
+            "crouch": 3.14159265,
+            "walk": 2 * 3.14159265 / 8, "run": 2 * 3.14159265 / 15,
+            "hit": 2 * 3.14159265 / 18,
+            "wave": 2.0, "swim": 1.3}
+
 
 def action_key(raw: str) -> str | None:
     """把用户输入的动作词解析成标准 key；不认识返回 None。"""
@@ -239,7 +258,8 @@ def _build_page(width: int, height: int, zoom: float) -> str:
 
 async def _shoot(skin_path: Path, script: str, args: list, *,
                  width: int, height: int, zoom: float,
-                 cape_path: Path | None = None) -> list[str]:
+                 cape_path: Path | None = None,
+                 speed: float | None = None) -> list[str]:
     """打开渲染页 → prepare(皮肤, 动作) → 执行 script(args) → 返回帧 dataURL 列表。"""
     from playwright.async_api import async_playwright
     try:
@@ -271,10 +291,77 @@ async def _shoot(skin_path: Path, script: str, args: list, *,
                     "return !!(c.getContext('webgl2') || c.getContext('webgl')); }")
                 if not ok:
                     raise RuntimeError("浏览器没有可用的 WebGL（SwiftShader 未生效）")
-                await page.evaluate("([u, a, c]) => window.prepare(u, a, c)",
-                                    [data_url, str(args[0] or "idle"), cape_url])
+                await page.evaluate("([u, a, c, s]) => window.prepare(u, a, c, s)",
+                                    [data_url, str(args[0] or "idle"), cape_url, speed])
                 out = await page.evaluate(f"([a]) => window.{script}(...a)", [args[1:]])
                 return list(out or [])
+            finally:
+                await browser.close()
+    finally:
+        try:
+            page_file.unlink()
+        except OSError:
+            pass
+
+
+async def _shoot_anim(skin_path: Path, anim: str, frames: int, cycles: int,
+                      yaw: float, *, width: int, height: int, zoom: float,
+                      cape_path: Path | None = None) -> list[str]:
+    """逐帧 seek 取动作帧：每帧单独 evaluate（设进度 → 立即重绘 → 取图）。
+
+    ⚠️ 为什么不用一次 evaluate 循环：skinview3d 的动画进度会被它内部的 rAF
+    update 覆盖，且 `speed=0` 会让 animate 不执行、`FunctionAnimation` 回调实测
+    也不生效（2026-10-25 连续踩了一上午）。逐帧「设进度 → renderer.render()
+    → toDataURL」把时序完全握住，不依赖任何内部循环。
+    """
+    import math
+    from playwright.async_api import async_playwright
+    try:
+        from modules.changelog import _chromium_path
+        exe = _chromium_path()
+    except Exception:
+        exe = None
+
+    page_file = VIEWER_DIR / f"_render_{int(time.time() * 1000)}.html"
+    page_file.write_text(_build_page(width, height, zoom), encoding="utf-8")
+    data_url = "data:image/png;base64," + base64.b64encode(
+        skin_path.read_bytes()).decode()
+    cape_url = ""
+    if cape_path:
+        cape_url = "data:image/png;base64," + base64.b64encode(
+            cape_path.read_bytes()).decode()
+
+    period = _PERIODS.get(anim, math.pi)
+    total = period * max(1, cycles)
+    is_fly = anim == "fly"
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True, executable_path=exe,
+                                               args=_CHROME_ARGS)
+            try:
+                page = await browser.new_page(viewport={"width": width, "height": height})
+                page.on("console", lambda m: logger.debug("[skin-web] %s", m.text))
+                await page.goto(page_file.as_uri())
+                await page.wait_for_function("window.__ready === true", timeout=20000)
+                await page.evaluate("([u, a, c]) => window.prepare(u, a, c)",
+                                    [data_url, anim, cape_url])
+                out = []
+                for i in range(frames):
+                    f = i / frames
+                    progress = f * total
+                    if is_fly:
+                        ph = f * math.pi * 2 * max(1, cycles)
+                        fly_y = math.sin(ph) * 3.2
+                        fly_rx = math.sin(ph * 2) * 0.05
+                    else:
+                        fly_y, fly_rx = None, None
+                    await page.evaluate("([a]) => window.seek(a)",
+                                        [[progress, yaw, fly_y, fly_rx, "image/jpeg", 0.9]])
+                    # ⚠️ 用页面截图而不是 canvas.toDataURL：后者读不到刚渲染的内容
+                    shot = await page.screenshot()   # 整页（页面尺寸=画布尺寸）
+                    out.append("data:image/jpeg;base64," + base64.b64encode(shot).decode())
+                return out
             finally:
                 await browser.close()
     finally:
@@ -376,10 +463,11 @@ async def render_action_gif(skin_path: Path, action: str = "walk", *,
     lay = _layout(key)   # 3/4 侧视，看得清腿的前后摆动；fly 另给宽画布
     t0 = time.monotonic()
     try:
+        cycles = _ACTION_CYCLES.get(key, 1)
         urls = await _shoot(skin_path, "shootAnim",
-                            [key, frames, lay["yaw"], "image/jpeg", 0.9],
+                            [key, frames, lay["yaw"], "image/jpeg", 0.9, cycles],
                             width=lay["w"], height=lay["h"], zoom=lay["zoom"],
-                            cape_path=cape_path)
+                            cape_path=cape_path, speed=_ANIM_SPEED)
     except Exception as e:
         logger.error("动作渲染失败(%s): %s", key, e, exc_info=True)
         return None, f"渲染失败: {e}"
