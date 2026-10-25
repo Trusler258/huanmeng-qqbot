@@ -197,6 +197,20 @@
     return snap(mime, q);
   };
 
+  // 旋转一圈取帧（纯旋转，姿态冻结）。
+  // ⚠️ 方向取负：rotation.y 正方向从上方看是逆时针，用户反馈"方向反了"，
+  //    改成顺时针（从观众视角看是向右转）。
+  window.shootSpin = async (frames, mime, q) => {
+    const out = [];
+    const step = (Math.PI * 2) / frames;
+    for (let i = 0; i < frames; i++) {
+      viewer.playerWrapper.rotation.y = -i * step;
+      await raf2();
+      out.push(snap(mime, q));
+    }
+    return out;
+  };
+
   // 固定视角播放动作：内置动画自动推进（真实时间），每帧等一次 rAF
   window.shootAnim = async (frames, yaw, mime, q, cycles) => {
     viewer.playerWrapper.rotation.y = yaw;
