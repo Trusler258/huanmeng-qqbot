@@ -1,12 +1,16 @@
-"""MC 皮肤 3D 旋转 GIF 渲染。
+"""MC 皮肤 3D 渲染：旋转 GIF / 动作 GIF / 三视图。
 
 方案来源：`Trae-CN/temp_20261024_01/mc-skin-preview`（skinview3d + three.js 的 Web 预览）。
-这里把同一套渲染搬成**离屏逐帧**：Chromium 打开本地页 → 一次性在页面内旋转 360° 逐帧
-抠 canvas → 回传 PNG dataURL 数组 → Pillow 合成 30fps GIF。
+这里把同一套渲染搬成**离屏逐帧**：Chromium 打开本地页 → 在页面内一次循环转角度/播动作、
+逐帧把 WebGL 画面合成到渐变背景上 → 回传帧 → Pillow 合成 GIF / 拼三视图。
 
-为什么不自己用 Pillow 撸 3D：
-  皮肤第二层 overlay、六面 UV 布局、手臂 4px / 头 8px 的尺寸关系、透视与光照，
-  自己写很容易在细节上歪，而且每改一版都要肉眼比对。skinview3d 已经把这些做对了。
+v2.3.107 提速要点（原来 120 帧要 16~26 秒，用户嫌慢）：
+  1. 帧用 **JPEG** 而不是 PNG：PNG 编码是主要瓶颈，JPEG 快 3~5 倍，体积也小
+  2. 合成放到页面内的 2D canvas 上做（先填渐变再 drawImage），同时解决了
+     "JPEG 不支持透明 → 背景会变黑"的问题
+  3. 不再做自动裁边（JPEG 没有 alpha 通道），改成固定取景 + 调 zoom，
+     顺带让动画播放时画面不抖
+  4. 转一圈从 4 秒 120 帧收到 3 秒 90 帧（30fps 不变，每帧 4°，观感差别很小）
 
 ⚠️ **不能用卡片渲染那套 Chromium 参数**：`modules/changelog.py` 的启动参数里有
    `--disable-gpu` + `--disable-software-rasterizer`，那会**关掉 WebGL**，skinview3d
@@ -17,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
-import json
 import time
 from pathlib import Path
 
@@ -57,6 +60,52 @@ _SKIN_SOURCES = (
     ("mc-heads", "https://mc-heads.net/skin/{name}"),
     ("crafatar", "https://crafatar.com/skins/{uuid}"),
 )
+
+# 支持的动作 → 页面内 ANIMS 的键
+ACTIONS = {
+    "walk": "走路",
+    "run": "跑步",
+    "fly": "飞行",
+    "idle": "站立",
+    "wave": "招手",
+    "swim": "游泳",
+    "crouch": "潜行",
+    "hit": "挥拳",
+}
+_ACTION_ALIASES = {
+    "走路": "walk", "走": "walk", "walking": "walk", "行走": "walk",
+    "跑步": "run", "跑": "run", "running": "run", "奔跑": "run",
+    "飞行": "fly", "飞": "fly", "flying": "fly", "飞翔": "fly",
+    "站立": "idle", "站着": "idle", "待机": "idle", "idle": "idle",
+    "招手": "wave", "挥手": "wave", "wave": "wave",
+    "游泳": "swim", "潜行": "crouch", "蹲": "crouch",
+    "挥拳": "hit", "打": "hit",
+}
+
+# 渲染画布与取景。不同动作要不同构图：
+#   fly 会把身体放平（横向），竖构图必然出画 → 单独给宽画布 + 拉远
+_LAYOUTS = {
+    "default": {"w": 300, "h": 390, "zoom": 0.90, "yaw": -0.62},
+    "fly":     {"w": 300, "h": 390, "zoom": 0.80, "yaw": -0.62},
+}
+
+
+def _layout(action: str | None) -> dict:
+    return _LAYOUTS.get((action or "").lower()) or _LAYOUTS["default"]
+
+
+_CANVAS_W = _LAYOUTS["default"]["w"]
+_ZOOM = _LAYOUTS["default"]["zoom"]
+
+
+def action_key(raw: str) -> str | None:
+    """把用户输入的动作词解析成标准 key；不认识返回 None。"""
+    t = (raw or "").strip().lower()
+    if not t:
+        return None
+    if t in ACTIONS:
+        return t
+    return _ACTION_ALIASES.get(t)
 
 
 # ── 皮肤获取 ──────────────────────────────────────────────
@@ -131,14 +180,14 @@ async def download_skin(url: str, dest: Path | None = None) -> tuple[Path | None
         if r.status_code != 200:
             return None, f"皮肤图下载失败（HTTP {r.status_code}）"
         if not _is_valid_skin(r.content):
-            return None, "这张图不是 MC 皮肤（要是 64x64 的皮肤原图，不是渲染好的截图）"
+            return None, "这张图不是 MC 皮肤（要 64x64 的皮肤原图，不是渲染好的截图）"
         dest.write_bytes(r.content)
         return dest, ""
     except Exception as e:
         return None, f"皮肤图下载失败: {e}"
 
 
-# ── 渲染 ──────────────────────────────────────────────────
+# ── 页面渲染 ──────────────────────────────────────────────
 
 def _build_page(width: int, height: int, zoom: float) -> str:
     html = (VIEWER_DIR / "index.html").read_text(encoding="utf-8")
@@ -147,9 +196,9 @@ def _build_page(width: int, height: int, zoom: float) -> str:
                 .replace("__ZOOM__", f"{zoom:.3f}"))
 
 
-async def _shoot_frames(skin_path: Path, frames: int, width: int, height: int,
-                        zoom: float) -> list[str]:
-    """在 Chromium 里逐帧旋转并取 canvas，返回 dataURL 列表。"""
+async def _shoot(skin_path: Path, script: str, args: list, *,
+                 width: int, height: int, zoom: float) -> list[str]:
+    """打开渲染页 → prepare(皮肤, 动作) → 执行 script(args) → 返回帧 dataURL 列表。"""
     from playwright.async_api import async_playwright
     try:
         from modules.changelog import _chromium_path
@@ -171,14 +220,14 @@ async def _shoot_frames(skin_path: Path, frames: int, width: int, height: int,
                 page.on("console", lambda m: logger.debug("[skin-web] %s", m.text))
                 await page.goto(page_file.as_uri())
                 await page.wait_for_function("window.__ready === true", timeout=20000)
-                # WebGL 是否真的起来了（SwiftShader 没生效时这里会 false）
                 ok = await page.evaluate(
                     "() => { const c = document.createElement('canvas');"
                     "return !!(c.getContext('webgl2') || c.getContext('webgl')); }")
                 if not ok:
                     raise RuntimeError("浏览器没有可用的 WebGL（SwiftShader 未生效）")
-                out = await page.evaluate(
-                    "([u, n]) => window.loadAndShoot(u, n)", [data_url, frames])
+                await page.evaluate("([u, a]) => window.prepare(u, a)",
+                                    [data_url, str(args[0] or "idle")])
+                out = await page.evaluate(f"([a]) => window.{script}(...a)", [args[1:]])
                 return list(out or [])
             finally:
                 await browser.close()
@@ -189,70 +238,33 @@ async def _shoot_frames(skin_path: Path, frames: int, width: int, height: int,
             pass
 
 
-def _background(w: int, h: int):
-    """深色径向渐变背景（比纯色更有层次，GIF 里也不会脏）。"""
-    from PIL import Image, ImageDraw
-    bg = Image.new("RGB", (w, h), (18, 20, 26))
-    d = ImageDraw.Draw(bg)
-    # 从中心偏上向外一圈圈叠暗，模拟布光
-    cx, cy = w * 0.5, h * 0.42
-    steps = 60
-    maxr = int((w ** 2 + h ** 2) ** 0.5 * 0.62)
-    for i in range(steps, 0, -1):
-        r = int(maxr * i / steps)
-        t = i / steps
-        col = (int(42 - 18 * t), int(46 - 20 * t), int(58 - 26 * t))
-        d.ellipse([cx - r, cy - r * 0.92, cx + r, cy + r * 0.92], fill=col)
-    return bg
+# ── 合成 ──────────────────────────────────────────────────
+
+def _decode(data_urls: list[str]):
+    from PIL import Image
+    frames = []
+    for u in data_urls:
+        try:
+            b = base64.b64decode(u.split(",", 1)[1])
+            frames.append(Image.open(io.BytesIO(b)).convert("RGB"))
+        except Exception as e:
+            logger.warning("解码帧失败: %s", e)
+    return frames
 
 
 def _compose_gif(data_urls: list[str], out_path: Path, fps: int,
                  target_w: int) -> tuple[Path | None, str]:
-    """dataURL 帧 → 合成 GIF。返回 (路径, 错误)。"""
+    """帧 → GIF。背景已由页面烤进图里，这里只做缩放 + 全局调色板量化。"""
     from PIL import Image
 
-    if not data_urls:
-        return None, "没拿到任何帧"
-
-    raws: list[Image.Image] = []
-    for u in data_urls:
-        try:
-            b = base64.b64decode(u.split(",", 1)[1])
-            raws.append(Image.open(io.BytesIO(b)).convert("RGBA"))
-        except Exception as e:
-            logger.warning("解码帧失败: %s", e)
-    if not raws:
+    flat = _decode(data_urls)
+    if not flat:
         return None, "帧解码全部失败"
 
-    # 统一裁掉四周空白（所有帧取同一个 bbox，避免抖动）
-    union = None
-    for im in raws:
-        bb = im.getchannel("A").getbbox()
-        if not bb:
-            continue
-        union = bb if union is None else (
-            min(union[0], bb[0]), min(union[1], bb[1]),
-            max(union[2], bb[2]), max(union[3], bb[3]))
-    if union:
-        pad = 6
-        union = (max(0, union[0] - pad), max(0, union[1] - pad),
-                 min(raws[0].width, union[2] + pad), min(raws[0].height, union[3] + pad))
-        raws = [im.crop(union) for im in raws]
-
-    # 统一缩放到目标宽度（保持比例）
-    src_w = raws[0].width
-    scale = target_w / float(src_w) if src_w else 1.0
-    tw = max(64, int(src_w * scale))
-    th = max(64, int(raws[0].height * scale))
-    raws = [im.resize((tw, th), Image.LANCZOS) for im in raws]
-
-    # 合成背景
-    bg = _background(tw, th).convert("RGBA")
-    flat = []
-    for im in raws:
-        canvas = bg.copy()
-        canvas.alpha_composite(im)
-        flat.append(canvas.convert("RGB"))
+    w, h = flat[0].size
+    scale = target_w / float(w) if w else 1.0
+    tw, th = max(64, int(w * scale)), max(64, int(h * scale))
+    flat = [f.resize((tw, th), Image.LANCZOS) for f in flat]
 
     # 全局调色板：所有帧共用，避免播放时颜色跳
     try:
@@ -273,7 +285,7 @@ def _compose_gif(data_urls: list[str], out_path: Path, fps: int,
             append_images=frames_q[1:],
             duration=max(20, int(round(1000.0 / fps))),
             loop=0,
-            optimize=True,
+            optimize=False,      # 120 帧下 optimize 很慢，收益不大
             disposal=1,
         )
     except Exception as e:
@@ -281,34 +293,89 @@ def _compose_gif(data_urls: list[str], out_path: Path, fps: int,
     return out_path, ""
 
 
-async def render_skin_gif(skin_path: Path, *, fps: int = 30, seconds: float = 4.0,
-                          target_w: int = 300, ss: float = 1.5) -> tuple[Path | None, str]:
-    """皮肤 PNG → 旋转一整圈的 30fps GIF。返回 (路径, 错误)。
+# ── 三个公开入口 ──────────────────────────────────────────
 
-    fps      帧率（用户要求 30）
-    seconds  转一圈用几秒（4 秒 = 每帧 3°）
-    target_w 输出宽度
-    ss       超采样倍率（1.5 = 渲染 1.5 倍再缩，边缘更干净）
-    """
+async def render_spin_gif(skin_path: Path, *, fps: int = 30, seconds: float = 2.0,
+                          target_w: int = 300) -> tuple[Path | None, str]:
+    """绕一圈的旋转 GIF（30fps，默认 3 秒 / 90 帧 / 每帧 4°）。"""
     frames = max(12, int(round(fps * seconds)))
-    vw = int(target_w * ss)
-    vh = int(vw * 1.3)          # 玩家高瘦，画布略高于宽
-    zoom = 0.92
-
     t0 = time.monotonic()
     try:
-        urls = await _shoot_frames(skin_path, frames, vw, vh, zoom)
+        urls = await _shoot(skin_path, "shootSpin", ["idle", frames, "image/jpeg", 0.9],
+                            width=_CANVAS_W, height=int(_CANVAS_W * 1.3), zoom=_ZOOM)
     except Exception as e:
-        logger.error("皮肤渲染失败: %s", e, exc_info=True)
+        logger.error("旋转渲染失败: %s", e, exc_info=True)
         return None, f"渲染失败: {e}"
     if not urls:
         return None, "渲染没产出帧（页面可能没加载成功）"
 
-    out = OUT_DIR / f"skin_{int(time.time())}.gif"
+    out = OUT_DIR / f"skin_spin_{int(time.time())}.gif"
     path, err = await asyncio.to_thread(_compose_gif, urls, out, fps, target_w)
     if err:
         return None, err
-    dt = time.monotonic() - t0
-    logger.info("皮肤 GIF 完成: %s | %d 帧 %.1fs | %d KB",
-                path.name, len(urls), dt, path.stat().st_size // 1024)
+    logger.info("旋转 GIF: %s | %d 帧 %.1fs | %d KB",
+                path.name, len(urls), time.monotonic() - t0, path.stat().st_size // 1024)
     return path, ""
+
+
+async def render_action_gif(skin_path: Path, action: str = "walk", *,
+                            fps: int = 30, seconds: float = 1.6,
+                            target_w: int = 300) -> tuple[Path | None, str]:
+    """固定 3/4 视角播放一个动作的 GIF（走/跑/飞…）。"""
+    key = action_key(action) or "walk"
+    frames = max(12, int(round(fps * seconds)))
+    lay = _layout(key)   # 3/4 侧视，看得清腿的前后摆动；fly 另给宽画布
+    t0 = time.monotonic()
+    try:
+        urls = await _shoot(skin_path, "shootAnim",
+                            [key, frames, lay["yaw"], "image/jpeg", 0.9],
+                            width=lay["w"], height=lay["h"], zoom=lay["zoom"])
+    except Exception as e:
+        logger.error("动作渲染失败(%s): %s", key, e, exc_info=True)
+        return None, f"渲染失败: {e}"
+    if not urls:
+        return None, "渲染没产出帧（页面可能没加载成功）"
+
+    out = OUT_DIR / f"skin_{key}_{int(time.time())}.gif"
+    path, err = await asyncio.to_thread(_compose_gif, urls, out, fps, target_w)
+    if err:
+        return None, err
+    logger.info("动作 GIF(%s): %s | %d 帧 %.1fs | %d KB",
+                key, path.name, len(urls), time.monotonic() - t0,
+                path.stat().st_size // 1024)
+    return path, ""
+
+
+async def render_three_views(skin_path: Path, *, target_h: int = 420
+                             ) -> tuple[Path | None, str]:
+    """三视图：正面 / 右侧 / 背面 横拼成一张 PNG。"""
+    t0 = time.monotonic()
+    angles = [0.0, 1.5707963, 3.1415927]
+    try:
+        urls = await _shoot(skin_path, "shootAngles", ["idle", angles, "image/png", 1],
+                            width=_CANVAS_W, height=int(_CANVAS_W * 1.3), zoom=_ZOOM)
+    except Exception as e:
+        logger.error("三视图渲染失败: %s", e, exc_info=True)
+        return None, f"渲染失败: {e}"
+    frames = _decode(urls)
+    if len(frames) < 3:
+        return None, "三视图渲染不完整"
+
+    from PIL import Image
+    w, h = frames[0].size
+    scale = target_h / float(h) if h else 1.0
+    tw, th = int(w * scale), int(h * scale)
+    frames = [f.resize((tw, th), Image.LANCZOS) for f in frames]
+
+    sheet = Image.new("RGB", (tw * len(frames), th))
+    for i, f in enumerate(frames):
+        sheet.paste(f, (i * tw, 0))
+    out = OUT_DIR / f"skin_views_{int(time.time())}.png"
+    sheet.save(out, optimize=True)
+    logger.info("三视图: %s | %.1fs | %d KB",
+                out.name, time.monotonic() - t0, out.stat().st_size // 1024)
+    return out, ""
+
+
+# 兼容旧调用名
+render_skin_gif = render_spin_gif

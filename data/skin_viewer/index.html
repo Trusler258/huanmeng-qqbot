@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>skin render</title>
 <style>
-  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  html, body { margin: 0; padding: 0; background: #101218; overflow: hidden; }
   canvas { display: block; }
 </style>
 </head>
@@ -14,35 +14,109 @@
 <script>
   // 由 Python 侧替换：__W__ / __H__ / __ZOOM__
   const W = __W__, H = __H__;
-  const canvas = document.getElementById("c");
+  const glCanvas = document.getElementById("c");
   const viewer = new skinview3d.SkinViewer({
-    canvas: canvas,
+    canvas: glCanvas,
     width: W,
     height: H,
     preserveDrawingBuffer: true,   // toDataURL 必须开
     fov: 45,
     zoom: __ZOOM__,
     autoRotate: false,
-    animation: new skinview3d.IdleAnimation(),  // 保持内部 rAF 循环，同时带一点呼吸感
+    animation: new skinview3d.IdleAnimation(),
     nameTag: null,
   });
 
-  // 相机交给 skinview3d / OrbitControls 管，手动改 position 会被 controls 覆盖
-  window.__viewer = viewer;
+  // 离屏 2D canvas：把 WebGL 画面合成到渐变背景上，再编码。
+  // 这么做有两个好处：JPEG 编码比 PNG 快得多（导出速度的主要瓶颈），
+  // 而且能带上 CSS/渐变背景（WebGL canvas 本身是不透明的）。
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = W;
+  outCanvas.height = H;
+  const ctx = outCanvas.getContext("2d");
+  const grad = ctx.createRadialGradient(
+    W * 0.5, H * 0.40, Math.min(W, H) * 0.06,
+    W * 0.5, H * 0.40, Math.max(W, H) * 0.75);
+  grad.addColorStop(0, "#2b3040");
+  grad.addColorStop(0.58, "#1b1f29");
+  grad.addColorStop(1, "#0f1117");
+
+  function snap(mime, q) {
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(glCanvas, 0, 0, W, H);
+    return outCanvas.toDataURL(mime || "image/jpeg", q || 0.9);
+  }
+
+  const raf = () => new Promise((r) => requestAnimationFrame(r));
+  const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  const ANIMS = {
+    idle: () => new skinview3d.IdleAnimation(),
+    walk: () => { const a = new skinview3d.WalkingAnimation(); a.speed = 1; return a; },
+    run: () => { const a = new skinview3d.RunningAnimation(); a.speed = 1; return a; },
+    fly: () => new skinview3d.IdleAnimation(),   // 竖直悬浮，靠下面的浮动做出飞行感
+    wave: () => new skinview3d.WaveAnimation(),
+    swim: () => new skinview3d.SwimAnimation(),
+    crouch: () => new skinview3d.CrouchAnimation(),
+    hit: () => new skinview3d.HitAnimation(),
+  };
+
   window.__ready = true;
 
-  // 逐帧旋转并取图。返回 PNG dataURL 数组。
-  window.loadAndShoot = async (skinUrl, frames, cycles = 1) => {
+  // 载入皮肤 + 指定动作
+  window.prepare = async (skinUrl, anim) => {
     await viewer.loadSkin(skinUrl);
+    viewer.animation = (ANIMS[anim] || ANIMS.idle)();
     viewer.playerWrapper.rotation.y = 0;
-    const total = Math.PI * 2 * cycles;
-    const step = total / frames;
+    viewer.playerWrapper.position.y = 0;
+    viewer.playerWrapper.rotation.x = 0;
+    window.__anim = anim || "idle";
+    // 动作有过渡（飞行要花几百毫秒把身体放平），等稳定再开拍，
+    // 否则第一帧还是站姿、GIF 开头会闪一下
+    await raf2();
+    await new Promise((r) => setTimeout(r, 650));
+    await raf2();
+    return true;
+  };
+
+  // 旋转一圈取帧（playerWrapper 转，动作照常播）
+  window.shootSpin = async (frames, mime, q) => {
     const out = [];
+    const step = (Math.PI * 2) / frames;
     for (let i = 0; i < frames; i++) {
       viewer.playerWrapper.rotation.y = i * step;
-      // 等两帧确保 renderer 已重绘
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      out.push(canvas.toDataURL("image/png"));
+      await raf2();
+      out.push(snap(mime, q));
+    }
+    return out;
+  };
+
+  // 固定视角播放动作：yaw 是绕 Y 轴的基础角度（3/4 侧视更好看腿）
+  window.shootAnim = async (frames, yaw, mime, q) => {
+    viewer.playerWrapper.rotation.y = yaw;
+    const out = [];
+    for (let i = 0; i < frames; i++) {
+      await raf();           // 动画靠内部时钟推进，一帧一次就够
+      // 飞行：FlyingAnimation 只是把身体放平、姿态几乎不动，
+      // 补一个缓慢的上下浮动，否则 GIF 会像一张静态图（实测 48 帧只有 3 个不同画面）
+      if (window.__anim === "fly") {
+        const ph = (i / frames) * Math.PI * 2;
+        viewer.playerWrapper.position.y = Math.sin(ph) * 3.4;   // 上下浮动
+        viewer.playerWrapper.rotation.x = Math.sin(ph * 2) * 0.10; // 轻微前后俯仰
+      }
+      out.push(snap(mime, q));
+    }
+    return out;
+  };
+
+  // 指定角度取单帧（三视图用，PNG 保质量）
+  window.shootAngles = async (angles, mime, q) => {
+    const out = [];
+    for (let i = 0; i < angles.length; i++) {
+      viewer.playerWrapper.rotation.y = angles[i];
+      await raf2();
+      out.push(snap(mime || "image/png", q || 1));
     }
     return out;
   };
