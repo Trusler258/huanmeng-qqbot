@@ -79,7 +79,7 @@ print(f"[2] replies 纯文本化 OK（llm_calls 仅来自 JSON calls，共 {len(
 # ── 3. 通用化：提示词与代码无写死 ──
 sk = read_skills()
 for bad, why in [("Trusler", "写死的人名"), ("1000000001", "写死的 QQ 号"),
-                 ("example", "写死的域名"), ("58888", "写死的端口"), ("58889", "写死的端口")]:
+                 ("mydomain", "写死的域名"), ("58888", "写死的端口"), ("58889", "写死的端口")]:
     assert bad not in sk, f"skills 里仍有{why}: {bad}"
 assert "${host}" not in sk, "skills 里仍有未替换的 ${host}"
 # 代码错误提示里也不该写死人名

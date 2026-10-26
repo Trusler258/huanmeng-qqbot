@@ -5,7 +5,7 @@ PC 状态上报 v3 — TCP 长连接 + 详细系统信息
 """
 import json, time, os, socket, threading, traceback, sys
 
-SERVER = os.environ.get("BOT_SERVER", "example.com")
+SERVER = os.environ.get("BOT_SERVER", "127.0.0.1")   # 主机名不入库，用环境变量给
 PORT = int(os.environ.get("BOT_PC_PORT", "58890"))
 AUTH_KEY = os.environ.get("BOT_PC_KEY", "huanmeng_pc_2026")
 

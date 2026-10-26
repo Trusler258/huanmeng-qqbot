@@ -149,3 +149,50 @@ docs/commands_i18n.json
 
 # .hml 安装备份（运行时产生）
 libs/.backup/
+
+# === 开发调试脚本（内部工具，不入库；本地文件保留）===
+scripts/_*.py
+!scripts/_side_guard.py
+scripts/私聊
+
+# === 临时测试 / 草稿（根目录）===
+fix_change.md
+seed_collect.py
+test_search.py
+test_search_result.txt
+test_tpl2.py
+
+# === 内部巡检 / 运维数据 ===
+data/inspection/
+data/panel_ops.json
+data/game_web_secret
+data/_panel_*.png
+data/help_card.png
+data/steam_assets/avatar/
+data/templates/*.bak
+
+# === 部署细节（含主机名/端口/账号，不入库）===
+deploy/nginx_panel.conf
+deploy/panel.service
+deploy/cf-steam-proxy/wrangler.toml
+
+# === 备份 / 退役文件（*.bak*、*.legacy、*.fragment）===
+*.bak
+*.bak.*
+*.bak2*
+*.legacy
+*.fragment
+
+# === 运行时产物 ===
+data/agnes_output/
+data/tts_temp/
+data/draw_model.json
+libs/*.hml
+
+# === 本地临时文件 ===
+_nt_*.md
+_nt_*.py
+_*.py
+_tmp_*/
+data/agnes_tasks.json
+data/tts_temp/

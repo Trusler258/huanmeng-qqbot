@@ -254,13 +254,14 @@ def list_downloads() -> tuple[bool, list[str]]:
 
 
 # ── 插件库（一键更新）──────────────────────────────────
-# 库地址可用环境变量 PLUGIN_LIB_BASE 覆盖，默认服务器 20030 端口。
+# 库地址只从环境变量 PLUGIN_LIB_BASE 读（不在仓库里写死主机）；
+# 未配置时退回本机 20030，等同于功能不可用而不是连到别人的机器。
 # 库 API：
 #   GET /v1/plugin/list                → 插件列表 {plugins:[{name,version,download_url,...}]}
 #   GET /v1/plugin/hmp/{name}          → 单插件信息（含 version / download_url）
 #   GET /v1/plugin/hmp/{name}.hmp      → 直接下载 .hmp
 def lib_base() -> str:
-    return os.environ.get("PLUGIN_LIB_BASE", "http://example.com:20030").rstrip("/")
+    return os.environ.get("PLUGIN_LIB_BASE", "http://127.0.0.1:20030").rstrip("/")
 
 
 def lib_list(timeout: float = 8.0) -> tuple[bool, list[dict], str]:
