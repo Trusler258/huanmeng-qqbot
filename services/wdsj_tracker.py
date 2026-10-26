@@ -10,6 +10,55 @@ logger = get_logger("wdsj_tracker")
 
 _HISTORY_FILE = Path(__file__).resolve().parent.parent / "data" / "wdsj_history.json"
 
+# ── 采集节奏（wdsj.collect_interval：4h / 12h）────────────────────────
+# ★ 单一真相源：bg_tasks 的调度循环、commands.py 的日榜/竞技卡片、断流公告卡
+#   全部从这里取节奏，避免"调度已切 12h、卡片上还写着下一轮 4:01"这种口径漂移。
+_WDSJ_INTERVALS = (4, 12)
+_WDSJ_INTERVAL_DEFAULT = 12
+_WDSJ_CFG_PATH = Path(__file__).resolve().parent.parent / "config" / "bot_config.toml"
+
+
+def collect_interval() -> int:
+    """当前采集节奏（小时）：4 或 12。读不到 / 非法值一律回退默认 12。"""
+    try:
+        import toml
+        v = int(toml.load(_WDSJ_CFG_PATH).get("wdsj", {}).get("collect_interval")
+                or _WDSJ_INTERVAL_DEFAULT)
+    except Exception:
+        v = _WDSJ_INTERVAL_DEFAULT
+    return v if v in _WDSJ_INTERVALS else _WDSJ_INTERVAL_DEFAULT
+
+
+def collect_slots(interval: int | None = None) -> tuple:
+    """采集时隙的小时数（统一取该小时的**第 1 分钟**，避开整点拥挤）。"""
+    iv = collect_interval() if interval is None else interval
+    return (0, 4, 8, 12, 16, 20) if iv == 4 else (0, 12)
+
+
+def next_slot(now=None, interval: int | None = None):
+    """离 now 最近的**未来**采集时刻。"""
+    now = now or datetime.now()
+    cands = [now.replace(hour=h, minute=1, second=0, microsecond=0)
+             for h in collect_slots(interval)]
+    cands += [c + timedelta(days=1) for c in cands]
+    return min(c for c in cands if c > now)
+
+
+def last_passed_slot(now=None, interval: int | None = None):
+    """最近一个**已经过去**的采集时隙（用来判断"是否漏采了一轮"）。"""
+    now = now or datetime.now()
+    cands = [now.replace(hour=h, minute=1, second=0, microsecond=0)
+             for h in collect_slots(interval)]
+    cands += [c - timedelta(days=1) for c in cands]
+    passed = [c for c in cands if c <= now]
+    return max(passed) if passed else None
+
+
+def slots_hint() -> str:
+    """时隙列表文案，如「0:01 / 12:01」。"""
+    return " / ".join(f"{h}:01" for h in collect_slots())
+
+
 # 全量采集模板 — 每个模板存整个 values dict
 _TEMPLATES = {
     "bedwars-stats": "起床战争",

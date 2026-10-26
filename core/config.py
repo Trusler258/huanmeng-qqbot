@@ -10,6 +10,7 @@ from __future__ import annotations
 from core.arch_loader import get_architecture_context
 
 import os
+import re
 import json
 import toml
 from dataclasses import dataclass, field

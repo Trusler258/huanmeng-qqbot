@@ -44,7 +44,7 @@ def _save_image(image_url: str, entry: dict):
         img_path.write_bytes(resp.content)
         entry["img_path"] = str(img_path)
     except Exception as e:
-        logger.debug("下载图片失败: %s", str(e)[:40])
+        logger.debug("下载图片失败: %s", str(e))
         entry["img_url"] = image_url
 
 
@@ -116,7 +116,7 @@ def mark_recalled(group_id: int, message_id: int, operator_id: int, user_id: int
         if found:
             path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
             logger.info("撤回: group=%d msg_id=%d op=%d content='%s'",
-                       group_id, msg_id, operator_id, recalled_content[:30])
+                       group_id, msg_id, operator_id, recalled_content)
         else:
             logger.debug("撤回(幽灵): group=%d msg_id=%d op=%d",
                        group_id, msg_id, operator_id)
@@ -159,24 +159,36 @@ def get_recent_recalls(group_id: int, count: int = 10) -> list[dict]:
         return []
 
 
+_ARCHIVE_DIR = _ROOT / "data" / "msglog_archive"
+
+
 def flush_buffer():
-    """退出时清理过期消息（保留最近 7 天未撤回 + 14 天已撤回）"""
+    """退出时归档过期消息（v2.3.70：不删除）。
+    未撤回 >7 天 → data/msglog_archive/msglog_<群号>.jsonl 追加（数据池永久累积）；
+    已撤回 >14 天 → 删除（撤回=用户想删，留太久有隐私风险，且撤回内容本不进样本）。
+    """
     now = int(time.time())
-    cutoff_normal = now - 7 * 86400   # 未撤回保留 7 天
-    cutoff_recalled = now - _RECALL_TTL  # 已撤回保留 14 天
+    cutoff_normal = now - 7 * 86400   # 未撤回保留 7 天后归档
+    cutoff_recalled = now - _RECALL_TTL  # 已撤回保留 14 天后删除
 
     if not _MSGLOG_DIR.exists():
         return
+    try:
+        _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.warning("创建归档目录失败: %s", e)
     for f in _MSGLOG_DIR.iterdir():
         if not f.name.startswith("msglog_") or not f.name.endswith(".jsonl"):
             continue
         try:
             lines = f.read_text(encoding="utf-8").splitlines()
             kept = []
+            archived = []
             for line in lines:
                 try:
                     entry = json.loads(line)
                 except Exception:
+                    kept.append(line)
                     continue
                 t = entry.get("time", 0)
                 if entry.get("recalled"):
@@ -185,7 +197,20 @@ def flush_buffer():
                 else:
                     if t > cutoff_normal:
                         kept.append(line)
+                    else:
+                        archived.append(line)
+            if archived:
+                gid = f.stem[len("msglog_"):]
+                arch_path = _ARCHIVE_DIR / ("msglog_%s.jsonl" % gid)
+                try:
+                    with open(arch_path, "a", encoding="utf-8") as af:
+                        af.write("\n".join(archived) + "\n")
+                    logger.info("msglog 归档 %s: %d 条 → %s", f.name, len(archived), arch_path.name)
+                except Exception as e:
+                    # 归档失败则保留在原文件（宁可不清理也不丢数据）
+                    kept.extend(archived)
+                    logger.warning("msglog 归档失败 %s: %s（原样保留）", f.name, e)
             f.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
         except Exception as e:
-            logger.warning("清理 msglog 失败 %s: %s", f.name, e)
-    logger.debug("msglog 清理完成")
+            logger.warning("归档 msglog 失败 %s: %s", f.name, e)
+    logger.debug("msglog 归档完成")

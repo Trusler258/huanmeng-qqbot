@@ -69,7 +69,8 @@ _CATEGORY = {
     "wdsj": "游戏", "gh": "游戏",
     "tuflevel": "游戏", "tuf谱面": "游戏", "tufsearch": "游戏",
     "tufd": "游戏", "tufpage": "游戏",
-    "pgr": "游戏",
+    "oldphi": "游戏",
+    "phi": "游戏",
     # 创作
     "draw": "创作", "绘画": "创作", "video": "创作", "视频": "创作",
     "voice": "创作", "语音": "创作",
@@ -120,6 +121,7 @@ _PLUGIN_COMMANDS: dict[str, tuple] = {
     "checkin": ("每日签到得积分", ["签到", "sign"]),
     "points": ("查看积分余额", ["积分"]),
     "shop":   ("积分商店购买商品", ["商店"]),
+    "phi":    ("Phigros 查询（曲目资料/定数/理论值/存档/Best N 出图）", []),
 }
 
 # 描述兜底：所有指令的「真实作用描述」（读函数实现核实，不含用法）
@@ -176,7 +178,8 @@ _EXTRA_DESC = {
     "luck": "每日运势抽签",
     "dice": "掷骰子得积分",
     "gh": "公会登记管理",
-    "pgr": "Phigros 谱面查询",
+    "oldphi": "Phigros 查询（旧入口，原 /~pgr）",
+    "phi": "Phigros 查询：曲目资料/定数/理论值/存档/Best N 出图",
     "wdsj": "洛花星雨战绩（me 双模式卡 / 模式 玩家名 单查 / lb 排行榜 / daily 日榜 / trend 趋势 / bd 绑定）",
     "sys": "PC 状态卡片 / 截屏",
     "pc": "PC 状态卡片 / 截屏",

@@ -29,7 +29,6 @@ from modules.fav import get_all_fav, FAV_FILE as FAV_FILE_REF, reset_all_fav
 from services.sender import send_group_msg, send_private_msg, send_raw_group, send_raw_user
 from modules.search import perform_search
 from modules.earthquake import cmd_eq
-from modules.nasa import cmd_nasa
 from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
 try:
     from modules.steam import cmd_steam, cmd_steam_doing
@@ -4396,7 +4395,6 @@ COMMAND_MAP: dict[str, callable] = {
     "添加":       cmd_friend_add,
     "拒绝":       cmd_friend_reject,
     "好友列表":   cmd_friend_list,
-    "nasa":       cmd_nasa,
     "watch":      cmd_watch,
     "spec":       cmd_watch,
     "观战":       cmd_watch,

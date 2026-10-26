@@ -38,7 +38,7 @@ async def collect_group_data(group_id: int) -> list[tuple[str, str]]:
 
 def _fmt_gh(group_id: int) -> str | None:
     """复用 ~gh list 的格式化输出"""
-    from modules.gh import _load, _gkey
+    from modules.gh_store import _load, _gkey  # gh 数据层（gh 指令已插件化）
     path = DATA_DIR / "gh.json"
     data = _load(path)
     gid = _gkey(group_id)

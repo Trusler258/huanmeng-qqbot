@@ -89,22 +89,22 @@ def get_cached_search(query: str) -> str | None:
     """
     entry = _mem_cache.get(query)
     if not entry:
-        logger.debug("搜索缓存未命中: '%s...'", query[:30])
+        logger.debug("搜索缓存未命中: '%s'", query)
         return None
     
     # 实时查询永远跳过缓存
     if entry.get("realtime"):
-        logger.debug("实时查询跳过缓存: '%s...'", query[:30])
+        logger.debug("实时查询跳过缓存: '%s'", query)
         return None
     
     # TTL 过期检查
     age = time.time() - entry.get("timestamp", 0)
     if age > _CACHE_TTL_SECONDS:
         del _mem_cache[query]
-        logger.debug("缓存过期(%.0fh): '%s...'", age / 3600, query[:30])
+        logger.debug("缓存过期(%.0fh): '%s'", age / 3600, query)
         return None
     
-    logger.info("搜索缓存命中: '%s...'", query[:30])
+    logger.info("搜索缓存命中: '%s'", query)
     return entry.get("result")
 
 
@@ -132,7 +132,7 @@ def set_search_cache(query: str, result: str, realtime: bool = False):
             del _mem_cache[k]
         logger.debug("搜索缓存淘汰 %d 条（当前 %d 条）", remove_count, len(_mem_cache))
 
-    logger.debug("搜索缓存已更新: '%s...' (实时=%s)", query[:30], realtime)
+    logger.debug("搜索缓存已更新: '%s' (实时=%s)", query, realtime)
 
 
 def get_cache_stats() -> dict:
@@ -242,6 +242,35 @@ def should_quick_reject(msg: str, context_lines: list[str], bot_name: str) -> bo
     return False
 
 
+async def _is_reply_to_bot(reply_id: int | None, bot_qq: int) -> bool:
+    """回复链判定：被引用的那条消息是不是幻梦自己发的。
+
+    确定性信号（走 get_msg 拿 sender.user_id），不用模型猜。
+    只在消息确实带 [CQ:reply] 时才发起 API 调用，普通消息零开销。
+    失败一律返回 False（fail-open：拿不到就当不是，交回后续判定）。
+    """
+    if not reply_id or not bot_qq:
+        return False
+    import asyncio as _aio
+    try:
+        from services.sender import get_ws_manager
+        mgr = get_ws_manager()
+
+        async def _fetch():
+            return await mgr.call_api("get_msg", {"message_id": reply_id})
+
+        data = await _aio.wait_for(_fetch(), timeout=3.0)
+        if not data:
+            return False
+        uid = (data.get("sender") or {}).get("user_id")
+        if uid is None:
+            return False
+        return int(uid) == int(bot_qq)
+    except Exception as e:
+        logger.debug("回复链判定失败（当未指向处理）: %s", e)
+        return False
+
+
 async def should_respond(
     msg: str,
     msg_type: str,
@@ -251,8 +280,13 @@ async def should_respond(
     bot_name: str,
     bot_qq: int,
     reply_threshold_override: int | None = None,
+    reply_id: int | None = None,
 ) -> bool:
-    """完整的三级判断流程。注意：is_arch 已由 pipeline.py 从 call_judgment_pipeline 直接获取。"""
+    """完整的三级判断流程。注意：is_arch 已由 pipeline.py 从 call_judgment_pipeline 直接获取。
+
+    reply_id: 消息引用的原消息 ID（[CQ:reply,id=...]）。用于「回复链」判定——
+    引的是幻梦的消息 = 明确指向它，直接视为已呼叫。
+    """
     cfg = get_config()
 
     # v2.0.4ab: 仅匹配 @QQ 数字（at 段权威），不做 @bot名字 文本匹配——群友昵称
@@ -267,46 +301,116 @@ async def should_respond(
         logger.info("记忆指令检测 → 直接回复（笔记本）")
         return True
 
-    if should_quick_reject(msg, context, bot_name):
-        logger.debug("快速规则拒绝: msg='%s...'", msg[:30])
+    # ★ 回复链（确定性）：引用的是幻梦的消息 → 明确指向它
+    _reply_to_bot = await _is_reply_to_bot(reply_id, bot_qq)
+    if _reply_to_bot:
+        logger.info("回复链指向幻梦 → 视为明确指向")
+
+    def _name_called(text: str) -> bool:
+        """消息里是否"叫了名字"。
+
+        ⚠️ 必须用**边界匹配**，不能用 `bot_name in text`：群 1073298664 里有真人昵称
+        「幻梦bot」，子串匹配会让"幻梦bot"命中"幻梦"→ 别人在叫那位群友时我们却跑去插话。
+        `(?![A-Za-z0-9_])` 让"幻梦bot""幻梦233"这类不算，但"幻梦 你好""@幻梦"仍算。
+        """
+        if not bot_name:
+            return False
+        return bool(re.search(rf'{re.escape(bot_name)}(?![A-Za-z0-9_])', text))
+
+    # ★ v2.3.88 用户规则（2026-10-14）：群聊里**没有 @（已在 pipeline 层短路）也没叫名字**
+    #   → 视为「不是在跟幻梦说话」，不乱插话。
+    #   决策模型**启用时**交给模型判（它能抓到「那个猫娘 / 梦梦 / 小猫咪」这类隐晦代称，
+    #   实测 50 例 × 上下文 3~30 条 100% 正确）；**未启用时**退回到确定性规则。
+    from services import decision as _decision
+    if not _decision.enabled() and not _reply_to_bot and not _name_called(msg):
+        logger.info("决策模型未启用 + 未@未叫名字 + 非回复链 → 不回复")
         return False
 
-    context_str = "\n".join(context[-10:])
+    if should_quick_reject(msg, context, bot_name):
+        logger.debug("快速规则拒绝: msg='%s'", msg)
+        return False
+
+    _ctx_n = _decision.judge_context_lines() if _decision.enabled() else 10
+    context_str = "\n".join(context[-_ctx_n:]) if _ctx_n else ""
     personality = cfg.personality_core
 
-    from services.llm import call_judgment_pipeline
-
-    interest_score, cheap_should_reply, _ = await call_judgment_pipeline(
-        msg=msg,
-        sender_name=sender_name,
-        context_str=context_str,
-        personality=personality,
-        cheap_model=cfg.cheap_model if cfg.cheap_model.url and cfg.cheap_model.key else None,
-        judge_model=cfg.judge_model if cfg.judge_model.url and cfg.judge_model.key else None,
-    )
+    # ★ 决策模型（B：替代原 LLM judge / _judge_combined）
+    #   启用且调用成功 → 直接采用其判定；失败 / 未启用 → 走原逻辑（fail-open，行为与从前一致）
+    _by_decision = False
+    _addressed = False
+    interest_score, cheap_should_reply = 0, False
+    try:
+        if _decision.enabled():
+            # 同样把「本群成员名单 + 说话人」给模型：群里有人昵称撞机器人名时
+            # （如"初梦bot"），模型才不会把 @ 他当成在叫幻梦。
+            _nicks = _decision.group_nicknames(group_id, exclude={bot_name})
+            _dj = await _decision.judge(msg, context_str, personality, reply_to_bot=_reply_to_bot,
+                                        speaker_name=sender_name, group_nicknames=_nicks)
+            if _dj is not None:
+                interest_score, cheap_should_reply, _arch, _addressed = _dj
+                _by_decision = True
+                logger.info("决策模型判定[群%s]: addressed=%s reply=%s interest=%d arch=%s",
+                            group_id, _addressed, cheap_should_reply, interest_score, _arch)
+    except Exception as _e:
+        logger.warning("决策模型判定失败，回退原 judge: %s", _e)
 
     reply_threshold = reply_threshold_override if reply_threshold_override is not None else cfg.reply_interest
-    if cfg.cheap_model.url and cfg.cheap_model.key and cfg.cheap_model.name:
-        if not cheap_should_reply:
-            logger.debug("最终决策: 廉价模型建议不回复")
-            return False
-        if cfg.judge_model.url and cfg.judge_model.key and cfg.judge_model.name:
-            result = interest_score >= reply_threshold
-            logger.debug("最终决策: 兴趣度=%d 阈值=%d → %s",
-                        interest_score, reply_threshold, "REPLY" if result else "SKIP")
-            return result
-        else:
-            logger.warning("判断模型未配置，但廉价模型通过了 → 回复")
-            return True
+
+    if _by_decision:
+        # ★ 合成判定 = addressed AND reply。
+        #   ⚠️ **只看 reply 会误判**：无指向的群友闲聊，reply 也会给到 0.8~0.99
+        #   （因为该题的前提是"已确认在跟它说话"）。必须以 addressed 为准绳。
+        decision = bool(_addressed and cheap_should_reply)
+        logger.debug("最终决策(决策模型): addressed=%s reply=%s interest=%d → %s",
+                     _addressed, cheap_should_reply, interest_score, "REPLY" if decision else "SKIP")
     else:
-        if cfg.judge_model.url and cfg.judge_model.key and cfg.judge_model.name:
-            result = interest_score >= reply_threshold
-            logger.debug("最终决策(无廉价): 兴趣度=%d → %s",
-                       interest_score, "REPLY" if result else "SKIP")
-            return result
+        from services.llm import call_judgment_pipeline
+
+        interest_score, cheap_should_reply, _ = await call_judgment_pipeline(
+            msg=msg,
+            sender_name=sender_name,
+            context_str=context_str,
+            personality=personality,
+            cheap_model=cfg.cheap_model if cfg.cheap_model.url and cfg.cheap_model.key else None,
+            judge_model=cfg.judge_model if cfg.judge_model.url and cfg.judge_model.key else None,
+        )
+
+        decision = False
+        if cfg.cheap_model.url and cfg.cheap_model.key and cfg.cheap_model.name:
+            if not cheap_should_reply:
+                logger.debug("最终决策: 廉价模型建议不回复")
+                decision = False
+            elif cfg.judge_model.url and cfg.judge_model.key and cfg.judge_model.name:
+                decision = interest_score >= reply_threshold
+                logger.debug("最终决策: 兴趣度=%d 阈值=%d → %s",
+                            interest_score, reply_threshold, "REPLY" if decision else "SKIP")
+            else:
+                logger.warning("判断模型未配置，但廉价模型通过了 → 回复")
+                decision = True
         else:
-            logger.warning("无可用的判断模型，默认不回复")
-            return False
+            if cfg.judge_model.url and cfg.judge_model.key and cfg.judge_model.name:
+                decision = interest_score >= reply_threshold
+                logger.debug("最终决策(无廉价): 兴趣度=%d → %s",
+                           interest_score, "REPLY" if decision else "SKIP")
+            else:
+                logger.warning("无可用的判断模型，默认不回复")
+                decision = False
+
+    # ★ v2.3.70 影子判断实验：线二规则 gate 只记录不生效（fire-and-forget，
+    #   零 LLM、纯本地正则微秒级、文件 I/O 走线程池不占队列），生产行为零改动
+    try:
+        import asyncio as _aio
+        from services.router_shadow import record_judge_shadow
+        _aio.create_task(record_judge_shadow(
+            msg=msg, sender_name=sender_name, group_id=group_id,
+            context=context[-6:], bot_name=bot_name, bot_qq=bot_qq,
+            judge_cheap=cheap_should_reply, judge_interest=interest_score,
+            production_reply=decision,
+        ))
+    except Exception:
+        pass
+
+    return decision
 
 
 # ════════════════════════════════════════════════════════════
@@ -317,7 +421,7 @@ async def needs_search(msg: str, context_str: str) -> bool:
     """判断消息是否需要联网搜索"""
     # 先尝试关键词
     if keyword_need_search(msg):
-        logger.info("搜索触发: 关键词命中 → '%s...'", msg[:30])
+        logger.info("搜索触发: 关键词命中 → '%s'", msg)
         return True
     
     # 回退到模型判断
