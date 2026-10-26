@@ -122,6 +122,38 @@
 插件在 `plugins/netmusic/`（受 .gitignore 约束，只 scp）。回归测试  
 `tests/_test_netmusic.py` 32 条（输入解析含路径/裸 id=/userid 陷阱、时长/大小格式化、文件名规则、纯文本约束）。
 
+### 四、插件与内置模块去重（架构调整）
+
+用户：「已经在插件里的功能就不要再放到仓库了」「薄壳就完整移植」。
+
+**先删彻底插件化的 9 个**：`modules/{gh,pgr,ping,power,voice,msg_relay,weather,nasa,wdsj}.py`
+—— 插件侧都已 `register_command`，且代码里没有任何 `import modules.X`。
+
+**再迁 6 个「反向依赖」**（插件反过来 import 内置模块，逻辑还在 modules 里）：
+`reward` / `steam` / `memory_link` / `op` / `earthquake` / `agnes`，共 3837 行。
+
+新增两个口子解决「插件不是 Python 包」的问题：
+
+```python
+# core/plugin/cores.py —— 进程内只 exec 一次，之后走缓存
+from core.plugin.cores import load_plugin_core
+op = load_plugin_core("op")
+mode = op.get_mode()
+
+# modules/commands.py —— COMMAND_MAP 里挂插件 handler，第一次调用才加载
+"赞赏": _lazy("reward", "cmd_reward"),
+```
+
+调用点共 45 处导入语句（commands.py / pipeline.py / bot.py / llm.py / 各插件 main.py /
+2 个测试 / voice_core），脚本化统一替换。插件核心放 `plugins/<name>/<name>_core.py`，
+不进仓库（plugins/ 受 gitignore），仓库里只留 modules/ 那 6 个文件的删除记录。
+
+README 同步：架构图 modules 45 → 35、目录树补插件三件套与 cores.py、
+新增「插件核心与复用」小节、贡献约定改为「新功能优先做成插件」。
+
+验证：`load_plugin_core` 六个核心全部加载；服务器实跑 `/~赞赏 list`
+经 `_lazy` 代理返回正常文案；26 插件加载、active、0 Traceback / ImportError。
+
 ### 验证
 
 - `py_compile` 全通过，`pyflakes` 无新增 undefined（基线 5 个：dispatcher `Optional`×2、  
