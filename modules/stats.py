@@ -18,6 +18,7 @@ logger = get_logger("stats")
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _TODAY_FILE_PREFIX = "stats_"
+_DAILY_OFF_FLAG = _DATA_DIR / "daily_report_disabled"   # 存在即关闭所有群的日报（总开关）
 
 # ── 统计开关（按群，内存缓存） ──
 _stats_disabled: set[int] = set()
@@ -382,6 +383,12 @@ async def midnight_report_loop(cfg):
             wdsj_sent_today = False
 
         if today_str != last_date or (now.hour == 0 and not wdsj_sent_today):
+            if _DAILY_OFF_FLAG.exists():
+                # 日报总开关（2026-10-26 用户要求关闭所有群）
+                logger.info("日报总开关关闭中（%s 存在），跳过群聊日报", _DAILY_OFF_FLAG.name)
+                wdsj_sent_today = True
+                last_date = today_str
+                continue
             logger.info("🌅 新的一天 %s — 发送昨日群聊日报", today_str)
             # wdsj 采集 + 推送由 _bg_wdsj_collector 统一负责，这里不需要重复
             wdsj_sent_today = True
