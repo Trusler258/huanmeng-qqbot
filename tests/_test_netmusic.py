@@ -36,13 +36,24 @@ CASES = [
     ("https://music.163.com/song?id=347230", ("song", "347230")),
     ("https://music.163.com/#/song?id=347230", ("song", "347230")),
     ("https://y.music.163.com/m/song?id=347230&uct2=abc", ("song", "347230")),
-    ("http://music.163.com/song/347230/?userid=1", (None, "http://music.163.com/song/347230/?userid=1")),
     ("https://music.163.com/album?id=32311", ("album", "32311")),
     ("https://music.163.com/#/my/m/music/playlist?id=3756532", ("playlist", "3756532")),
     ("347230", ("song", "347230")),
     ("看看这个 https://music.163.com/song?id=1974443814 好听", ("song", "1974443814")),
     ("", (None, "")),
     ("hello", (None, "")),
+    # 路径形态（不放宽 id= 就够不到的）
+    ("https://music.163.com/song/347230", ("song", "347230")),
+    ("https://music.163.com/song/347230/?userid=1", ("song", "347230")),
+    ("https://music.163.com/m/song/347230/", ("song", "347230")),
+    ("https://music.163.com/album/32311", ("album", "32311")),
+    ("https://music.163.com/playlist/3756532", ("playlist", "3756532")),
+    # id= 不再要求前面是 ? & #：裸 id= 也要认
+    ("https://music.163.com/api/song/detail?id=347230", ("song", "347230")),
+    ("music.163.com/song?id=347230", ("song", "347230")),
+    # ★ 陷阱：userid= / songid= 不能被当成 id=
+    ("https://music.163.com/song?userid=999", (None, "https://music.163.com/song?userid=999")),
+    ("https://music.163.com/x?songid=888&id=347230", ("song", "347230")),
 ]
 for text, expect in CASES:
     ck(f"解析 {text!r}", M.parse_target(text) == expect)
