@@ -154,6 +154,13 @@ README 同步：架构图 modules 45 → 35、目录树补插件三件套与 cor
 验证：`load_plugin_core` 六个核心全部加载；服务器实跑 `/~赞赏 list`
 经 `_lazy` 代理返回正常文案；26 插件加载、active、0 Traceback / ImportError。
 
+**迁移后的路径坑（当日二次修）**：6 个核心原来写在 `modules/` 下，用的是
+`Path(__file__).resolve().parent.parent` 取项目根；挪到 `plugins/<name>/` 后少了一级，
+全部指向 `plugins/data/`。表现是 `/~赞赏 list` 明明有 3 位赞助者却提示「名单还是空的」。
+7 个文件（含 power_core）统一改成 `parents[2]`，并逐个核对数据路径：
+赞赏名单 / 赞赏码 / 地震订阅 / 跨聊关联 / roles.toml / agnes 配额与输出 都指回 `data/`。
+`plugins/data/` 里只有个空的 agnes_output 目录，没有数据写坏。
+
 ### 验证
 
 - `py_compile` 全通过，`pyflakes` 无新增 undefined（基线 5 个：dispatcher `Optional`×2、  
