@@ -60,11 +60,19 @@ if [ -d "$K_ROOT" ]; then
     log "KOOK 打包: $KTARBALL ($(du -h "$WORK/$KTARBALL" | cut -f1))"
 fi
 
-# ── 3. TTL 30 天：删旧包 ──
-find "$WORK" -name "qqbot-full-*.tar.gz" -mtime +30 -delete
-find "$WORK" -name "kook-full-*.tar.gz" -mtime +30 -delete
-find "$WORK" -name "qqbot-full-*.tar.gz" | sort | head -n -35 | xargs -r rm -f
-find "$WORK" -name "kook-full-*.tar.gz" | sort | head -n -35 | xargs -r rm -f
+# ── 3a. 永久存 3T 盘（服务器本地全量，不删；2026-10-26 加）──
+# GitHub 侧只留 7 天滚动窗口，3T 盘是永久层
+KEEP3T="/mnt/3tdata/bot_data/backups"
+mkdir -p "$KEEP3T"
+cp -f "$WORK/qqbot-full-$DATE.tar.gz" "$KEEP3T/" 2>/dev/null
+cp -f "$WORK/kook-full-$DATE.tar.gz"  "$KEEP3T/" 2>/dev/null
+log "3T 永久存档: $KEEP3T/qqbot-full-$DATE.tar.gz"
+
+# ── 3b. GitHub 侧 TTL 7 天 + 最多留 10 个 ──
+find "$WORK" -name "qqbot-full-*.tar.gz" -mtime +7 -delete
+find "$WORK" -name "kook-full-*.tar.gz" -mtime +7 -delete
+find "$WORK" -name "qqbot-full-*.tar.gz" | sort | head -n -10 | xargs -r rm -f
+find "$WORK" -name "kook-full-*.tar.gz" | sort | head -n -10 | xargs -r rm -f
 
 # ── 4. 提交推送 ──
 git add -A
