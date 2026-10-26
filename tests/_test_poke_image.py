@@ -48,7 +48,8 @@ def test_resolve_model():
 
 
 def test_size():
-    from modules import agnes as A
+    from core.plugin.cores import load_plugin_core
+    A = load_plugin_core("agnes")
     print("[2] 尺寸/分辨率")
     ck("16:9 基准", A._resolve_size("16:9") == "1536x864")
     ck("1:1 基准", A._resolve_size("1:1") == "1024x1024")
@@ -65,7 +66,8 @@ def test_size():
 
 def test_cmd_parse():
     """cmd_draw 参数解析：直接跑，mock 掉配额/发送/后台任务。"""
-    from modules import agnes as A
+    from core.plugin.cores import load_plugin_core
+    A = load_plugin_core("agnes")
     import services.sender as S
 
     print("[3] /~draw 参数解析")
@@ -141,7 +143,8 @@ def test_cmd_parse():
 
 def test_channel():
     """主备通道：poke 成功 / poke 失败转备用 / poke 不可用直接备用。"""
-    from modules import agnes as A
+    from core.plugin.cores import load_plugin_core
+    A = load_plugin_core("agnes")
     from services import poke_image as P
 
     print("[4] 主备通道")
@@ -176,7 +179,8 @@ def test_channel():
 
 def test_fallback_chain():
     """无渠道(502)自动换模型；非渠道错误直接报错不换。"""
-    from modules import agnes as A
+    from core.plugin.cores import load_plugin_core
+    A = load_plugin_core("agnes")
     from services import poke_image as P
 
     print("[8] 无渠道降级链")
@@ -324,7 +328,8 @@ def test_cost_and_tier():
 
 def test_quota_cfg():
     """配额：默认 3 张、免重启跟随配置、owner 手设后不被覆盖。"""
-    from modules import agnes as A
+    from core.plugin.cores import load_plugin_core
+    A = load_plugin_core("agnes")
 
     print("[7] 配额配置化")
     ck("默认上限来自配置 = 3", A._draw_limit() == 3, str(A._draw_limit()))
