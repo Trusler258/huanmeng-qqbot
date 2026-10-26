@@ -780,6 +780,50 @@ manifest.permissions 子集、未声明不得占用核心工具名）；执行�
 - KOOK：单测 6/6 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；29 插件正常
 - QQ：单测 7/7 + 事件 10/10；`核心库已就绪: 1 个 ['hmcore']`；24 插件正常
 
+## v2.3.102 — 事件体系对齐 KOOK：消息生命周期 + Envelope + 订阅者超时 (2026.10.20)
+
+对齐 KOOK v2.3.102。QQ 侧无 `tool_runtime`，工具事件改为在 `_plugin_tool_allowed` 拒绝处发。
+
+1. **统一 Envelope**：`Event` 增加 `event_id` / `schema_version` / `trace_id` / `source` /
+   `plugin_id`，保留 `name` / `data` / `ts`；新增 `emit_event()` 统一出口
+2. **消息生命周期**（此前 `message.received/sent` 只有常量、零 emit）
+   - `message.received`（pipeline 入口，只带元数据不含正文）
+   - `message.ignored`（空消息 / 全不可见字符，带 reason）
+   - `message.processing`（预钩子之后）
+   - `message.replied`（send_sentences，= 已交给发送层）
+   - `message.sent` / `message.failed`（send_by_chat_type，发送层明确返回才发）
+3. **工具**：插件工具被拒时发 `tool.permission.denied`
+4. **插件/能力生命周期**：`plugin.loading` / `load_failed` / `enabled` / `disabled` +
+   `capability.registered` / `unregistered`
+5. **两个缺陷**：钩子 `except: pass` 改为 `logger.error(exc_info=True)`；
+   `publish` 协程订阅者加 10s 超时（超时取消 + 慢订阅者告警），未改成无约束 create_task
+
+验证：单测 10/10；生命周期真跑 loading→loaded→capability.registered→enabled→disabled；
+24 插件正常
+
+## v2.3.101 — 插件工具「注册即授权」收紧（QQ 侧等价闭环）(2026.10.20)
+
+一句话总结：插件 `register_tool` 不再等于获得执行授权；未声明权限的插件工具不得占用核心工具名。
+
+对齐 KOOK v2.3.101（同日）。QQ 侧没有 `core/tool_runtime` 权限层，因此做最小等价闭环：
+
+1. **注册期校验**（`core/plugin/api.py`）
+   - 声明了 `permissions` → 必须是 `manifest.permissions` 的子集，否则**拒绝注册**
+   - 未声明 + **占用核心工具名**（`core.tools.TOOLS` 里的名字）→ **拒绝注册**
+   - 未声明 + 新工具名 → 放行但 WARNING（迁移期）
+   - `Capability` 新增 `perm_declared` / `owner_permissions`，区分"显式声明"与"用了缺省值"
+2. **执行期复查**（`core/tools.py::_plugin_tool_allowed`）
+   - 工具必须仍在 capability 注册表（插件卸载/禁用后不得继续可调）
+   - 未声明 + 核心名 → 拒绝执行
+   - 声明过的权限必须在**活的** `manifest.permissions` 内（被降权后旧注册项自动失效）
+3. `PluginManager.manifest_of(name)`：权限层执行期取活 manifest
+
+### 验证
+- 规则单测 7/7：未声明新名放行 / 未声明占核心名拒绝 / 已声明放行 /
+  manifest 收窄后拒绝 / 卸载后拒绝 / 注册期超集拒绝 / 注册期占核心名拒绝
+- 端到端：`execute_tool('roll_dice')` 仍正常返回「掷出了 3 点（6面骰），获得 1 积分」
+- 24 插件正常装载，无异常；`dice` 的 roll_dice 走迁移期放行并打 WARNING
+
 ## v2.3.100 — 空间触发只认原生 @ 标记 (2026.10.20)
 
 一句话总结：`.qzone` 只在评论含 QQ 原生 @ 标记（`@{uin:3682248514,...}`）时回复，
@@ -1013,9 +1057,6 @@ QQ 侧因为插件命令全走 `COMMAND_MAP`（委托内置），分发未受影
 ### 顺带修复
 `cmd_countdown` 调用的 `_load_countdowns` / `_save_countdowns` **全仓无定义**
 （KOOK 端有，移植时漏了）→ `/~countdown` 一直 NameError、从未可用。已补 10 行存储层。
-
-
-
 
 ## v2.3.89 — 故障监控上线 + 工具调用强制接管 + 两处紧急修复 (2026.10.15)
 
@@ -1520,6 +1561,52 @@ Oct 15 13:49:00 ERROR (queues:_group_worker:132) [队列] 群247478659 处理异
 - ⚠️ 教训：双跑比对的"0 差异"可能是**空交集假象**——曾因两端拿到不同存档、键集无交集而误判通过，
   必须同时核对曲目数与键集
 
+## v2.3.82 — Phigros 插件上线：/~phi 全套移植 + 卡片渲染打通本地图片 (2026.10.12)
+一句话总结：把第三方 phi-plugin 的 Phigros 查询整体移植成幻梦插件（曲目资料/定数/理论值离线可查，
+TapTap 登录 → 存档 → B19/B30 出图），并修掉"卡片里曲绘、头像全是破图"的根因——Chromium 在
+`set_content` 下会拦截 `file://` 子资源，必须用真实 HTML 文件走 `goto(file://)` 加载。
+
+### 一、/~phi 新插件（plugins/phi/，PHI-PORT-20261011）
+- 入口 `/~phi`（`/phi` 同效），旧 `/~pgr` 改名 `/~oldphi` 原样保留，不动老代码
+- 子命令：`song/info/card/theory/new/status/login/logout/me/b19(N)/help`
+- 曲目资料走**本地曲库**（`data/songs.json` 346 曲 / 345 别名），断网可用；
+  登录/存档出图走 TapTap sessionToken → LeanCloud 云存档 → 本地 AES 解密（零 API key）
+- 存档链路三处硬伤一并修掉：`where` 参数未 URL 编码（真机会抛 InvalidURL）、
+  密文被当 ASCII 解码、AES key 抄错一字节
+- rks 计算对齐上游：`build_chart_table → build_records → calc_b19`；⚠️ `save_ver` 只在
+  **有历史定数表**时才有意义，我们一律传 `None`，否则定数全部返回 0、rks 全 0
+- 登录流程加"用完即撤"：二维码与提示在登录结束（成功/失败/超时）后撤回，需要新权限
+  `message.delete`
+
+### 二、插件平台能力扩展（core/plugin/）
+- `PluginMessage` 新增 `send_ex` / `send_file_ex`（返回含 `data.message_id` 的原始响应）、
+  `message_id_of()`、`delete(message_id)`（需 `message.delete` 权限）
+- 新增 `PluginNapCat`（读写/管理三类白名单 + 权限双门 + `call()`/`raw()`）、
+  `PluginFS`（沙箱在 `data/plugins/<name>/`，越界抛错）；`PluginContext` 挂上 `napcat`/`fs` 与 `has(perm)`
+- `_perm_ok(manifest, perm)`：未声明即拒绝，`napcat.*` 前缀通配不覆盖高危 leaf（`raw`）
+- manifest 升到 v2：`commands`(含 aliases)/`tools`/`config_schema`/`secrets`/`storage`/`limits`/
+  `network`/`requires`/`events`/`hooks`/`timers`/`priority`…，未知字段进 `extra` 保证向下兼容；
+  规范草案 `docs/plugin-manifest-v2.md` + 机器可读 `core/plugin/manifest.schema.json`
+
+### 三、卡片渲染：file:// 图片不再破图（modules/changelog.py、plugins/phi/card_render.js）
+- **根因**：`page.set_content()` 把页面放在 `about:blank` 源下，Chromium 拒绝加载 `file://`
+  子资源（实测 `<img src="file:///...">` 的 `naturalWidth` 全为 0）→ 卡片曲绘/头像/评级图标全废
+- `render_card_to_image(..., html_file=...)` 新增可选参数：给路径就写成真 HTML 走
+  `goto(file://<path>)`，并等所有 `<img>` 解码完再截图；不传则维持原 `set_content` 行为
+- ⚠️ POSIX 路径拼接坑：`'file:///' + '/root/x'` = `file:////root/x`（四斜杠，首段被当 authority）
+  → 统一按平台拼前缀（Windows `file:///G:/…`、Linux `file:///root/…`）
+- ⚠️ `card_render.js` 里内联 CSS 时用 `href.replace(/^file:\/\/\//, '')` 在 Linux 上会吃掉路径
+  开头的 `/`（得到 `root/x` 相对路径）→ CSS 静默不内联、页面裸奔；改为按平台还原
+- 曲绘资源接入 `card_assets/original_ill/`（来自 `Catrong/phi-plugin-ill`，只带卡片真正用到的
+  `illLow` 512×270 / `illBlur` 256×135 / `SP` 共 144MB；2048×1080 的 `ill/` 768MB 卡片里用不上，未随包）
+- 数据整形对齐上游 `LevelRecordInfo` / `b30Analysis.js` / `Save.getStats`：`rank` 必须是难度名
+  （曾误填序号，`rank-IN` 之类 CSS 类名全部失效）、新增 `Rating`（phi/FC/V/S/A/B/C/F）、
+  真实 RKS 直方图（28 槽）、真实 C/FC/Phi 统计表、真实玩家名（`/users/me` 拿昵称）
+- ⚠️ 部署踩坑：scp 会把 Windows 的 UID（197609）带到服务器文件上，snap 版 Chromium 的 AppArmor
+  `owner` 规则不匹配 → 一律 `ERR_ACCESS_DENIED`。**scp 后必须 `chown -R root:root`**
+- 验证：本地与服务器双端跑通完整链路（真存档 90 曲 / 30 条榜 / 曲绘缺图 0 / 直方图 28 槽），
+  出图 667KB 两端字节一致
+
 ## v2.3.81e — 交付加固 + 搜索更广：素材不再丢、协议不再漏、AnySearch 参数交给 LLM (2026.10.10)
 一句话总结：用户实测生成的新闻 md"只有两条、还净是空话"以及偶发"只回一句'我这就整理成 md 发出来'
 却没有文件"，根因有二：① 靠模型自己复述搜索素材必然丢料；② 模型有时不走原生 function-calling，
@@ -1884,7 +1971,6 @@ SenseAudio 云端合成 API，不再依赖第二台电脑在线；音色 9 个�
 
 ### 3. 启动项 `bot.py`
 - `_bg_tts_server`（58891 节点接收端）不再启动（方法体保留），端口 58891 释放
-
 
 ## v2.3.70 — 路由器影子判断实验上线（judge vs 规则双跑记录，零改动零影响）(2026.9.30)
 一句话总结：给判断管道加一个**影子记录器**——每条走到 judge 的群消息，额外用本地规则 gate
@@ -2908,6 +2994,19 @@ v2.3.44 的"陌生群对话+指令全关"把管理员自己也拦了。现补上
 写到 data/group_names.json，面板读它显示真名（带 mtime 缓存，避免 40 个群
 读 40 次盘）。空数据不覆盖旧文件，与旧内容合并。
 另附 scripts/_sync_group_names.py：不等每日 23:59 自动同步，可立即生成。
+
+## v2.3.49a — 聊天白名单开放的群，指令白名单一并开放 (2026.9.18)
+用户确认语义：群在聊天白名单（group_list）里 → cmd_whitelist 不生效，
+该群所有指令可用（+ v2.3.49 的管理员豁免）。
+⚠️ 连带效果：cmd_whitelist 当前对所有已白名单群都不再生效——它只在
+"给陌生群配置了 cmd_whitelist"时才有机会参与判断（而陌生群整体仍被 v2.3.44
+全封）。若想让 cmd_whitelist 给陌生群当"例外名单"（放行名单内指令），另行提出。
+
+## v2.3.49 — 管理员绕过分群指令白名单 (2026.9.18)
+发言者是管理员（cfg.admin_qq）→ 跳过分群 cmd_whitelist 检查，不受群级指令限制。
+其他成员仍按原逻辑：群配置了 cmd_whitelist → 只放名单内指令；没配置 → 全放行。
+v2.3.44 的"非白名单群全关"对管理员同样豁免吗？——不，陌生群封禁仍然生效
+（管理员进陌生群发指令同样被拒），本次只豁免"已白名单群的分群指令限制"。
 
 ## v2.3.48 — FC 原生工具调用提示 + 搜索空结果诚实守卫 (2026.9.18)
 一句话总结：搜索等 FC 原生工具现在也会发「[工具调用: xxx]」提示（此前只有 JSON
@@ -4468,10 +4567,6 @@ HTML 里的 base64 素材只占 73ms（7%）——所以"瘦身 HTML"这类优�
 - 修复：与命令层同款模式——`ai_move_async` 用 `create_task` 后台执行，HTTP 响应立刻返回；页面轮询 1 秒内刷到"AI 正在思考…"，算完自动出新局面
 - 三棋网页轮询 1500ms → 1000ms
 
-
-
-
-
 ## v2.3.18 — 日报剔除 bot 发言 + 私聊收信录 msglog (2026.9.15)
 一句话总结：群日报发言榜不再混入幻梦自己（实测曾以 179 条登顶），私聊收到的消息也开始录进 msglog。
 
@@ -4543,6 +4638,206 @@ HTML 里的 base64 素材只占 73ms（7%）——所以"瘦身 HTML"这类优�
 - 服务器已清理测试棋局与房间，保留真实用户棋局
 
 
+一句话总结：反扒发现洛花星雨 API 模板 16→18、榜单 28→86（26 领域）、条目字段改名 owner、新增赛季榜 SEASON/中文标签/快照图，已补齐新模板并适配。
+
+- **反扒结论（docs/wdsj_api.md 全量记录）**：
+  - 模板 16→18：新增 `arena-modern-stats`（高版本竞技场）、`luckypillars-stats`（幸运之柱）
+  - 榜单 28→86，26 个领域（新增幸运之柱/你建我猜/单方块/星雨阁/梦落岛/凌空乱斗/羊羊战争/记忆速建/财富等）
+  - **条目字段改名 `name`→`owner`**（现有 HTML 构建已用 owner，未破坏）
+  - 周期新增 `SEASON`（当前 26S3 赛季，`SEASONAL` 是错的会 400）
+  - 战绩返回新增 `labels` 中文映射 + `headerCards`/`summaryCards` + `snapshotKey`/`imageUrl` 快照图
+  - **uid 查询已被服务端禁用**（400「当前服务器不允许使用 uid 查询玩家」）
+- **代码适配**：
+  - `TEMPLATES` 补 2 个新模板 + 别名（am/modern → 高版本竞技场，lp/pillar → 幸运之柱）
+  - 新增 `TEMPLATE_CN`：支持 `/~wdsj 幸运之柱 xxx` 中文模板名直查
+  - `PERIOD_LABELS` 补 `SEASON: 赛季`
+  - uid 加注释说明服务端已禁用（保留兼容）
+  - **86 榜单别名全量补齐**（BOARD_ALIASES + BOARD_SHORTHAND，86/86 覆盖）
+  - **`/~wdsj lb` 周期智能降级**：按榜单真实 periods 对齐，避免撞 400（`_align_board_period`，10 分钟缓存）
+  - `query_leaderboard` 遇 400/业务错误也写 last_error（原只记 403/404）
+- 本地验证：新模板查询 ok（幸运之柱 values=14）、SEASON 榜单 ok（26S3 赛季）、中文名 resolve 全通、
+  周期降级 4/4（ELO→ALLTIME、幸运之柱→ALLTIME、bedwars-wins 保留 WEEKLY）
+
+### 双模式横屏战绩卡 `/~wdsj me` / `/~wdsj <玩家名> me`（新增指令）
+- **成品**：2200×1316 横屏（1.67:1），亮色毛玻璃 + 圆角，左右两栏等高
+  - 左段 **起床战争**（暖红）：33 项全字段（5 列）+ 衍生比率 18 项（6 列，4 组配色）
+  - 右段 **竞技场**（冷蓝）：17 项全字段（3 列）+ 段位卡 + **对抗指标 8 项**
+  - 顶部：API 真实皮肤头像 + 玩家名 + 完整 UUID + UID/注册时间
+  - 底部：署名「由 {bot_name} 生成」+ 生成时间 + 8 位任务 hash（淡灰胶囊）
+- **用法**：`/~wdsj me`（用 `/~wdsj bd` 绑定的玩家名）/ `/~wdsj <玩家名> me`（指定，不需绑定）
+  - 误把模式名当玩家名（如 `/~wdsj bw me`）会提示正确用法
+- **起床衍生比率 18 项**：KD/WLR/FKDR/PKR/AKR/VDR/BPG/KPG/FPG/BBPW/TPR/FKR/FBPR/N3KR/BPR/FbKR/FwKR/HFR
+  （FKDR 终局死亡按败场数估算）
+- **竞技场对抗指标 8 项**：KD/WLR/WR 胜率/KPG 场均击杀/DPG 场均死亡/BedFight 胜率/
+  FireballFight 胜率/连胜保持率
+- **图标全部用 Minecraft 原版贴图**：从 zh.minecraft.wiki 抓 `Invicon_*`（CF 403 → Playwright 打开图片页
+  + 页面内 canvas 导出），**58 个**图标 base64 内联（截图零外部依赖）
+  - 语义对齐：段位=**信标**、最高连胜=钻石、回春床=**粉色床**、地雷=**石质压力板**、吃素食=胡萝卜、
+    爆炸=火药、射飞火球=弓、打飞火球=光灵箭、等级=梯子、BedFight 败=灰床、FireballFight 败=水桶
+- **MC 颜色码着色**：原值带 `§x`（如 `§3铂金 III`）→ 前端 `mcColor()` 渲染成真颜色（§3=#00AAAA 深青），
+  段位卡/标题/字段三处都着色
+- **头像**：API 真实皮肤 `player-heads/{name}/head.png`（失败回退 Steve 头）
+- **字体**：内联 Monocraft（MC 风格开源等宽体）作用于玩家名/缩写徽章/数值，中文回退系统字体
+- 模板 `data/templates/wdsj_dual_card.html` + `build_dual_card_html()` 注入 `window.WDSJ_DATA`
+  - 截图视口须 ≥ 卡片宽度（现 2400×1400），否则右侧被裁
+- 实测 3 个玩家各自渲染真实数据（uid/段位/数值均不同），0 坏图、0 JS 错误
+
+### 每日排行榜卡片模板化改造（亮色主题 + MC 原版图标）
+- **起床日榜 / 竞技场日榜**：从深色窄图（蓝黑/暗红渐变 + emoji 奖牌）改为**亮色毛玻璃卡片**，
+  与双模式战绩卡同一套设计语言
+- 模板 `data/templates/daily_rank_card.html`（620px）/ `daily_arena_card.html`（660px），
+  `_build_daily_rank_html()` / `_build_arena_daily_html()` 注入 `window.DAILY_DATA`
+- **MC 原版图标表头**：击杀=铁剑 / 胜场=绿宝石 / 死亡=骷髅头 / KD=书；竞技场另有 段位=信标 / 败场=屏障
+  - 前三名奖牌：**金锭 / 铁锭 / 铜锭**（替代 emoji 🥇🥈🥉）
+- **Monocraft 字体**（英文数字）+ 系统中文字体
+- **名次对齐**：图标占固定槽位（无名次图标时留空），数字起点固定 → 1/2/3 与 10+ 名对齐同一条竖线
+- **击杀列灰色括注「(终杀)」**：说明数据里括号的含义（终局击杀）
+- **段位颜色码亮底适配**：`§f`(白) 等浅色码在亮色卡片上会隐形（实测某玩家段位直接消失），
+  统一改用同色系深色（`§f`→#6b7280、`§b`→#0e7490…），深色码保持原色
+- **日榜配色对齐双模式卡**：起床暖红/橙、竞技场冷蓝，光晕浓度加强（不再是纯白底）
+- **截图改 body 元素**：原 `full_page=True` 会按视口尺寸出图、卡片右侧留下大片背景留白，
+  改为元素截图后自动贴合内容（620×内容高）
+- `_render_html_to_png(html, prefix, width=740, height=900)` 支持自定义视口
+
+### 卡片出图性能优化（实测 6.0s → 3.9s）
+用分段计时定位瓶颈后做了三项：
+- **API 查询并行**：起床/竞技场两次查询原为串行（2.85s）→ `asyncio.gather` 并行（1.4s）
+- **皮肤头像改为服务端预下载并 base64 内联**：原由浏览器加载外部头像，`networkidle` 要等它回来，
+  网络抖动时渲染从 3s 飙到 9s；现在与 API 查询并行下载，页面**零外部请求**，渲染快且稳定
+- **截图 PNG → JPEG q95**：截图是最大瓶颈（PNG 编码 2200×1316 要 1.69s），JPEG 只要 0.55s，
+  体积还小 38%（465KB vs 749KB），卡片渐变/像素图标无可见损失
+- 渲染等待从 `networkidle + 500ms` 改为 `domcontentloaded + 350ms`（不再等网络）
+
+实测（服务器，各 3 次均值）：起床日榜 52 行 ≈ 1.5s；竞技场日榜 ≈ 1.5s；双模式卡 ≈ 3.9s
+（分解：取数并行 1.4s + 建页 0.25s + 解析 0.47s + 截图 0.55s + 其他）
+
+### 双模式卡图标微调
+- 起床「首杀」：飞箭 → **金剑**（金剑贴图独立成 `golden_sword` 键，原先藏在 `globalElo` 键下）
+- 起床「放置方块」：草方块 → **淡蓝色羊毛**（起床战争搭路即羊毛，语义更贴）
+
+### 棋类修复：象棋棋盘比例 + 落子发旧图 + 棋局结果不进上下文
+三处都是实测暴露的问题：
+- **象棋棋盘被压成"方块"**：`cchess.svg.board()` 默认把棋盘（本体 800×900 = 8:9 竖长方形）
+  居中塞进 1200×1200 的**正方画布**，四周留 200/150 空白 → 看起来像方格。
+  修法：渲染后处理 viewBox/尺寸 → `viewBox="-420 -470 840 940"`，出图 **840×940（比例 0.894）**，
+  并用固定尺寸包裹层截图（无留白）
+- **象棋落子发出的是上一手盘面**：`make_move()` 内用 `asyncio.ensure_future(_svg_to_png(...))`
+  **异步渲染但不等待**，上层拿到路径立刻发图；文件名固定（`xq_{group_id}.png`）会被覆盖
+  → 新增 `_start_render()` / `wait_render()`，`commands.py` 在发图前 `await wait_render()`
+  （board 分支与走棋分支都加了）
+- **棋局结果不进会话上下文**：五子棋/象棋下完后 LLM 完全不知道刚下过棋
+  （实测：用户五连赢了说"你输了"，bot 回"我什么时候跟你下过棋""你连棋盘都没摆，五连？截图呢"，
+  直到用户发截图才认）。修法：结束点写一条 `[棋局] …` 进上下文 ——
+  五子棋 5 个结束点（判赢/平局/禁手/认输/强制结束），象棋在认输时写入
+
+### 象棋难度分级 + 放开私聊 + 新增围棋 9×9
+- **象棋 AI 难度分级**（`/~xq start [难度]`：新手/普通/困难/专家）
+  - 采用**迭代加深 + 时间预算**（0.25 / 0.9 / 1.8 / 3.0 秒），而不是固定搜索深度 ——
+    Python 纯 minimax 的深度-耗时是爆炸式的（实测 depth2=0.3s、depth3=4s、depth4=20~37s），
+    固定 depth4 会阻塞事件循环几十秒
+  - 低难度带随机失误率（新手 35% / 普通 12%），否则 depth=1 也总能吃子显得过强
+  - 一个负面结论：给 minimax 加"吃子优先排序"反而更慢（19.7s→37.3s）—— 象棋吃子着法太少，
+    排序开销大于剪枝收益，已回滚
+- **象棋放开私聊**：原 `/~xq` 在私聊直接返回"仅支持群聊"；现在按 chat_id 隔离，群聊私聊都能玩
+- **修复 `/~xq` 一直不可用的根因**：命令层 import 的 `_build_svg` / `INIT_BOARD` 在模块里
+  **根本不存在**（实际是 `_board_to_svg` / `build_initial_svg`）→ 任何 `/~xq` 调用都 ImportError
+- **新增围棋 9×9**（`/~go`，别名 `/~围棋`，群聊私聊均可用）
+  - 自实现规则：落子 / 提子 / **自杀禁手** / **打劫**（单子提单子且自身一气 → 禁对方立即回提）/ pass
+  - 数子：中国规则简化版（子数 + 围空），**不做死活判定**，结算文案已标注"仅供参考"
+  - AI：启发式（吃子 12 分 / 叫吃 6 分 / 气 / 连接 / 线位偏好 / 不填自眼）+ 高难度一层反制；
+    9×9 下极快（0.01s 级），不会阻塞
+  - 渲染：SVG 棋盘（木色底 + 星位 + 最后一手红点 + 坐标 A–J 跳过 I）+ 信息栏（难度/手数/提子）
+  - 命令：`start [难度]` / `<坐标>`（D4 或 4,4）/ `pass` / `board` / `resign`
+- 帮助文档同步：`help_card` 增加围棋条目并更新象棋描述（自动收集，无需手工维护清单）
+
+### 棋盘模板参数化 + AI 对手正名（原 `/~xq` 显示"玩家0"）
+- `wzq_board.html` 抽出 4 个占位符：`${BOARD_N}` `${CELL}` `${STONE}` `${TITLE_EN}`，
+  五子棋/围棋共用一套模板（原先围棋贴了一套仿制样式，走形）
+- AI 对手名统一取 `core.config.get_config().bot_name`（→"幻梦"），不再写死"AI"/"玩家0"
+
+### 棋类在线对战网页上线（game 子域 + HMAC 身份）
+- **服务**：`services/game_web.py`（FastAPI）挂在 bot 进程的 asyncio loop 上（`main.py` 里
+  `await start_server()`），**直接共享 `modules/*_game` 的内存棋局，无需 IPC/DB**；只监听
+  `127.0.0.1:59400`，对外走 Cloudflare Tunnel 子域 `game.example.com`
+- **身份**：链接里带 `chat_id_userid` + HMAC-SHA256(前16位) 签名，**点开即身份、无感登录**；
+  签名密钥落盘 `data/game_web_secret`，重启不变（否则老链接全失效）
+- **跨进程/重启可见性**：`_get_game()` 内存 miss 时补读 `data/go_games.json`；
+  `_load()` 改 **setdefault 合并语义**（只补不覆盖），否则 bot 里刚下的棋网页看不到
+- **踩坑：JSON 整数键**。`captures={1:0, 2:0}` 序列化成 `{"1":0,"2":0}`，读回后
+  `captures[BLACK]` 直接 `KeyError: 1` → HTTP 500 → 读档处统一 `{int(k): v}` 转回
+- **踩坑：同步 httpx 打自己起的异步服务会死锁**（同步 client 堵死事件循环）→ 自测脚本必须
+  `httpx.AsyncClient`，或者把服务放到**独立进程**里跑（本项目采用后者）
+- **踩坑：`uvicorn` 的异常不打进 bot 日志**，要看 `journalctl -u bot.service`
+
+### 围棋支持 9 / 13 / 19 三档（默认 19 标准盘）+ 棋局生命周期调整
+- 尺寸全面参数化：`BOARD_SIZES=(9,13,19)`、`letters_of()`（跳过 I）、`star_points()`、
+  `_empty_board(size)`、`_neighbors(r,c,size)`、`parse_coord(raw,size)`；`/~go start [难度] [尺寸]`
+  支持 `9/13/19` 与 `小/中/大`
+- **AI 性能**：候选点从"全盘扫描"改为**邻近启发**（只评估已有棋子周围 2 格），
+  19×19 自对弈 80 手实测 max 25ms / avg 10ms，不会阻塞事件循环
+- **棋局结束后不再删除**（原 `resign_game`/`end_game` 直接 `del _games[chat_id]`）：
+  保留终局盘面与 `final_score`/`result_text`，网页刷新仍能看到结果；
+  `start_game` 改为只在 `status == "playing"` 时拒绝开新局
+- `_record_go_context()` 加 `_ctx_done` 幂等标记，避免 end_game 与 resign 路径重复写上下文
+- **踩坑：服务器 python3 = 3.10，f-string 里不能复用同引号**。本地 3.12/3.13 能编过、
+  3.10 报 `SyntaxError: f-string: unmatched '['` → `len(game["board"])` 改走中间变量；
+  **改完必须在服务器上 `python3 -m py_compile` 验一遍**
+
+### 专属线上对局界面（双战绩风格，不再复用五子棋棋盘模板）
+- 用户要求"至少设计一个专属的线上界面"，采用 wdsj **双模式战绩卡**的设计语言：
+  亮色毛玻璃 + 圆角卡片 + 双色调面板（黑方冷蓝 / 白方暖红）+ 像素字体
+- **左栏棋盘**：木纹底 + SVG 精确格线（线只画到最外交叉点，不再顶到边缘）+ 星位 + 悬停虚子 +
+  最后一手红环；坐标列随尺寸自适应（`calcCell()` 按容器宽度取 `min(基准格, 可用宽度/n)`）
+- **右栏双战绩**：`你(BLACK)` / `幻梦(WHITE)` 两块面板 —— 盘上子 / 提子 / 落子 + 盘面占比条 +
+  行棋徽标（行棋中 / 思考中 / 等待 / 已结束）
+- **对局信息**：难度 / 手数 / 停一手次数 / 用时（服务端算 `elapsed`）+ 终局结果横幅
+- **棋谱**：逐手 chips（序号 + 坐标，黑白分色，pass 单独样式），后端新增 `moves` 落子记录
+  （`_push_move`/`_push_pass`），API 返回最近 60 手
+- **像素字体不内联**：Monocraft 从双模式卡里抽出来单独放 `data/web_assets/monocraft.ttf`，
+  由 `/static/monocraft.ttf` 提供（带 7 天缓存），避免每次加载 270KB base64
+- **鉴权收紧**：新增 `_auth_player()` —— 除校验签名外，还要求 **token 持有者就是这局的主人**，
+  否则 403（原来只要 room 对得上就放行，别人的链接能画出你的房间）
+- **渲染前必查的两件事**（都是本轮实际踩到的）：`.bwrap` 的 `grid-template-rows` 顺序写反
+  导致棋盘区落进 22px 行里、整块错位；`.board-bg` 用 `z-index:-1` 跑到卡片白底后面（木纹消失）
+  → 改 `isolation:isolate` + `z-index:0/1/2` 分层
+- 验收：接口级自测 79 项全过；服务器 Playwright 量测 `hits=361 / lines=38 / circles=9 /
+  hitsMatchBoard=true / JS_ERRORS 空`，桌面 1440 与手机 430 均无横向溢出（`scrollW == clientW`）
+
+### 五子棋 + 象棋也接上线上对战（三棋共用一套界面骨架）
+- **共用样式抽成 `data/web_assets/game.css`**（由 `/static/game.css` 提供，1 小时缓存），
+  三个页面都只留 `<link rel="stylesheet" href="${CSS_URL}">`；字体用 `url("monocraft.ttf")`
+  相对本文件解析 → 隧道挂子路径也不会失效
+- **静态资源改白名单**：`/static/{name}` 只放行 `monocraft.ttf` / `game.css`（FastAPI 的
+  路径参数天然不吃斜杠，穿越路径直接 404）
+- **五子棋 `/~wzq`**（`data/templates/wzq_web.html`）：
+  - 15 路棋盘 + 标准五子星位；双战绩面板显示 **盘上子 / 最长连 / 落子** + 盘面占比
+  - 人人局**黑方白方各自一条链接**（token 按 user_id 签发），人机局白方名称取 bot 名
+  - 人机模式落子后**服务端立刻让 AI 应手**（`ai_move_async`），响应里带上 AI 的落子坐标
+  - 对局信息：模式（人机/对战）/ 手数 / 禁手开关 / 用时；终局显示胜负横幅
+- **象棋 `/~xq`**（`data/templates/xq_web.html`）：
+  - 棋盘独立渲染：10 横线 + 9 竖线（中间 7 条在楚河汉界断开）+ 九宫斜线 + 双层外框 +
+    炮兵位十字标记 + **楚河/漢界**；红黑棋子用楷体字，点击「自己的子 → 目标点」走棋
+  - 坐标标签用 **UCI 的 a–i / 9–0**，方便直接读出走法（点两下生成的 uci 与手输一致）
+  - 双战绩面板显示 **存活子 / 吃子 / 回合** + 兵力占比（红方暖色、黑方冷色）
+  - 棋谱逐步显示「棋子字 + 目标格」（如 `炮 e2` = 炮二平五）
+- **接口层（`services/game_web.py`）**：
+  - `_auth_wzq()` 允许黑/白任一方的 token，`_auth_xq()` 只认房主；`_page()` 统一注入
+    `${ROOM}/${TOKEN}/${CSS_URL}`
+  - 象棋 AI 是同步阻塞实现（时间预算最长 3s），Web 走 `run_in_executor` 执行，
+    不让页面请求卡住 bot 事件循环；同时给 `make_move` 加 `render=False`，
+    避免网页每走一步都白跑一次 Playwright 截图
+- **棋局结束后不再删档**（象棋原来 `_delete_game`、五子棋 `save_games` 只存 playing/waiting）：
+  改为保留终局盘面 + 结果文案，`start_game` 的守卫改成"只在未结束时拒绝"，
+  这样网页刷新、bot 重启都还能看到终局
+- `_game_web_link()` 统一了三个指令的取链接逻辑；`/~wzq link`、`/~xq link` 新增；
+  `/~wzq ai|duel|accept`、`/~xq start` 开局文案里直接附网页链接
+- 帮助文档：五子棋/象棋描述更新为"支持网页下棋"（`help_card` 自动收集，只改描述）
+- **验收**：本机接口级自测 66 项全过（围棋回归 + 五子棋人机/人人 + 权限 + 静态资源白名单）；
+  服务器 34 项全过（含象棋走棋/吃子/认输/终局/重开）；Playwright 三页量测
+  `go hits=361 lines=38 circles=9`、`wzq hits=225 lines=30 circles=5 pieces=0`、
+  `xq hits=90 pieces=30 rects=1 lines=126`，三页 `scrollW == clientW`、`JS_ERRORS=[]`
+
+## v2.3.15 — wdsj API 第三轮反扒适配（新模板+赛季榜+中文名直查） (2026.9.14~15)
 一句话总结：反扒发现洛花星雨 API 模板 16→18、榜单 28→86（26 领域）、条目字段改名 owner、新增赛季榜 SEASON/中文标签/快照图，已补齐新模板并适配。
 
 - **反扒结论（docs/wdsj_api.md 全量记录）**：
@@ -5077,6 +5372,27 @@ HTML 里的 base64 素材只占 73ms（7%）——所以"瘦身 HTML"这类优�
 **验证**：构建通过；菜单 selected 类出现、紫色占比显著提升；助手说"改人格"→ 自动跳到
 bot_config.toml 的 personality 输入框并高亮。
 
+## v2.3.1 — 前置思考判断 + thinking 开关 + judge 空返回修复 (2026.9.12)
+- 背景: deepseek-flash 默认开启思考模式（DeepSeek-V4.1-Flash）。V4.1 默认 thinking 开启
+- **发现 Bug**: 换 deepseek-flash 后 judge 短判断(max_tokens=20) 空返回 finish_reason=length
+  → 根因: 思考 token 吃掉仅有的 20 输出预算。日志证据: tokens=20 返回空
+- **修复**: `call_llm` 新增 thinking 参数，**默认 False**（本函数多为短输出判断调用）
+  → judge/搜索判断/json_mode 兜底全部自动关思考，短判断恢复
+- **新功能(前置判断开启思考)**: 主回复链路按需开思考
+  - `call_llm_with_tools` 新增 thinking 参数 + 提取 reasoning_content 返回
+  - `ToolCallResult` 新增 reasoning 字段
+  - FC 多轮 assistant 消息回传 reasoning_content（防 DeepSeek 400: 带 tools 必须回传）
+  - `generate_multi_reply_with_tools` 透传 thinking
+  - pipeline: `_detect_skill_needs(full_msg).deep` 命中 → thinking=True（知识/原理/对比提问）
+    → 深问题 11 句讲透；闲聊 thinking=False 2 句快答
+- **验证**:
+  - _detect_skill_needs 4 用例全对（深知识=True / 闲聊=False / 工具=False / 知识=True）
+  - thinking=True 模拟测试: reasoning_content=735字符（思考真实产出）且 JSON 输出正常
+  - thinking=False: reasoning 为空，快答
+  - judge 复测: "0|3|0" 正常返回（修复前空返回）
+  - 生产主回复链路: 知识提问 11 句 / 闲聊 2 句
+- ⚠️ 设计说明: judge/工具/JSON兜底默认关思考（短判断不能被思考拖垮）；仅主回复按 deep 意图开
+
 ## v2.3.0 — 面板全可写（106 接口）+ 崩溃自愈经实测可用 (2026.9.13)
 一句话总结：面板从"能看"变成"啥都能改、啥都能管"，并且加了崩溃自愈——改配置把 bot 改崩了，它会自己回滚并救活；这条机制是真把 bot 弄崩验证过的。
 
@@ -5144,6 +5460,176 @@ MainPID:   1529017 → 1529656 ← 反复重启
 bot 恢复运行，自愈自动解除布防回到静默
 ```
 
+## v2.2.5 — 深度讲解模式改为按需注入（日常闲聊每轮省 ~840 tokens）— 2026.9.11
+背景：v2.2.4 拆完 skill 后，`group_format` 仍有 6079 字符，其中「深度讲解模式」（原规则 19-24）
+1577 字符是**只有知识类提问才需要**的长回答规范，却每轮都进 system。
+
+改动：
+- 新增 `data/skills/70_deep_explain.md`（`## deep_explain`，1651 字符）：原规则 19-24 全量迁入，
+  顶层序号重编号为 1-6，并在开头加一行「深度讲解模式已启用」的模式声明
+- `data/skills/10_format_group.md`：group_format 6079 → **4483 字符**（−1597）
+- `services/llm.py`：
+  - 新增 `_DEEP_HINTS`（42 个意图词：详细/详解/展开/原理/为什么/怎么/什么是/是啥/区别/对比/步骤/流程/教程/科普/冷知识/历史/背景…）
+  - `_detect_skill_needs` 增加 `deep` 意图（命中词，或 "8 字以上且带问号" 的疑问句）
+  - `_build_skill_refs` 在 `deep` 命中时注入 `deep_explain`；`_OPTIONAL_SECTIONS` 加入该章节
+- 修掉两处悬空引用（指向已迁出的块）：group_format 规则8 的「详见下方深度讲解模式」、
+  规则17 的「按下方深度讲解规范在聊天里展开」
+
+**真实 API A/B 对照**（同一批问题，改造前后各跑一次）：
+| 用例 | 改造前 | 改造后 |
+|------|--------|--------|
+| 知识·对比（TCP vs UDP） | 9 句 / 861 字 / 8 个【】 | **12 句 / 1135 字 / 10 个【】** |
+| 知识·概念（三次握手是啥） | 9 句 / 864 字 / 7 个【】 | 10 句 / 839 字 / 8 个【】 |
+| 知识·原理（为什么碎片多了变慢） | 8 句 / 777 字 / 6 个【】 | 10 句 / 802 字 / 8 个【】 |
+| 闲聊 | 2 句 / 25 字 | 2 句 / 32 字（保持简短） |
+| 极简（在吗） | 1 句 / 9 字 | 1 句 / 8 字（保持简短） |
+
+结论：知识类回答**没有变短**（反而更完整，位置从 system 挪到 user 前端、注意力更高），闲聊保持简短。
+成本：闲聊轮 system 12827 → **11224 字符**（−840 tokens）；知识轮 refs 多 1651 字符，与原先在 system 里基本持平。
+
+触发覆盖验证：13 组用例（6 知识类应触发 / 7 闲聊类不应触发）全 PASS；服务器与本地 18 章节哈希逐字节一致。
+
+## v2.2.4 — 提示词拆分到 data/skills/（要啥加载啥）+ 管理员代发 /~say — 2026.9.11
+需求：① 把 skill 拆开放进 skills 文件夹，实现"要啥加载啥" ② admin 私聊 bot 就能让它往指定群/私聊发消息。
+
+### 一、提示词拆分（data/main_skill.md → data/skills/*.md）
+按**加载角色**拆成 8 个文件，文件名前缀即加载顺序与用途：
+| 文件 | 内容 | 加载方式 |
+|------|------|----------|
+| `00_core.md` | prompt_header / persona_lock / self_awareness / anti_repeat | 常驻 system |
+| `10_format_group.md` | group_format | 常驻 system（群聊） |
+| `11_format_private.md` | private_format / private_tone | 常驻 system（私聊） |
+| `20_command_tools.md` | command_tools | 常驻 system |
+| `21_command_table.md` | command_table | **按需**：命中工具/指令意图才注入 user |
+| `30_fav.md` | fav_format / fav_tiers | 常驻 system |
+| `40_reminders.md` | reply/voice/jsonraw_reminder + plain_text_rule | **按调用路径**取 |
+| `50_play_mode.md` | play_mode | **按需**：命中玩梗意图才注入 |
+| `60_face_lib.md` | face_lib | **按需**：命中表情意图才注入 |
+
+代码改动：
+- `services/llm.py` `_load_skill_sections` 重写：main_skill.md 变为**可选遗留文件**，缺失时**必须继续合并 skills 目录**
+  - ★ **修掉一个真 bug**：旧实现在 main_skill.md 不存在时直接 `return`（跳过 `_merge_skills_dir`），
+    拆分后会把所有提示词静默清空 —— bot 会变成没有人设的空壳，且不报错
+- `core/config.py` `_build_self_awareness`：不再硬编码 `data/main_skill.md`，改为扫描 `data/skills/*.md` 找
+  `## self_awareness`（config 不能 import services，故就地正则取段），找不到再回退遗留文件
+- 本地 `data/main_skill.md` 已删除（备份在 `qqbot-backup/2026-09-11/main_skill.md.retired`）
+
+**零回归验证**（拆分前抓基线 → 拆分后逐字节比对）：
+| 指标 | 结果 |
+|------|------|
+| system（群聊） | 12827 字符 / md5 dad3b2be，**拆分前后完全一致** |
+| system（私聊） | 8224 字符 / md5 e957e0a5，一致 |
+| 17 个章节内容 | 全部逐字一致 |
+| refs（tools/face/play/chat） | face/play/chat 一致；tools 3402→3507（仅因新增 say 指令，符合预期） |
+| 服务器 vs 本地 | 17 章节哈希全等 |
+
+坑：`self_awareness` 段原文含 `# 自我认知` 标题行和空行，章节解析器会丢弃、但 `core/config.py` 用正则读原文会保留
+→ 首轮比对 system 少 9 字符。已把原始格式还原进 `00_core.md`，两处读法结果一致。
+坑：`data/skills/` 下**任何 `*.md` 都会被当技能加载**，备份文件放这里会按文件名顺序覆盖正式版本 → 备份必须放目录外。
+
+### 二、管理员代发消息 /~say（新文件 `modules/msg_relay.py`）
+主人在私聊里让 bot 把消息发到指定群 / 指定私聊。
+```
+/~say g<群号> <内容>     发到群      例: /~say g2000000002 大家晚上好呀
+/~say u<QQ号> <内容>     发到私聊
+/~say <群号> <内容>      纯数字默认按群号
+```
+- 前缀兼容：`g/group/群/群聊` 与 `u/user/p/private/私/私聊`
+- 内容里的 `@123456` 自动转 `[CQ:at,qq=123456]`；也能直接写 CQ 码；`a@163.com` 这类不会误转
+- 权限：主人 / 全局 OP / 该群管理员；非管理员直接拒绝
+- 注册：COMMAND_MAP `say`/`代发` + `_CMD_DESC` + `lang.toml` 帮助菜单与详情
+
+验证：本地 11 组目标解析 + 4 组 @ 转换 + 权限/发群/发私聊/参数不足，全部 PASS；
+服务器端同样跑通（`say` 已注册、@ 已转码、非管理员被拦）。
+
+## v2.2.3 — 禁用 Markdown 规则细化：放开编号、消解规则冲突 — 2026.9.11
+背景：v2.2.2 的 `plain_text_rule` 把 `1. 2. 3.` 编号也一起禁了，与既有的 group_format 规则22
+（"列表用「1. 」「2. 」或「- 」配合缩进"）**直接冲突** —— 按提示词铁律2，冲突会让规则互相抵消。
+
+修正（2 文件）：
+- **data/skills/40_reminders.md** `plain_text_rule`
+  - 放开「1. 」「2. 」编号（讲操作步骤/流程时优先用编号逐条写，一条一个动作）
+  - 明确禁止 `-` / `*` 打头的列表（markdown 列表语法，正文里不要出现）
+  - 小节标题用【】；贴链接直接给完整网址；贴代码不要反引号/代码块
+- **data/main_skill.md** 三处编号规则对齐，消除冲突
+  - group_format 规则5：改为"日常闲聊别给句子编序号；列步骤/清单用 1. 或 · 打头（不要用 -/*）"
+  - private_format 规则5：同上
+  - 规则22 排版：允许清单去掉「- 」，补全禁用清单（加 | 表格 |、[文字](链接)）
+
+实测（服务器真实调用，2 类问题各一次）：
+| 问题 | md 残留 | 编号行 | 减号列表 |
+|------|---------|--------|----------|
+| 怎么给笔记本分盘…详细步骤 | 无 | 13 | 0 |
+| 对比 TCP 和 UDP 的区别 | 无 | 8 | 0 |
+输出形态：`【先说思路】` 方括号分节 + `1. ` 编号步骤 + 口语展开，QQ 里纯文本可读
+
+## v2.2.2 — 提示词集中管理 + 回复禁用 Markdown — 2026.9.11
+两个需求：① 回复别用 Markdown（QQ 不渲染，星号/井号/减号原样显示很难看）② 提示词写在一个固定的 skill 里，不要硬编码在各个角落。
+
+### 现状（硬编码散落的 4 处）
+- `services/llm.py` `_build_messages`（主回复路径）一大坨 `fmt_reminder`
+- `services/llm.py` `generate_multi_reply`（voice 路径）另一大坨 `fmt_reminder`
+- `modules/commands.py` `cmd_jsonraw`（调试指令）第三份副本
+- `core/ctx_usage.py`（/~ctx 统计）**手工复刻**了一份，会随提示词改动漂移 → 统计失真
+
+### 改造
+- **新增 `data/skills/40_reminders.md`**（集中落点，经 `_merge_skills_dir` 自动叠加，无需新机制）
+  - `## reply_reminder` 主回复模板（原 A 版，`${ctx_hint}` / `${max_chars}` 为变量）
+  - `## voice_reminder` 语音路径模板（原 B 版）
+  - `## jsonraw_reminder` 调试指令模板
+  - `## plain_text_rule` **新增·禁用 Markdown 规则**（自动追加到提醒末尾 —— 越靠近当前消息注意力越高）
+- **`services/llm.py`** 新增 `_build_reminder(name, **vars)`：读模板 → 插值 → 追加禁 md 规则
+  - 缺章节时打 ERROR 并回退**最小 JSON 兜底**（JSON 约束绝不能丢，否则 LLM 输出纯文本 → 全量解析失败）
+  - `_OPTIONAL_SECTIONS` 补入 4 个新章节名，防被 `_build_skill_refs` 关键词兜底误注入
+  - 顺带修复 `_parse_reply` 的日志格式串 bug（5 个占位符只传 4 个参数 → 每次解析都刷 TypeError traceback）
+- **`modules/commands.py`** / **`core/ctx_usage.py`**：改调 `_build_reminder`，副本全部删除
+
+### 禁 Markdown 规则要点
+禁止 `**加粗**`、`*斜体*`、`# 标题`、`> 引用`、`-`/`*` 列表、表格、`[文字](链接)`、分隔线、反引号/代码块；
+要强调用「」《》【】，要分点就分行或用「一是…二是…」，链接直接贴完整网址，代码直接写原文。
+与既有规则无冲突（group_format 规则5 本就要求"只输出纯文本、不要编号"）。
+
+### 验证（本地 + 服务器双端）
+- **逐字对比**：改前先 dump 三条路径的提醒原文存档，改后与原文字节级比对 —— 全部一致，只多出 344 字符禁 md 规则
+  | 路径 | 原文 | 改后 |
+  |------|------|------|
+  | A 主回复（群/私聊） | 1412 | 1757 = 1412 + 345 |
+  | B 语音 | 1213 | 1558 = 1213 + 345 |
+- 兜底测试：模拟章节缺失 → 正确回退最小兜底、无残留占位符、不抛异常
+- 隔离测试：新章节不泄漏进 system、不被 `_build_skill_refs` 捞走；指令列表仍正常注入
+- 端到端回归：记笔记场景仍裁到 1 句、`400tok/s` 不再误触发搜索、知识类多句不被裁
+- 服务器：`已叠加 skill 文件: 40_reminders.md`、章节 13 → 17、提醒渲染 1757 字符、无 ERROR、WS 已连接
+- `/~ctx` 的"格式提醒"从 493 → **884 tokens**（此前是偏短的手工复刻，现在读真实模板，数字终于准了）
+
+## v2.2.1 — 修复回复正文里的「/字母」被误当指令（串台/白跑搜索）— 2026.9.11
+现象（群 247478659 实测）：Trusler 发「修订Note1为空，已读」→ bot 删笔记后**白跑了一次 28s 搜索**，
+搜的还是「都快赶上本地推理了」，接着又追加一句莫名其妙的「诶，怎么把这条删掉了呀？」。
+
+根因（正则误伤，v2.0.4m 防护没覆盖）：
+- `core/pipeline.py:649` 回复扫描正则 `/(?:\~|\#|(?=[a-zA-Z]))` 的第三分支把**任意「/字母」**都当指令。
+- bot 回复里写了「400tok/s 都快赶上本地推理了」→ 其中 `/s` 命中 `COMMAND_MAP["s"]`（search 别名），
+  参数还贪婪吃掉后半句 → 自动提取 `/~s 都快赶上本地推理了` → 真跑搜索 → 结果回灌触发追加回复。
+- `tok/s`、`MB/s`、`m/s` 这类单位写法在技术聊天里极常见，属高频误伤面。
+
+修复（2 文件）：
+- **core/pipeline.py**
+  1. 回复扫描只认文档化的 `/~`、`/#` 前缀（去掉裸 `/字母` 分支）。
+     用户输入侧（第 288 行 `_re.match` 锚定行首）不动，`/s xxx` 手动发仍可用。
+  2. **纯 note 操作时回复裁到 1 句**：实测 LLM 常在「好，记本子上了～」后多带一句评论群里别的话题
+     （例：别人聊军训出汗 → 顺嘴点评军训）。与既有 `_note_only`（纯 note 不追加回复）同源。
+- **services/llm.py**：两处 fmt_reminder 末尾强化两条规则
+  - 笔记本已有同一个人/同一条关系的条目 → **必须 fix 更新，禁止新增重复条目**
+    （实测同一组「光煞/夜煞」关系被重复记 4 次）
+  - **只答当前这条消息，禁止点评上下文里其他人的话题**；本轮要调 calls 时 replies 限 1 句
+
+验证（本地端到端，mock LLM 返回日志里的真实输出 + mock 发送）：
+| 用例 | 期望 | 结果 |
+|------|------|------|
+| 「400tok/s 都快赶上本地推理了」正文 | 不提取任何 CALL | ✅ 无 |
+| `10MB/s` / `m/s` | 不提取 | ✅ 无 |
+| `/~note del 1`、`/~s xxx`、`/#reload` | 正常提取 | ✅ 正常 |
+| 16:11 记笔记（带串台句） | 只发 1 句 | ✅ 1 句 |
+| 搜索/闲聊多句 | 不被裁 | ✅ 3 句 / 2 句 |
 
 ## v2.2.0 — 后台控制面板（独立进程 API 服务，65 个接口）(2026.9.12)
 一句话总结：给 bot 做了一个能看能管的网页后台，独立进程运行——bot 崩了它还能活着看日志、重启服务。
@@ -5196,6 +5682,38 @@ bot 恢复运行，自愈自动解除布防回到静默
 **七、待办**
 - 前端 `panel_web/`（计划用 vue-pure-admin 起手，P3 阶段）
 - 默认密码请尽快在面板内改掉
+
+## v2.2.0 — 上下文用量查询指令 /~ctx — 2026.9.11
+需求：加一个上下文查询指令，展示每轮给 LLM 的上下文都被什么占着（对齐 ChatGPT 的上下文用量面板）。
+
+实现（4 文件 + 1 新增）：
+- **core/ctx_usage.py**（新增）：`build_ctx_report(chat_id, is_group)` 统计 6 个维度
+  - `System Prompt`：`_build_system_text` 完整输出（与真实请求一致）
+  - `参考资料`：`_build_skill_refs` 热注入（工具意图时最大占用 / 实际聊天不带）
+  - `Conversation`：历史消息（当前条数/上限）
+  - `注入信息`：extra_info（时间/节假日/记忆/笔记/画像/好感度等）
+  - `格式提醒`：fmt_reminder 完整文本
+  - `当前消息`：本次发言
+  - 顶部总览：`上下文用量 X% · N / 60K` + 进度条；百分比按 60K 窗口
+- **modules/commands.py**：import + `COMMAND_MAP` 注册 `"ctx": cmd_ctx`
+- **services/llm.py**：`_CMD_DESC` 加 ctx 说明（指令文档同步铁律）
+- **config/lang.toml**：`/~help` 系统菜单加 `/~ctx`，新增 ctx 详细帮助
+
+token 计算：
+- 优先本地 DeepSeek tokenizer（`core/token_tracker._token_count`）
+- **发现并修复 BPE 退化坑**：服务器 tokenizer 无 PyTorch 时 encode 长文本严重偏小
+  （12745 字符只算出 1236，正常 ~6600）→ `_tok_count` 加退化检测
+  （估算与真实差距 > 2.5 倍 → 回退字符估算：中文≈0.7 tok/字，英文≈0.25）
+- `/~ctx <群号>` 管理员可查指定群
+
+实测（服务器真实群 2000000002）：
+```
+上下文用量 13.8% · 8.3K / 60.0K
+System Prompt  ~6.7K   11.1%   ← v2.1.9 后稳定核心
+参考资料     ~650   1.1%     ← 工具意图才注入
+Conversation   ~470   0.8%  (20条/上限20条)
+格式提醒     ~493   0.8%
+```
 
 ## v2.1.22 — 表情改用「动画表情」形式发送，不再占满屏幕 + 修图片路径四斜杠 (2026.9.12)
 一句话总结：发表情时 QQ 里显示的是一张小贴纸而不是占半屏的图片，顺带修掉一个会让表情全部发不出去的路径 bug。
@@ -5561,209 +6079,6 @@ bot 恢复运行，自愈自动解除布防回到静默
 - 成本影响: 历史 200 条 ≈ 30-60K token/请求，按 $0.15/M 输入 = ~$0.005-0.01/次，可接受
 - ⚠️ 注意: deepseek-flash 默认**思考模式**，maxtoken=1000 可能偏小（思考 token 计入输出），待实测
 
-## v2.2.5 — 深度讲解模式改为按需注入（日常闲聊每轮省 ~840 tokens）— 2026.9.11
-背景：v2.2.4 拆完 skill 后，`group_format` 仍有 6079 字符，其中「深度讲解模式」（原规则 19-24）
-1577 字符是**只有知识类提问才需要**的长回答规范，却每轮都进 system。
-
-改动：
-- 新增 `data/skills/70_deep_explain.md`（`## deep_explain`，1651 字符）：原规则 19-24 全量迁入，
-  顶层序号重编号为 1-6，并在开头加一行「深度讲解模式已启用」的模式声明
-- `data/skills/10_format_group.md`：group_format 6079 → **4483 字符**（−1597）
-- `services/llm.py`：
-  - 新增 `_DEEP_HINTS`（42 个意图词：详细/详解/展开/原理/为什么/怎么/什么是/是啥/区别/对比/步骤/流程/教程/科普/冷知识/历史/背景…）
-  - `_detect_skill_needs` 增加 `deep` 意图（命中词，或 "8 字以上且带问号" 的疑问句）
-  - `_build_skill_refs` 在 `deep` 命中时注入 `deep_explain`；`_OPTIONAL_SECTIONS` 加入该章节
-- 修掉两处悬空引用（指向已迁出的块）：group_format 规则8 的「详见下方深度讲解模式」、
-  规则17 的「按下方深度讲解规范在聊天里展开」
-
-**真实 API A/B 对照**（同一批问题，改造前后各跑一次）：
-| 用例 | 改造前 | 改造后 |
-|------|--------|--------|
-| 知识·对比（TCP vs UDP） | 9 句 / 861 字 / 8 个【】 | **12 句 / 1135 字 / 10 个【】** |
-| 知识·概念（三次握手是啥） | 9 句 / 864 字 / 7 个【】 | 10 句 / 839 字 / 8 个【】 |
-| 知识·原理（为什么碎片多了变慢） | 8 句 / 777 字 / 6 个【】 | 10 句 / 802 字 / 8 个【】 |
-| 闲聊 | 2 句 / 25 字 | 2 句 / 32 字（保持简短） |
-| 极简（在吗） | 1 句 / 9 字 | 1 句 / 8 字（保持简短） |
-
-结论：知识类回答**没有变短**（反而更完整，位置从 system 挪到 user 前端、注意力更高），闲聊保持简短。
-成本：闲聊轮 system 12827 → **11224 字符**（−840 tokens）；知识轮 refs 多 1651 字符，与原先在 system 里基本持平。
-
-触发覆盖验证：13 组用例（6 知识类应触发 / 7 闲聊类不应触发）全 PASS；服务器与本地 18 章节哈希逐字节一致。
-
-## v2.2.4 — 提示词拆分到 data/skills/（要啥加载啥）+ 管理员代发 /~say — 2026.9.11
-需求：① 把 skill 拆开放进 skills 文件夹，实现"要啥加载啥" ② admin 私聊 bot 就能让它往指定群/私聊发消息。
-
-### 一、提示词拆分（data/main_skill.md → data/skills/*.md）
-按**加载角色**拆成 8 个文件，文件名前缀即加载顺序与用途：
-| 文件 | 内容 | 加载方式 |
-|------|------|----------|
-| `00_core.md` | prompt_header / persona_lock / self_awareness / anti_repeat | 常驻 system |
-| `10_format_group.md` | group_format | 常驻 system（群聊） |
-| `11_format_private.md` | private_format / private_tone | 常驻 system（私聊） |
-| `20_command_tools.md` | command_tools | 常驻 system |
-| `21_command_table.md` | command_table | **按需**：命中工具/指令意图才注入 user |
-| `30_fav.md` | fav_format / fav_tiers | 常驻 system |
-| `40_reminders.md` | reply/voice/jsonraw_reminder + plain_text_rule | **按调用路径**取 |
-| `50_play_mode.md` | play_mode | **按需**：命中玩梗意图才注入 |
-| `60_face_lib.md` | face_lib | **按需**：命中表情意图才注入 |
-
-代码改动：
-- `services/llm.py` `_load_skill_sections` 重写：main_skill.md 变为**可选遗留文件**，缺失时**必须继续合并 skills 目录**
-  - ★ **修掉一个真 bug**：旧实现在 main_skill.md 不存在时直接 `return`（跳过 `_merge_skills_dir`），
-    拆分后会把所有提示词静默清空 —— bot 会变成没有人设的空壳，且不报错
-- `core/config.py` `_build_self_awareness`：不再硬编码 `data/main_skill.md`，改为扫描 `data/skills/*.md` 找
-  `## self_awareness`（config 不能 import services，故就地正则取段），找不到再回退遗留文件
-- 本地 `data/main_skill.md` 已删除（备份在 `qqbot-backup/2026-09-11/main_skill.md.retired`）
-
-**零回归验证**（拆分前抓基线 → 拆分后逐字节比对）：
-| 指标 | 结果 |
-|------|------|
-| system（群聊） | 12827 字符 / md5 dad3b2be，**拆分前后完全一致** |
-| system（私聊） | 8224 字符 / md5 e957e0a5，一致 |
-| 17 个章节内容 | 全部逐字一致 |
-| refs（tools/face/play/chat） | face/play/chat 一致；tools 3402→3507（仅因新增 say 指令，符合预期） |
-| 服务器 vs 本地 | 17 章节哈希全等 |
-
-坑：`self_awareness` 段原文含 `# 自我认知` 标题行和空行，章节解析器会丢弃、但 `core/config.py` 用正则读原文会保留
-→ 首轮比对 system 少 9 字符。已把原始格式还原进 `00_core.md`，两处读法结果一致。
-坑：`data/skills/` 下**任何 `*.md` 都会被当技能加载**，备份文件放这里会按文件名顺序覆盖正式版本 → 备份必须放目录外。
-
-### 二、管理员代发消息 /~say（新文件 `modules/msg_relay.py`）
-主人在私聊里让 bot 把消息发到指定群 / 指定私聊。
-```
-/~say g<群号> <内容>     发到群      例: /~say g2000000002 大家晚上好呀
-/~say u<QQ号> <内容>     发到私聊
-/~say <群号> <内容>      纯数字默认按群号
-```
-- 前缀兼容：`g/group/群/群聊` 与 `u/user/p/private/私/私聊`
-- 内容里的 `@123456` 自动转 `[CQ:at,qq=123456]`；也能直接写 CQ 码；`a@163.com` 这类不会误转
-- 权限：主人 / 全局 OP / 该群管理员；非管理员直接拒绝
-- 注册：COMMAND_MAP `say`/`代发` + `_CMD_DESC` + `lang.toml` 帮助菜单与详情
-
-验证：本地 11 组目标解析 + 4 组 @ 转换 + 权限/发群/发私聊/参数不足，全部 PASS；
-服务器端同样跑通（`say` 已注册、@ 已转码、非管理员被拦）。
-
-## v2.2.3 — 禁用 Markdown 规则细化：放开编号、消解规则冲突 — 2026.9.11
-背景：v2.2.2 的 `plain_text_rule` 把 `1. 2. 3.` 编号也一起禁了，与既有的 group_format 规则22
-（"列表用「1. 」「2. 」或「- 」配合缩进"）**直接冲突** —— 按提示词铁律2，冲突会让规则互相抵消。
-
-修正（2 文件）：
-- **data/skills/40_reminders.md** `plain_text_rule`
-  - 放开「1. 」「2. 」编号（讲操作步骤/流程时优先用编号逐条写，一条一个动作）
-  - 明确禁止 `-` / `*` 打头的列表（markdown 列表语法，正文里不要出现）
-  - 小节标题用【】；贴链接直接给完整网址；贴代码不要反引号/代码块
-- **data/main_skill.md** 三处编号规则对齐，消除冲突
-  - group_format 规则5：改为"日常闲聊别给句子编序号；列步骤/清单用 1. 或 · 打头（不要用 -/*）"
-  - private_format 规则5：同上
-  - 规则22 排版：允许清单去掉「- 」，补全禁用清单（加 | 表格 |、[文字](链接)）
-
-实测（服务器真实调用，2 类问题各一次）：
-| 问题 | md 残留 | 编号行 | 减号列表 |
-|------|---------|--------|----------|
-| 怎么给笔记本分盘…详细步骤 | 无 | 13 | 0 |
-| 对比 TCP 和 UDP 的区别 | 无 | 8 | 0 |
-输出形态：`【先说思路】` 方括号分节 + `1. ` 编号步骤 + 口语展开，QQ 里纯文本可读
-
-## v2.2.2 — 提示词集中管理 + 回复禁用 Markdown — 2026.9.11
-两个需求：① 回复别用 Markdown（QQ 不渲染，星号/井号/减号原样显示很难看）② 提示词写在一个固定的 skill 里，不要硬编码在各个角落。
-
-### 现状（硬编码散落的 4 处）
-- `services/llm.py` `_build_messages`（主回复路径）一大坨 `fmt_reminder`
-- `services/llm.py` `generate_multi_reply`（voice 路径）另一大坨 `fmt_reminder`
-- `modules/commands.py` `cmd_jsonraw`（调试指令）第三份副本
-- `core/ctx_usage.py`（/~ctx 统计）**手工复刻**了一份，会随提示词改动漂移 → 统计失真
-
-### 改造
-- **新增 `data/skills/40_reminders.md`**（集中落点，经 `_merge_skills_dir` 自动叠加，无需新机制）
-  - `## reply_reminder` 主回复模板（原 A 版，`${ctx_hint}` / `${max_chars}` 为变量）
-  - `## voice_reminder` 语音路径模板（原 B 版）
-  - `## jsonraw_reminder` 调试指令模板
-  - `## plain_text_rule` **新增·禁用 Markdown 规则**（自动追加到提醒末尾 —— 越靠近当前消息注意力越高）
-- **`services/llm.py`** 新增 `_build_reminder(name, **vars)`：读模板 → 插值 → 追加禁 md 规则
-  - 缺章节时打 ERROR 并回退**最小 JSON 兜底**（JSON 约束绝不能丢，否则 LLM 输出纯文本 → 全量解析失败）
-  - `_OPTIONAL_SECTIONS` 补入 4 个新章节名，防被 `_build_skill_refs` 关键词兜底误注入
-  - 顺带修复 `_parse_reply` 的日志格式串 bug（5 个占位符只传 4 个参数 → 每次解析都刷 TypeError traceback）
-- **`modules/commands.py`** / **`core/ctx_usage.py`**：改调 `_build_reminder`，副本全部删除
-
-### 禁 Markdown 规则要点
-禁止 `**加粗**`、`*斜体*`、`# 标题`、`> 引用`、`-`/`*` 列表、表格、`[文字](链接)`、分隔线、反引号/代码块；
-要强调用「」《》【】，要分点就分行或用「一是…二是…」，链接直接贴完整网址，代码直接写原文。
-与既有规则无冲突（group_format 规则5 本就要求"只输出纯文本、不要编号"）。
-
-### 验证（本地 + 服务器双端）
-- **逐字对比**：改前先 dump 三条路径的提醒原文存档，改后与原文字节级比对 —— 全部一致，只多出 344 字符禁 md 规则
-  | 路径 | 原文 | 改后 |
-  |------|------|------|
-  | A 主回复（群/私聊） | 1412 | 1757 = 1412 + 345 |
-  | B 语音 | 1213 | 1558 = 1213 + 345 |
-- 兜底测试：模拟章节缺失 → 正确回退最小兜底、无残留占位符、不抛异常
-- 隔离测试：新章节不泄漏进 system、不被 `_build_skill_refs` 捞走；指令列表仍正常注入
-- 端到端回归：记笔记场景仍裁到 1 句、`400tok/s` 不再误触发搜索、知识类多句不被裁
-- 服务器：`已叠加 skill 文件: 40_reminders.md`、章节 13 → 17、提醒渲染 1757 字符、无 ERROR、WS 已连接
-- `/~ctx` 的"格式提醒"从 493 → **884 tokens**（此前是偏短的手工复刻，现在读真实模板，数字终于准了）
-
-## v2.2.1 — 修复回复正文里的「/字母」被误当指令（串台/白跑搜索）— 2026.9.11
-现象（群 247478659 实测）：Trusler 发「修订Note1为空，已读」→ bot 删笔记后**白跑了一次 28s 搜索**，
-搜的还是「都快赶上本地推理了」，接着又追加一句莫名其妙的「诶，怎么把这条删掉了呀？」。
-
-根因（正则误伤，v2.0.4m 防护没覆盖）：
-- `core/pipeline.py:649` 回复扫描正则 `/(?:\~|\#|(?=[a-zA-Z]))` 的第三分支把**任意「/字母」**都当指令。
-- bot 回复里写了「400tok/s 都快赶上本地推理了」→ 其中 `/s` 命中 `COMMAND_MAP["s"]`（search 别名），
-  参数还贪婪吃掉后半句 → 自动提取 `/~s 都快赶上本地推理了` → 真跑搜索 → 结果回灌触发追加回复。
-- `tok/s`、`MB/s`、`m/s` 这类单位写法在技术聊天里极常见，属高频误伤面。
-
-修复（2 文件）：
-- **core/pipeline.py**
-  1. 回复扫描只认文档化的 `/~`、`/#` 前缀（去掉裸 `/字母` 分支）。
-     用户输入侧（第 288 行 `_re.match` 锚定行首）不动，`/s xxx` 手动发仍可用。
-  2. **纯 note 操作时回复裁到 1 句**：实测 LLM 常在「好，记本子上了～」后多带一句评论群里别的话题
-     （例：别人聊军训出汗 → 顺嘴点评军训）。与既有 `_note_only`（纯 note 不追加回复）同源。
-- **services/llm.py**：两处 fmt_reminder 末尾强化两条规则
-  - 笔记本已有同一个人/同一条关系的条目 → **必须 fix 更新，禁止新增重复条目**
-    （实测同一组「光煞/夜煞」关系被重复记 4 次）
-  - **只答当前这条消息，禁止点评上下文里其他人的话题**；本轮要调 calls 时 replies 限 1 句
-
-验证（本地端到端，mock LLM 返回日志里的真实输出 + mock 发送）：
-| 用例 | 期望 | 结果 |
-|------|------|------|
-| 「400tok/s 都快赶上本地推理了」正文 | 不提取任何 CALL | ✅ 无 |
-| `10MB/s` / `m/s` | 不提取 | ✅ 无 |
-| `/~note del 1`、`/~s xxx`、`/#reload` | 正常提取 | ✅ 正常 |
-| 16:11 记笔记（带串台句） | 只发 1 句 | ✅ 1 句 |
-| 搜索/闲聊多句 | 不被裁 | ✅ 3 句 / 2 句 |
-
-## v2.2.0 — 上下文用量查询指令 /~ctx — 2026.9.11
-需求：加一个上下文查询指令，展示每轮给 LLM 的上下文都被什么占着（对齐 ChatGPT 的上下文用量面板）。
-
-实现（4 文件 + 1 新增）：
-- **core/ctx_usage.py**（新增）：`build_ctx_report(chat_id, is_group)` 统计 6 个维度
-  - `System Prompt`：`_build_system_text` 完整输出（与真实请求一致）
-  - `参考资料`：`_build_skill_refs` 热注入（工具意图时最大占用 / 实际聊天不带）
-  - `Conversation`：历史消息（当前条数/上限）
-  - `注入信息`：extra_info（时间/节假日/记忆/笔记/画像/好感度等）
-  - `格式提醒`：fmt_reminder 完整文本
-  - `当前消息`：本次发言
-  - 顶部总览：`上下文用量 X% · N / 60K` + 进度条；百分比按 60K 窗口
-- **modules/commands.py**：import + `COMMAND_MAP` 注册 `"ctx": cmd_ctx`
-- **services/llm.py**：`_CMD_DESC` 加 ctx 说明（指令文档同步铁律）
-- **config/lang.toml**：`/~help` 系统菜单加 `/~ctx`，新增 ctx 详细帮助
-
-token 计算：
-- 优先本地 DeepSeek tokenizer（`core/token_tracker._token_count`）
-- **发现并修复 BPE 退化坑**：服务器 tokenizer 无 PyTorch 时 encode 长文本严重偏小
-  （12745 字符只算出 1236，正常 ~6600）→ `_tok_count` 加退化检测
-  （估算与真实差距 > 2.5 倍 → 回退字符估算：中文≈0.7 tok/字，英文≈0.25）
-- `/~ctx <群号>` 管理员可查指定群
-
-实测（服务器真实群 2000000002）：
-```
-上下文用量 13.8% · 8.3K / 60.0K
-System Prompt  ~6.7K   11.1%   ← v2.1.9 后稳定核心
-参考资料     ~650   1.1%     ← 工具意图才注入
-Conversation   ~470   0.8%  (20条/上限20条)
-格式提醒     ~493   0.8%
-```
-
 ## v2.1.9 — 提示词分层：system 稳定化 + skill 热读取 — 2026.9.11
 需求："skill 热读取，而不是一直都带着；重要的写系统提示词里，其他聊天内容写用户提示词里"。
 
@@ -5786,6 +6101,340 @@ Conversation   ~470   0.8%  (20条/上限20条)
 - 工具意图（如"帮我查明天北京天气"）才附带 command_table + 全部指令列表
 - 服务器部署后重启正常：main_skill.md 加载 13 个章节，NapCat WS 已连接
 - 待 API 频率限额恢复后做最小真实调用验证热注入
+
+## v2.1.8 — 动态 JSON 真正落地 (2026.9.11)
+- 用户追问"动态 JSON 实现了吗" → 核查发现**之前只是假的**:
+  - schema.json 里标了 optional 标记, 但 services/llm.py **根本没读这个标记**(grep 无消费点)
+  - fmt_reminder 的 JSON 模板仍列全 10 个字段 → LLM 照抄一堆 null, 输出 token 白烧
+- 真正实现: 两处 fmt_reminder 的模板改为「必填 2 个 + 动态按需」
+  - 必填: replies, fav
+  - 动态(需要才带, 不需要就整个省略 key, 禁止 null 占位): mood / calls / action / at / face / mood_detail / origin+actor
+  - origin+actor 只在带 calls 时一起加(原规则是"每句必填", 已改)
+- 健壮性实测(关键): _normalize_reply_json 会遍历 schema 补默认值, pipeline 对所有字段都是 falsy 检查
+  - 极简返回 {"replies":[...],"fav":1} → 解析正常, 其余字段补默认 ✓
+  - 带 calls → origin 默认 user, actor 补 {} ✓
+  - 带 action/at → 正常 ✓
+- 收益: 闲聊场景每次少输出 6-8 个字段(约 50-120 输出 token)
+
+## v2.1.7 — 隐私保护 + 全量语料审查 (2026.9.11)
+- 背景: 用户要求用**全量**聊天记录模拟笔记本(不用 API, 人工判断)
+- 审查范围: 群 2000000002 共 1879 条记录 → 过滤非文本/指令/链接/其他bot 后 725 条干净消息
+- **发现1(隐私风险)**: 聊天记录中含群友真实住址("福建省宁德市福鼎市玉龙北路310号鼎融广场1栋1504室")
+  → 已在 `core/bot_notes.py` 加隐私拦截: 手机号/身份证号/银行卡号/详细住址 命中即拒绝写入(add 和 update 双保护)
+- **发现2(数据噪声)**: msglog 混入大量**其他 bot 的消息**(Q群管家 u6310、修仙游戏bot Rick、Verity)，
+  占非 bot 记录近一半 — 建议后续在记录侧过滤(它们不是真人发言, 不该进笔记)
+- **发现3(高价值)**: 群友发的【好感度列表】里含完整 QQ昵称↔游戏昵称映射(如 LP_XiaoP#初梦龙❤)，
+  是"别把号忘了"的最佳数据源
+- 人工判断结果: 725 条干净消息里, 真正该进笔记本的约 8-12 条(其余为闲聊/玩笑/技术讨论/乞讨/玩梗)
+
+## v2.1.6 — 笔记本规则位置终调优（真实语料模拟驱动）(2026.9.11)
+- 用群 2000000002 最近 60 条真实聊天记录模拟跑笔记本（只读原群，写入测试群555555501）
+- 首轮结果: 60 条只触发 1 条 — 关键漏记案例:
+  "光煞和夜煞一样是小玩具哦，而且他们是很相亲相爱的玩具情侣"
+  → LLM 回复里明明理解了("哦——原来是情侣玩具啊"/"所以夜煞和光煞是一对")，但没调 note
+- 根因: note 规则夹在 fmt_reminder 中间(搜索规则之后、回复格式之前)，LLM 回答提问时注意力全给了回答
+- 修复: 在 fmt_reminder **最末尾**(紧邻当前消息，注意力最高处)加强化版规则，全用中文引号避免转义
+  内容: "★【笔记本·最后强调，看当前这条消息就够了】...该记不记＝失职；只在回复里说记下了却没有实际调用＝骗人"
+- 二轮结果: 60 条触发 3 条，关键那条已能记住:
+  1. _HumanTear_ UUID=... 因QQ安全政策皮肤/昵称可能不显示，需用/反馈提交游戏ID申请白名单
+  2. 光煞和夜煞=一对相亲相爱的玩具情侣，都是小玩具
+  3. 模组东=雪泠翎，女生
+- 说明: 其余 57 条为图片/链接分享、闲聊("哦不"/"太强了")、提问、指令调用(~cache/~wdsj)，不记=正确
+- 模拟脚本存档: G:/py/qqbot-backup/2026-09-11/sim_notes.py（可复用语料回归）
+
+## v2.1.5 — 笔记本隔离显性化 (2026.9.11)
+- 需求: 用户强调"每个群的笔记要分开"
+- 核查结论: 笔记本本来就是按群隔离的(`data/notes/<chat_id>.md`, 群聊=群号/私聊=用户号)
+  - dispatcher.py:180 `chat_id=group_id` → per-group 串行队列 → process_message(chat_id=群号)
+  - 端到端双群验证: 群777777701 → 777777701.md, 群777777702 → 777777702.md, 无交叉 ✓
+- 加固(让隔离可见, 避免误解):
+  1. 注入标题改 `【你的笔记本·本群专属】共 N 条（只在当前群生效，其它群看不到）` — 防止 LLM 把它当通用知识
+  2. `/~note` 群聊显示 `【笔记本·本群】`、私聊显示 `【笔记本·私聊】`
+  3. 空笔记提示同样带 scope
+
+## v2.1.4 — 笔记本 fix 修改能力 (2026.9.11)
+- 需求: 笔记本原本只能新增/删除, 记错了只能删了重记 → 加 fix 改单项
+- 实现:
+  1. `core/bot_notes.py` 新增 `update_note(chat_id, index, new_text)`: 按序号改写, 带越界/空内容保护
+  2. `cmd_note` 支持 `fix|edit|改|修改` 子命令: `/~note fix <序号> <新内容>`
+  3. **注入格式加序号**(关键): load_notes 输出 `1. [09-11] xxx`, 并在标题里直接告诉 LLM "改某条写 fix <序号> <新内容>"
+  4. note 指令说明 + main_skill 5b + fmt_reminder 两处 都加了"发现记错了用 fix 改正, 不要重记一条"
+  5. judge 强制触发词扩充: 加 `记错了|记错|改笔记|改一下笔记|更正一下`(原本只有"记一下/记住")
+- 端到端验证(真实 pipeline):
+  - 预置笔记2条 → 发"记错了, 修正一下, 模组东不是雪泠翎, 是月夜"
+  - LLM 输出 `calls=[{"name":"note","args":"fix 1 模组东=月夜"}]` ✓ (自己定位到第1条)
+  - 笔记变为 `1. [09-11] 模组东=月夜`, 回复"好，改过来了～模组东是月夜"(1句) ✓
+
+## v2.1.3 — judge 记忆指令强制触发 (2026.9.11)
+- 问题: 真实 pipeline 端到端测试发现 — "记一下xxx"(没@bot) 被 judge 判定不回复, 流程提前退出, 笔记根本写不了
+- 根因: judge.should_respond 只有 @bot 短路, 其余全靠 LLM 判断"要不要回复"
+- 修复: modules/judge.py 在 @检测后加记忆指令强制触发词 (记一下/记住这个/记下来/帮我记/记录一下/别忘了这个)
+- 端到端验证(mock 发送, 假群号):
+  1. judge: 记忆指令检测 → 直接回复 ✓
+  2. LLM轮1输出: calls=[{"name":"note","args":"光煞和夜煞=群内公认的小玩具，是一对相亲相爱的玩具情侣"}] ✓
+  3. pipeline: JSON CALL → /~note 执行 → 写入 data/notes/<群>.md ✓
+  4. 管道完成 3句 sent; 笔记条数=1 ✓
+- 结论: 笔记本全链路(判定→生成→调用→写入→注入)已验证可用
+
+## v2.1.2 — 笔记本触发调优 (2026.9.11)
+- 问题: v2.1.1 实测全部用例都不触发 note — 根因是规则0"不要主动调用指令"与规则5b冲突, 且 note 规则只在 system(14K) 里被淹没
+- 修复:
+  1. 规则0 新增"例外③(笔记本主动记)": 群内关系/称呼/身份/约定/群梗 → 主动记, 不受规则0限制
+  2. 规则5b 判定改为一句话标准"这条信息下周还有用吗", 去掉过度保守表述
+  3. **关键**: 在 fmt_reminder(最后一条user消息, LLM注意力最高处)加入笔记本规则, 两处(_build_messages + generate_multi_reply)
+  4. 加判定要点: "只要群里的人这样称呼/认为就照记(哪怕是知名角色)——你记的是这个群的事实, 不是百科"
+- 实测(6个真实用例):
+  - 明确说"记一下" → 必记 ✓
+  - 称呼/黑话("模组东是女生") → 记 ✓ (稳定)
+  - 自报家门("我叫小明") → 记 [QQ:x] 格式 ✓
+  - 群内关系("光煞和夜煞是情侣") → 多数会记, 知名IP角色时偶发漏记(LLM判定波动)
+  - 人物特征/玩笑/无意义/闲聊 → 不记 ✓ (正确)
+- 教训: 规则要放在 fmt_reminder(user末尾)才有效, 长 system 里的规则容易被稀释
+
+## v2.1.1 — 笔记本: LLM 主动维护的长期记忆 (2026.9.11)
+- 背景: bot 常说"那我记下了喵"但实际没记住 (如"光煞和夜煞是小玩具情侣"这类群内知识)
+- 方案: 复用 CALL 指令机制, 零架构改动
+  1. 新增 `core/bot_notes.py`: data/notes/<chat_id>.md 一行一条, 上限100条自动淘汰, 重复检测
+  2. 注册 /~note 指令 (查看/手动记/del序号/clear), LLM 经 calls 调用写入
+  3. main_skill 规则5b: 明确"必须真记", 禁用嘴上说记下了; 有人自报家门时记 `[QQ:x] 昵称/身份`
+  4. pipeline: 笔记注入 extra_info (群聊+私聊两处), 缓存友好放末尾
+  5. pipeline: 纯 note 调用不触发追加回复 (避免"记下了"说两遍)
+  6. .gitignore 加 data/notes/
+- 实测: "记一下光煞和夜煞是情侣" → calls=[note ✓]; "我叫小明" → 自动记 [QQ:x] 格式 ✓; 闲聊不记 ✓
+- 注意: 服务器 bot_config.toml 为转义单行格式, 修改须用脚本原地替换, 严禁整体覆盖
+
+## v2.1.0 — a_fix: 提示词脱僵化 + 输出长度自适应 (2026.9.11)
+- 背景: 用户反馈群 [群号] 与 [群号] bot 发言过僵 (24% 纯动作描写、41% 带喵、中位 20 字), 技术话题被压成短句
+- 根因: 基底人格与 main_skill.md 规则冲突
+  1. config/bot_config.toml personality: "每句话结尾都要加上喵" + "能用15字说清楚的不用50字" 两条硬规则
+  2. main_skill.md 规则4 "每句最长不超过40字" + 规则8 "普通闲聊只回1-2句"
+  3. services/llm.py 工具结果兜底路径硬编码 "一句话自然回应" max_tokens=80
+  4. core/pipeline.py 非搜索类工具结果 "用一句话自然回应" max_t=200, 结果截断 500 字
+- 修复:
+  1. 删除两条基底硬规则, 改为 "喵是调味非默认" + "长短自适应"
+  2. main_skill 规则4/8 改为场景分档: 闲聊1~3句 / 知识技术类 3~10 句不限字数
+  3. 新增 13b 正反馈回应 + 15c 动作频率红线(5条最多1条带动作, 纯动作≤1/10, 喵≤1/3)
+  4. 深度讲解新增 "默认放宽" 豁免: 涉及技术/知识/原理/概念 → 直接展开
+  5. llm.py 工具兜底 max_tokens 80→2000 并允许展开; pipeline 非搜索工具 max_t 200→1500, 截断 500→2000
+  6. reply_schema.json max_items 5→12, 非核心字段标 optional (face/at/mode/action/mood/origin/actor)
+- 实测: "Q群管家干啥的" 4句115字; "TCP三次握手" 10句937字带分节; "在吗" 1句8字 — 自适应生效
+- 部署: 4文件整体上传 + bot_config.toml 原地脚本替换(服务器版为转义单行格式, 不可覆盖) + 重启验证
+
+## v2.0.7 — /~draw 自定义画面比例（默认 16:9）— 2026.8.25
+
+### 比例支持
+- 默认不再是 1024x1024 方块，改为 **16:9（1536x864）**
+- 新增 `_ASPECT_RATIOS` 映射表 + `_resolve_size()` 解析器，支持：
+  - 比例别名：`16:9` / `1:1` / `3:2` / `2:3` / `9:16` / `4:3` / `3:4`
+  - 英文别名：`square` / `portrait` / `landscape` / `wide` / `tall`
+  - 直接尺寸：`1024x1024` / `1536x864` 等任意 WxH
+  - 无法识别→默认 16:9
+- 用法：`/~draw <提示词>`（默认 16:9）/ `/~draw 1:1 猫娘`（指定比例）/ `/~draw 1024x1024 猫娘`（指定尺寸）
+- 备份：`qqbot-backup/2026-08-25/`
+
+## v2.0.6 — /~draw 图源切换 CloudMist（gpt-image-2）— 2026.8.24
+
+### 文生图后端更换
+- `modules/agnes.py` 文生图接口改走 `https://v2.cloudmist.cloud/v1`（OpenAI 兼容），模型 `agnes-image-2.1-flash` → `gpt-image-2`
+- 返回改为 base64（`data[0].b64_json`），解码后存 PNG 发送；保留 url 兜底分支
+- API key 硬编码为 CloudMist token（原环境变量 AGNES_KEY 不再用于 draw）
+- 文生视频（`/~video` / `/~img2video`）独立为 `AGNES_VIDEO_BASE` + `_video_headers()`，仍走原 Agnes 服务与环境变量 key，不受图源切换影响
+- 备份：`qqbot-backup/2026-08-24/`
+
+### 修复：/~draw 超时失败（v2.0.6 补充）
+- `_gen_image` 超时 120s → 300s：gpt-image-2 复杂 prompt 生成可超过 2 分钟（实测日志 120s 整触发超时）
+- 异常日志改打印类型 + repr（httpx 超时异常 str 为空导致日志无内容）
+- url 兜底下载超时 30s → 60s
+
+## v2.0.5 — /~img 指令恢复（Lolicon API）— 2026.8.24
+
+### 图源切换：waifu.pics → Lolicon（Pixiv 来源）
+- 废弃不可用的 `waifu.pics`，`/~img` 改用 `https://api.lolicon.app/setu/v2`（免费免 key）
+- **支持多标签参数**：`/~img 甘雨 原神` 为 AND（同时包含，最多 3 个）；单个标签内可用 `|` 做 OR，如 `/~img 萝莉|少女 白丝|黑丝` → (萝莉 OR 少女) AND (白丝 OR 黑丝)；无参数时随机
+- `/~img18`（R18）曾恢复注册，**现按需求下线（移除注册，逻辑保留待启用）**；`/~img` help 不再提示 R18 版
+- 拆两套请求头：API 请求不带 Referer（否则 403），图片下载必须带 `Referer: https://www.pixiv.net/`（走 i.pixiv.re 反代）
+- `size` 用重复键手工拼接 `size=regular&size=original`（urlencode 对数组不可靠），优先取 regular 缩略图发送
+- r18=0 全年龄过滤：库分类 r18 字段 + **R18 标签黑名单**（与 lolicon_client.py 一致，因 API r18 字段是库分类、不等同作品本身标识）；拉取 5 张再过滤保证有命中；无结果时提示换关键词
+- **随机选图**：拉 5 张用 `random.choice` 而非固定 `items[0]`（Lolicon 带 tag 返回顺序固定，始终取第一张会导致同 tag 永远同一张图）
+- **最近 pid 去重**：`_IMG_SENT_PIDS` 集合缓存已发 pid（最多 200，超限清空），同 tag 连发跳过已发过的图，全命中则放宽不跳过
+- 保留本地下载 + `file:///` CQ 码发送链路，失败降级直发远程 URL
+- `/~img help` 显示用法帮助（支持 帮助/?/usage 别名）
+- 备份：`qqbot-backup/2026-08-24/`
+
+## v2.0.5 — 脱敏 + GitHub 上传 (2026.9.10)
+- 背景: 上传 v2.0.5 到 GitHub 前做敏感信息清洗, 用户选择"全量清洗+重写历史"
+- 清洗范围:
+  1. `data/update_log.md`: 全部真实 QQ号/群号 → 语义占位符([QQ号]/[群号]/[botQQ]/[消息号])
+  2. `modules/agnes.py`: 硬编码 CloudMist API key → `os.environ.get("AGNES_API_KEY")` 运行时读取, config/.env 配置
+  3. `modules/gh.py`/`utils/username.py`/`core/log_server.py`: 注释中的号码同样清洗
+  4. `.gitignore` 增加 `config/.env.bak*`(防备份文件入库)
+- 历史重写: git filter-repo --no-gc 重写全部 83 提交 + force-push 到 origin main, 删除远程遗留 master 分支
+- 验证: 重新 clone 后全历史无敏感残留; agnes.py 无硬编码; update_log 无 9-11 位号码
+- 服务器部署: 备份 agnes.py/.env → 上传新版 → .env 追加 AGNES_API_KEY → 重启
+- 坑: force-push 后自动更新引擎 base SHA 失效触发全量下载阻塞启动 → 重启后状态文件自动恢复
+- filter-repo Windows 坑: 默认 gc 步骤会清空 .git refs! 必须 --no-gc, 重写后勿手动 gc
+
+## v2.0.4z — 深度讲解强触发（"详细点"追问展开 + 查完必展开）— 2026.9.4
+
+### 现象（11:39 群[群号] 先导语功能实测后暴露）
+- v2.0.4y 先导语先发验证成功（"这词我拿不准喵，帮你查查"秒回 → 18s 后出结果）
+- 但第一轮"雷石东直放站是啥"只回了 3 句摘要；用户追问"详细点"→ 5 句每句 ≤15 字
+  的短句（"红石中继器的机翻/2012年官方汉化翻车/把repeater译成直放站/雷石东是
+  Redstone音译/老玩家都懂的梗喵"）——纯同义重复没展开，Crowdin/破坏者/"床上"等
+  细节一个没讲。而那次搜索返回 622 字材料（含全部细节）足够写 8-15 句
+
+### 根因（main_skill.md 深度讲解规则 19-24 实际不触发）
+1. 规则19 有"且问题本身值得展开"模糊限定——LLM 拿它当挡箭牌，名词科普被 3 句打发
+2. 追问词"详细点"不在规则19 触发词列表，LLM 没切深度讲解，仍按群聊普通规则
+   3-5 句×≤40字输出（被规则4/8 压制）
+3. 追问轮上下文里只有 bot 自己的几句简答（搜索材料只在当轮 msgs，不进群上下文），
+   LLM 无料可讲又不肯再搜 → 同义重复
+4. 规则21"优先于上文所有句数/字数限制"没点名规则4/8，LLM 不敢突破 40 字/句
+
+### 修复（纯提示词，main_skill.md v1.1.8→v1.1.9）
+1. 规则19 重构为**强制触发**：名词/概念/梗/黑历史/术语科普默认要展开，删掉"值得
+   展开"模糊评估；新增**追问必补**（详细点/细说/展开讲讲/多说点/继续说/再讲讲/还有呢）
+   与**查完必展开硬规则**（调了 search/read 查完必须展开，严禁 2~3 句摘要打发）
+2. 规则21 豁免点名：进入本模式后群聊规则4"≤40字/句"与规则8"句数控制"全部作废，
+   别再按短聊天节奏写
+3. 规则24 补**追问时的再查**：追问"详细点"而材料细节不在上下文 → 直接再 search
+   拿全材料展开，禁止凭印象编细节、禁止同义重复假装展开
+- 零代码改动；覆盖 v2.0.4v 深度讲解规则但触发性更强
+
+## v2.0.4y — FC 先导语先发 + 转述口语化 — 2026.9.4
+
+### 现象（11:26:38 群[群号]，与 v2.0.4x 同场景实测）
+- 用户 @bot 问"雷石东直放站是啥"，LLM 轮1 输出
+  `content="主人你@的是别人呀…这词我确实拿不准，帮你搜搜看吧" + tool_calls=[search_web]`
+- 但轮1 content **从未被发送**：代码只在无 tool_calls 分支用 content，有 tool_calls 直接
+  走工具执行 → 13.6s 后一次性发 3 句正文。期间用户干等以为 bot 没反应，且"帮你查查"
+  的铺垫丢失后正文开头突兀
+- 附带：最终 3 句转述偏百科念稿（直接照抄搜索结果的书面句式），猫娘味不足
+
+### 根因（services/llm.py generate_multi_reply_with_tools）
+- FC 循环 `if not result.tool_calls:` 为假时，content 无任何消费路径即被丢弃
+- assistant 消息 append 时 content 写死 None，后续轮/最终 json 轮 LLM 看不到
+  自己说过"帮你查查"，衔接易重复
+
+### 修复
+1. **llm.py**：签名新增可选 `interim_cb`（async 回调，pipeline 注入发送通道）；
+   FC 轮1 有原生 tool_calls 且 content 为短自然语（1<len≤120、非 JSON/无```/~）
+   → `await interim_cb(content)` **先把先导语发给用户再执行工具**；
+   后续轮 content 不发送（防刷屏）；assistant 消息 content 由 None 改为保留原文
+   （≤300 字才保留）——让最终轮 LLM 看到已说的话，避免重复"我查查/稍等"
+2. **pipeline.py**：新增 `_make_interim_sender()`，主消息(541)与戳一戳(110)两处调用
+   注入 interim_cb，先导语与正常回复同走 send_sentences（stats/msglog 录制一致）
+3. **main_skill.md v1.1.7→v1.1.8**（command_tools）：
+   - 新增**规则11 先导语会先发出**：调工具前的自然语会先发给对方；只写"动手前的话"
+     （知会/安抚），别写结论别提前展开正文；最终回复不重复先导语；先导语禁写 /~xxx
+   - 规则10 补**转述要口语化**：查到的书面资料用猫娘口吻转述，禁整段照抄搜索结果念稿
+
+### 验证
+- 部署后同场景实测：轮1 content 先发 → 搜索 → 最终正文直接上干货
+- 本地 py_compile 通过；只改 3 文件 + update_log，未动数据格式
+
+### 补充修复（同版，utils/username.py）
+- 轮1 content 里 LLM 说"主人你@的是别人呀"——根因：replace_at_in_message 对 bot 自身
+  的 @ **保持原始 QQ 号**（@[botQQ]），LLM 不知道那是自己 → 误判"@的是别人"
+- 修复：bot 自身 @ → 替换为 `@{bot_name}`（dispatcher 早已传 bot_name 但函数没用）；
+  @bot 检测走 raw_message 不受影响，替换只影响 LLM 可见文本
+
+## v2.0.4x — 名词疑问必搜（雷石东直放站翻车修复）— 2026.9.4
+
+### 现象（11:07:43 群[群号]）
+- 用户 @bot 问"雷石东直放站是啥"，bot 三连翻车：
+  1. 凭印象瞎猜"直放站是信号中继设备，雷石东可能是品牌或项目名"（实际是 MC 机翻梗）
+  2. 没走深度讲解（v2.0.4v 加的触发条件没生效）
+  3. 口头"我帮你查查喵～"却 calls=[] 没真调 search
+- 日志：该消息 pipeline 搜索=0字（群 @ 直答路径不预搜，全靠 LLM 自己 FC 调 search），
+  但 LLM 被提示词强规则压制不敢搜
+
+### 根因
+- 提示词自相矛盾：llm.py fmt_reminder"用户没说'搜/查/找'就**绝对不要搜**"+
+  main_skill command_tools 规则0"只在被明确要求时才调用指令" → 名词提问被硬压成瞎猜+反问
+- 与此前"环流三号"会主动搜的成功案例行为不一致（模型在两条冲突规则间随机摇摆）
+
+### 修复（场景化搜索规则）
+1. llm.py fmt_reminder：闲聊/寒暄/接梗不搜；**名词/概念提问(XX是啥/是什么/什么意思/哪来的)、
+   不确定、时效、数据类 → 必须先 search 查证，禁止瞎猜/反问**
+2. main_skill v1.1.6→v1.1.7：
+   - command_tools 规则0 新增**例外②（名词疑问必搜）**
+   - 深度讲解规则24 补：名词类"XX是啥"拿不准就直接搜（不必等用户说"查"字）
+
+## v2.0.4w — 严格 JSON + 句号克制 — 2026.9.4
+
+### 现象（用户贴日志 11:00:44 群[群号]）
+- 追问"双亿度"时 LLM 轮1 输出纯文本（非 JSON，内容其实是对的）
+  → "LLM 输出非 JSON，强制重试" json_mode=True → DeepSeek json_object 返回**空**
+  → 老逻辑"JSON模式返回空，关闭json_mode重试"直接降级普通模式 → 又可能吐非 JSON
+- 另一隐患：兜底重试 max_tokens=min(...,800) 焊死 800，深度讲解长 JSON 必被截断
+
+### 修复（services/llm.py）
+1. **严格 JSON**：call_llm json_mode 空返回（finish=stop）不再立刻降级普通模式——
+   保持 json_mode 重试最多 2 次（_json_retries 计数 + 追加 _hint_json_output() 强制提示行，
+   DeepSeek json_object 要求 prompt 含 json 字样），仍空才普通兜底一次
+2. 两处兜底 token 800 焊死 → max(max_tokens or 0, 4000)
+   （第2轮空兜底 + 非JSON强制重试；FC最终轮本来就 8000）
+3. 新增 _hint_json_output(messages)：追加强制 JSON 指令
+
+### 提示词（data/main_skill.md v1.1.5→v1.1.6）
+- group_format 规则13 追加【句号克制】：聊天句尾尽量不用"。"，用 ～/喵/啦/哦/呢/嘛/颜文字收尾；
+  深度讲解长句内部可用逗号但句尾少用句号
+- private_format 规则4 同样追加句尾少用句号
+
+## v2.0.4v — 深度讲解模式（详细解释类真·详细输出）— 2026.9.4
+
+### 现象
+- 问"环流三号是啥""雷石东直放站"这类想了解的话题，bot 两三句打发，不够详细
+- 用户要求：像 webai 工具那样输出完整深度长文；纯文本不渲染 markdown；可以换行有格式；
+  分多句发出来且分句合理；人格不丢
+
+### 改动（data/main_skill.md v1.1.4→v1.1.5，纯提示词，无代码）
+- group_format 新增小节【深度讲解】规则19~24：
+  - 触发：XX是啥/详细解释/讲讲/科普/原理/为什么/怎么实现/区别/完整流程 等值得展开的话题
+  - replies 8~15 句逐条发出成一篇长文；每句=一个完整小节/段落，句内可 \n 换行分段
+  - 分句边界=小节边界，不硬切；每句 50~500 字
+  - 排版：纯文本【】分节 + "1."/"- "列表 + 空行分段；禁止 markdown 符号(#/>/**/```)
+  - 人格：全程猫娘口吻但内容专业完整，卖萌是点缀
+  - 不确定数据先 calls search 查证 + 规则10 诚实归因
+- 长内容规则17 补充：名词解释/科普/答疑不算"写东西"，不走 FILE，直接深度讲解
+- private_format 新增规则11：私聊深度讲解指针（6~12 句、≤300字/句）
+
+### 约束核验（无需改代码）
+- JSON 路径不截断 replies 句数（[:5] 仅在纯文本降级路径）
+- sender.send_sentences 逐条发送、不截断内容、\n 原样保留 → 句内换行格式可行
+
+## v2.0.4u — 搜索结果"诚实归因"提示词修复 — 2026.9.4
+
+### 现象
+- 用户问"环流三号是啥"，bot 先说"让我查查喵~"并调用 search_web，搜到后却答"哦这个我知道喵！"
+  —— 把刚查到的内容装成自己本来就知道，与上一句"让我查查"自相矛盾
+
+### 修复（双层）
+1. `data/main_skill.md` v1.1.3→v1.1.4：command_tools 新增规则10【诚实归因】
+   凡工具查来的信息必须如实说"刚查了下/搜到啦/查到啦"，严禁说"我知道/我记得/早就知道"；
+   仅聊天记忆/长期记忆内容可用"记得"
+2. `services/llm.py` `generate_multi_reply_with_tools`：工具执行完的最终 json_mode 回复轮，
+   在 system 区插入一条"诚实归因"提醒（v2.0.4u 注释），就近压制该轮幻觉
+
+### 验证
+- 本地 py_compile 通过；备份 qqbot-backup/2026-09-04/（llm.py + main_skill.md）
+
+## v2.0.4t — 后台任务去重（提醒/控制/节假日）— 2026.9.3
+
+### 现象
+- 每次启动日志出现 2 条"提醒轮询已启动（每30秒检查一次）"（间隔约 60ms，历史每次启动都双份）
+
+### 根因
+- bot.py run() 与 plugins/bg_tasks 插件 on_enable 各自注册了同一批后台任务：
+  提醒轮询(remind_checker_loop) / 控制文件监听(control_watcher) / 节假日服务(holiday) → 三组双跑
+- 30s 提醒轮询 x2 → 到点提醒存在双发风险；holiday x2 → 节日推送双发风险
+- 与 v2.0.4s wdsj 双跑同源：插件化迁移后旧入口的重复任务没删干净
+
+### 修复
+- bot.py 注释掉 3 处重复注册（方法体保留死代码），统一由 bg_tasks 插件负责：
+  `# _bg_remind_checker()` / `# _bg_control_watcher()` / `# _bg_holiday()`
+- 备份：`qqbot-backup/2026-09-03/bot.py.bak_20260903_remind_dup` / 服务器 `bot.py.bak_20260903_nodup`
 
 ## v2.0.4s — wdsj 战绩采集失败统计 + 统一重试 + QQ空间说明 — 2026.9.3
 现象：00:03 每日采集"80 条新记录 (失败 20)"，全部 ConnectTimeout；且日志出现**两条"采集完成"+ 双进度流**。
@@ -6159,6 +6808,210 @@ QQ 群消息里出现 `(met)(met)` 等 KOOK KMarkdown 标记——KOOK 移植插
 - 清理 `data/draw.json` 历史残留：QQ [QQ号] 的 `limit:10` 个人覆盖改回 5
 - `/~owner` 帮助文本两处"默认 10"改"默认 5"
 
+## v2.0.4ao — 战绩日报重复同名修复: shuangzi_1228 绑了两个QQ (2026.9.9)
+- 现象: QQ空间战绩日报意外显示两个 shuangzi_1228
+- 根因: data/wdsj_player_name.json(榜单玩家名单)里 [QQ号] 和 [QQ号] 都映射到
+  shuangzi_1228; build_daily_rankings/build_arena_daily_rankings 按 bindings.items() 遍历
+  → 同名 name 各产出一条 row, 日报重复
+- 处置(用户: 留[QQ号]):
+  1. 数据: 删 [QQ号] 绑定, 保留 [QQ号](服务器 data/wdsj_player_name.json,
+     备份 .bak_20260909_0010; 名单 52→51)
+  2. 代码防御: wdsj_tracker.py 两个日榜函数循环顶加 _seen_names 按游戏名去重,
+     防将来同名绑定再重复上榜
+- 部署: scp services/wdsj_tracker.py → restart bot.service
+- 验证: 服务器 py_compile OK; bot active(pid 1216392); 58888 绑 127.0.0.1;
+  NapCat 已连; 绑定表 shuangzi 仅 [QQ号]
+- 文件备份: /root/bot/services/wdsj_tracker.py.bak_20260909_0015
+
+## v2.0.4an — qzone 失败说明并入日报说说(不再单独发文字说说) (2026.9.8)
+- 背景: 用户要求"战绩采集说明应放在图片所在那一条的文字部分, 而非发两条说说"
+- 改动(plugins/bg_tasks/main.py, gitignore 不入库):
+  1. 删除 _notify_qzone_failures 方法及 96/121 两处调用(不再非0点单独发文字说说)
+  2. 新增 self._pending_failed: 每轮采集失败暂存(不含通知副作用)
+  3. 0 点推日报时, 若有失败玩家且当日未并入过, 把"⚠️ 战绩采集失败说明"拼接进
+     QQ 空间日报说说的 content, 与图片同一条发出
+  4. 复用 wdsj_qzone_fail_notify.json 按自然日去重, 防 bot 重启后重复说明
+- 行为约定(用户选定"仅供日报合并, 非0点不单独发"):
+  * 0 点: 失败说明并入日报图片说说文字
+  * 4/8/12/16/20 点: 仅采集, 失败不单独发文字说说
+- 部署: 本地改 → scp /root/bot/plugins/bg_tasks/main.py → systemctl restart bot.service
+- 验证: 服务器 py_compile OK; NapCat 已连(pid 2845043); 00:15 重启无报错, 下轮采集 04:01
+- 注意: 今天非0点不会推日报, 合并效果在次日0点(若有失败)可见; 04:01 若失败也不再单独发文字
+
+## v2.0.4aj — bg_tasks datetime 修复 + 日志服务封公网直连 + 隧道 BasicAuth — 2026.9.6
+### 1. 采集失败通知 datetime NameError（用户贴日志）
+- 现象：00:03:55 `main:_bg_wdsj_collector:191 战绩采集失败: name 'datetime' is not defined`
+- 根因：_notify_qzone_failures(plugins/bg_tasks/main.py:194+) 用 datetime.now() 但方法内
+  未 import（datetime 只是 _bg_wdsj_collector 的局部变量）→ NameError → 被外层兜底
+  except 捕获 → **0 点档日榜图片推送(126-189 行)被短路跳过**
+- 修复：方法内补 `from datetime import datetime`
+- 补发：脚本复刻 0 点档推送 → 床战日报 28 人 + 竞技场 10 人 → 群 [群号] + QQ 空间 ✓
+### 2. 日志页封公网直连（承接 bot 子域隧道）
+- 需求：58888/62000 不再从公网直连 + 访问密码
+- 方案：cloudflared ingress 改指 nginx 反代层(127.0.0.1:48888/46200, Basic Auth
+  htpasswd /www/server/nginx/conf/htpasswd.bot, 用户名 trusler)；log_server.py 默认
+  绑定 0.0.0.0 → 127.0.0.1（QQ bot.py 与 KOOK logweb 各副本）
+- 验证：公网直连 58888/62000 → 000 拒绝；隧道无凭据 401/带凭据 200；WS 101
+- 访问：https://bot.example.com/qqbot 与 /kookbot（nginx bot-log.conf 反代，
+  配置 .bak_20260906_botsub；源 .bak_20260906_bind）
+### 3. 今日采集注记：Flowers_summer[bedwars] 00:03 4 轮 ConnectTimeout 最终失败，
+   属上游网络瞬时故障，非绑定问题；明晨 04:01 全量采集自动补上
+
+## v2.0.4ai — 日志控制台支持隧道 path 前缀 + https/wss — 2026.9.5
+### 背景
+- 需求：两 bot 日志页经 CF Tunnel 挂 bot.example.com 单子域
+  （/ → QQ 58888，/kook → KOOK 62000），页面 JS 固定连 location.host+/ws 会串台
+- 附带：走 https 隧道时旧模板硬编码 ws:// 会被浏览器 mixed-content 拦截
+### 改动（data/templates/console.html 两端: /root/bot + /root/kook_bot）
+- WebSocket 地址：按 location.pathname 前缀自适应 + https→wss
+  `(proto)+'://'+host+pathname去尾斜杠+'/ws'`（/ 与 /kook 下各连各的）
+- /api/logs 历史接口同样加前缀
+- log_server WS 握手本就不校验路径，服务端零改动
+### 隧道侧（cloudflared config.yml）
+- ingress: bot.example.com path /kook* → 127.0.0.1:62000（在前）；
+  同 hostname 兜底 → 127.0.0.1:58888（QQ）
+- 同步 /etc → route dns → 重启
+### 验证
+- bot.xxx/ → 幻梦 QQ Bot 控制台 200；bot.xxx/kook → KOOK 控制台；
+  /kook/ws Upgrade → HTTP 101；两端 HTML 均含 wss 分支
+
+## v2.0.4ah — 修复 v2.0.4af 引入的重复发送回归 — 2026.9.5
+### 现象（用户实测）
+- 一次 /sys 在群里出现 3 条相同消息
+- 日志：13:24:39 /sys 触发 1 次 → 指令执行完 → call_api send 第1次 → 5s 超时 →
+  重试第2次 → 又超时 → 重试第3次 → 成功。**实际发出去 3 遍**
+### 根因
+- v2.0.4af 把 fire-and-forget 改成 call_api + 3 次重试：call_api 的"超时"≠"发送失败"——
+  NapCat 往往已收到并发出，只是响应回包慢/丢 → 重试 = 同一条消息重复发送
+- 老 fire-and-forget 不会重复（只有 ws.send 抛异常才重试，此时消息确实没到）
+### 修复（services/sender.py）
+- send_group_msg/send_private_msg：去掉重试循环 → **单次 call_api + 8s 超时**
+- 未确认(超时/失败)仅日志警告，不重发、不补 fallback（避免"原文+fallback"双条）
+- message_id 拿不到时 msg_id=0 兜底录制（撤回匹配该条让位，换取绝不重复）
+- 权衡说明：重复发送是用户可见的硬伤，message_id 偶发拿不到只是撤回匹配降级
+
+## v2.0.4ag — 修复撤回事件被消息去重吞掉（group_recall 收不到）— 2026.9.5
+### 现象（用户实测抓出）
+- v2.0.4af 部署后 01:01:11 用户发"现在该测撤回了" → 01:01:15 撤回 →
+  01:01:28 /recall 仍只显示旧幽灵，01:01:15 的撤回根本没进记录
+- 日志：01:01:10-20 窗口内 bot 零撤回事件（_handle_recall 未触发），消息却正常收到
+### 根因（dispatcher._dispatch_inner）
+- 消息去重 `_seen_ids` 对所有事件生效，而 OneBot v11 group_recall 事件带的
+  message_id 就是**被撤回消息的 id**——被撤消息刚作为普通消息处理过必然在
+  _seen_ids 里 → 撤回事件命中去重被 return 吞掉 → 撤回永远收不到
+- 9-4 11:45 那次撤回能处理是因为被撤消息当时未被 bot 收到(不在去重集)，纯属侥幸
+### 修复（core/dispatcher.py）
+- 消息去重移入 message 路由分支内，仅对 post_type=message 生效；
+  notice(撤回/戳一戳)/request 事件不参与 message_id 去重
+- 与 v2.0.4af 互补：af 解决"msglog 有真实 msg_id 可匹配"，ag 解决"撤回事件能收到"
+
+## v2.0.4af — send_group_msg 拿真实 message_id（bot 消息撤回可命中）— 2026.9.5
+### 背景（承接 v2.0.4ae 排查）
+- 用户点出设计本意：录制带 message_id+原文 → 撤回时按号查原文（msglog 正是此设计，
+  mark_recalled 按 msg_id 精确匹配）
+- 但审计发现缺口主因之一：send_group_msg/send_private_msg 用 fire-and-forget
+  (mgr.send 只返回 bool)，_log_bot_sent 写死 msg_id=0；而 mark_recalled 明确跳过
+  msg_id=0 条目(多条 bot 消息共用 0 无法区分) → 凡走此通道的 bot 消息被撤回
+  永远成幽灵 "[原文未录制]"（实测 00:45:51/18:19:13 两条 bot 消息幽灵）
+### 修复（services/sender.py）
+1. send_group_msg/send_private_msg：fire-and-forget → **call_api 请求-响应**
+   （echo 匹配+超时5s+重试3次+内部重试1次），拿 data.message_id
+2. _log_bot_sent 加 msg_id 参数：有真实 id 以 id 录制(可被撤回匹配)；失败兜底维持 0
+3. 语义增强：call_api 确认送达才返回 True，失败走原 fallback 提示
+### 验证
+- 服务器实测：发送成功 → msglog bot 条目 msg_id=[消息号]（原为 0）
+- 影响面：send_group_msg 被指令反馈/推送/错误提示广泛调用，均变为可撤回匹配+确认送达；
+  主回复通道 send_sentences→_send_and_record 本就带真实 id 不受影响
+
+## v2.0.4ae — /~recall 展示消息号(msg_id) — 2026.9.5
+### 背景（用户实测 /recall 质疑可用性）
+- 用户问：1) 能获取消息号码吗 2) 能否按消息号找回记录
+- 排查实测：
+  - 撤回事件自带 message_id，msglog 录制/幽灵条目都存有 msg_id，但 /~recall 展示层
+    一直没显示 → 用户看不到"消息号"这回事
+  - 撤回后调平台 get_msg(message_id) 补救原文 → 实测返回空(QQ 服务端已清内容)，
+    撤回不可逆只能靠 bot 事前录制(msglog)
+  - 数据审计：全群 16 条撤回 7 条有原文(44%)，9 条幽灵 msg_id 在 msglog 确不存在
+    (bot 离线期/发送失败无 message_id 的消息录不上)，非匹配 bug 是录制覆盖缺口
+### 改动（modules/commands.py cmd_recall）
+- 每行展示加 mid=消息号：`1. [00:45:51 mid=[消息号]] 枭茂密 撤回了 ...`
+- 用户可拿 mid 对账/反馈；msglog 按 msg_id 精确匹配逻辑本就存在(mark_recalled)
+
+## v2.0.4ad — judge/utils 换 DeepSeek（Qwen 15.8s → 1.25s 光速响应）— 2026.9.5
+### 现象
+- 用户反馈 Qwen judge 太慢：SiliconFlow Qwen2.5-7B-Instruct 实测单次 15.8s
+  （免费模型高峰排队），judge 阶段每条普通消息都等它 → 回复节奏拖沓
+- 用户提议：独立的 DeepSeek V4 Flash 实例做判断（提示词与回复人格隔离）
+### 改动（config/bot_config.toml 两段，本地+服务器同步）
+- [model.judge_cheap] + [model.utils_small]：Qwen2.5-7B-Instruct@SILICONFLOW →
+  **deepseek-chat@DEEPSEEK**
+- 两段保持同名 → 走 _judge_combined 单次合并调用路径不变；judge 提示词本就独立
+  （call_judgment_pipeline 自带精简 prompt，不注入回复人格），天然满足隔离需求
+- utils_small 同时服务 voice/画像提取等 → 一并提速提准，单次 few tokens 成本可忽略
+- 熔断兜底保留：DeepSeek judge 异常仍走本地规则，不堵队列
+### 验证
+- 服务器实测 call_judgment_pipeline 全链路 1.25s（原 15.8s，12.6x）
+- 部署：服务器 bot_config.toml(.bak_20260905_judge_ds) 精准替换两段（不整文件覆盖，
+  两侧配置结构本就不同），重启 PID active
+
+## v2.0.4ac — system 瘦身 40%（缓存 miss 成本砍半）— 2026.9.5
+### 背景
+- 用户反馈 token 缓存命中率低。审计确认 messages 结构本就最优（system 静态前缀 +
+  动态时间/记忆/fav 集中在末尾 user，实测 system 跨调用 md5 恒定 5873977d85）
+- 真凶：**system 单条 21194 字符(~14K tokens)**，其中 cfg.system_prompt 8563 字符里
+  87%(7453) 是 architecture.mermaid 全量节点(70 行)——每条消息都带进前缀，
+  miss 时全额计费；而日常聊天/科普根本用不到架构细节
+- pipeline 本就有按需注入机制：arch_keywords(版本/架构/能力/配置等)命中才经
+  core/arch_loader 注入完整架构到 extra_info 末尾——system 常驻全量属重复浪费
+### 修复（core/config.py 一处）
+1. _build_self_awareness：architecture.mermaid 70 行全量 → **极简一行摘要**
+   （四层 core→services→modules→utils + db/plugins/data），完整架构保持按需注入
+2. changelog 注入 6 条 → 3 条（/~up 可查全部）
+- 预期：system 21194 → ~13700 字符（-35~40%），miss 成本同步降；命中率分母变小
+- 不影响行为：问架构/版本/能力时 pipeline 仍会注入完整架构（走末尾不污染缓存）
+
+## v2.0.4ab — @其他同名"幻梦"也响应（v2.0.4aa 文本匹配过宽）— 2026.9.4
+
+### 现象（用户实测）
+- 群友昵称也叫"幻梦"，@那个真人 → bot 也跟着响应
+- 根因：v2.0.4aa 给 is_mentioned 加了 `@bot_name` **文本**匹配（@幻梦）兜底——
+  @真人幻梦与 @bot 在文本层都是"@幻梦"，无法区分 QQ → 误判
+- v2.0.4aa 当时为兼容"@QQ 被替换成 @bot名"用了文本匹配，属妥协方案
+
+### 修复（3 文件，@ 判定只信权威 at 段）
+- @ 检测全部改回**只认 QQ**：raw_message 的 `[CQ:at,qq=bot_qq]`（权威）+ msg_content
+  `@bot_qq` 数字（raw 无 CQ 时兜底）；**彻底移除 @bot_name 文本匹配**
+- pipeline.py:300 主回复判断 / dispatcher.py:381 错误报告检查 / judge.py:258
+- @bot 在文本层仍被替换成 @幻梦（v2.0.4y(b)，LLM 上下文友好），但与"是否响应"
+  判定解耦——判定看 at 段 QQ，文本只影响 LLM 阅读
+- 本地单测 5 形态：真@bot(CQ)/@真人幻梦/@QQ数字/@群友/无@ 全部符合预期
+
+## v2.0.4aa — 修复 @bot 全静默回归（v2.0.4y(b) 引入）— 2026.9.4
+
+### 现象（11:45:10 群[群号]）
+- Trusler @bot 引用 bot 自己的科普回复追问"这么高的温度怎么测出来的"
+- 日志：pipeline 0.01s 本地判定 should_reply=False → 静默不回（非卡死，是判"不用回"）
+- 波及面：**所有 @bot 消息**都会静默不回——@ 检测失效是全局性的
+
+### 根因（v2.0.4y(b) 用户名替换改动 + 漏改检测点）
+- v2.0.4y(b) 把 replace_at_in_message 里 bot 自身 @ 从"保持 QQ 号"改为替换成
+  "@bot名"（如 @幻梦）→ msg_content 里不再出现 @[botQQ]
+- 但 @ 检测点仍用 `@{bot_qq}` 匹配 msg_content → 全部落空，落入
+  `@\S+` "@他人消息→SKIP" 分支 → should_reply=False
+- 我当时误判"@bot 检测走 raw_message 不受影响"——图片分支(dispatcher:331)确实走 raw，
+  但**主回复判断 pipeline:300 走的是替换后的 msg_content**，没排查到位
+
+### 修复（3 文件 4 检测点，统一兼容三形态）
+1. **pipeline.py:300 主回复判断**：`@{bot_qq}`(数字) + `@{bot_name}`(替换后) +
+   `[CQ:at,qq=bot_qq]`(raw CQ 码) 任一命中即 is_mentioned
+2. **dispatcher.py:381 错误报告引用检查**：同上三形态
+3. **dispatcher.py:331 图片@bot 识别**：raw_message 原用 @QQ 正则匹配 CQ 码文本
+   ——本就匹配不到（历史遗留 bug），补 `[CQ:at,qq=bot_qq]` 匹配
+4. **judge.py:258**：judge 内点名校验补 @bot_name 匹配（兜底）
+- 本地单测：@幻梦/@[botQQ]/@他人/CQ码 四形态全部命中正确
+- 教训：改"消息文本形态"（替换层）必须 grep 全仓所有依赖该形态的检测点再动手，
+  不能只验证替换层本身；文本从 @QQ→@名字 会连带弄死所有 @QQ 正则
+
 ## v2.0.4 — 修复 qq_name_map 分群昵称 + LLM 对话者身份 — 2026.8.28
 
 ### 修复 qq_name_map 分群隔离
@@ -6330,234 +7183,591 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 沙箱逃逸向量（getattr / __class__ / __mro__ / globals 等）全部拦截测试通过
 - 全部修改文件 py_compile 通过
 
-## v2.0.5 — /~img 指令恢复（Lolicon API）— 2026.8.24
+## v1.5.5 — KOOK 生态兼容 + 168 commits 优化移植 — 2026.8.21
 
-### 图源切换：waifu.pics → Lolicon（Pixiv 来源）
-- 废弃不可用的 `waifu.pics`，`/~img` 改用 `https://api.lolicon.app/setu/v2`（免费免 key）
-- **支持多标签参数**：`/~img 甘雨 原神` 为 AND（同时包含，最多 3 个）；单个标签内可用 `|` 做 OR，如 `/~img 萝莉|少女 白丝|黑丝` → (萝莉 OR 少女) AND (白丝 OR 黑丝)；无参数时随机
-- `/~img18`（R18）曾恢复注册，**现按需求下线（移除注册，逻辑保留待启用）**；`/~img` help 不再提示 R18 版
-- 拆两套请求头：API 请求不带 Referer（否则 403），图片下载必须带 `Referer: https://www.pixiv.net/`（走 i.pixiv.re 反代）
-- `size` 用重复键手工拼接 `size=regular&size=original`（urlencode 对数组不可靠），优先取 regular 缩略图发送
-- r18=0 全年龄过滤：库分类 r18 字段 + **R18 标签黑名单**（与 lolicon_client.py 一致，因 API r18 字段是库分类、不等同作品本身标识）；拉取 5 张再过滤保证有命中；无结果时提示换关键词
-- **随机选图**：拉 5 张用 `random.choice` 而非固定 `items[0]`（Lolicon 带 tag 返回顺序固定，始终取第一张会导致同 tag 永远同一张图）
-- **最近 pid 去重**：`_IMG_SENT_PIDS` 集合缓存已发 pid（最多 200，超限清空），同 tag 连发跳过已发过的图，全命中则放宽不跳过
-- 保留本地下载 + `file:///` CQ 码发送链路，失败降级直发远程 URL
-- `/~img help` 显示用法帮助（支持 帮助/?/usage 别名）
-- 备份：`qqbot-backup/2026-08-24/`
+### 🔄 .hmp 插件 KOOK 格式自动剥离
+- 新增 `core/plugin/kook_compat.py`：加载插件时向 `sys.modules` 注入 `khl`/`kook`/`kaiheila` 假模块（含 `khl.api`、`Card`、`MessageTypes` 等），KOOK 生态 `.hmp` 插件无需改动即可在 qqbot 加载运行，KOOK 专属调用安全降级
+- `strip_kook_text()`：剥离 `(met)/(rol)/(chn)/(emj)/(file)` 等 KMarkdown 标记
+- `loader.py` 类定位改严格判定（`vars()` 检查钩子 + `_kook_stub` 标记跳过），修复 stub 类被误判为 Plugin 类的问题
+- 纯内存注入、不改源不落盘；插件真实能力走 ctx.* 与 qqbot 原生一致
 
-## v2.0.6 — /~draw 图源切换 CloudMist（gpt-image-2）— 2026.8.24
-
-### 文生图后端更换
-- `modules/agnes.py` 文生图接口改走 `https://v2.cloudmist.cloud/v1`（OpenAI 兼容），模型 `agnes-image-2.1-flash` → `gpt-image-2`
-- 返回改为 base64（`data[0].b64_json`），解码后存 PNG 发送；保留 url 兜底分支
-- API key 硬编码为 CloudMist token（原环境变量 AGNES_KEY 不再用于 draw）
-- 文生视频（`/~video` / `/~img2video`）独立为 `AGNES_VIDEO_BASE` + `_video_headers()`，仍走原 Agnes 服务与环境变量 key，不受图源切换影响
-- 备份：`qqbot-backup/2026-08-24/`
-
-### 修复：/~draw 超时失败（v2.0.6 补充）
-- `_gen_image` 超时 120s → 300s：gpt-image-2 复杂 prompt 生成可超过 2 分钟（实测日志 120s 整触发超时）
-- 异常日志改打印类型 + repr（httpx 超时异常 str 为空导致日志无内容）
-- url 兜底下载超时 30s → 60s
-
-## v2.0.7 — /~draw 自定义画面比例（默认 16:9）— 2026.8.25
-
-### 比例支持
-- 默认不再是 1024x1024 方块，改为 **16:9（1536x864）**
-- 新增 `_ASPECT_RATIOS` 映射表 + `_resolve_size()` 解析器，支持：
-  - 比例别名：`16:9` / `1:1` / `3:2` / `2:3` / `9:16` / `4:3` / `3:4`
-  - 英文别名：`square` / `portrait` / `landscape` / `wide` / `tall`
-  - 直接尺寸：`1024x1024` / `1536x864` 等任意 WxH
-  - 无法识别→默认 16:9
-- 用法：`/~draw <提示词>`（默认 16:9）/ `/~draw 1:1 猫娘`（指定比例）/ `/~draw 1024x1024 猫娘`（指定尺寸）
-- 备份：`qqbot-backup/2026-08-25/`
-
-## v2.0.4t — 后台任务去重（提醒/控制/节假日）— 2026.9.3
-
-### 现象
-- 每次启动日志出现 2 条"提醒轮询已启动（每30秒检查一次）"（间隔约 60ms，历史每次启动都双份）
-
-### 根因
-- bot.py run() 与 plugins/bg_tasks 插件 on_enable 各自注册了同一批后台任务：
-  提醒轮询(remind_checker_loop) / 控制文件监听(control_watcher) / 节假日服务(holiday) → 三组双跑
-- 30s 提醒轮询 x2 → 到点提醒存在双发风险；holiday x2 → 节日推送双发风险
-- 与 v2.0.4s wdsj 双跑同源：插件化迁移后旧入口的重复任务没删干净
-
-### 修复
-- bot.py 注释掉 3 处重复注册（方法体保留死代码），统一由 bg_tasks 插件负责：
-  `# _bg_remind_checker()` / `# _bg_control_watcher()` / `# _bg_holiday()`
-- 备份：`qqbot-backup/2026-09-03/bot.py.bak_20260903_remind_dup` / 服务器 `bot.py.bak_20260903_nodup`
-
-## v2.0.4u — 搜索结果"诚实归因"提示词修复 — 2026.9.4
-
-### 现象
-- 用户问"环流三号是啥"，bot 先说"让我查查喵~"并调用 search_web，搜到后却答"哦这个我知道喵！"
-  —— 把刚查到的内容装成自己本来就知道，与上一句"让我查查"自相矛盾
-
-### 修复（双层）
-1. `data/main_skill.md` v1.1.3→v1.1.4：command_tools 新增规则10【诚实归因】
-   凡工具查来的信息必须如实说"刚查了下/搜到啦/查到啦"，严禁说"我知道/我记得/早就知道"；
-   仅聊天记忆/长期记忆内容可用"记得"
-2. `services/llm.py` `generate_multi_reply_with_tools`：工具执行完的最终 json_mode 回复轮，
-   在 system 区插入一条"诚实归因"提醒（v2.0.4u 注释），就近压制该轮幻觉
+### ⚡ 通读 kook 168 commits 筛选的运行时优化
+- **单工具超时**（kook 67dd501）：`core/tools.py` 新增 `TOOL_TIMEOUTS` 工具级超时表 + `get_tool_timeout()`，FC 循环 `run_one` 用 `asyncio.wait_for` 包裹，防慢工具拖死整轮
+- **输出截断保头尾**（kook 6cda8e0）：`_python_eval` 用 `_fold_truncate` 保留头尾折叠中间，防 LLM 编造被截断的尾部结果
+- **calls 多形态解析**（kook a101954）：LLM 回复 JSON 的 calls 兼容 `tool/name` + `arguments/args`（含字符串 JSON 参数）
+- **FC 轮数 2→6 + 防死循环**（kook 5fcab40）：MAX_ROUNDS 放宽为保险上限，连续两轮相同工具调用集自动终止
+- **max_tokens<=0 保护**（kook 900125e）：`call_llm`/`call_llm_with_tools` 将 `max_tokens<=0` 视为不设上限，防 DeepSeek 400
+- **msglog 回溯 500→5000**（kook dcb9ba3）：`search_msglog` 默认扫描上限提升，提升记忆召回
 
 ### 验证
-- 本地 py_compile 通过；备份 qqbot-backup/2026-09-04/（llm.py + main_skill.md）
+- KOOK 插件（import khl / Card / MessageTypes / api.fetch）+ 原生插件共存加载、命令/工具分发、卸载清理全通过
+- 全部修改文件 py_compile 通过
 
-## v2.0.4v — 深度讲解模式（详细解释类真·详细输出）— 2026.9.4
+## v1.5.4 — 完整移植插件系统（kook Phase 13/14）— 2026.8.21
 
-### 现象
-- 问"环流三号是啥""雷石东直放站"这类想了解的话题，bot 两三句打发，不够详细
-- 用户要求：像 webai 工具那样输出完整深度长文；纯文本不渲染 markdown；可以换行有格式；
-  分多句发出来且分句合理；人格不丢
+把 huanmeng-kook-bot 的插件体系整体移植到 qqbot，架构对齐。
 
-### 改动（data/main_skill.md v1.1.4→v1.1.5，纯提示词，无代码）
-- group_format 新增小节【深度讲解】规则19~24：
-  - 触发：XX是啥/详细解释/讲讲/科普/原理/为什么/怎么实现/区别/完整流程 等值得展开的话题
-  - replies 8~15 句逐条发出成一篇长文；每句=一个完整小节/段落，句内可 \n 换行分段
-  - 分句边界=小节边界，不硬切；每句 50~500 字
-  - 排版：纯文本【】分节 + "1."/"- "列表 + 空行分段；禁止 markdown 符号(#/>/**/```)
-  - 人格：全程猫娘口吻但内容专业完整，卖萌是点缀
-  - 不确定数据先 calls search 查证 + 规则10 诚实归因
-- 长内容规则17 补充：名词解释/科普/答疑不算"写东西"，不走 FILE，直接深度讲解
-- private_format 新增规则11：私聊深度讲解指针（6~12 句、≤300字/句）
+### 🧩 插件运行时
+- `core/plugin/` 四件套：`manifest.py`（PluginManifest 校验）/ `loader.py`（发现+动态导入）/ `manager.py`（discover→load→init→enable→disable→reload→unload→health 生命周期机，单插件崩溃隔离）/ `api.py`（PluginContext 公开 API）
+- `core/eventbus.py`：统一事件总线（订阅/发布/通配/异步隔离，插件协作基础设施）
+- `core/capability/`：能力注册表（Capability 统一 Command/Tool/Plugin 抽象 + registry/router/loader）
+- 插件写法：`plugins/<name>/manifest.json` + `main.py`，类名 `Plugin(ctx)`，可选 `on_load/on_enable/on_disable/on_unload`，reload 自动清理事件/定时器/能力注册
 
-### 约束核验（无需改代码）
-- JSON 路径不截断 replies 句数（[:5] 仅在纯文本降级路径）
-- sender.send_sentences 逐条发送、不截断内容、\n 原样保留 → 句内换行格式可行
+### 🎛 插件能力（ctx.*，惰性解耦）
+- `message.send/send_file`、`memory.remember/recall`、`event`、`timer.every`、`capability.register_command/register_tool(always_on)`、`config`、`economy`、`vision.describe`、`identity.is_admin`、`llm.generate`、`approval.request`（私聊管理员 + /~apy 回执）、`sandbox.run_python/cpp/shell`、`logger`
 
-## v2.0.4w — 严格 JSON + 句号克制 — 2026.9.4
+### 📦 分享与插件库
+- `modules/plugin_share.py`：`.hmp` 打包/解包（防 zip-slip）、聊天下载、插件库客户端（`PLUGIN_LIB_BASE`，默认 `example.com:20030`，实测可连、库内 13 个插件）
+- `/~plugin` 指令：list / install / unload / reload / pack / import / update（一键更新）
+- `/~apy <token> 同意|拒绝`：审批回执
 
-### 现象（用户贴日志 11:00:44 群[群号]）
-- 追问"双亿度"时 LLM 轮1 输出纯文本（非 JSON，内容其实是对的）
-  → "LLM 输出非 JSON，强制重试" json_mode=True → DeepSeek json_object 返回**空**
-  → 老逻辑"JSON模式返回空，关闭json_mode重试"直接降级普通模式 → 又可能吐非 JSON
-- 另一隐患：兜底重试 max_tokens=min(...,800) 焊死 800，深度讲解长 JSON 必被截断
+### 🔌 FC 集成
+- `core/tools.py`：`get_tool_schemas()` 合并插件动态注册工具 Schema（内置同名优先）；`execute_tool` 增加插件 handler 分发回退
+- 插件命令经 `register_command` 自动挂进 COMMAND_MAP，`/~name` 直接可调，卸载自动移除
 
-### 修复（services/llm.py）
-1. **严格 JSON**：call_llm json_mode 空返回（finish=stop）不再立刻降级普通模式——
-   保持 json_mode 重试最多 2 次（_json_retries 计数 + 追加 _hint_json_output() 强制提示行，
-   DeepSeek json_object 要求 prompt 含 json 字样），仍空才普通兜底一次
-2. 两处兜底 token 800 焊死 → max(max_tokens or 0, 4000)
-   （第2轮空兜底 + 非JSON强制重试；FC最终轮本来就 8000）
-3. 新增 _hint_json_output(messages)：追加强制 JSON 指令
+### 🚀 启动
+- `bot.py` 启动时 `get_plugin_manager().load_all()`，单插件失败不影响主流程
+- 新增示例插件 `plugins/dice/`：`/~dice` 掷骰 + `roll_dice` 常驻工具 + 掷骰奖励 1 积分（联动经济系统）
 
-### 提示词（data/main_skill.md v1.1.5→v1.1.6）
-- group_format 规则13 追加【句号克制】：聊天句尾尽量不用"。"，用 ～/喵/啦/哦/呢/嘛/颜文字收尾；
-  深度讲解长句内部可用逗号但句尾少用句号
-- private_format 规则4 同样追加句尾少用句号
+## v1.5.3 — 移植 huanmeng-kook-bot 三大功能模块 — 2026.8.21
 
-## v2.0.4x — 名词疑问必搜（雷石东直放站翻车修复）— 2026.9.4
+从 KOOK 机器人 `huanmeng-kook-bot`（同作者）移植三块 qqbot 原本缺失的能力。
+经比对，qqbot 已是 kook bot 的超集（多中国象棋/好友请求/退群/昵称同步/撤回记录），
+故仅精准补齐以下三块。
 
-### 现象（11:07:43 群[群号]）
-- 用户 @bot 问"雷石东直放站是啥"，bot 三连翻车：
-  1. 凭印象瞎猜"直放站是信号中继设备，雷石东可能是品牌或项目名"（实际是 MC 机翻梗）
-  2. 没走深度讲解（v2.0.4v 加的触发条件没生效）
-  3. 口头"我帮你查查喵～"却 calls=[] 没真调 search
-- 日志：该消息 pipeline 搜索=0字（群 @ 直答路径不预搜，全靠 LLM 自己 FC 调 search），
-  但 LLM 被提示词强规则压制不敢搜
+### 💰 经济系统（积分 / 库存）
+- 新增 `modules/economy.py`：积分增减、转增、签到、商店、背包、物品使用
+- 数据落 `data/economy.json`（全局 RLock + 临时文件原子写，沿用 kook 设计）
+- 新增指令：`/~points /~sign /~gift /~shop /~buy /~bag /~use`（含中文别名 积分/签到/赠送/商店/购买/背包/使用）
+- 示例物品「好感券」：使用后给当前聊天中的自己 +10 好感度（联动 `modules/fav.py`）
+- 所有经济函数以 try/except 优雅降级，模块缺失不影响聊天主流程
 
-### 根因
-- 提示词自相矛盾：llm.py fmt_reminder"用户没说'搜/查/找'就**绝对不要搜**"+
-  main_skill command_tools 规则0"只在被明确要求时才调用指令" → 名词提问被硬压成瞎猜+反问
-- 与此前"环流三号"会主动搜的成功案例行为不一致（模型在两条冲突规则间随机摇摆）
+### 🗄️ SQLite + FTS5 全文检索数据层
+- 新增 `db/store.py`（`SearchStore`）：聊天记录 / 记忆结构化存储 + 全文检索
+- FTS5(trigram) 中文子串匹配；不可用时自动降级为 SQL LIKE
+- `dispatcher` 在 `record_message` 钩子后自动索引群消息，私聊消息单独索引
+- 新增 `/~回顾 <关键词>` 指令直接查询索引；`db/migrate.py` 一键回溯 `data/msglog/*.jsonl`
+- 完全 ADDITIVE：不破坏现有 JSON 存储，写入失败静默降级
 
-### 修复（场景化搜索规则）
-1. llm.py fmt_reminder：闲聊/寒暄/接梗不搜；**名词/概念提问(XX是啥/是什么/什么意思/哪来的)、
-   不确定、时效、数据类 → 必须先 search 查证，禁止瞎猜/反问**
-2. main_skill v1.1.6→v1.1.7：
-   - command_tools 规则0 新增**例外②（名词疑问必搜）**
-   - 深度讲解规则24 补：名词类"XX是啥"拿不准就直接搜（不必等用户说"查"字）
+### 📦 skills/ 模块化提示词体系
+- `services/llm.py` 的 `_load_skill_sections()` 新增 `_merge_skills_dir()`，
+  自动把 `data/skills/*.md` 按 `## 章节` 叠加到 `main_skill.md`，未显式引用的章节兜底追加
+- 新增示例 `data/skills/20_economy.md`，让 bot 主动知晓积分系统
 
-## v2.0.4y — FC 先导语先发 + 转述口语化 — 2026.9.4
+## v1.5.2 — 数学计算沙箱 — 2026.8.9
 
-### 现象（11:26:38 群[群号]，与 v2.0.4x 同场景实测）
-- 用户 @bot 问"雷石东直放站是啥"，LLM 轮1 输出
-  `content="主人你@的是别人呀…这词我确实拿不准，帮你搜搜看吧" + tool_calls=[search_web]`
-- 但轮1 content **从未被发送**：代码只在无 tool_calls 分支用 content，有 tool_calls 直接
-  走工具执行 → 13.6s 后一次性发 3 句正文。期间用户干等以为 bot 没反应，且"帮你查查"
-  的铺垫丢失后正文开头突兀
-- 附带：最终 3 句转述偏百科念稿（直接照抄搜索结果的书面句式），猫娘味不足
+### 🧮 calc 工具：Python 代码精确求解
 
-### 根因（services/llm.py generate_multi_reply_with_tools）
-- FC 循环 `if not result.tool_calls:` 为假时，content 无任何消费路径即被丢弃
-- assistant 消息 append 时 content 写死 None，后续轮/最终 json 轮 LLM 看不到
-  自己说过"帮你查查"，衔接易重复
+**新增 `calc` Function Calling 工具**
+- 用户发数学题/方程/方程组时，LLM 自动生成 Python 代码调用 `calc` 工具
+- 代码在沙箱子进程中执行（5秒超时、2000字符输出限制）
+- 执行结果喂回 LLM，再生成自然聊天回复
+- 彻底解决 LLM 心算出错的问题（如：忽略方程矛盾、算错代数式）
 
-### 修复
-1. **llm.py**：签名新增可选 `interim_cb`（async 回调，pipeline 注入发送通道）；
-   FC 轮1 有原生 tool_calls 且 content 为短自然语（1<len≤120、非 JSON/无```/~）
-   → `await interim_cb(content)` **先把先导语发给用户再执行工具**；
-   后续轮 content 不发送（防刷屏）；assistant 消息 content 由 None 改为保留原文
-   （≤300 字才保留）——让最终轮 LLM 看到已说的话，避免重复"我查查/稍等"
-2. **pipeline.py**：新增 `_make_interim_sender()`，主消息(541)与戳一戳(110)两处调用
-   注入 interim_cb，先导语与正常回复同走 send_sentences（stats/msglog 录制一致）
-3. **main_skill.md v1.1.7→v1.1.8**（command_tools）：
-   - 新增**规则11 先导语会先发出**：调工具前的自然语会先发给对方；只写"动手前的话"
-     （知会/安抚），别写结论别提前展开正文；最终回复不重复先导语；先导语禁写 /~xxx
-   - 规则10 补**转述要口语化**：查到的书面资料用猫娘口吻转述，禁整段照抄搜索结果念稿
+**安全沙箱**
+- 静态正则拦截：禁止 `import os/sys/subprocess/socket` 等危险模块
+- 禁止 `open()`/`exec()`/`eval()`/`__import__()` 等危险调用
+- 禁止 `__class__`/`__subclasses__`/`__mro__` 等沙箱逃逸向量
+- 最小化环境变量，子进程隔离
+- 可用模块：math, fractions, decimal, statistics, sympy（如已安装）
 
-### 验证
-- 部署后同场景实测：轮1 content 先发 → 搜索 → 最终正文直接上干货
-- 本地 py_compile 通过；只改 3 文件 + update_log，未动数据格式
+**FC 管道集成**
+- `calc` 结果归类为 `data_results`，走 json_mode 生成最终回复
+- 执行失败（含"失败"关键字）归类为 `errors`，LLM 可解释错误
+- `_CMD_DESC` 和 `_build_messages` 格式提醒同步更新
 
-### 补充修复（同版，utils/username.py）
-- 轮1 content 里 LLM 说"主人你@的是别人呀"——根因：replace_at_in_message 对 bot 自身
-  的 @ **保持原始 QQ 号**（@[botQQ]），LLM 不知道那是自己 → 误判"@的是别人"
-- 修复：bot 自身 @ → 替换为 `@{bot_name}`（dispatcher 早已传 bot_name 但函数没用）；
-  @bot 检测走 raw_message 不受影响，替换只影响 LLM 可见文本
+## v1.5.1 — 搜索革命 + 人格优化 + 交互打磨 — 2026.8.6
 
-## v2.0.4z — 深度讲解强触发（"详细点"追问展开 + 查完必展开）— 2026.9.4
+### 🔍 搜索系统重构
 
-### 现象（11:39 群[群号] 先导语功能实测后暴露）
-- v2.0.4y 先导语先发验证成功（"这词我拿不准喵，帮你查查"秒回 → 18s 后出结果）
-- 但第一轮"雷石东直放站是啥"只回了 3 句摘要；用户追问"详细点"→ 5 句每句 ≤15 字
-  的短句（"红石中继器的机翻/2012年官方汉化翻车/把repeater译成直放站/雷石东是
-  Redstone音译/老玩家都懂的梗喵"）——纯同义重复没展开，Crowdin/破坏者/"床上"等
-  细节一个没讲。而那次搜索返回 622 字材料（含全部细节）足够写 8-15 句
+**DeepSeek Responses API 原生搜索**
+- 接入 DeepSeek 服务端 `web_search` 工具，搜索结果由 API 端直接合成
+- 纯 urllib 实现，零第三方依赖（不需要 openai SDK）
+- 支持自动打开多个页面深度阅读，按事件、时间线分段输出
+- 时效性强，能搜到当天最新新闻和数据
 
-### 根因（main_skill.md 深度讲解规则 19-24 实际不触发）
-1. 规则19 有"且问题本身值得展开"模糊限定——LLM 拿它当挡箭牌，名词科普被 3 句打发
-2. 追问词"详细点"不在规则19 触发词列表，LLM 没切深度讲解，仍按群聊普通规则
-   3-5 句×≤40字输出（被规则4/8 压制）
-3. 追问轮上下文里只有 bot 自己的几句简答（搜索材料只在当轮 msgs，不进群上下文），
-   LLM 无料可讲又不肯再搜 → 同义重复
-4. 规则21"优先于上文所有句数/字数限制"没点名规则4/8，LLM 不敢突破 40 字/句
+**三层回退保证可用性**
+1. DeepSeek 原生搜索（45s 超时，不限输出长度）
+2. Agent 多源搜索（百度 + Bing + 深度抓取）
+3. 本地搜索器（百科 + 百度 + Bing）
+- 任一失败自动降级，确保搜索不中断
 
-### 修复（纯提示词，main_skill.md v1.1.8→v1.1.9）
-1. 规则19 重构为**强制触发**：名词/概念/梗/黑历史/术语科普默认要展开，删掉"值得
-   展开"模糊评估；新增**追问必补**（详细点/细说/展开讲讲/多说点/继续说/再讲讲/还有呢）
-   与**查完必展开硬规则**（调了 search/read 查完必须展开，严禁 2~3 句摘要打发）
-2. 规则21 豁免点名：进入本模式后群聊规则4"≤40字/句"与规则8"句数控制"全部作废，
-   别再按短聊天节奏写
-3. 规则24 补**追问时的再查**：追问"详细点"而材料细节不在上下文 → 直接再 search
-   拿全材料展开，禁止凭印象编细节、禁止同义重复假装展开
-- 零代码改动；覆盖 v2.0.4v 深度讲解规则但触发性更强
+**搜索结果展示优化**
+- 搜索提示显示实际搜索关键词（`🔍 web_search ['关键词']`）
+- 搜索结果使用独立的事实型 system prompt 总结，不受猫娘人设的短句限制
+- 禁止 Markdown 格式，纯文本适配 QQ 群聊
 
-## v2.0.4aa — 修复 @bot 全静默回归（v2.0.4y(b) 引入）— 2026.9.4
+### 🗣️ 人格系统优化
 
-### 现象（11:45:10 群[群号]）
-- Trusler @bot 引用 bot 自己的科普回复追问"这么高的温度怎么测出来的"
-- 日志：pipeline 0.01s 本地判定 should_reply=False → 静默不回（非卡死，是判"不用回"）
-- 波及面：**所有 @bot 消息**都会静默不回——@ 检测失效是全局性的
+**称呼自然化**
+- admin/op 可以叫"主人"，但不再强制每句都喊
+- 权限拒绝从固定模板改为灵活回应（不再反复说"需要主人操作"）
+- 新增规则：bot 可以自主决定接受或拒绝群友的互动邀请（游戏/闲聊等），不必每件事都推给主人
 
-### 根因（v2.0.4y(b) 用户名替换改动 + 漏改检测点）
-- v2.0.4y(b) 把 replace_at_in_message 里 bot 自身 @ 从"保持 QQ 号"改为替换成
-  "@bot名"（如 @幻梦）→ msg_content 里不再出现 @[botQQ]
-- 但 @ 检测点仍用 `@{bot_qq}` 匹配 msg_content → 全部落空，落入
-  `@\S+` "@他人消息→SKIP" 分支 → should_reply=False
-- 我当时误判"@bot 检测走 raw_message 不受影响"——图片分支(dispatcher:331)确实走 raw，
-  但**主回复判断 pipeline:300 走的是替换后的 msg_content**，没排查到位
+**私聊保持亲密**
+- 私聊白名单为空或仅限特定用户，私聊对象默认就是最高权限
 
-### 修复（3 文件 4 检测点，统一兼容三形态）
-1. **pipeline.py:300 主回复判断**：`@{bot_qq}`(数字) + `@{bot_name}`(替换后) +
-   `[CQ:at,qq=bot_qq]`(raw CQ 码) 任一命中即 is_mentioned
-2. **dispatcher.py:381 错误报告引用检查**：同上三形态
-3. **dispatcher.py:331 图片@bot 识别**：raw_message 原用 @QQ 正则匹配 CQ 码文本
-   ——本就匹配不到（历史遗留 bug），补 `[CQ:at,qq=bot_qq]` 匹配
-4. **judge.py:258**：judge 内点名校验补 @bot_name 匹配（兜底）
-- 本地单测：@幻梦/@[botQQ]/@他人/CQ码 四形态全部命中正确
-- 教训：改"消息文本形态"（替换层）必须 grep 全仓所有依赖该形态的检测点再动手，
-  不能只验证替换层本身；文本从 @QQ→@名字 会连带弄死所有 @QQ 正则
+**好感度系统增强**
+- fav 变化幅度自由化：小互动 ±1~5，明显好感变化 ±10~20，极端情况 ±30
+- 好感度数字不会出现在回复文字中（后台数据不暴露给用户）
+- 好感度 ≤ -100 的用户消息直接被忽略
+
+### 🧪 交互打磨
+
+**不限 token 输出**
+- 主线回复移除 max_tokens 限制，复杂问题由提示词控制输出长度
+- 搜索总结改为"不缩句、不省略"，按事件分段完整输出
+- 写作检测改为 LLM 上下文判断（区分 writing / code / chat），减少误判
+
+**上下文持久化**
+- 即时记忆磁盘化（`data/context_cache.json`）
+- bot 重启后自动恢复近期对话，不丢失聊天语境
+
+**CALL 执行顺序优化**
+- 代码生成 CALL 延迟到文字回复全部发出后再执行
+- 搜索提示排在初始回复之后，不再 async 抢跑
+
+### 🛡️ 用户管理
+
+**全群忽略系统**
+- `/~ignore <QQ>` / `/~unignore <QQ>` — 管理被屏蔽用户
+- `/~unignore all` — 一键解除所有忽略
+- admin 自动豁免，被忽略用户在所有群都不再获得回复
+
+**好感度指令**
+- `/~owner data set fav g_群号_QQ号 数值` — 手动调节用户好感度
+- `/~favlist` — 查看当前群好感度排行
+
+### 🔧 安全
+
+- `main_skill.md` 服务器地址改为运行时变量注入，公开仓库不含真实域名
+- 配置文件拆分为 example 模板，真实密钥通过 `.env` 环境变量加载
+- 用户画像自动过滤误提取的指令/聊天内容
+
+### 🐛 修复
+- 五子棋棋盘 HTML 模板占位符补全（玩家名、状态、手数等正常显示）
+- `web_search` 模块遗漏 `import asyncio` 导致原生搜索报错
+- 好感度系统 fav 字段扩幅时漏改 `fav_format` 提示词
+- 上下文持久化加载路径遗漏
+
+---
+
+## v1.5.0 — Function Calling + 代码生成 + 用户画像 + 语音合成 + 视觉重构 — 2026.8.3
+
+### 🤖 Function Calling 集成（DeepSeek FC）
+- 8 个工具自动调用：天气、战绩、排名、搜索、地震、五子棋、PC 状态、代码生成
+- 多轮 FC Agent 循环（最多 2 轮），同轮多工具并行执行 (`asyncio.gather`)
+- 工具结果分类：错误回复 / 数据自然回复 / 动作直接返回
+- 首轮非 JSON 输出 → `json_mode=True` 强制重试（补救重试 max_tokens 上限 800）
+- 纯文本回复静默降级，不刷 WARNING
+- FC 工具定义统一在 `core/tools.py` 的 `TOOLS` 表 + `_TOOL_CMD_MAP`
+- `call_llm_with_tools` 独立封装（不依赖 `call_llm`，直接使用 OpenAI SDK）
+
+### 💻 代码生成管道（FC write_code）
+- LLM 自动检测编程语言 → 生成完整解法代码
+- 单文件直接发送 QQ 文件，多文件打包 zip
+- C++ 代码自动 g++ 编译 + 带超时执行（防止死循环）
+- 编译/运行结果跟随文件一起回复
+- **长题防御**：>2000 字代码题直接认怂"看不懂喵"，不烧 token
+- 去掉了规格优化中间步骤和"正在生成代码喵"废话消息，原题直喂
+
+### 👤 用户画像系统（`core/user_profile.py`）
+- JSON 文件存储 `data/user_profiles.json`，按用户 QQ 号索引
+- 每次发言后台异步提取：关键词快速提取（零成本，≥20字才调 LLM）
+- 画像字段：tags(标签) / interests(兴趣) / dislikes(雷点) / tone(语气偏好) / events(重要事件) / status(当前状态)
+- 画像注入 `extra_info`，LLM 根据画像个性化回复
+- 回溯脚本 `scripts/backfill_profiles.py`：从 msglog 批量建画像
+- 竞态安全：提取完成前不阻塞、不丢失
+
+### 🎙️ 语音合成（`/~voice`）⚠️ 未完成
+- Edge TTS 语音合成，默认女声晓晓（zh-CN-XiaoxiaoNeural）
+- SSML 情绪分句控制：根据 `mood_detail` 动态插入 `<mstts:express-as>` 标签
+- 物理参数调节：pitch+28Hz / rate+35% 童声尖音效果
+- 生成 WAV 文件 → 通过 QQ 语音消息发送
+
+### 🖥️ PC 状态监控（`services/pc_status.py`）
+- 服务器端口接收 HTTP POST
+- 本地 `scripts/pc_status_reporter.py` 定期采集：窗口标题 + 音乐播放器 + 歌词
+- FC 工具 `system_status` + 指令 `/~sys` / `/sys` / `/~pc`
+- 缓存有效期 30s，超时返回"未开机"
+
+### ✨ Crystal Aurora v2 视觉重构（7 个模板）
+- 背景：4 层径向渐变极光（粉/紫/蓝/青）+ conic-gradient 水晶折射 + 噪点纹理
+- 卡片：blur(24px) saturate(1.4) 玻璃效果 + mask 渐变边框 + 顶部高光条 + 多层阴影
+- 标题：三色渐变 + drop-shadow 发光
+- 代码块：Mac 风格（红黄绿圆点 + 语言标签 + 渐变标题栏）+ One Dark token 配色
+- 列表：发光圆点标记；表格：渐变表头 + 斑马纹；引用块：渐变 border + 引号装饰
+- 模板：`changelog_card / md_card / daily_report / weather_card / box_card / leaderboard_card / wzq_board`
+
+### 🩺 根因修复：LLM 空返回 & 不按 JSON 格式输出（最影响体验）
+
+这组问题直接导致用户看到"回复生成失败"或回复牛头不对马嘴。根因不在提示词，而在代码层。
+
+#### 根因 1：`_build_messages` 消息角色判断错误（`llm.py#L816`）
+- **问题**：FC 管道的多轮上下文用 `i % 2` 奇偶判断 role（user/assistant 交替）
+- **后果**：多轮对话中 bot 回复被标成 user、用户消息被标成 assistant，LLM 收到错乱的对话历史 → 输出格式不跟着走
+- **修复**：改为 `bot_name:` 前缀判断，以消息内容本身确定发言人角色
+- **影响范围**：所有走 FC 管道的群聊回复，之前的"LLM 不按 JSON 输出"很大概率是这里引起的
+
+#### 根因 2：FC 管道 JSON 输出双重失败（`llm.py#L612` + `call_llm_with_tools`）
+- **问题**：`call_llm_with_tools` 开启了 `response_format={"type":"json_object"}` → v4-flash **不支持与 tools 同时使用** → LLM 返回空 content + 空 tool_calls
+- **后果**：管线检测到空 content → 重试（仍然空）→ 最终报"LLM返回空内容"给用户
+- **修复**：撤回 `response_format`，改为在 `_build_messages` 的格式提醒最前面加 `★★★ 最重要规则：你的全部回复必须是 JSON 格式，绝不允许输出纯文本 ★★★`（提示词级硬约束）
+- **附带优化**：JSON 补救重试的 `max_tokens` 从 3000 降到 800（v4-flash 3000 tokens 会导致 `finish_reason=length` 再触发一轮重试）
+
+#### 根因 3：`_judge_combined` 判断模块 max_tokens 浪费（`llm.py#L1232`）
+- **问题**：判断用户消息是否需要回复的 LLM 调用设了 `max_tokens=500`，实际只需要 `true/false` 两个字符
+- **后果**：500 tokens = 一次判断浪费 ~400 token 配额，累积到并发时加剧 flash 的 token 压力
+- **修复**：砍到 20
+
+#### 其余 8 处修复
+| # | 文件 | 修复内容 |
+|---|------|----------|
+| 1 | `sender.py#L197` | API 调用 `request` 参数 → `json.dumps(payload)`（payload 格式错误导致发送失败） |
+| 2 | `commands.py#L3013` | `/#` 指令检查缺少 `cfg = get_config()` → NameError 崩溃 |
+| 3 | `commands.py#L2899` | 加 `/s` 别名（lang.toml 引导用户用 `/~s` 但代码里找不到 → 回复"未知指令"） |
+| 4 | `tools.py#L348` | `_agent_think` 残留 11 行无用代码（在其他 agent 工具清代码时遗漏） |
+| 5 | `dispatcher.py#L31` | `_seen_ids` set → dict 按插入顺序截断（set 无顺序，清旧 ID 时误清新 ID → 消息被跳过） |
+| 6 | `spam_guard.py#L126` | timestamps 和 messages 数组同步过滤（一个清了另一个没清 → 数组长度不一致） |
+| 7 | `pipeline.py#L419` | 删除 60 行工具代理死代码（已被 FC 系统替代，但残留代码仍在拦截消息流） |
+| 8 | `pipeline.py` + `tools.py` | `write_code` 引用了不存在的 `code_model` 变量 → NameError 崩溃 |
+| — | `pipeline.py` | >2000 字代码题直接认怂，不调 LLM 避免 120s 超时浪费 |
+
+### 🐛 其他修复
+- **LLM 失败回退**：三个 LLM 调用返回空时补齐 `mood_detail` 字段，防止元组解包崩溃
+- **v4-flash 内存压缩超时**：15s 超时导致压缩结果为空
+- **changelog 卡片渲染器用错**：`changelog.py` 有两个 MD 渲染器（标准库版 `markdown_to_enhanced_html` + 简易正则版 `_md_to_html`），`generate_changelog_image` 错误调了简易版 → 模板 CSS 是为标准库版设计的 HTML 结构写的（表头高亮/斑马纹/代码语言标签/嵌套列表缩进/斜体粗体/多行引用块），简易版产不出对应结构 → 大量样式闲置失效。修复：优先调标准库版，失败回退简易版
+
+### 📦 仓库整理 & 配置完善
+- 移除 18 个泄露的私有文件（模板/模块/脚本）
+- 清理 `lang.toml` 私有模块帮助文本（weather/box/wdsj/gh/tuf/xq）
+- 添加 `example.bot_config.toml`、`example.roles.toml`、`example.adapter_config.toml`、`example.env`
+- 配置模板重写：中文 key、provider 映射 env 环境变量
+- `PLUGIN_DEV.md` 插件开发指南
+- `test_fc_sim.py` FC 模拟测试
+
+### 🔄 自动更新优化
+- 自动处理 force-push 导致旧 SHA 404：降级全量下载 + 重试
+- `/~upd` 短别名 + `/~upd test` 公开连通性测试
+- `/~upd` 输出详细更新日志含 commit 信息
+
+### 🎯 其他改进
+- `/~op group del` 清群时同步清理全局 `op_qqs` 花名册
+- `/~owner wdsj groups` 管理推送群 + `/~wdsj daily send` 强制推送
+- `mood_detail` 管道集成（每句话对应情绪）
+- `log_server` 支持分离式静态文件 (console.css/js/guard.js) 路由
+- `log_server` `_build_html` 精简，删除 190 行旧版内联模板
+
+### 🔮 文件变更
+| 文件 | 变更 |
+|------|------|
+| `core/tools.py` | **重写**：FC 工具系统 (TOOLS + _TOOL_CMD_MAP + execute_tool + _write_code)，+872/-408 |
+| `services/llm.py` | **大修**：`call_llm_with_tools` + FC 多轮 Agent + json_mode 兜底 + 提示词增强，+362 行 |
+| `core/user_profile.py` | **新建**：用户画像系统，406 行 |
+| `modules/voice.py` | **新建**：Edge TTS 语音合成，105 行 |
+| `services/pc_status.py` | **新建**：PC 状态监控 HTTP 服务，77 行 |
+| `scripts/pc_status_reporter.py` | **新建**：本地 PC 状态采集上报，97 行 |
+| `scripts/backfill_profiles.py` | **新建**：msglog 回溯建画像，73 行 |
+| `scripts/fix_config_toml.py` | **新建**：配置文件迁移脚本，66 行 |
+| `test_fc_sim.py` | **新建**：FC 模拟测试，165 行 |
+| `docs/PLUGIN_DEV.md` | **新建**：插件开发指南，252 行 |
+| `data/user_profiles.json` | **新建**：用户画像数据 |
+| `config/example.*.toml` | **新建**：example 配置模板 |
+| `core/pipeline.py` | FC 集成 / write_code 认怂 / 工具代理死代码清理 / 用户画像注入 |
+| `core/dispatcher.py` | `_seen_ids` 优化 / PC 状态路由 |
+| `core/config.py` | 配置模板兼容 / PC 状态配置 |
+| `modules/commands.py` | FC 指令 + voice/sys/upd 指令 + 批量修复 |
+| `modules/auto_update.py` | force-push 容错 + 短别名 |
+| `modules/memory.py` | 画像注入适配 |
+| `modules/op.py` | group del 同步清理 |
+| `modules/stats.py` | WDSJ 推送群管理 |
+| `data/templates/*.html` | Crystal Aurora v2 7 个模板重构 |
+| `data/update_log.md` | 本文档 |
+
+## v1.4.2 — 自然对话重构 + OP权限分层 + 模式系统 --2026.7.15
+
+### 🗣️ 自然对话重构
+- **禁止回溯旧上下文**：只回应当前消息，不翻10分钟前的截图/聊天记录当素材
+- **禁止元对话**：不说"被点名了""翻了一下记录""看到你们在聊XX"这类播报员式总结
+- **水群语气**：像QQ群闲聊的女生，可偶尔用"草""笑死""确实""好家伙"等口语
+- **内向OS**：可偶尔在回复中夹杂括号内心独白，如"(其实我也有点困了)"，比嘴上诚实
+- **CALL 指令全面收紧**：只在用户明确说"帮我搜/查/找/介绍一下"时才调用工具。`tools.py` 的 `TOOL_DEFINITIONS` 移除"系统自动检测调用"矛盾指令
+
+### 🔫 OP 权限分层（admin > op > user）
+- `/~op add/del <QQ>` — 添加/移除 OP 次级管理员
+- `/~op group set <群号> <OP_QQ>` — 群主权限指派给 OP（OP 在该群内等于 admin）
+- `/~op group del <群号>` — 撤销指派，恢复 admin
+- `/~op group list` — 查看所有 OP 和群指派
+- OP 在指派群内自动获得 `[admin]` 角色标签，可用全部 CALL 指令
+
+### 👤 私聊增强
+- `/~persona <人格描述>` — 私聊切换 AI 人格，完全替换 system prompt
+- `/~persona reset/show` — 恢复默认/查看当前人格
+- `/~主人` — 将当前私聊对象设为主人，获得 admin 级权限
+
+### 😴 模式系统
+- `/~sleep` — 睡觉模式：全部回复用第三人称括号叙述，如"(迷迷糊糊翻了个身)"，10字内迷糊呓语
+- `/~含蓄` / `/~叙事` — 含蓄叙述模式：日常可用，第三人称括号内心独白 ，如"(默默记下了这件事)"
+- 三种模式互斥（普通/含蓄/睡觉），无论哪种都作用于群聊+私聊+戳一戳
+
+### 🐛 关键修复
+- **NapCat 缺 post_type**：`dispatcher` + `message_parser` 兼容缺少 `post_type` 字段的消息（有 `message_type` 就当作 message 事件）
+- **cmd_whitelist=None 崩溃**：`grp_cmds` 为 None 时 `in` 操作抛 TypeError，改为 `if not grp_cmds: pass`
+- **dispatch 异常捕获**：`_dispatch_inner` try/except + 完整 traceback 日志
+- **scp 丢行连锁崩溃**：`recall.py`/`commands.py`/`judge.py` 三处语法错误导致全体消息丢失 ~100 分钟，修复并加强部署验证
+- **分群昵称**：`get_display_name(uid, gid)` 优先读分群 `nicknames`，fallback 全局 `qq_name_map`
+- **@优先回复**：当 @机器人 + CALL 指令时，丢弃 CALL 前的闲聊句子，直接回复指令结果
+
+### 🌐 开源版同步
+- GitHub `huanmeng-qqbot` 同步 v1.4.1 全部 42 文件（+4146/-742 行）
+- README 版本 v1.1→v1.4.1，LICENSE 年份 2024→2026
+- `wdsj_cache.py` 从开源版移除，`commands.py` 加 ImportError fallback
+- 服务器 SSH key 配置 GitHub push（443 被墙，走 22 端口）
+
+### 🔧 戳一戳
+- 禁止重复"摸头很舒服"句式，每次随机情绪（疑惑/开心/害羞/吓一跳/嫌弃/淡定）
+- 睡觉/含蓄模式下戳一戳也切换为括号第三人称叙述
+
+### 🔮 文件变更
+| 文件 | 变更 |
+|------|------|
+| `data/main_skill.md` | 规则 10~14：禁止回溯/元对话/水群语气/内向OS；规则 0 扩展：CALL 全局收紧 |
+| `modules/op.py` | **新建**：OP 权限系统 + 私聊人格/主人 + 睡觉/含蓄模式 |
+| `core/config.py` | `op_qqs` + `group_owners` 字段；`get_user_tag(gid)` 支持分群 OP；`get_display_name(uid,gid)` 分群昵称 |
+| `modules/commands.py` | 注册 `op/persona/主人/sleep/含蓄` 指令；wdsj_cache fallback |
+| `core/pipeline.py` | @优先丢弃闲聊 / 分群昵称 / 模式注入 / 私聊人格覆盖 / 私聊主人 / 戳一戳多样化 |
+| `core/dispatcher.py` | post_type 缺失兼容 / cmd_whitelist None 防御 / try/except + traceback |
+| `utils/message_parser.py` | `_is_message_event` 兼容无 post_type（有 message_type 即当消息） |
+| `core/tools.py` | `TOOL_DEFINITIONS` 移除"系统自动检测调用"→ 明确仅在用户要求时执行 |
+| `data/templates/*` | 1.4.1 同步至开源版 |
+| `bot.py` / `main.py` | VERSION 1.4.1 → 1.4.2 |
+
+
+
+### 🗣️ 回复质量控制
+- **句数压缩**：群聊 1~5 → 1~3 句；短消息（喵/嗯/好）→ 1 句就够了
+- **戳一戳精简**：token 400→150 + 注入"只用 1 句短回应"
+- **禁止反复晚安**：说了晚安就别再提睡觉，翻来覆去显得假
+- **禁止假设作息**：不说"明天上课/上班"，不知道对方放没放假
+- **上下文不合并**：多人发言不再挤在一条 user 消息里，每条独立让 LLM 看清
+- **私聊角色**：`[admin]` 统一叫主人，`[friend]` 只用你我，禁止精分切换
+- **群聊 @ 功能**：注入可 @ 用户列表，LLM 可用 `[CQ:at,qq=QQ号]` @ 人
+
+### ✍️ 全量消息录制 & 撤回
+- `send_sentences` 用 `call_api` 获取真实 message_id → 撤回 bot 消息能匹配原文
+- `send_group_msg` / `send_private_msg` 底层自动录 bot 消息到 msglog
+- msglog 统一 JSONL，`type="bot"` 一键过滤所有 bot 回复，用于排查质量
+- `mark_recalled` 跳过 msg_id=0 的 bot 消息，防止多条 bot 消息互相误中撤回
+
+### 🧠 msglog 记忆回溯
+- `search_msglog()` 从最近 300 条消息中关键词匹配，注入 extra_info
+- 触发条件：消息 ≥6 字（短词不触发），用户消息优先，bot 消息限 2 条
+- 效果：LLM 能看到上下文窗口之外的聊天记录，不会重复回答或遗漏上下文
+
+### 🐛 关键修复
+- **CALL 系统**：正则 `~` 可选 / 清洗 HTML 碎片(`admin">`) / COMMAND_MAP 校验 / wdsj 参数校验 / 错误结果标记 `[CALL错误]` / follow-up LLM 诚实报错
+- **LLM 伪装 CALL**：剥离写入上下文的 `[系统] 已调用:` 后缀，防止 LLM 从历史学会伪造
+- **好感度缺失**：格式提醒追加 `[fav: ...]` 要求，防止 LLM 忘记加好感度
+- **fav 越界**：`data_set` 对 fav 类型 clamp 0~100
+- **fav key**：`data get/set/del` 对 fav 自动纠正纯数字 key → `g{chat}:{user}`
+- **更新日志模板**：删除重复 `id="changelog-body"` + `<li>` 包裹 `<ul>` + 行内粗体代码转换
+- **日报升级**：HTML 卡片替代纯文本，排行条+24h 热力图+幻梦锐评
+
+### 🌐 服务器
+- **NTP 自动校准**：`crontab` 每天 23:58 `ntpdate -s ntp.aliyun.com`
+
+### 🔮 文件变更
+| 文件 | 变更 |
+|------|------|
+| `core/pipeline.py` | CALL 大修 / 上下文标签剥离 / 句数+戳一戳 / 时间注入 / msglog回溯 / @列表 |
+| `services/llm.py` | 格式提醒 `[fav]` / 上下文不合并 |
+| `services/sender.py` | `_send_and_record` + `_log_bot_sent` 全量录制 |
+| `modules/memory.py` | **新增** `search_msglog` msglog 回溯检索 |
+| `modules/recall.py` | `mark_recalled` 跳过 msg_id=0 |
+| `modules/admin.py` | fav `data_set` clamp 0~100 |
+| `modules/commands.py` | fav key 自动纠正 / wzq duel 修复 / unduel+admin clear |
+| `modules/stats.py` | `generate_daily_report_image` HTML 日报 / `record_message` +sender_name |
+| `modules/changelog.py` | `_md_to_html` `<ul>`包裹 + `_inline_fmt` 行内格式 |
+| `data/main_skill.md` | 句数 5→3 / 短消息规则 / 禁晚安 / 禁假设作息 / 私聊角色 / @规则 / wdsj文档 |
+| `data/templates/daily_report.html` | **新建**：日报 HTML 卡片 |
+| `data/templates/changelog_card.html` | 修复重复 `changelog-body` |
+| `data/update_log.md` | v1.4.1 条目 |
+| `core/dispatcher.py` | `record_message` +sender_name |
+| `bot.py` / `main.py` | VERSION 1.4.0 → 1.4.1 |
+| 服务器 crontab | 23:58 NTP 自动校准 |
+
+## v1.4.0 — 五子棋 AI + 引用图片 + 质控大修 --2026.7.13
+
+### 🎮 五子棋 AI 重写
+- 从 LLM 猜坐标 → **Minimax + Alpha-Beta 剪枝**评分搜索
+- 模式评估：全盘四方向扫描，活四 50000 / 冲四 1000 / 活三 1000
+- 候选剪枝：只搜已有棋子半径 2 格，225 格砍到 20-40 格
+- 走法排序：高分先搜，α-β 大量剪枝
+- 四档难度：新手(depth 1) / 普通(2) / 困难(2) / 专家(迭代 1→2→3 + 8s 超时)
+- 专用线程池 `_AI_EXECUTOR`，不阻塞 Playwright 渲染
+- 立即防守：对手活四/五连威胁直接堵
+
+### 📎 引用图片自动响应
+- @机器人 + 引用消息中的图片 → 自动下载识别，描述注入管道
+- WDSJ 战绩图智能分流：bot 自己发的战绩图被引用时，直接返回缓存数据（不耗视觉 token）
+- `wdsj_cache.py`：snapshot → 数据映射，1 小时过期
+
+### 🐛 关键修复
+- **@检测严格化**：正则 `@<bot_qq>(?!\d)`，bot 自身 @ 保持 QQ 号不替换
+- **更新日志卡片**：去 CDN 依赖（fonts/marked.js/highlight.js），Python `_md_to_html()` 服务端渲染
+- **图片识别**：PIL 预处理 → 转 RGB + 长边缩至 2048 + 输出 PNG，避免智谱 1210 格式错误
+- **日志控制台**：`addLine()` 改为单 `<span class="msg">`，解决实时日志复制换行
+- **预搜索 CALL**：搜索结果注入加 `【系统预搜索】` 标记 + 代码级拦截重复 `[CALL:~search]`
+- **||| 多句分隔**：格式提醒钉在 user message 末尾，防止长 extra_info 冲掉规则
+- **不可见字符清洗**：管道入口正则洗零宽/双向控制/不可见运算符，纯垃圾跳过
+- **wzq duel 修复**：缺 return 掉到末尾变"未知操作"；undo 申请人覆盖；AI 图片顺序颠倒
+- **wzq 增强**：/~wzq unduel 撤销挑战、/~wzq admin clear 强制结束本群棋局，持久化 `wzq_games.json`
+- **CALL 系统大修**：正则 `~` 可选（防 LLM 漏写前缀静默丢失）；程序级校验指令存在性 + wdsj 参数数量；清洗 CALL 文本中的 HTML 碎片(`admin">`)和换行；命令返回错误自动捕获 → 标注 `[CALL错误]` → follow-up LLM 诚实告知失败
+- **wdsj 文档修正**：main_skill.md `[CALL:~wdsj <玩家名>]` → `[CALL:~wdsj bw 玩家名]`，避免 LLM 只传一个参数
+- **LLM 伪装 CALL**：剥离写入上下文的 `[系统] 已调用:` 后缀，防止 LLM 从历史学会伪造（输出假 CALL 而不实际执行）
+- **好感度缺失**：user message 格式提醒追加 `[fav: ...]` 要求，防止 LLM 被大量规则淹没忘加好感度
+
+### 🔧 功能调整
+- **搜索改为手动**：关闭 `auto_search_if_needed`，只响应用户 `/~search` 和 LLM `[CALL:~search]`
+- **搜索进度提示**：`perform_search` 内只在实际搜索时发 "🔍 正在搜喵~"（缓存命中不提示）
+- **统计开关**：`/~unstats` 暂停 / `/~setstats` 恢复，数据文件不动
+- **退群指令**：`/~leave [群号]` 收集 GH/统计/好感度 → 重置 fav → 退群，文件全保留
+- **戳一戳白名单**：`/~owner wl remove` 后该群戳一戳同步屏蔽
+
+### 🔮 文件变更
+| 文件 | 变更 |
+|------|------|
+| `modules/wzq.py` | AI 重写：Minimax + α-β + 评估 + 走法排序 + 专用线程池 |
+| `core/dispatcher.py` | @ 严格检测 / 引用图片识别 / WDSJ 缓存分流 / 戳一戳白名单 |
+| `modules/changelog.py` | `_md_to_html()` 服务端渲染 / 模板去 CDN |
+| `services/image_api.py` | PIL 预处理：格式统一 → PNG |
+| `core/pipeline.py` | @ 严格检测 / 关自动搜索 / 不可见字符清洗 / 预搜索标记 |
+| `core/log_server.py` | 日志格式统一单 span |
+| `services/llm.py` | ||| 格式提醒钉到 user message |
+| `services/sender.py` | echo 匹配修复 |
+| `utils/username.py` | bot @ 保持 QQ 号不替换 |
+| `modules/search.py` | 搜索进度提示移到 perform_search 内部 |
+| `modules/stats.py` | 统计开关 `_stats_disabled` |
+| `modules/commands.py` | /~unstats /~setstats /~leave / cmd_wdsj 缓存 |
+| `modules/leave.py` | **新建**：退群数据收集/清理 |
+| `services/wdsj_cache.py` | **新建**：WDSJ 战绩图片缓存 |
+
+## v1.3.0 — LLM 指令调用 + 表情库 + 地震大修 + 全指令文档 --2026.7.6
+
+### 💡 LLM 可调用指令系统 [CALL:~xxx]
+- 大模型可在回复中嵌入 `[CALL:~指令 参数]` 自动调用机器人功能
+- 20+ 指令可被 LLM 调用：天气、地震、搜索、画图、管理配置等
+- 管道自动检测 CALL → 执行 → 过滤标签 → 在主消息末尾附加 `[系统] 已调用: /~指令`
+- 私聊/群聊均可使用
+- 调用结果通过 follow-up LLM 自然回应
+
+### 😊 表情库 [FACE:关键词]
+- 新增 `modules/face_lib.py`：关键词匹配本地 emoji 图片
+- 支持 15 种情绪表情（开心/害羞/坏笑/疑惑/大哭等）
+- LLM 在回复末尾用 `[FACE:关键词]` 匹配并发送
+- 表情文件位于 `data/faces/`
+
+### 🗺️ 地震系统全面重构
+- 数据源升级：CENC + 四川/福建/重庆 省级预警，5 源并行 1s 轮询
+- MD5 响应缓存 + 60s 防重推冷却
+- 省映射表支持 31 省级地区多省订阅
+- 地图三代进化：OSM(不可达) → SVG雷达图(兜底) → 天地图Leaflet(最终)
+- 天地图 WMTS 瓦片 (vec_w + cva_w)，真实地理地名
+- 缩放策略：M≥7 z5 / M≥5 z6 / 其他 z7（覆盖省级范围）
+- HTML 地震卡片 → Playwright 截图 → CQ 图片发送
+- EQ 监视器 WebSocket 端口
+
+### 🗣️ 私聊语气优化
+- 软禁"主人"称呼（不禁止但限制频率）
+- 拟声词开头 ≤10%
+- 每句 12-20 字，2-6 句结构
+- 文字表情 QAQ/OvO/QwQ 替代颜文字
+
+### 📋 全指令参考文档
+- `data/幻梦Bot_完整指令文档.md`：50+ 指令完整用法说明
+- `/~help` 改为发送预渲染指令文档卡片（即时响应，不等待渲染）
+- 文档以 `## command_reference` 注入到 LLM system prompt
+
+### 📄 废弃指令
+- `/~s`（搜索）：已从 COMMAND_MAP 移除
+- `/~img` / `/~img18`（随机二次元图）：已从 COMMAND_MAP 移除
+- 旧 `tools.py` 中的天气工具：已移除，由 CALL 系统接管
+
+### 🔧 其他改进
+- 判决合并：cheap judge + interest judge 合并为单次 API 调用
+- 消息去重：`dispatcher.py` 新增 `message_id` 去重
+- 自动搜索聚焦明确关键词，不再拦截"再查一次"
+- 旧 tools.py 清理：移除 weather 调用防重复查询
+- Bot 服务修复：robot.service 废弃，只保留 bot.service 单实例
+- service 配置修正：ExecStart 改为 `main.py`，WorkingDirectory 改为 `/root/bot`
+
+### 🔮 文件变更
+| 文件 | 变更 |
+|------|------|
+| `modules/earthquake.py` | 重写：多源、天地图卡片、省订阅、EQ监视器 |
+| `modules/face_lib.py` | **新建**：表情库关键词匹配 |
+| `data/main_skill.md` | 新增 command_tools、face_lib、command_reference、private_format/tone |
+| `data/幻梦Bot_完整指令文档.md` | **新建**：完整指令参考 |
+| `data/help_card.png` | **新建**：预渲染帮助卡片 |
+| `services/llm.py` | 动态注入 + `_build_dynamic_command_list()` |
+| `core/pipeline.py` | CALL/FACE 检测 + tools.py 清理 |
+| `core/dispatcher.py` | message_id 去重 |
+| `core/tools.py` | 移除 weather 工具 |
+| `modules/commands.py` | 废弃 s/img/img18，/~help 改卡片模式 |
+
+### 💬 私聊专用提示词
+
+群聊和私聊现在使用**独立的格式规则**：
+
+| 项目 | 群聊 | 私聊 |
+|------|------|------|
+| 最大句数 | 5 句 | 8 句 |
+| 每句上限 | 40 字 | 30 字 |
+| 表情风格 | 颜文字 (。>∀<。)ﾉ | 文字表情 (QAQ / OuO / QwQ) |
+| 称呼规则 | 正常角色标签 [admin]/[friend] | 禁止主人/朋友，只用你我他 |
+| 对话风格 | 多人聊天，偶尔插话 | 二人独处，更亲切简短 |
+
+### 📁 main_skill.md 统一管理
+
+所有 LLM 提示词从代码中移出，集中到 `data/main_skill.md`：
+
+```
+data/main_skill.md
+├── ## prompt_header     # 角色身份：你是{bot_name}...
+├── ## group_format      # 群聊格式规则（5句+颜文字）
+├── ## private_format    # 私聊格式规则（8句+文字表情+你我他）
+├── ## fav_format        # 好感度反馈标记
+├── ## fav_tiers         # 好感度档位表
+├── ## anti_repeat       # 防重复规则
+├── ## play_mode         # 扮演模式规则
+├── ## self_awareness    # 自我认知模板（版本/架构/配置）
+```
+
+### 🔧 代码改动
+
+**`services/llm.py`**:
+- 移除 60 行硬编码 `MULTI_REPLY_SYSTEM_STATIC`
+- 新增 `_load_skill_sections()` — 按 `##` 解析 main_skill.md
+- 新增 `_build_system_text(bot_name, personality, is_group)` — 群聊/私聊选择不同章节
+- `generate_multi_reply()` 新增 `is_group` 参数
+
+**`core/pipeline.py`**:
+- 两处 `generate_multi_reply` 调用传入 `is_group`
+- 移除"多行分批发送"残留代码
+
+**`core/config.py`**:
+- `_build_self_awareness()` 改为从 main_skill.md 读模板
+- 模型信息更新为 DeepSeek + Zhipu
+
+### 📦 新增文件
+
+- `data/main_skill.md` — 所有提示词集中管理
+
+---
+
+---
+
+# 附：注记（非代码版本，按原样保留，不参与版本排序）
 
 ## 注记（非代码版本）— 识图 Connection error 根因：.env 缺智谱 key — 2026.9.4
 - 9-2 v2.0.4r 把 glm-4v-flash Connection error 当"上游故障"是误判：实际 [model.picture]
@@ -6566,154 +7776,6 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
 - 附带：SILICONFLOW_KEY 已失效(Token is invalid)，judge_cheap 靠熔断兜底，待换新 key
 - 教训：排查 Connection error 先验 .env 对应 provider 的 URL/KEY 是否配置且有效，再谈上游
 
-## v2.0.4ab — @其他同名"幻梦"也响应（v2.0.4aa 文本匹配过宽）— 2026.9.4
-
-### 现象（用户实测）
-- 群友昵称也叫"幻梦"，@那个真人 → bot 也跟着响应
-- 根因：v2.0.4aa 给 is_mentioned 加了 `@bot_name` **文本**匹配（@幻梦）兜底——
-  @真人幻梦与 @bot 在文本层都是"@幻梦"，无法区分 QQ → 误判
-- v2.0.4aa 当时为兼容"@QQ 被替换成 @bot名"用了文本匹配，属妥协方案
-
-### 修复（3 文件，@ 判定只信权威 at 段）
-- @ 检测全部改回**只认 QQ**：raw_message 的 `[CQ:at,qq=bot_qq]`（权威）+ msg_content
-  `@bot_qq` 数字（raw 无 CQ 时兜底）；**彻底移除 @bot_name 文本匹配**
-- pipeline.py:300 主回复判断 / dispatcher.py:381 错误报告检查 / judge.py:258
-- @bot 在文本层仍被替换成 @幻梦（v2.0.4y(b)，LLM 上下文友好），但与"是否响应"
-  判定解耦——判定看 at 段 QQ，文本只影响 LLM 阅读
-- 本地单测 5 形态：真@bot(CQ)/@真人幻梦/@QQ数字/@群友/无@ 全部符合预期
-
-## v2.0.4ac — system 瘦身 40%（缓存 miss 成本砍半）— 2026.9.5
-### 背景
-- 用户反馈 token 缓存命中率低。审计确认 messages 结构本就最优（system 静态前缀 +
-  动态时间/记忆/fav 集中在末尾 user，实测 system 跨调用 md5 恒定 5873977d85）
-- 真凶：**system 单条 21194 字符(~14K tokens)**，其中 cfg.system_prompt 8563 字符里
-  87%(7453) 是 architecture.mermaid 全量节点(70 行)——每条消息都带进前缀，
-  miss 时全额计费；而日常聊天/科普根本用不到架构细节
-- pipeline 本就有按需注入机制：arch_keywords(版本/架构/能力/配置等)命中才经
-  core/arch_loader 注入完整架构到 extra_info 末尾——system 常驻全量属重复浪费
-### 修复（core/config.py 一处）
-1. _build_self_awareness：architecture.mermaid 70 行全量 → **极简一行摘要**
-   （四层 core→services→modules→utils + db/plugins/data），完整架构保持按需注入
-2. changelog 注入 6 条 → 3 条（/~up 可查全部）
-- 预期：system 21194 → ~13700 字符（-35~40%），miss 成本同步降；命中率分母变小
-- 不影响行为：问架构/版本/能力时 pipeline 仍会注入完整架构（走末尾不污染缓存）
-
-## v2.0.4ad — judge/utils 换 DeepSeek（Qwen 15.8s → 1.25s 光速响应）— 2026.9.5
-### 现象
-- 用户反馈 Qwen judge 太慢：SiliconFlow Qwen2.5-7B-Instruct 实测单次 15.8s
-  （免费模型高峰排队），judge 阶段每条普通消息都等它 → 回复节奏拖沓
-- 用户提议：独立的 DeepSeek V4 Flash 实例做判断（提示词与回复人格隔离）
-### 改动（config/bot_config.toml 两段，本地+服务器同步）
-- [model.judge_cheap] + [model.utils_small]：Qwen2.5-7B-Instruct@SILICONFLOW →
-  **deepseek-chat@DEEPSEEK**
-- 两段保持同名 → 走 _judge_combined 单次合并调用路径不变；judge 提示词本就独立
-  （call_judgment_pipeline 自带精简 prompt，不注入回复人格），天然满足隔离需求
-- utils_small 同时服务 voice/画像提取等 → 一并提速提准，单次 few tokens 成本可忽略
-- 熔断兜底保留：DeepSeek judge 异常仍走本地规则，不堵队列
-### 验证
-- 服务器实测 call_judgment_pipeline 全链路 1.25s（原 15.8s，12.6x）
-- 部署：服务器 bot_config.toml(.bak_20260905_judge_ds) 精准替换两段（不整文件覆盖，
-  两侧配置结构本就不同），重启 PID active
-
-## v2.0.4ae — /~recall 展示消息号(msg_id) — 2026.9.5
-### 背景（用户实测 /recall 质疑可用性）
-- 用户问：1) 能获取消息号码吗 2) 能否按消息号找回记录
-- 排查实测：
-  - 撤回事件自带 message_id，msglog 录制/幽灵条目都存有 msg_id，但 /~recall 展示层
-    一直没显示 → 用户看不到"消息号"这回事
-  - 撤回后调平台 get_msg(message_id) 补救原文 → 实测返回空(QQ 服务端已清内容)，
-    撤回不可逆只能靠 bot 事前录制(msglog)
-  - 数据审计：全群 16 条撤回 7 条有原文(44%)，9 条幽灵 msg_id 在 msglog 确不存在
-    (bot 离线期/发送失败无 message_id 的消息录不上)，非匹配 bug 是录制覆盖缺口
-### 改动（modules/commands.py cmd_recall）
-- 每行展示加 mid=消息号：`1. [00:45:51 mid=[消息号]] 枭茂密 撤回了 ...`
-- 用户可拿 mid 对账/反馈；msglog 按 msg_id 精确匹配逻辑本就存在(mark_recalled)
-
-## v2.0.4af — send_group_msg 拿真实 message_id（bot 消息撤回可命中）— 2026.9.5
-### 背景（承接 v2.0.4ae 排查）
-- 用户点出设计本意：录制带 message_id+原文 → 撤回时按号查原文（msglog 正是此设计，
-  mark_recalled 按 msg_id 精确匹配）
-- 但审计发现缺口主因之一：send_group_msg/send_private_msg 用 fire-and-forget
-  (mgr.send 只返回 bool)，_log_bot_sent 写死 msg_id=0；而 mark_recalled 明确跳过
-  msg_id=0 条目(多条 bot 消息共用 0 无法区分) → 凡走此通道的 bot 消息被撤回
-  永远成幽灵 "[原文未录制]"（实测 00:45:51/18:19:13 两条 bot 消息幽灵）
-### 修复（services/sender.py）
-1. send_group_msg/send_private_msg：fire-and-forget → **call_api 请求-响应**
-   （echo 匹配+超时5s+重试3次+内部重试1次），拿 data.message_id
-2. _log_bot_sent 加 msg_id 参数：有真实 id 以 id 录制(可被撤回匹配)；失败兜底维持 0
-3. 语义增强：call_api 确认送达才返回 True，失败走原 fallback 提示
-### 验证
-- 服务器实测：发送成功 → msglog bot 条目 msg_id=[消息号]（原为 0）
-- 影响面：send_group_msg 被指令反馈/推送/错误提示广泛调用，均变为可撤回匹配+确认送达；
-  主回复通道 send_sentences→_send_and_record 本就带真实 id 不受影响
-
-## v2.0.4ag — 修复撤回事件被消息去重吞掉（group_recall 收不到）— 2026.9.5
-### 现象（用户实测抓出）
-- v2.0.4af 部署后 01:01:11 用户发"现在该测撤回了" → 01:01:15 撤回 →
-  01:01:28 /recall 仍只显示旧幽灵，01:01:15 的撤回根本没进记录
-- 日志：01:01:10-20 窗口内 bot 零撤回事件（_handle_recall 未触发），消息却正常收到
-### 根因（dispatcher._dispatch_inner）
-- 消息去重 `_seen_ids` 对所有事件生效，而 OneBot v11 group_recall 事件带的
-  message_id 就是**被撤回消息的 id**——被撤消息刚作为普通消息处理过必然在
-  _seen_ids 里 → 撤回事件命中去重被 return 吞掉 → 撤回永远收不到
-- 9-4 11:45 那次撤回能处理是因为被撤消息当时未被 bot 收到(不在去重集)，纯属侥幸
-### 修复（core/dispatcher.py）
-- 消息去重移入 message 路由分支内，仅对 post_type=message 生效；
-  notice(撤回/戳一戳)/request 事件不参与 message_id 去重
-- 与 v2.0.4af 互补：af 解决"msglog 有真实 msg_id 可匹配"，ag 解决"撤回事件能收到"
-
-## v2.0.4ah — 修复 v2.0.4af 引入的重复发送回归 — 2026.9.5
-### 现象（用户实测）
-- 一次 /sys 在群里出现 3 条相同消息
-- 日志：13:24:39 /sys 触发 1 次 → 指令执行完 → call_api send 第1次 → 5s 超时 →
-  重试第2次 → 又超时 → 重试第3次 → 成功。**实际发出去 3 遍**
-### 根因
-- v2.0.4af 把 fire-and-forget 改成 call_api + 3 次重试：call_api 的"超时"≠"发送失败"——
-  NapCat 往往已收到并发出，只是响应回包慢/丢 → 重试 = 同一条消息重复发送
-- 老 fire-and-forget 不会重复（只有 ws.send 抛异常才重试，此时消息确实没到）
-### 修复（services/sender.py）
-- send_group_msg/send_private_msg：去掉重试循环 → **单次 call_api + 8s 超时**
-- 未确认(超时/失败)仅日志警告，不重发、不补 fallback（避免"原文+fallback"双条）
-- message_id 拿不到时 msg_id=0 兜底录制（撤回匹配该条让位，换取绝不重复）
-- 权衡说明：重复发送是用户可见的硬伤，message_id 偶发拿不到只是撤回匹配降级
-
-## v2.0.4ai — 日志控制台支持隧道 path 前缀 + https/wss — 2026.9.5
-### 背景
-- 需求：两 bot 日志页经 CF Tunnel 挂 bot.example.com 单子域
-  （/ → QQ 58888，/kook → KOOK 62000），页面 JS 固定连 location.host+/ws 会串台
-- 附带：走 https 隧道时旧模板硬编码 ws:// 会被浏览器 mixed-content 拦截
-### 改动（data/templates/console.html 两端: /root/bot + /root/kook_bot）
-- WebSocket 地址：按 location.pathname 前缀自适应 + https→wss
-  `(proto)+'://'+host+pathname去尾斜杠+'/ws'`（/ 与 /kook 下各连各的）
-- /api/logs 历史接口同样加前缀
-- log_server WS 握手本就不校验路径，服务端零改动
-### 隧道侧（cloudflared config.yml）
-- ingress: bot.example.com path /kook* → 127.0.0.1:62000（在前）；
-  同 hostname 兜底 → 127.0.0.1:58888（QQ）
-- 同步 /etc → route dns → 重启
-### 验证
-- bot.xxx/ → 幻梦 QQ Bot 控制台 200；bot.xxx/kook → KOOK 控制台；
-  /kook/ws Upgrade → HTTP 101；两端 HTML 均含 wss 分支
-
-## v2.0.4aj — bg_tasks datetime 修复 + 日志服务封公网直连 + 隧道 BasicAuth — 2026.9.6
-### 1. 采集失败通知 datetime NameError（用户贴日志）
-- 现象：00:03:55 `main:_bg_wdsj_collector:191 战绩采集失败: name 'datetime' is not defined`
-- 根因：_notify_qzone_failures(plugins/bg_tasks/main.py:194+) 用 datetime.now() 但方法内
-  未 import（datetime 只是 _bg_wdsj_collector 的局部变量）→ NameError → 被外层兜底
-  except 捕获 → **0 点档日榜图片推送(126-189 行)被短路跳过**
-- 修复：方法内补 `from datetime import datetime`
-- 补发：脚本复刻 0 点档推送 → 床战日报 28 人 + 竞技场 10 人 → 群 [群号] + QQ 空间 ✓
-### 2. 日志页封公网直连（承接 bot 子域隧道）
-- 需求：58888/62000 不再从公网直连 + 访问密码
-- 方案：cloudflared ingress 改指 nginx 反代层(127.0.0.1:48888/46200, Basic Auth
-  htpasswd /www/server/nginx/conf/htpasswd.bot, 用户名 trusler)；log_server.py 默认
-  绑定 0.0.0.0 → 127.0.0.1（QQ bot.py 与 KOOK logweb 各副本）
-- 验证：公网直连 58888/62000 → 000 拒绝；隧道无凭据 401/带凭据 200；WS 101
-- 访问：https://bot.example.com/qqbot 与 /kookbot（nginx bot-log.conf 反代，
-  配置 .bak_20260906_botsub；源 .bak_20260906_bind）
-### 3. 今日采集注记：Flowers_summer[bedwars] 00:03 4 轮 ConnectTimeout 最终失败，
-   属上游网络瞬时故障，非绑定问题；明晨 04:01 全量采集自动补上
-
 ## 注记（承接 v2.0.4ai/aj）— 路径定版 /qqbot /kookbot + 导航页同步 — 2026.9.6
 - bot.example.com 最终定版：/qqbot → QQ 58888、/kookbot → KOOK 62000
   （v2.0.4ai 原用 /kook，用户要求更清晰的命名，已验证 200/101/根404）
@@ -6721,163 +7783,140 @@ v2.0.0 包含：完整插件系统、三大功能模块（经济系统 / SQLite 
   两卡片改指隧道地址（tag 标注"隧道·需密码"），本地副本已同步
   (C:/Users/Huang/WorkBuddy/2026-09-05-20-51-46/cf-test/index.html)
 
-## v2.0.4an — qzone 失败说明并入日报说说(不再单独发文字说说) (2026.9.8)
-- 背景: 用户要求"战绩采集说明应放在图片所在那一条的文字部分, 而非发两条说说"
-- 改动(plugins/bg_tasks/main.py, gitignore 不入库):
-  1. 删除 _notify_qzone_failures 方法及 96/121 两处调用(不再非0点单独发文字说说)
-  2. 新增 self._pending_failed: 每轮采集失败暂存(不含通知副作用)
-  3. 0 点推日报时, 若有失败玩家且当日未并入过, 把"⚠️ 战绩采集失败说明"拼接进
-     QQ 空间日报说说的 content, 与图片同一条发出
-  4. 复用 wdsj_qzone_fail_notify.json 按自然日去重, 防 bot 重启后重复说明
-- 行为约定(用户选定"仅供日报合并, 非0点不单独发"):
-  * 0 点: 失败说明并入日报图片说说文字
-  * 4/8/12/16/20 点: 仅采集, 失败不单独发文字说说
-- 部署: 本地改 → scp /root/bot/plugins/bg_tasks/main.py → systemctl restart bot.service
-- 验证: 服务器 py_compile OK; NapCat 已连(pid 2845043); 00:15 重启无报错, 下轮采集 04:01
-- 注意: 今天非0点不会推日报, 合并效果在次日0点(若有失败)可见; 04:01 若失败也不再单独发文字
 
-## v2.0.4ao — 战绩日报重复同名修复: shuangzi_1228 绑了两个QQ (2026.9.9)
-- 现象: QQ空间战绩日报意外显示两个 shuangzi_1228
-- 根因: data/wdsj_player_name.json(榜单玩家名单)里 [QQ号] 和 [QQ号] 都映射到
-  shuangzi_1228; build_daily_rankings/build_arena_daily_rankings 按 bindings.items() 遍历
-  → 同名 name 各产出一条 row, 日报重复
-- 处置(用户: 留[QQ号]):
-  1. 数据: 删 [QQ号] 绑定, 保留 [QQ号](服务器 data/wdsj_player_name.json,
-     备份 .bak_20260909_0010; 名单 52→51)
-  2. 代码防御: wdsj_tracker.py 两个日榜函数循环顶加 _seen_names 按游戏名去重,
-     防将来同名绑定再重复上榜
-- 部署: scp services/wdsj_tracker.py → restart bot.service
-- 验证: 服务器 py_compile OK; bot active(pid 1216392); 58888 绑 127.0.0.1;
-  NapCat 已连; 绑定表 shuangzi 仅 [QQ号]
-- 文件备份: /root/bot/services/wdsj_tracker.py.bak_20260909_0015
+---
 
-## v2.0.5 — 脱敏 + GitHub 上传 (2026.9.10)
-- 背景: 上传 v2.0.5 到 GitHub 前做敏感信息清洗, 用户选择"全量清洗+重写历史"
-- 清洗范围:
-  1. `data/update_log.md`: 全部真实 QQ号/群号 → 语义占位符([QQ号]/[群号]/[botQQ]/[消息号])
-  2. `modules/agnes.py`: 硬编码 CloudMist API key → `os.environ.get("AGNES_API_KEY")` 运行时读取, config/.env 配置
-  3. `modules/gh.py`/`utils/username.py`/`core/log_server.py`: 注释中的号码同样清洗
-  4. `.gitignore` 增加 `config/.env.bak*`(防备份文件入库)
-- 历史重写: git filter-repo --no-gc 重写全部 83 提交 + force-push 到 origin main, 删除远程遗留 master 分支
-- 验证: 重新 clone 后全历史无敏感残留; agnes.py 无硬编码; update_log 无 9-11 位号码
-- 服务器部署: 备份 agnes.py/.env → 上传新版 → .env 追加 AGNES_API_KEY → 重启
-- 坑: force-push 后自动更新引擎 base SHA 失效触发全量下载阻塞启动 → 重启后状态文件自动恢复
-- filter-repo Windows 坑: 默认 gc 步骤会清空 .git refs! 必须 --no-gc, 重写后勿手动 gc
+# 附：v0.8 ~ beta 0.4 远古日志（2025.8 ~ 2026.6）
 
-## v2.1.0 — a_fix: 提示词脱僵化 + 输出长度自适应 (2026.9.11)
-- 背景: 用户反馈群 [群号] 与 [群号] bot 发言过僵 (24% 纯动作描写、41% 带喵、中位 20 字), 技术话题被压成短句
-- 根因: 基底人格与 main_skill.md 规则冲突
-  1. config/bot_config.toml personality: "每句话结尾都要加上喵" + "能用15字说清楚的不用50字" 两条硬规则
-  2. main_skill.md 规则4 "每句最长不超过40字" + 规则8 "普通闲聊只回1-2句"
-  3. services/llm.py 工具结果兜底路径硬编码 "一句话自然回应" max_tokens=80
-  4. core/pipeline.py 非搜索类工具结果 "用一句话自然回应" max_t=200, 结果截断 500 字
-- 修复:
-  1. 删除两条基底硬规则, 改为 "喵是调味非默认" + "长短自适应"
-  2. main_skill 规则4/8 改为场景分档: 闲聊1~3句 / 知识技术类 3~10 句不限字数
-  3. 新增 13b 正反馈回应 + 15c 动作频率红线(5条最多1条带动作, 纯动作≤1/10, 喵≤1/3)
-  4. 深度讲解新增 "默认放宽" 豁免: 涉及技术/知识/原理/概念 → 直接展开
-  5. llm.py 工具兜底 max_tokens 80→2000 并允许展开; pipeline 非搜索工具 max_t 200→1500, 截断 500→2000
-  6. reply_schema.json max_items 5→12, 非核心字段标 optional (face/at/mode/action/mood/origin/actor)
-- 实测: "Q群管家干啥的" 4句115字; "TCP三次握手" 10句937字带分节; "在吗" 1句8字 — 自适应生效
-- 部署: 4文件整体上传 + bot_config.toml 原地脚本替换(服务器版为转义单行格式, 不可覆盖) + 重启验证
+> 这段历史有两次丢失，本文件里的是**从两处残骸拼回来的**：
+>
+> 1. 2026-08-21 提交 `d6ac80d`「日志清理为从 v2.0.0 开始记录」，把 v1.x 及更早全删了
+>    → v1.3.0 ~ v1.5.5 从那次提交之前的 git 版本恢复
+> 2. beta 0.4.3 ~ 0.7.4 在任何 git 提交里都不存在
+>    → 从服务器旧快照 `/root/bot/0.7.4/data/update_log.md`（4 KB）恢复
+> 3. v0.8.0 / v0.9.0 Pro 只剩 `modules/changelog.py` 里 `_DEFAULT_LOG` 那份兜底副本
+>    → 从代码里原样抽出
+>
+> ⚠️ **已知缺口：v1.0 ~ v1.2 无任何记录**（git 里没有、服务器快照里也没有）。
+> 从 `changelog.py` 的行文看那段时间做过 TUF 谱面查询与浏览器截图相关的工作，
+> 但没有可信的版本条目，这里不臆造。
+>
+> 排序：版本号倒序，同版本号保持原始先后。
 
-## v2.1.1 — 笔记本: LLM 主动维护的长期记忆 (2026.9.11)
-- 背景: bot 常说"那我记下了喵"但实际没记住 (如"光煞和夜煞是小玩具情侣"这类群内知识)
-- 方案: 复用 CALL 指令机制, 零架构改动
-  1. 新增 `core/bot_notes.py`: data/notes/<chat_id>.md 一行一条, 上限100条自动淘汰, 重复检测
-  2. 注册 /~note 指令 (查看/手动记/del序号/clear), LLM 经 calls 调用写入
-  3. main_skill 规则5b: 明确"必须真记", 禁用嘴上说记下了; 有人自报家门时记 `[QQ:x] 昵称/身份`
-  4. pipeline: 笔记注入 extra_info (群聊+私聊两处), 缓存友好放末尾
-  5. pipeline: 纯 note 调用不触发追加回复 (避免"记下了"说两遍)
-  6. .gitignore 加 data/notes/
-- 实测: "记一下光煞和夜煞是情侣" → calls=[note ✓]; "我叫小明" → 自动记 [QQ:x] 格式 ✓; 闲聊不记 ✓
-- 注意: 服务器 bot_config.toml 为转义单行格式, 修改须用脚本原地替换, 严禁整体覆盖
+## v0.9.0 Pro — TUF 谱面查询 + Playwright 加速 + 版本切换
+<span class="tag-new">✨ 新功能</span>
+- **TUF 谱面查询系统**：新增完整 TUF（节奏游戏谱面库）查询指令集，支持按难度查详情、关键词搜索、谱面下载直链、分页浏览
+- `/~tuflevel <关键词> <难度>`：精准查询指定谱面的指定难度信息，包含 BPM、长度、物量、note 列表、下载直链
+- `/~tufsearch <关键词> [页码]`：关键词模糊搜索谱面，支持分页浏览，默认第 1 页，每页 5 条
+- `/~tufd <关键词> <难度>`：一键获取谱面下载直链（基于 TUF 官方 OpenAPI）
+- `/~tufpage <页码>`：配合 search 结果翻页，查看历史搜索结果
+- 所有指令均支持 @ 触发者回复，下载链接自动高亮显示
+- **版本切换指令 `/~updateinfo [版本号]`**：支持查看指定版本的更新日志，缺省显示最新版本。正则精准提取 `## v{版本号}` 段落，告别"翻遍全文"时代
+- **TUF API 字段兼容层**：`tilecount` / `tileCount` 大小写通吃；`downloadCount` / `downloads` 双字段兼容；`get_level_passes` 返回 list 时不再崩溃
 
-## v2.1.2 — 笔记本触发调优 (2026.9.11)
-- 问题: v2.1.1 实测全部用例都不触发 note — 根因是规则0"不要主动调用指令"与规则5b冲突, 且 note 规则只在 system(14K) 里被淹没
-- 修复:
-  1. 规则0 新增"例外③(笔记本主动记)": 群内关系/称呼/身份/约定/群梗 → 主动记, 不受规则0限制
-  2. 规则5b 判定改为一句话标准"这条信息下周还有用吗", 去掉过度保守表述
-  3. **关键**: 在 fmt_reminder(最后一条user消息, LLM注意力最高处)加入笔记本规则, 两处(_build_messages + generate_multi_reply)
-  4. 加判定要点: "只要群里的人这样称呼/认为就照记(哪怕是知名角色)——你记的是这个群的事实, 不是百科"
-- 实测(6个真实用例):
-  - 明确说"记一下" → 必记 ✓
-  - 称呼/黑话("模组东是女生") → 记 ✓ (稳定)
-  - 自报家门("我叫小明") → 记 [QQ:x] 格式 ✓
-  - 群内关系("光煞和夜煞是情侣") → 多数会记, 知名IP角色时偶发漏记(LLM判定波动)
-  - 人物特征/玩笑/无意义/闲聊 → 不记 ✓ (正确)
-- 教训: 规则要放在 fmt_reminder(user末尾)才有效, 长 system 里的规则容易被稀释
+<span class="tag-optimize">⚡ 性能优化</span>
+- **Playwright 浏览器实例复用**：全局 `_browser` 单例 + `_ensure_browser()` 懒加载，避免每次截图都重新启动 Chromium，截图速度提升约 60%
+- **Chromium 启动参数全面优化**：新增 `--disable-extensions`、`--disable-background-networking`、`--disable-ipc-flooding-protection` 等 12 项参数，减少无效开销
+- **设备缩放比调整**：`device_scale_factor` 默认值从 2.0 降为 1.0，截图速度再提升约 40%，清晰度仍满足 QQ 图片显示需求
+- **等待策略优化**：`wait_until='load'` 替代 `'networkidle'`，避免因外部 CDN 字体、分析脚本加载慢而卡住截图流程
+- **请求拦截屏蔽无效流量**：通过 `page.route('**/*', handler)` 主动 abort 字体、分析、广告类请求，减少 30%+ 无效网络活动
 
-## v2.1.3 — judge 记忆指令强制触发 (2026.9.11)
-- 问题: 真实 pipeline 端到端测试发现 — "记一下xxx"(没@bot) 被 judge 判定不回复, 流程提前退出, 笔记根本写不了
-- 根因: judge.should_respond 只有 @bot 短路, 其余全靠 LLM 判断"要不要回复"
-- 修复: modules/judge.py 在 @检测后加记忆指令强制触发词 (记一下/记住这个/记下来/帮我记/记录一下/别忘了这个)
-- 端到端验证(mock 发送, 假群号):
-  1. judge: 记忆指令检测 → 直接回复 ✓
-  2. LLM轮1输出: calls=[{"name":"note","args":"光煞和夜煞=群内公认的小玩具，是一对相亲相爱的玩具情侣"}] ✓
-  3. pipeline: JSON CALL → /~note 执行 → 写入 data/notes/<群>.md ✓
-  4. 管道完成 3句 sent; 笔记条数=1 ✓
-- 结论: 笔记本全链路(判定→生成→调用→写入→注入)已验证可用
+<span class="tag-fix">🐛 问题修复</span>
+- 修复 TUF 谱面查询中 `tilecount`（小写）字段读不到的问题（兼容 `tileCount` 和 `tilecount`）
+- 修复 TUF 谱面查询中 `downloadCount` 字段读不到的问题（兼容 `downloadCount` 和 `downloads`）
+- 修复 `duration_ms` 为浮点数时 `:02d` 格式码报错的问题（`int()` 强转后再运算）
+- 修复 `get_level_passes` API 直接返回 list 时的兼容性崩溃问题
+- 修复 `changelog.py` 缺少 `from core.logger import get_logger` 导致启动即崩溃
+- 修复 `_ensure_browser()` 中 `pw()` 返回 ContextManager 而非 Playwright 实例导致 `'PlaywrightContextManager' object has no attribute 'chromium'` 错误
 
-## v2.1.4 — 笔记本 fix 修改能力 (2026.9.11)
-- 需求: 笔记本原本只能新增/删除, 记错了只能删了重记 → 加 fix 改单项
-- 实现:
-  1. `core/bot_notes.py` 新增 `update_note(chat_id, index, new_text)`: 按序号改写, 带越界/空内容保护
-  2. `cmd_note` 支持 `fix|edit|改|修改` 子命令: `/~note fix <序号> <新内容>`
-  3. **注入格式加序号**(关键): load_notes 输出 `1. [09-11] xxx`, 并在标题里直接告诉 LLM "改某条写 fix <序号> <新内容>"
-  4. note 指令说明 + main_skill 5b + fmt_reminder 两处 都加了"发现记错了用 fix 改正, 不要重记一条"
-  5. judge 强制触发词扩充: 加 `记错了|记错|改笔记|改一下笔记|更正一下`(原本只有"记一下/记住")
-- 端到端验证(真实 pipeline):
-  - 预置笔记2条 → 发"记错了, 修正一下, 模组东不是雪泠翎, 是月夜"
-  - LLM 输出 `calls=[{"name":"note","args":"fix 1 模组东=月夜"}]` ✓ (自己定位到第1条)
-  - 笔记变为 `1. [09-11] 模组东=月夜`, 回复"好，改过来了～模组东是月夜"(1句) ✓
+<span class="tag-break">💥 破坏性变更</span>
+- Playwright 截图默认 `device_scale_factor` 从 2.0 调整为 1.0（速度优先），如需高清模式请自行修改 `changelog.py` 中 `_screenshot_html()` 的 `scale` 参数默认值
+- `_ensure_browser()` 新增 `_playwright_instance` 全局变量，bot 关闭时需调用 `await _playwright_instance.stop()` 清理
 
-## v2.1.5 — 笔记本隔离显性化 (2026.9.11)
-- 需求: 用户强调"每个群的笔记要分开"
-- 核查结论: 笔记本本来就是按群隔离的(`data/notes/<chat_id>.md`, 群聊=群号/私聊=用户号)
-  - dispatcher.py:180 `chat_id=group_id` → per-group 串行队列 → process_message(chat_id=群号)
-  - 端到端双群验证: 群777777701 → 777777701.md, 群777777702 → 777777702.md, 无交叉 ✓
-- 加固(让隔离可见, 避免误解):
-  1. 注入标题改 `【你的笔记本·本群专属】共 N 条（只在当前群生效，其它群看不到）` — 防止 LLM 把它当通用知识
-  2. `/~note` 群聊显示 `【笔记本·本群】`、私聊显示 `【笔记本·私聊】`
-  3. 空笔记提示同样带 scope
+## v0.8.0 — 全面重构
+<span class="tag-new">✨ 新功能</span>
+- 模块化架构：core / modules / services / utils 四层分离
+- WebSocket 全局长连接复用，消息发送延迟降低 **50~80%**
+- 二级判断 + 三级兴趣度模型 **并行调用**，判断延迟减半
+- 异步图片识别（httpx），不再阻塞事件循环
+- 搜索缓存内存化 + 脏标记定时刷盘
 
-## v2.1.6 — 笔记本规则位置终调优（真实语料模拟驱动）(2026.9.11)
-- 用群 2000000002 最近 60 条真实聊天记录模拟跑笔记本（只读原群，写入测试群555555501）
-- 首轮结果: 60 条只触发 1 条 — 关键漏记案例:
-  "光煞和夜煞一样是小玩具哦，而且他们是很相亲相爱的玩具情侣"
-  → LLM 回复里明明理解了("哦——原来是情侣玩具啊"/"所以夜煞和光煞是一对")，但没调 note
-- 根因: note 规则夹在 fmt_reminder 中间(搜索规则之后、回复格式之前)，LLM 回答提问时注意力全给了回答
-- 修复: 在 fmt_reminder **最末尾**(紧邻当前消息，注意力最高处)加强化版规则，全用中文引号避免转义
-  内容: "★【笔记本·最后强调，看当前这条消息就够了】...该记不记＝失职；只在回复里说记下了却没有实际调用＝骗人"
-- 二轮结果: 60 条触发 3 条，关键那条已能记住:
-  1. _HumanTear_ UUID=... 因QQ安全政策皮肤/昵称可能不显示，需用/反馈提交游戏ID申请白名单
-  2. 光煞和夜煞=一对相亲相爱的玩具情侣，都是小玩具
-  3. 模组东=雪泠翎，女生
-- 说明: 其余 57 条为图片/链接分享、闲聊("哦不"/"太强了")、提问、指令调用(~cache/~wdsj)，不记=正确
-- 模拟脚本存档: G:/py/qqbot-backup/2026-09-11/sim_notes.py（可复用语料回归）
+<span class="tag-optimize">⚡ 性能优化</span>
+- BotConfig @dataclass 封装：20+ 个全局变量 → 一个类实例
+- format_lang 集中化到 utils/format_lang.py，消除重复定义
+- 图片缓存限容（1000 条上限）+ TTL（30 天过期）
+- 日志系统升级：每模块独立 Logger + 彩色控制台 + 文件持久化
 
-## v2.1.7 — 隐私保护 + 全量语料审查 (2026.9.11)
-- 背景: 用户要求用**全量**聊天记录模拟笔记本(不用 API, 人工判断)
-- 审查范围: 群 2000000002 共 1879 条记录 → 过滤非文本/指令/链接/其他bot 后 725 条干净消息
-- **发现1(隐私风险)**: 聊天记录中含群友真实住址("福建省宁德市福鼎市玉龙北路310号鼎融广场1栋1504室")
-  → 已在 `core/bot_notes.py` 加隐私拦截: 手机号/身份证号/银行卡号/详细住址 命中即拒绝写入(add 和 update 双保护)
-- **发现2(数据噪声)**: msglog 混入大量**其他 bot 的消息**(Q群管家 u6310、修仙游戏bot Rick、Verity)，
-  占非 bot 记录近一半 — 建议后续在记录侧过滤(它们不是真人发言, 不该进笔记)
-- **发现3(高价值)**: 群友发的【好感度列表】里含完整 QQ昵称↔游戏昵称映射(如 LP_XiaoP#初梦龙❤)，
-  是"别把号忘了"的最佳数据源
-- 人工判断结果: 725 条干净消息里, 真正该进笔记本的约 8-12 条(其余为闲聊/玩笑/技术讨论/乞讨/玩梗)
+<span class="tag-fix">🐛 问题修复</span>
+- 修复 debug() 每次调用读磁盘的性能问题
+- 清理死代码 if_module.py
+- img / img18 合并，消除 90% 重复代码
+- 修复裸 except 吞错误的问题
 
-## v2.1.8 — 动态 JSON 真正落地 (2026.9.11)
-- 用户追问"动态 JSON 实现了吗" → 核查发现**之前只是假的**:
-  - schema.json 里标了 optional 标记, 但 services/llm.py **根本没读这个标记**(grep 无消费点)
-  - fmt_reminder 的 JSON 模板仍列全 10 个字段 → LLM 照抄一堆 null, 输出 token 白烧
-- 真正实现: 两处 fmt_reminder 的模板改为「必填 2 个 + 动态按需」
-  - 必填: replies, fav
-  - 动态(需要才带, 不需要就整个省略 key, 禁止 null 占位): mood / calls / action / at / face / mood_detail / origin+actor
-  - origin+actor 只在带 calls 时一起加(原规则是"每句必填", 已改)
-- 健壮性实测(关键): _normalize_reply_json 会遍历 schema 补默认值, pipeline 对所有字段都是 falsy 检查
-  - 极简返回 {"replies":[...],"fav":1} → 解析正常, 其余字段补默认 ✓
-  - 带 calls → origin 默认 user, actor 补 {} ✓
-  - 带 action/at → 正常 ✓
-- 收益: 闲聊场景每次少输出 6-8 个字段(约 50-120 输出 token)
+<span class="tag-break">💥 破坏性变更</span>
+- 配置文件结构不变，但内部加载方式改为 BotConfig 类
+- 全局变量访问方式变更（通过 get_config() 单例）
+
+## beta 0.7.4 PrePRO
+### 新增功能
+- 快递查询 `/~box`，自动清洗广告，展示完整物流轨迹
+- 随机二次元图片 `/~img` 与轻度 R18 图片 `/~img18`
+- 戳一戳互动：被双击头像（摸一摸）时猫娘会回应并增加好感度
+- 查看更新日志 `/~updateinfo`
+- 系统信息 `/~info` 新增显示操作系统、内存、CPU、已加载模型列表
+
+### 功能优化
+- 天气播报改为表格 + 口语化描述，支持 7 日预报，自动区分管理员与普通用户
+- 记忆系统增强：每次自动记忆附带参与者名称，不再仅显示“对话摘要”
+- 搜索结果直接交由主回复模型消化，跳过廉价模型摘要，响应速度明显提升
+- 消息发送增加 3 次重试，全部失败时自动发送兜底回复“喵～幻梦刚刚没听清...”
+- `/~reload` 改为跨平台重启（Linux 退出进程由 systemd 拉起，Windows 重新执行自身）
+
+### 问题修复
+- 修复私聊部分场景下不回复的 bug
+- 修复 @ 消息中包含指令（如 `@幻梦 /~天气 深圳`）被错误当作普通对话的问题
+- 修复模型偶尔输出全角方括号 `［fav: +2］` 导致好感度标记泄露
+- 强化多句回复分隔符规则，防止换行、双竖线等异常符号出现在聊天中
+
+## beta 0.7.0   --2026.5.6
+- 新增戳一戳（摸头）互动，被摸时猫娘会回应并增加好感度
+- 新增 `/~img` 随机二次元图片，`/~img18` 轻度 R18 图片（PG16）
+- 新增 `/~updateinfo` 查看更新日志
+- 增强 `/~info`：显示操作系统、内存、CPU 以及所有已加载的模型
+- 天气播报全面优化：表格 + 口语化播报，自动区分管理员与普通用户
+- `/~reload` 改为跨平台重启（Linux 退出进程由 systemd 拉起，Windows 重新执行）
+- 搜索结果直接交由主模型消化，不再经过廉价模型摘要
+- 消息发送增加重试机制（3 次），失败后自动发送“没听清”兜底回复
+- 修正私聊部分场景下不回复的 bug
+
+## beta 0.6.2 (智能记忆总结)   --2026.5.5
+- 长期记忆机制重构：每隔 10 分钟将对话缓冲区交由廉价模型异步总结成一句话记忆
+- 修复私聊消息因 @ 检测遗漏导致不回复的问题
+- 好感度计算完全由模型通过 `[fav: ±N]` 标记决定，移除硬编码关键词
+
+## beta 0.6.0 (多句生成)   --2026.5.5
+- 回复生成改为一次性输出 1~5 句，用 `|||` 分隔，程序分批发送（间隔 2~4 秒）
+- 新增好感度自动变化：模型在回复末尾的 `[fav: ±N]` 标记，程序自动更新好感度数值
+- 新增定时记忆：每隔 10 分钟自动将最近用户消息截取 40 字存入记忆文件
+- 私聊修复：私聊消息直接回复，不再跳过
+- 新增 `/~reload` 热重载配置（管理员专用）
+- 支持多 API 平台共存（如 DeepSeek 与 SiliconFlow 同时使用）
+- 新增天气查询 `/~天气` 或 `/~weather`（数据源：60s API）
+
+## beta 0.5.0 (插件化与智能判断)   --2026.5.4
+- 三级回复判断：硬规则过滤 → 免费廉价模型判断（是否回复）→ 精细兴趣度模型（0~10 分）
+- 新增长期记忆：自动保存群聊/私聊中的关键对话到 `memory_{对话id}.md`
+- 新增好感度系统：保存到 `fav.json`，可通过 `/~favlist` 查看
+- 新增指令系统：`/~help`、`/~ping`、`/~s` 等，`/#` 前缀管理员专用（如 `/#添加关系`）
+- 新增角色配置分离：`config/roles.toml` 管理管理员、好友关系及昵称映射
+- 支持私聊（可开关），群聊白名单独立配置
+- 新增 DuckDuckGo 搜索（内置缓存）
+- 图片识别接入（可选）
+- 优化提示词，区分不同关系（主人 / 朋友 / 群友）
+
+## beta 0.4.3 (初始精简版)  --2025.8.25
+- 基于 Maibot 精简的 QQ 机器人框架，对接 NapCat + OneBot v11
+- 群聊白名单、消息解析（文字/图片/文件）
+- 简单的兴趣度判断（@ 必回，其他按关键词 + LLM 判断）
+- 单一回复模型（硅基流动），支持调整回复阈值
+- 日志模块、基础配置分离、@ 替换用户名
