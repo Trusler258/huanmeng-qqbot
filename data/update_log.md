@@ -63,6 +63,30 @@
 去掉 `[:N]`、去掉 `%s...` 里的省略号。**其它地方的切片一律不碰**（那些是业务逻辑）。
 共改 133 个调用块（本地）/ 109 个（服务器，llm.py 与 tools.py 已随本次上传）。
 
+### 三、新插件：`/~netmusic` 网易云解析
+
+```
+/~netmusic https://music.163.com/song?id=347230
+/~netmusic 347230
+/~netmusic https://163cn.tv/xxxx        短链也认
+/~netmusic 347230 file                  额外把 mp3 当文件发出来
+```
+
+回复三条：歌曲信息（歌名/歌手/专辑/时长/音质/大小）→ 网易云音乐卡片（客户端内直接可播）
+→ 只有加了 `file` 才下载 mp3 发文件，文件名 `曲名-艺人_id.mp3`（用户指定）。
+
+实现上**不用 weapi 加密**。参考 frankgx97/nem-downloader 与 nyan.im 那篇文章，但实测发现
+`/api/song/enhance/player/url` 只要带一个**自造的 NMTID cookie** 就能返回直链；
+不带 cookie 才返回 `code=-110 + url=null`（看着像"要会员"，其实只是没身份）。
+码率按 320k → 192k → 128k 依次降级，匿名一般只能拿 128k；
+`config/.env` 配 `NETEASE_COOKIE=MUSIC_U=...` 可拿更高音质（不配也能用）。
+
+服务器在境内，直链可用；境外 IP 网易会返回 null，这是它家限制。
+歌单/专辑链接目前只提示「只做单曲」，没实现整单下载。
+
+插件在 `plugins/netmusic/`（受 .gitignore 约束，只 scp）。回归测试
+`tests/_test_netmusic.py` 24 条（输入解析、时长/大小格式化、文件名规则、纯文本约束）。
+
 ### 验证
 
 - `py_compile` 全通过，`pyflakes` 无新增 undefined（基线 5 个：dispatcher `Optional`×2、
