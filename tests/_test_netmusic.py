@@ -104,6 +104,39 @@ ck("有直链时不提会员", "会员" not in txt)
 no_url = dict(audio, url="", fee=1)
 ck("无直链且 fee=1 提到会员", "会员" in M.build_info_text(detail, no_url))
 
+# 缓存命中时不提"拿不到直链"
+ck("有存档时不提直链", "拿不到" not in M.build_info_text(detail, {}, cached=True))
+ck("有存档时标注已有存档", "已有存档" in M.build_info_text(detail, {}, cached=True))
+ck("size_override 优先于接口大小",
+   "1.0MB" in M.build_info_text(detail, audio, size_override=1048576))
+
+
+# ── 歌库缓存 ─────────────────────────────────────────────
+import tempfile  # noqa: E402
+
+with tempfile.TemporaryDirectory() as td:
+    _orig = M._LIB_CANDIDATES
+    M._LIB_CANDIDATES = [Path(td)]
+    try:
+        ck("空目录找不到", M.find_cached("347230") is None)
+
+        big = Path(td) / "海阔天空-Beyond_347230.mp3"
+        big.write_bytes(b"0" * 20480)
+        ck("按 ID 找到存档", M.find_cached("347230") == big)
+        ck("别的 ID 不误命中", M.find_cached("111111") is None)
+
+        small = Path(td) / "坏文件_222222.mp3"
+        small.write_bytes(b"0" * 100)
+        ck("过小的文件不算缓存", M.find_cached("222222") is None)
+
+        # 首选目录不可用时回退：拿一个普通文件当"目录"的父级，mkdir 必然失败
+        blocker = Path(td) / "blocker"
+        blocker.write_bytes(b"x")
+        M._LIB_CANDIDATES = [blocker / "sub", Path(td)]
+        ck("首选目录不可用会回退", M._music_dir() == Path(td))
+    finally:
+        M._LIB_CANDIDATES = _orig
+
 print()
 print("通过 %d / 失败 %d" % (ok, fail))
 sys.exit(1 if fail else 0)
