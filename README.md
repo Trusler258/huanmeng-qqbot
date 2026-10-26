@@ -126,8 +126,8 @@ flowchart TB
         S["sender.py 分批发送 / 表情节拍"]
     end
 
-    subgraph Mod["modules/ 模块"]
-        M["45 个模块<br/>指令 · 记忆 · 判断 · 地震 · 经济"]
+    subgraph Mod["modules/ + plugins/"]
+        M["35 个模块<br/>指令 · 记忆 · 判断 · 存储"]
     end
 
     U --> NC --> D --> P
@@ -153,7 +153,7 @@ huanmeng-qqbot/
 ├── core/                      # 核心
 │   ├── pipeline.py            # 消息管道
 │   ├── context_manager.py     # 会话上下文（分块冻结）
-│   ├── plugin/                # 插件系统（manifest / loader / manager）
+│   ├── plugin/                # 插件系统（manifest / loader / manager / cores）
 │   ├── capability/            # 能力注册表（Command / Tool / Plugin）
 │   ├── eventbus.py            # 事件总线
 │   ├── sandbox.py             # 沙箱执行
@@ -163,15 +163,18 @@ huanmeng-qqbot/
 │   ├── llm.py                 # LLM + Function Calling 多轮 Agent
 │   └── sender.py              # WebSocket 发送 · 分批 · 表情节拍
 │
-├── modules/                   # 模块（45 个）
+├── modules/                   # 内置模块（35 个）——只放「还没插件化」的公共逻辑
 │   ├── commands.py            # 指令注册表 COMMAND_MAP
 │   ├── help_card.py           # 指令卡片（描述唯一来源）
 │   ├── memory.py              # 长期记忆
-│   ├── memory_link.py         # 跨会话记忆关联
 │   ├── judge.py               # 三级回复判断
-│   ├── earthquake.py          # 地震速报
-│   ├── reward.py              # 赞赏
+│   ├── chinese_chess.py       # 象棋引擎
 │   └── …
+│
+├── plugins/                   # 插件（24 个，不进仓库，部署时单独同步）
+│   ├── <name>/manifest.json   # 元信息：指令名 / 权限 / 网络白名单
+│   ├── <name>/main.py         # 入口：class Plugin + register_command
+│   └── <name>/<name>_core.py  # 核心实现（逻辑从 modules/ 整体搬来，外部可复用）
 │
 ├── data/
 │   ├── skills/*.md            # 提示词章节
@@ -294,6 +297,27 @@ flowchart LR
 | `ctx.logger` | 命名空间日志 |
 
 </details>
+
+### 插件核心与复用（`*_core.py`）
+
+插件如果只是「把内置模块换个位置」，逻辑放 `plugins/<name>/<name>_core.py`，
+`main.py` 只负责拿 `ctx`、注册指令。**同一个功能不在 `modules/` 再留一份实现。**
+
+外部（`modules/commands.py`、`core/pipeline.py`、`bot.py`、`services/llm.py`）要复用这份逻辑时，
+走统一入口：
+
+```python
+from core.plugin.cores import load_plugin_core
+
+op = load_plugin_core("op")        # 进程内只 exec 一次，之后走缓存
+mode = op.get_mode()
+```
+
+`plugins/` 不是 Python 包（加载器按文件路径 exec），外部没法写 `from plugins.op import ...`，
+`load_plugin_core` 就是补这个口子的。
+
+`COMMAND_MAP` 里挂插件核心的 handler 用 `_lazy(插件名, 函数名)`，第一次调用才加载，
+避免启动时把二十多个插件全 exec 一遍。
 
 插件库里大部分 `.hmp` 是给 KOOK 机器人写的，加载时注入 `khl` / `kook` 假模块并剥掉 KMarkdown 标记，不用改插件源码
 
@@ -629,10 +653,13 @@ identity = """
 
 PR 约定：
 
-1. 新指令在 `modules/commands.py` 的 `COMMAND_MAP` 注册
-2. 同时在 `modules/help_card.py` 补 `_CATEGORY` 和 `_EXTRA_DESC`，这两处是 `/~help` 和 LLM 指令清单的共同来源
-3. 提示词写进 `data/skills/*.md`，不写进 Python
-4. `data/update_log.md` 最新版本在最上面
+1. **新功能优先做成插件**：`plugins/<name>/`（manifest + main），逻辑放 `<name>_core.py`；
+   已经在插件里实现的功能，不要在 `modules/` 再放一份
+2. 需要被核心调用时，用 `core.plugin.cores.load_plugin_core("name")` 取，不要 `from plugins.x import`
+3. 确实属于公共基础的（记忆、判断、指令注册表）才放 `modules/`，并在
+   `modules/help_card.py` 补 `_CATEGORY` / `_EXTRA_DESC`（`/~help` 与 LLM 指令清单的共同来源）
+4. 提示词写进 `data/skills/*.md`，不写进 Python
+5. `data/update_log.md` 最新版本在最上面
 
 ---
 

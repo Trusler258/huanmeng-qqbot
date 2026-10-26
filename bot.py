@@ -471,7 +471,9 @@ class HuanmengBot:
 
     async def _bg_eq_poller(self):
         """后台任务：地震速报自动轮询"""
-        from modules.earthquake import start_polling
+        from core.plugin.cores import load_plugin_core
+        _core_earthquake = load_plugin_core("earthquake")
+        start_polling = _core_earthquake.start_polling
         await start_polling()
 
     async def _bg_log_server(self):

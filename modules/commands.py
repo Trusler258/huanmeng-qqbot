@@ -28,14 +28,32 @@ from utils.format_lang import format_lang
 from modules.fav import get_all_fav, FAV_FILE as FAV_FILE_REF, reset_all_fav
 from services.sender import send_group_msg, send_private_msg, send_raw_group, send_raw_user
 from modules.search import perform_search
-from modules.earthquake import cmd_eq
-from modules.agnes import cmd_draw, cmd_video, cmd_img2video, owner_quota_get, owner_quota_set, owner_quota_reset
+from core.plugin.cores import load_plugin_core
+_core_earthquake = load_plugin_core("earthquake")
+cmd_eq = _core_earthquake.cmd_eq
+from core.plugin.cores import load_plugin_core
+_core_agnes = load_plugin_core("agnes")
+cmd_draw = _core_agnes.cmd_draw
+cmd_video = _core_agnes.cmd_video
+cmd_img2video = _core_agnes.cmd_img2video
+owner_quota_get = _core_agnes.owner_quota_get
+owner_quota_set = _core_agnes.owner_quota_set
+owner_quota_reset = _core_agnes.owner_quota_reset
 try:
-    from modules.steam import cmd_steam, cmd_steam_doing
+    from core.plugin.cores import load_plugin_core
+    _core_steam = load_plugin_core("steam")
+    cmd_steam = _core_steam.cmd_steam
+    cmd_steam_doing = _core_steam.cmd_steam_doing
 except ImportError:          # 缺依赖时不拖垮整条指令链路
     cmd_steam = cmd_steam_doing = None
 try:
-    from modules.op import cmd_op, cmd_persona, cmd_master, cmd_sleep, cmd_hanxu
+    from core.plugin.cores import load_plugin_core
+    _core_op = load_plugin_core("op")
+    cmd_op = _core_op.cmd_op
+    cmd_persona = _core_op.cmd_persona
+    cmd_master = _core_op.cmd_master
+    cmd_sleep = _core_op.cmd_sleep
+    cmd_hanxu = _core_op.cmd_hanxu
 except ImportError:
     cmd_op = cmd_persona = cmd_master = cmd_sleep = cmd_hanxu = None
 
@@ -50,8 +68,9 @@ except ImportError:
 from core.token_tracker import cmd_cost, cmd_tokens, cmd_cache
 from core.bot_notes import cmd_note
 from core.ctx_usage import cmd_ctx
-from modules.reward import cmd_reward   # ★ 赞赏码 / 赞助名单
-from modules.memory_link import cmd_mlink   # ★ 跨聊天记忆关联（单一入口）
+from core.plugin.cores import load_plugin_core
+_core_memory_link = load_plugin_core("memory_link")
+cmd_mlink = _core_memory_link.cmd_mlink
 
 # ★ 经济系统已迁移为插件（points/shop，v2.0.1），不再内置
 
@@ -3615,7 +3634,11 @@ async def cmd_owner(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     # ── draw/video 配额管理 ──
     if action in ("draw", "video"):
-        from modules.agnes import owner_quota_get, owner_quota_set, owner_quota_reset
+        from core.plugin.cores import load_plugin_core
+        _core_agnes = load_plugin_core("agnes")
+        owner_quota_get = _core_agnes.owner_quota_get
+        owner_quota_set = _core_agnes.owner_quota_set
+        owner_quota_reset = _core_agnes.owner_quota_reset
         if len(args) < 2:
             return format_lang("cmd_owner.m34", action=action, action2=action, action3=action, action4=action)
         sub = args[1].lower()
@@ -4334,6 +4357,20 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
     return result
 
 
+def _lazy(plugin: str, attr: str):
+    """按需加载插件核心里的指令 handler（2026-10-26）。
+
+    已迁入插件的内置模块不再在 modules/ 留文件，但要兼容 COMMAND_MAP 里按名调用，
+    这里返回一个同签名的 async 代理，第一次调用时才 import 插件核心。
+    """
+    async def _call(args, user_id, group_id, sender_name, is_group, bot_qq):
+        from core.plugin.cores import load_plugin_core
+        fn = getattr(load_plugin_core(plugin), attr)
+        return await fn(args, user_id, group_id, sender_name, is_group, bot_qq)
+    _call.__name__ = f"_lazy_{plugin}_{attr}"
+    return _call
+
+
 COMMAND_MAP: dict[str, callable] = {
     "help":       cmd_help,
     "restart":    cmd_restart,
@@ -4442,10 +4479,10 @@ COMMAND_MAP: dict[str, callable] = {
     "mlink":      cmd_mlink,
     "记忆关联":   cmd_mlink,
     # ── 赞赏码 / 赞助名单 ──
-    "reward":     cmd_reward,
-    "赞赏":       cmd_reward,
-    "赞助":       cmd_reward,
-    "sponsor":    cmd_reward,
+    "reward":     _lazy("reward", "cmd_reward"),
+    "赞赏":       _lazy("reward", "cmd_reward"),
+    "赞助":       _lazy("reward", "cmd_reward"),
+    "sponsor":    _lazy("reward", "cmd_reward"),
     # ── 服务器功耗 / 电费（仅管理员）──
     # ── Steam 状态 / 价格 ──
     "steam":      cmd_steam,

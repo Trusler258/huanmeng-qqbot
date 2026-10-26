@@ -493,8 +493,8 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
     #   名单为空时不注入；上限 20 个名字（见 modules/reward.MAX_HINT_ITEMS）防 token 膨胀。
     _sponsors = ""
     try:
-        from modules.reward import sponsors_hint
-        _sponsors = sponsors_hint()
+        from core.plugin.cores import load_plugin_core
+        _sponsors = load_plugin_core("reward").sponsors_hint()
     except Exception:
         _sponsors = ""
     core_parts = [

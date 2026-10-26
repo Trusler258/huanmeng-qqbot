@@ -269,7 +269,11 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
     poke_rules = [_build_reminder("poke_reminder", append_plain=False)]
 
     try:
-        from modules.op import get_mode, get_sleep_prompt_rule, get_narrative_prompt_rule
+        from core.plugin.cores import load_plugin_core
+        _core_op = load_plugin_core("op")
+        get_mode = _core_op.get_mode
+        get_sleep_prompt_rule = _core_op.get_sleep_prompt_rule
+        get_narrative_prompt_rule = _core_op.get_narrative_prompt_rule
         mode = get_mode(chat_id)
         if mode == "sleeping":
             poke_rules = [get_sleep_prompt_rule(chat_id)]
@@ -619,7 +623,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     role_tag = cfg.get_user_tag(user_id, chat_id if is_group else 0)
     if not is_group and role_tag not in ("admin",):
         try:
-            from modules.op import is_private_master
+            from core.plugin.cores import load_plugin_core
+            _core_op = load_plugin_core("op")
+            is_private_master = _core_op.is_private_master
             if is_private_master(user_id):
                 role_tag = "admin"
         except ImportError:
@@ -833,7 +839,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
 
     # ★ v2.3.11 跨聊天记忆关联：来自其他会话的近期交流（带来源标识，放末尾对缓存友好）
     try:
-        from modules.memory_link import build_linked_context, chat_key as _mlink_key
+        from core.plugin.cores import load_plugin_core
+        _core_memory_link = load_plugin_core("memory_link")
+        build_linked_context = _core_memory_link.build_linked_context
+        _mlink_key = _core_memory_link.chat_key
         _linked_txt = build_linked_context(_mlink_key(chat_id, is_group), ctx)
         if _linked_txt:
             extra_info_parts.append(_linked_txt)
@@ -886,7 +895,11 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
             )
 
     try:
-        from modules.op import get_mode, get_sleep_prompt_rule, get_narrative_prompt_rule
+        from core.plugin.cores import load_plugin_core
+        _core_op = load_plugin_core("op")
+        get_mode = _core_op.get_mode
+        get_sleep_prompt_rule = _core_op.get_sleep_prompt_rule
+        get_narrative_prompt_rule = _core_op.get_narrative_prompt_rule
         mode = get_mode()
         if mode == "sleeping":
             extra_info_parts.append(get_sleep_prompt_rule(chat_id))
@@ -943,7 +956,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     system_prompt_for_llm = cfg.system_prompt
     if not is_group:
         try:
-            from modules.op import get_persona, get_persona_memory_id
+            from core.plugin.cores import load_plugin_core
+            _core_op = load_plugin_core("op")
+            get_persona = _core_op.get_persona
+            get_persona_memory_id = _core_op.get_persona_memory_id
             from modules.memory import set_persona_override
             custom = get_persona(user_id, cfg.private_persona_version)
             if custom:
@@ -1432,7 +1448,10 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # ------mode切换------
     if mode_switch and mode_switch in ("normal", "sleeping", "narrative"):
         try:
-            from modules.op import _load_modes, _save_modes
+            from core.plugin.cores import load_plugin_core
+            _core_op = load_plugin_core("op")
+            _load_modes = _core_op._load_modes
+            _save_modes = _core_op._save_modes
             modes = _load_modes()
             if mode_switch == "normal":
                 modes.pop(str(chat_id), None)
@@ -1755,7 +1774,9 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
                     custom_persona = None
                     if not is_group:
                         try:
-                            from modules.op import get_persona
+                            from core.plugin.cores import load_plugin_core
+                            _core_op = load_plugin_core("op")
+                            get_persona = _core_op.get_persona
                             custom_persona = get_persona(user_id, cfg.private_persona_version)
                         except ImportError:
                             pass

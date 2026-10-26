@@ -112,7 +112,8 @@ SID64 = str(76561197960265728 + ACCOUNT)   # 76561198000000000
 
 
 def main() -> None:
-    import modules.steam as M
+    from core.plugin.cores import load_plugin_core
+    M = load_plugin_core("steam")
 
     print("=== 1. 纯数字输入必须按 Steam 标识解析（旧版被 _qq_of 吃掉）===")
     for label, text in [

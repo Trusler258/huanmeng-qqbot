@@ -105,7 +105,8 @@ def main():
     (ok if sid == TRUSLER_SID else bad)(f"SteamID3 公式正确 → {sid}")
 
     print("\n=== 5. /~steam who 直接给 id：不走绑定 ===")
-    import modules.steam as st
+    from core.plugin.cores import load_plugin_core
+    st = load_plugin_core("steam")
 
     calls = {"bind": 0, "resolve": [], "card": []}
 
