@@ -37,7 +37,16 @@ PYEOF
 # ── 2. 打包全量：/root/bot/data 全目录（排除临时/缓存/.bak）+ config + bg_tasks 补丁 ──
 TARBALL="qqbot-full-$DATE.tar.gz"
 STAGE="/tmp/qqbot_backup_stage"
-tar czf "$WORK/$TARBALL"     --exclude="data/img_temp"     --exclude="data/tts_temp"     --exclude="data/tmp"     --exclude="data/__pycache__"     --exclude="*.bak*"     --exclude="data/backup_daily.log"     -C /root/bot data config plugins/bg_tasks/main.py >> "$LOG" 2>&1
+# 2026-10-26：插件的核心实现（plugins/<name>/*_core.py）原来不在备份范围，
+#   迁移后 modules/ 里的逻辑全部搬进 plugins/，只备份 bg_tasks/main.py 等于没备份。
+#   plugins/phi/card_assets 是 212M 字体+插画，排除（单文件 >100M 会被 GitHub 拒收），
+#   资产另存 3T 盘一份。
+tar czf "$WORK/$TARBALL" \
+    --exclude="data/img_temp"     --exclude="data/tts_temp"     --exclude="data/tmp" \
+    --exclude="data/__pycache__" \
+    --exclude="*.bak*"     --exclude="data/backup_daily.log"     --exclude="*/__pycache__" \
+    --exclude="plugins/phi/card_assets" \
+    -C /root/bot data config plugins >> "$LOG" 2>&1
 rm -rf "$STAGE" "$SNAP"
 [ -f "$WORK/$TARBALL" ] || { log "打包失败"; exit 1; }
 SIZE=$(du -h "$WORK/$TARBALL" | cut -f1)
