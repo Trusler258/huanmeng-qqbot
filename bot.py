@@ -77,13 +77,10 @@ class HuanmengBot:
         init_logger(debug_mode=self.cfg.debug_mode)
         info("日志系统已初始化")
 
-        # 自动更新检查
-        try:
-            from modules.auto_update import check_and_update
-            result = await check_and_update()
-            info("自动更新: %s", result)
-        except Exception as e:
-            info("自动更新跳过: %s", e)
+        # 自动更新检查已移除（v2.0.4g「去自动更新」）。
+        # 原来这里 `from modules.auto_update import check_and_update` 一直 ImportError，
+        # 被 except 吞成 INFO「自动更新跳过」，等于每启动一次刷一条假告警（2026-10-26 删）。
+        # /~update 手动更新走 modules.auto_update.cmd_update，不受影响。
 
         # 4. 初始化发送器（WebSocket 连接复用）
         init_sender(self.cfg.host, self.cfg.port)
