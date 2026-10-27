@@ -646,34 +646,73 @@ def _trend_svg(series: list, accent: str, accent2: str) -> str:
         dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{dr}" fill="#fff" '
                     f'stroke="{accent}" stroke-width="{dw}"/>')
 
-    # ── 数值标注：≤20 点全标，否则只标首/尾/最高/最低 ──
-    ann_idx = set(range(n)) if n <= 20 else {0, n - 1, vals.index(max(vals)), vals.index(min(vals))}
+    # ── 数值标注：按「标注宽度 + 间距」自适应，整条线最多约 15 个 ──
+    #   Monocraft 的数字近似等宽，按 0.62em 估字宽；每格至少留 (字宽 + 10px)，
+    #   否则 101 个点的数字会连成一串（2026-10-27 用户反馈）。
+    _FS, _GAP, _CAP = 16, 10, 15
+    _max_chars = max(len(_fmt_num(v)) for v in vals)
+    _label_w = _max_chars * _FS * 0.62
+    _fit = int(pw // (_label_w + _GAP)) + 1          # 宽度允许的最多个数
+    _k = max(2, min(_CAP, _fit, n))
+    if _k >= n:
+        ann_idx = list(range(n))
+    else:
+        ann_idx = sorted({round(i * (n - 1) / (_k - 1)) for i in range(_k)})
+    # 首尾标注是向内对齐的（anchor start/end），实际占位比居中的宽半格，
+    # 等距取样后会出现「4267 和 4625 贴在一起」——按真实横向距离再筛一遍
+    _kept: list[int] = []
+    for _i in ann_idx:
+        if not _kept:
+            _kept.append(_i)
+            continue
+        _need = _label_w + _GAP
+        if _i in (0, n - 1) or _kept[-1] in (0, n - 1):
+            _need += _label_w * 0.5
+        if X(_i) - X(_kept[-1]) >= _need:
+            _kept.append(_i)
+    ann_idx = _kept
     anns = []
-    for i in sorted(ann_idx):
+    for i in ann_idx:
         x, y = pts[i]
-        # 统一放点上方；只有贴着画布顶端（<30px）时才改放下方，避免被裁。
-        # 之前对「最低点」特判往下放，平坦数据下会跟 x 轴日期挤在一起且与其他点不齐。
-        dy = 22 if (y - T) < 30 else -16
-        # 首尾贴边：左右顶到画布边缘会被裁或压住 y 轴刻度，改成向内对齐
+        # 首尾贴边：顶到画布边缘会被裁或压住 y 轴刻度，改成向内对齐
+        # ⚠️ anchor 必须在下面算 dy 之前定，否则引用了还没赋值的名字（会静默回退兜底）
         anchor, dx = "middle", 0
         if i == 0:
             anchor, dx = "start", 2
         elif i == n - 1:
             anchor, dx = "end", -2
+        # 标注高度按「自身横向覆盖范围内折线的最高点」动态抬升，
+        # 否则上升段会把文字穿过（2026-10-27：首点 4267 的末位被数据点盖住）。
+        _x_lo, _x_hi = x - _label_w / 2, x + _label_w / 2
+        if anchor == "start":
+            _x_lo, _x_hi = x - 2, x + _label_w
+        elif anchor == "end":
+            _x_lo, _x_hi = x - _label_w, x + 2
+        _ys = [py for (px, py) in pts if _x_lo <= px <= _x_hi]
+        _top = min(_ys) if _ys else y             # 像素 y 越小 = 位置越高
+        dy = min(-16, _top - y - 14)              # 至少高出该段最高点 14px
+        dy = max(dy, -62)                         # 别飘得太远
+        if (y - T) < 30:
+            dy = 22                               # 贴画布顶端时改放下方，避免被裁
         anns.append(f'<text x="{x+dx:.1f}" y="{y+dy:.1f}" text-anchor="{anchor}" font-size="16" '
                     f'font-weight="700" fill="{accent}" '
                     f'font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(vals[i])}</text>')
 
-    # ── x 轴日期（最多 10 个）──
+    # ── x 轴日期：同款自适应（日期固定 5 字符 MM/DD，比数值标注宽，上限 10 个）──
+    _DFS, _DGAP, _DCAP = 15, 12, 10
+    _dw = 5 * _DFS * 0.62
+    _dfit = int(pw // (_dw + _DGAP)) + 1
+    _dk = max(2, min(_DCAP, _dfit, n))
+    if _dk >= n:
+        x_idx = list(range(n))
+    else:
+        x_idx = sorted({round(i * (n - 1) / (_dk - 1)) for i in range(_dk)})
     xlab = []
-    step = max(1, (n - 1) // 9) if n > 1 else 1
-    for i in range(0, n, step):
-        xlab.append(f'<text x="{X(i):.1f}" y="{H-18}" text-anchor="middle" font-size="15" '
+    for i in x_idx:
+        # 首尾日期同样向内对齐，否则贴边那颗会被面板内边切掉（2026-10-27 实测 10/23 被裁）
+        _a = "start" if i == 0 else ("end" if i == n - 1 else "middle")
+        xlab.append(f'<text x="{X(i):.1f}" y="{H-18}" text-anchor="{_a}" font-size="15" '
                     f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{labels[i]}</text>')
-    drawn = list(range(0, n, step))
-    if n > 1 and (n - 1) - drawn[-1] >= max(2, step // 2):
-        xlab.append(f'<text x="{X(n-1):.1f}" y="{H-18}" text-anchor="middle" font-size="15" '
-                    f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{labels[-1]}</text>')
 
     return f'''<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">
   <defs>
