@@ -41,12 +41,14 @@
     position:relative;z-index:2;
   }
   .badge{
-    width:62px;height:62px;border-radius:16px;flex:0 0 auto;
+    width:72px;height:72px;border-radius:18px;flex:0 0 auto;overflow:hidden;
     display:flex;align-items:center;justify-content:center;
     font-family:"Monocraft","PingFang SC",sans-serif;font-size:26px;font-weight:800;color:#fff;
     background:linear-gradient(145deg,{{ACCENT2}},{{ACCENT}});
     box-shadow:0 8px 18px {{SHADOW}};
+    border:2px solid rgba(255,255,255,.95);
   }
+  .badge img{width:100%;height:100%;object-fit:cover;display:block;image-rendering:pixelated}
   .t-name{
     font-family:"Monocraft","PingFang SC","Microsoft YaHei",sans-serif;
     font-size:36px;font-weight:800;letter-spacing:-.5px;color:#2c2622;
@@ -110,7 +112,7 @@
 <div class="card">
 
   <div class="topbar">
-    <div class="badge">{{INITIAL}}</div>
+    <div class="badge">{{HEAD}}</div>
     <div>
       <div class="t-name">{{PLAYER}}</div>
       <div class="t-sub">
@@ -144,7 +146,6 @@
   </div>
 
   <div class="foot">
-    <span>数据来源 洛花星雨 OpenAPI · 每日采集 · 单点取当日最后一次采样</span>
     <span class="r" id="f-time"></span>
   </div>
 

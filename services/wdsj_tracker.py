@@ -740,8 +740,13 @@ def _trend_svg(series: list, accent: str, accent2: str) -> str:
 
 
 def build_trend_card_html(player: str, metric: str, metric_label: str,
-                          series: list, days: int | None = None) -> str:
-    """趋势卡 HTML（主题同双模式战绩卡）。"""
+                          series: list, days: int | None = None,
+                          head_uri: str = "") -> str:
+    """趋势卡 HTML（主题同双模式战绩卡）。
+
+    head_uri: 玩家皮肤头像的 data URI（services.wdsj_api.fetch_player_head_data_uri
+    取回）。为空时回退成首字母徽章——头像服务抖动不该让整张卡渲染失败。
+    """
     global _trend_tpl_cache
     if _trend_tpl_cache is None:
         _trend_tpl_cache = _TREND_TPL_PATH.read_text(encoding="utf-8")
@@ -773,7 +778,10 @@ def build_trend_card_html(player: str, metric: str, metric_label: str,
             .replace("{{CHIP_BG}}", "rgba(255,255,255,.75)")
             .replace("{{CHIP_BORDER}}", "rgba(255,255,255,.95)")
             .replace("{{PLAYER}}", _esc_html(player))
-            .replace("{{INITIAL}}", _esc_html((player or "?")[0].upper()))
+            .replace("{{HEAD}}", (
+                f'<img src="{head_uri}" alt="">' if head_uri
+                else _esc_html((player or "?")[0].upper())
+            ))
             .replace("{{MODE_LABEL}}", mode_label)
             .replace("{{METRIC_LABEL}}", _esc_html(metric_label))
             .replace("{{DAYS}}", str(n))
@@ -812,7 +820,15 @@ async def generate_trend_card(player: str, metric: str, days: int | None = None)
     try:
         import time as _t
         from modules.changelog import render_card_to_image
-        html = build_trend_card_html(player, metric, label, series, days)
+        # 头像走 API 的 /api/v1/player-heads/{name}/head.png，转 data URI 内联，
+        # 避免截图时等外部网络（失败就用首字母徽章兜底）
+        head_uri = ""
+        try:
+            from services.wdsj_api import fetch_player_head_data_uri
+            head_uri = await fetch_player_head_data_uri(player)
+        except Exception as e:
+            logger.warning("趋势卡头像获取失败（回退首字母）: %s", e)
+        html = build_trend_card_html(player, metric, label, series, days, head_uri=head_uri)
         out = await render_card_to_image(
             html,
             output_filename=f"trend_{player}_{metric}_{int(_t.time())}.png",
