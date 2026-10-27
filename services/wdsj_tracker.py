@@ -527,3 +527,261 @@ def build_arena_daily_rankings(label_date=None, cross_day=False, auto_fallback=T
     else:
         time_end = max(all_times)[11:16] if all_times else "??:??"
     return rows, label_date, time_start, time_end, fallback
+
+
+# ══════════════════════════════════════════════════════════════
+#  趋势卡（HTML 版，2026-10-27 重做）
+#  主题对齐 data/templates/wdsj_dual_card.html：
+#  米白底 + 橙/蓝双光晕 + 白色半透明玻璃面板 + Monocraft 数字字体
+#  matplotlib 版（generate_trend_chart）保留为 Playwright 不可用时的兜底
+# ══════════════════════════════════════════════════════════════
+_TREND_CARD_W = 1800
+_TREND_TPL_PATH = Path(__file__).resolve().parent.parent / "data" / "templates" / "wdsj_trend.html"
+_trend_tpl_cache: str | None = None
+_monocraft_cache: str | None = None
+
+# 指标 → 视觉（起床用暖橙，竞技场用冷蓝，对应双模式卡的 --red-hue / --blue-hue）
+_TREND_THEME = {
+    "bw": {"accent": "#ee5a3a", "accent2": "#ff9e7a", "glow_a": "rgba(255,183,154,.34)",
+           "glow_b": "rgba(158,188,255,.30)", "shadow": "rgba(230,90,58,.26)"},
+    "ar": {"accent": "#4a6cf7", "accent2": "#8fa9ff", "glow_a": "rgba(255,183,154,.26)",
+           "glow_b": "rgba(158,188,255,.38)", "shadow": "rgba(74,108,247,.24)"},
+}
+
+
+def _trend_font_face() -> str:
+    """从双模式卡里抽 @font-face，避免同一份 380KB base64 维护两遍。"""
+    global _monocraft_cache
+    if _monocraft_cache is not None:
+        return _monocraft_cache
+    _monocraft_cache = ""
+    try:
+        import re as _re
+        dual = (_TREND_TPL_PATH.parent / "wdsj_dual_card.html").read_text(encoding="utf-8")
+        m = _re.search(r"@font-face\s*\{[^}]*?data:font/ttf;base64,[^}]*\}", dual, _re.S)
+        if m:
+            _monocraft_cache = m.group(0)
+    except Exception as e:
+        logger.warning("趋势卡字体提取失败（回退系统字体）: %s", e)
+    return _monocraft_cache
+
+
+def _fmt_num(v: int) -> str:
+    return f"{v:,}" if abs(v) >= 10000 else str(v)
+
+
+def _trend_svg(series: list, accent: str, accent2: str) -> str:
+    """把每日采样画成 SVG：面积渐变 + 折线 + 采样点 + 网格。
+
+    点少的日期全部标注数值；点多时只标首尾与极值，避免糊成一片。
+    """
+    W, H = 1640, 520
+    L, R, T, B = 70, 32, 24, 54
+    pw, ph = W - L - R, H - T - B
+
+    n = len(series)
+    vals = [s["val"] for s in series]
+    labels = [s["ts"][5:10].replace("-", "/") for s in series]   # MM/DD
+
+    vmin, vmax = min(vals), max(vals)
+    if vmax == vmin:
+        # 5 天都卡在同一个值时，折线会贴在底边上、刻度还会出现 48/48 这种重复
+        # （2026-10-27 实测 sb91786713lll 类玩家）。上下各留 5%（至少 1）居中。
+        _d = max(1, int(round(abs(vmax) * 0.05)))
+        vmin, vmax = vmax - _d, vmax + _d
+    pad = (vmax - vmin) * 0.10
+    y0, y1 = vmin - pad, vmax + pad
+
+    # y 轴取「好看的整数刻度」：步长落在 1/2/2.5/5 × 10^n，避免 7412/6529 这种碎值
+    import math as _m
+    span = max(1.0, y1 - y0)
+    raw_step = span / 4
+    mag = 10 ** _m.floor(_m.log10(raw_step)) if raw_step > 0 else 1
+    step_y = mag
+    for _mul in (1, 2, 2.5, 5, 10):
+        if raw_step <= _mul * mag:
+            step_y = _mul * mag
+            break
+    # 直接用「数据极值」对齐刻度，不再额外留白——否则 4267 会被拉到 3000 起，
+    # 图下方空出一大块。留白由刻度本身给（最多一个 step）。
+    step_y = max(1, round(step_y))        # 计数指标只用整数刻度
+    y0 = _m.floor(vmin / step_y) * step_y
+    y1 = _m.ceil(vmax / step_y) * step_y
+    if y1 - y0 < step_y:
+        y1 = y0 + step_y
+    while (y1 - y0) / step_y > 6:          # 最多 6 条网格线，避免刻度刷屏
+        step_y *= 2
+        y0 = _m.floor(vmin / step_y) * step_y
+        y1 = _m.ceil(vmax / step_y) * step_y
+    n_ticks = max(2, int(round((y1 - y0) / step_y)) + 1)
+
+    def X(i: int) -> float:
+        return L + (pw / 2 if n == 1 else pw * i / (n - 1))
+
+    def Y(v: float) -> float:
+        return T + ph - (v - y0) / (y1 - y0) * ph
+
+    # ── 网格与 y 轴刻度（5 条）──
+    grid, ticks = [], []
+    for k in range(n_ticks):
+        v = y0 + step_y * k
+        y = Y(v)
+        grid.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W-R}" y2="{y:.1f}" '
+                    f'stroke="rgba(120,100,80,.13)" stroke-width="1" stroke-dasharray="4 6"/>')
+        ticks.append(f'<text x="{L-14}" y="{y+4:.1f}" text-anchor="end" '
+                     f'font-size="15" fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">'
+                     f'{_fmt_num(int(round(v)))}</text>')
+
+    # ── 折线与面积 ──
+    pts = [(X(i), Y(v)) for i, v in enumerate(vals)]
+    line = "M " + " L ".join(f"{x:.1f} {y:.1f}" for x, y in pts)
+    area = (f'M {pts[0][0]:.1f} {T+ph:.1f} L ' +
+            " L ".join(f"{x:.1f} {y:.1f}" for x, y in pts) +
+            f' L {pts[-1][0]:.1f} {T+ph:.1f} Z')
+
+    # ── 采样点 ──
+    dots = []
+    dr, dw = (5.6, 3.0) if n <= 30 else ((4.0, 2.4) if n <= 60 else (2.8, 1.8))
+    for i, (x, y) in enumerate(pts):
+        dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{dr}" fill="#fff" '
+                    f'stroke="{accent}" stroke-width="{dw}"/>')
+
+    # ── 数值标注：≤20 点全标，否则只标首/尾/最高/最低 ──
+    ann_idx = set(range(n)) if n <= 20 else {0, n - 1, vals.index(max(vals)), vals.index(min(vals))}
+    anns = []
+    for i in sorted(ann_idx):
+        x, y = pts[i]
+        # 统一放点上方；只有贴着画布顶端（<30px）时才改放下方，避免被裁。
+        # 之前对「最低点」特判往下放，平坦数据下会跟 x 轴日期挤在一起且与其他点不齐。
+        dy = 22 if (y - T) < 30 else -16
+        # 首尾贴边：左右顶到画布边缘会被裁或压住 y 轴刻度，改成向内对齐
+        anchor, dx = "middle", 0
+        if i == 0:
+            anchor, dx = "start", 2
+        elif i == n - 1:
+            anchor, dx = "end", -2
+        anns.append(f'<text x="{x+dx:.1f}" y="{y+dy:.1f}" text-anchor="{anchor}" font-size="16" '
+                    f'font-weight="700" fill="{accent}" '
+                    f'font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(vals[i])}</text>')
+
+    # ── x 轴日期（最多 10 个）──
+    xlab = []
+    step = max(1, (n - 1) // 9) if n > 1 else 1
+    for i in range(0, n, step):
+        xlab.append(f'<text x="{X(i):.1f}" y="{H-18}" text-anchor="middle" font-size="15" '
+                    f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{labels[i]}</text>')
+    drawn = list(range(0, n, step))
+    if n > 1 and (n - 1) - drawn[-1] >= max(2, step // 2):
+        xlab.append(f'<text x="{X(n-1):.1f}" y="{H-18}" text-anchor="middle" font-size="15" '
+                    f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{labels[-1]}</text>')
+
+    return f'''<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="{accent}" stop-opacity=".26"/>
+      <stop offset="72%" stop-color="{accent}" stop-opacity=".05"/>
+      <stop offset="100%" stop-color="{accent}" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  {''.join(grid)}
+  <path d="{area}" fill="url(#ag)"/>
+  <path d="{line}" fill="none" stroke="{accent2}" stroke-width="9" stroke-opacity=".35"
+        stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <path d="{line}" fill="none" stroke="{accent}" stroke-width="4.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  {''.join(dots)}
+  {''.join(anns)}
+  {''.join(xlab)}
+  {''.join(ticks)}
+</svg>'''
+
+
+def build_trend_card_html(player: str, metric: str, metric_label: str,
+                          series: list, days: int | None = None) -> str:
+    """趋势卡 HTML（主题同双模式战绩卡）。"""
+    global _trend_tpl_cache
+    if _trend_tpl_cache is None:
+        _trend_tpl_cache = _TREND_TPL_PATH.read_text(encoding="utf-8")
+
+    th = _TREND_THEME["ar"] if metric.startswith("arena") else _TREND_THEME["bw"]
+    accent, accent2 = th["accent"], th["accent2"]
+    mode_label = "竞技场" if metric.startswith("arena") else "起床战争"
+
+    vals = [s["val"] for s in series]
+    n = len(vals)
+    first, last = vals[0], vals[-1]
+    delta = last - first
+    span_days = max(1, n - 1)
+    per_day = delta / span_days
+    diffs = [vals[i] - vals[i - 1] for i in range(1, n)]
+    max_day = max(diffs) if diffs else 0
+
+    d0 = series[0]["ts"][:10].replace("-", ".")
+    d1 = series[-1]["ts"][:10].replace("-", ".")
+
+    html = (_trend_tpl_cache
+            .replace("{{WIDTH}}", str(_TREND_CARD_W))
+            .replace("{{FONT_FACE}}", _trend_font_face())
+            .replace("{{ACCENT2}}", accent2)
+            .replace("{{ACCENT}}", accent)
+            .replace("{{SHADOW}}", th["shadow"])
+            .replace("{{GLOW_A}}", th["glow_a"])
+            .replace("{{GLOW_B}}", th["glow_b"])
+            .replace("{{CHIP_BG}}", "rgba(255,255,255,.75)")
+            .replace("{{CHIP_BORDER}}", "rgba(255,255,255,.95)")
+            .replace("{{PLAYER}}", _esc_html(player))
+            .replace("{{INITIAL}}", _esc_html((player or "?")[0].upper()))
+            .replace("{{MODE_LABEL}}", mode_label)
+            .replace("{{METRIC_LABEL}}", _esc_html(metric_label))
+            .replace("{{DAYS}}", str(n))
+            .replace("{{RANGE_LABEL}}", f"近 {days} 天" if days else "全量")
+            .replace("{{SPAN}}", f"{d0} → {d1}")
+            .replace("{{NOTE}}", f"每日一个采样点 · 共 {n} 个点 · 累计值走势")
+            .replace("{{SVG}}", _trend_svg(series, accent, accent2))
+            .replace("{{V_FIRST}}", _fmt_num(first))
+            .replace("{{V_LAST}}", _fmt_num(last))
+            .replace("{{DELTA_LABEL}}", "增长" if delta >= 0 else "减少")
+            .replace("{{DELTA_CLASS}}", "up" if delta > 0 else "flat")
+            .replace("{{V_DELTA}}", ("+" if delta > 0 else "") + _fmt_num(delta))
+            .replace("{{V_PERDAY}}", ("+" if per_day > 0 else "") + f"{per_day:.1f}")
+            .replace("{{V_MAXDAY}}", ("+" if max_day > 0 else "") + _fmt_num(int(max_day))))
+
+    from services.card_base import inject_stamp
+    import time as _t
+    return inject_stamp(html, _t.time() * 1000)
+
+
+def _esc_html(s) -> str:
+    import html as _h
+    return _h.escape(str(s), quote=True)
+
+
+async def generate_trend_card(player: str, metric: str, days: int | None = None) -> str | None:
+    """趋势卡主入口：HTML → Playwright 截图。失败时回退 matplotlib 版。"""
+    series = get_player_trend(player, metric, days)
+    if not series:
+        return None
+    label = metric
+    for mid, tid, fn, lb in _TREND_METRICS:
+        if mid == metric:
+            label = lb
+            break
+    try:
+        import time as _t
+        from modules.changelog import render_card_to_image
+        html = build_trend_card_html(player, metric, label, series, days)
+        out = await render_card_to_image(
+            html,
+            output_filename=f"trend_{player}_{metric}_{int(_t.time())}.png",
+            width=_TREND_CARD_W + 40,
+        )
+        if out:
+            return out
+        logger.warning("趋势卡截图返回空，回退 matplotlib")
+    except Exception as e:
+        logger.error("趋势卡 HTML 渲染失败，回退 matplotlib: %s", e, exc_info=True)
+    return generate_trend_chart(player, metric, days)

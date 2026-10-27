@@ -2836,7 +2836,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     # ★ 折线图
     if action in ("trend", "趋势", "走势", "折线"):
-        from services.wdsj_tracker import generate_trend_chart
+        from services.wdsj_tracker import generate_trend_card
         player = None
         metric = "bw_kills"
         for a in args[1:]:
@@ -2855,7 +2855,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         await (send_group_msg(tip, group_id) if is_group
                else send_private_msg(tip, user_id))
         
-        img = generate_trend_chart(player, metric)
+        img = await generate_trend_card(player, metric)
         if img:
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
             await (send_group_msg(cq, group_id) if is_group

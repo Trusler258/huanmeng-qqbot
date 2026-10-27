@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>洛花星雨 · {{METRIC_LABEL}}趋势</title>
+<style>
+  /* 主题继承 data/templates/wdsj_dual_card.html：米白底 + 橙/蓝双光晕 + 白色玻璃面板 */
+  {{FONT_FACE}}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{background:transparent}
+  body{
+    font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+    -webkit-font-smoothing:antialiased;
+    padding:0;
+  }
+  .card{
+    width:{{WIDTH}}px;
+    padding:38px 44px 30px;
+    background:
+      radial-gradient(900px 460px at 10% -10%, {{GLOW_A}}, transparent 62%),
+      radial-gradient(900px 460px at 90% -10%, {{GLOW_B}}, transparent 62%),
+      linear-gradient(160deg,#fbf6f0 0%,#f4f0ec 42%,#eef1f6 100%);
+    border-radius:32px;
+    position:relative;
+    overflow:hidden;
+  }
+  .card::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="140" height="140"><circle cx="8" cy="8" r="1" fill="white" opacity="0.5"/></svg>');
+    opacity:.5;
+  }
+
+  /* ── 顶部玩家条 ── */
+  .topbar{
+    display:flex;align-items:center;gap:22px;
+    background:rgba(255,255,255,.58);
+    backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+    border:1px solid rgba(255,255,255,.9);
+    border-radius:22px;padding:18px 26px;
+    box-shadow:0 14px 34px rgba(120,80,60,.08), inset 0 1px 0 rgba(255,255,255,.95);
+    position:relative;z-index:2;
+  }
+  .badge{
+    width:62px;height:62px;border-radius:16px;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;
+    font-family:"Monocraft","PingFang SC",sans-serif;font-size:26px;font-weight:800;color:#fff;
+    background:linear-gradient(145deg,{{ACCENT2}},{{ACCENT}});
+    box-shadow:0 8px 18px {{SHADOW}};
+  }
+  .t-name{
+    font-family:"Monocraft","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:36px;font-weight:800;letter-spacing:-.5px;color:#2c2622;
+    text-shadow:0 1px 0 rgba(255,255,255,.85);
+  }
+  .t-sub{display:flex;gap:14px;margin-top:6px;font-size:17px;color:#8a7f76;align-items:center}
+  .t-sub b{color:#4a423c;font-weight:700;font-family:"Monocraft","PingFang SC",sans-serif}
+  .sep{width:1px;height:14px;background:rgba(120,100,80,.22)}
+  .t-right{margin-left:auto;text-align:right}
+  .chip{
+    display:inline-flex;align-items:center;gap:7px;
+    padding:7px 14px;border-radius:12px;font-size:15px;font-weight:700;
+    color:{{ACCENT}};background:{{CHIP_BG}};border:1px solid {{CHIP_BORDER}};
+  }
+  .dot{width:8px;height:8px;border-radius:50%;background:{{ACCENT}};box-shadow:0 0 0 3px {{CHIP_BG}}}
+  .t-span{font-size:14.5px;color:#9a8f86;margin-top:8px;font-family:"Monocraft","PingFang SC",sans-serif}
+
+  /* ── 图表面板 ── */
+  .panel{
+    margin-top:20px;position:relative;z-index:2;
+    background:rgba(255,255,255,.55);
+    backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+    border:1px solid rgba(255,255,255,.9);
+    border-radius:24px;
+    padding:22px 18px 10px;
+    box-shadow:0 14px 34px rgba(120,80,60,.07), inset 0 1px 0 rgba(255,255,255,.95);
+  }
+  .panel-head{
+    display:flex;align-items:baseline;gap:12px;padding:0 14px 6px;
+  }
+  .panel-title{font-size:17px;font-weight:700;color:#3a332c}
+  .panel-note{font-size:13.5px;color:#a29890}
+  svg{display:block;width:100%;height:auto}
+
+  /* ── 统计条 ── */
+  .stats{
+    display:flex;gap:12px;margin-top:18px;position:relative;z-index:2;
+  }
+  .stat{
+    flex:1;background:rgba(255,255,255,.62);
+    border:1px solid rgba(255,255,255,.92);border-radius:16px;
+    padding:14px 16px;box-shadow:0 8px 20px rgba(120,80,60,.05);
+  }
+  .stat .k{font-size:13px;color:#9a8f86;letter-spacing:.4px}
+  .stat .v{
+    margin-top:5px;font-size:27px;font-weight:800;color:#2c2622;
+    font-family:"Monocraft","PingFang SC",sans-serif;letter-spacing:-.5px;
+  }
+  .stat .v.up{color:{{ACCENT}}}
+  .stat .v.flat{color:#8a7f76}
+
+  /* ── 页脚 ── */
+  .foot{
+    display:flex;align-items:center;gap:10px;margin-top:16px;padding:0 6px;
+    font-size:12.5px;color:#a89e96;position:relative;z-index:2;
+  }
+  .foot .r{margin-left:auto;font-family:"Monocraft","PingFang SC",sans-serif}
+</style>
+</head>
+<body>
+<div class="card">
+
+  <div class="topbar">
+    <div class="badge">{{INITIAL}}</div>
+    <div>
+      <div class="t-name">{{PLAYER}}</div>
+      <div class="t-sub">
+        <span>{{MODE_LABEL}}</span>
+        <span class="sep"></span>
+        <span><b>{{METRIC_LABEL}}</b></span>
+        <span class="sep"></span>
+        <span>采集 <b>{{DAYS}}</b> 天</span>
+      </div>
+    </div>
+    <div class="t-right">
+      <span class="chip"><i class="dot"></i>{{RANGE_LABEL}}</span>
+      <div class="t-span">{{SPAN}}</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <span class="panel-title">{{METRIC_LABEL}}累积走势</span>
+      <span class="panel-note">{{NOTE}}</span>
+    </div>
+    {{SVG}}
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">起始</div><div class="v flat">{{V_FIRST}}</div></div>
+    <div class="stat"><div class="k">当前</div><div class="v">{{V_LAST}}</div></div>
+    <div class="stat"><div class="k">{{DELTA_LABEL}}</div><div class="v {{DELTA_CLASS}}">{{V_DELTA}}</div></div>
+    <div class="stat"><div class="k">日均增长</div><div class="v flat">{{V_PERDAY}}</div></div>
+    <div class="stat"><div class="k">单日最高</div><div class="v flat">{{V_MAXDAY}}</div></div>
+  </div>
+
+  <div class="foot">
+    <span>数据来源 洛花星雨 OpenAPI · 每日采集 · 单点取当日最后一次采样</span>
+    <span class="r" id="f-time"></span>
+  </div>
+
+</div>
+</body>
+</html>
