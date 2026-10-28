@@ -55,10 +55,26 @@ LLM 回复总开关已关闭，跳过本轮（chat=0 user=1）
 
 指令通路另行验证过，不受影响。
 
-### 五、QQ 空间通知
+### 五、QQ 空间通知（已发）
 
-原计划同步发说说告知群友，但 `config/qzone_cookie.txt` 里的 cookie 已失效
-（`code=-3000`，2026-10-20 之后没续），自动发布走不通，文案已备好待手动发。
+`config/qzone_cookie.txt` 里的 cookie 早就失效了（`code=-3000`），
+但**不用它也能发**——NapCat 自带空间接口：
+
+- `get_cookies(domain=qzone.qq.com)` 从当前登录态直接取新鲜 cookie
+- `send_qzone_msg({content})` 发布说说，返回 `tid`
+- `delete_qzone_msg({tid})` 删说说
+
+已按此发出公告（tid `42a77adb975fe16a17160300`）：
+
+```
+【功能调整】
+应 QQ 平台政策要求，幻梦的对话回复暂时关闭，但所有指令照常可用
+并非跑路，望周知
+```
+
+⚠️ 踩坑记录：`send_qzone_msg` 参数校验很松，拿 `content='x'` 试探接口
+**会真的发出去一条**。验证接口是否可用请用 `get_supported_actions`
+或直接看返回码，别拿真接口做探活。测试那条已用 `delete_qzone_msg` 删除。
 
 ## v2.3.108 — /~wdsj trend 折线图重做（双模式卡视觉）(2026.10.27)
 
