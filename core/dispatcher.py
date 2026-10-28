@@ -37,8 +37,11 @@ def _record_recent_image(chat_id: int, url: str, desc: str, sender: str) -> None
 
 
 # 行首的 @ 提及：CQ 码形态 或 明文「@昵称」
+# ★ v2.3.110：token 里遇到 `/~` 或 `/#` 就停 —— QQ 有时不给 @ 和正文之间留空格
+#   （`@小明\u200b/~help`），原 `@\S{1,24}` 会把指令一起吞掉，剥完剩空串。
+#   只认这两个强标记停：昵称里的普通斜杠（`@//rick/`）不会被误切。
 _LEADING_MENTION_RE = re.compile(
-    r"^\s*(?:\[CQ:at,qq=\d+[^\]]*\]|@\S{1,24}[\s,，:：]*)")
+    r"^\s*(?:\[CQ:at,qq=\d+[^\]]*\][\s,，:：]*|@(?:(?!/~|/#)\S){1,40}[\s,，:：]*)")
 
 # 零宽字符：QQ 常在「@」与昵称/正文之间塞 U+200B/U+FEFF 防解析。
 # ⚠️ 它们在正则里属于 \S（非空白），会让「@\S+」把零宽吃进昵称、
@@ -58,17 +61,19 @@ def _strip_leading_mentions(text: str, limit: int = 3) -> str:
     只剥开头、且剥完必须以 / 开头才返回新值；带疑问词的（「/~draw 是啥意思」）
     视为提问，不剥，避免白白执行一条指令（画图还会扣配额）。
 
-    ★ v2.3.107（2026-10-25 用户报「@其他人后面带指令不触发」）两处增强：
+    ★ v2.3.107（2026-10-25）两处增强：昵称含斜杠、@ 与正文间有零宽字符。
 
-    ① **昵称本身含斜杠**（例 `@//rick/ /mc`）。`@\\S{1,24}` 只会剥到第一个空白，
-       剥完剩 `/rick/ /mc`（看着像指令、实际是昵称残渣）→ 不以 / 开头 → 判成聊天。
-       现在改成：如果 @ 后第一个 token 里有 `/`，就以「空白 + /」为切点，
-       后面那段才是指令。
+    ★ v2.3.110（2026-10-28）：**删掉「昵称含斜杠 → 按空白 + / 切开」那条特判**。
+    它是为 `@//rick/ /mc` 补的，但在有多个 @ 的行里会切过头：
 
-    ② **零宽字符**。QQ 会在 @ 与正文之间插 U+200B/U+FEFF，`\\S` 把它们当有效字符，
-       导致「剥不干净」或「`\\u200b/mc` 不以 / 开头」。先统一剔除再判。
+        @//rick/ 53cfec… @//rick/ /mc 53cfec… gif
 
-    两种情况都只在**行首是 @ 提及**时生效，普通聊天里出现的 `/xxx` 一律不动。
+    整行第一处「空白 + /」出现在中间的 `/mc` 前，于是前半句被当成 @ 前缀吃掉，
+    剩下 `/mc …` 被判定成指令，回了句「未知指令」——实际只是群友在聊天。
+
+    现在统一成：**只按 token 逐个剥行首 mention**（\\S 到空白为止，或 CQ at 段），
+    剥完再判是否以 `/` 开头。昵称里带斜杠天然不受影响，因为 `@//rick/` 本身就是
+    一个完整 token（斜杠后面没有空白）。
     """
     if not text:
         return text
@@ -78,22 +83,14 @@ def _strip_leading_mentions(text: str, limit: int = 3) -> str:
         return text
 
     probe = clean
+    for _ in range(max(1, limit)):
+        nxt = _LEADING_MENTION_RE.sub("", probe, count=1)
+        if nxt == probe:
+            break
+        probe = nxt
 
-    # 增强①：昵称含斜杠 → 按「空白 + /」切开
-    m_head = re.match(r"^\s*@(\S{1,40})", probe)
-    if m_head and "/" in m_head.group(1):
-        cut = re.search(r"\s+(?=/)", probe)
-        if not cut:
-            return text
-        probe = probe[cut.end():]
-    else:
-        for _ in range(max(1, limit)):
-            nxt = _LEADING_MENTION_RE.sub("", probe, count=1)
-            if nxt == probe:
-                break
-            probe = nxt
-        if probe == clean:
-            return text
+    if probe == clean:
+        return text
 
     probe = probe.lstrip()
     if not probe.startswith("/"):
