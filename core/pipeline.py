@@ -676,6 +676,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     # 只有进入回复管道的消息才写入 group_context
     ctx.append_to_context(chat_id, context_line)
 
+    # ------LLM 回复总开关（2026-10-28）------
+    # 用户要求：按 QQ 政策暂停 LLM 对话回复，指令照常。
+    # 放在这里而不是函数最开头——上面已经有指令拦截分支（指令不经过本管道），
+    # 这里只掐「回复判断 → 生成 → 发送」这一段，判定都不跑，连 token 都省。
+    from core.llm_switch import is_llm_reply_enabled
+    if not is_llm_reply_enabled():
+        logger.info("LLM 回复总开关已关闭，跳过本轮（chat=%s user=%s）", chat_id, user_id)
+        return
+
     # ------回复判断------
     should_reply = False
     import re as _re

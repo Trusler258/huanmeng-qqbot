@@ -58,6 +58,7 @@ _CATEGORY = {
     "box": "工具", "快递": "工具",
     # 数据
     "stats": "数据", "统计": "数据", "unstats": "数据", "setstats": "数据",
+    "llm": "系统", "回复": "系统",
     "recall": "数据", "favlist": "数据",
     "balance": "数据", "cost": "数据", "tokens": "数据",
     "dbsearch": "数据", "回顾": "数据",
@@ -152,6 +153,7 @@ _EXTRA_DESC = {
     "统计": "群聊今日统计",
     "unstats": "暂停本群统计",
     "setstats": "恢复本群统计",
+    "llm": "LLM 回复总开关（关闭后群里不回话，指令照常）",
     "recall": "查看群消息撤回记录",
     "favlist": "查看好感度排行榜",
     "balance": "DeepSeek API 余额查询",

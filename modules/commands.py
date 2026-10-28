@@ -1393,6 +1393,47 @@ async def cmd_setstats(args, user_id, group_id, sender_name, is_group, bot_qq):
     return format_lang("cmd_setstats.m3")
 
 
+async def cmd_llm(args, user_id, group_id, sender_name, is_group, bot_qq):
+    """LLM 回复总开关 /~llm [on|off|status]
+
+    2026-10-28 用户要求：按 QQ 平台政策暂停机器人对话回复，指令照常。
+    关闭后 core/pipeline.py 在「回复判断」之前直接 return，判定/生成/发送全部跳过。
+    开关是文件开关（data/llm_reply_disabled），重启不失效。
+    """
+    cfg = get_config()
+    sub = (args[0].lower() if args else "status")
+
+    from core.llm_switch import is_llm_reply_enabled, set_llm_reply_enabled, state
+
+    if sub in ("status", "状态", ""):
+        st = state()
+        if st["enabled"]:
+            return "LLM 回复：开启中 · 按群白名单正常对话\n关闭用 /~llm off（管理员）"
+        since = st["since"] or "未知"
+        return (f"LLM 回复：已关闭（{since} 起）\n"
+                f"· 群里不会再回话，指令照常执行\n"
+                f"· 恢复用 /~llm on（管理员）")
+
+    if sub in ("on", "开", "开启", "打开"):
+        if not cfg.is_admin(user_id, group_id):
+            return "只有管理员能开 LLM 回复"
+        if not set_llm_reply_enabled(True, by=user_id):
+            return "LLM 回复本来就是开着的"
+        logger.info("指令 /~llm on: 操作者=%d 群=%d", user_id, group_id)
+        return "LLM 回复已开启，按群白名单正常对话"
+
+    if sub in ("off", "关", "关闭", "停"):
+        if not cfg.is_admin(user_id, group_id):
+            return "只有管理员能关 LLM 回复"
+        if not set_llm_reply_enabled(False, by=user_id):
+            return "LLM 回复本来就是关着的"
+        logger.info("指令 /~llm off: 操作者=%d 群=%d", user_id, group_id)
+        return ("LLM 回复已关闭：群里不再回话，指令照常执行\n"
+                "恢复：/~llm on")
+
+    return "用法：/~llm [status|on|off]（on/off 仅管理员）"
+
+
 async def cmd_leave(args, user_id, group_id, sender_name, is_group, bot_qq):
     """退群指令 /~leave [群号] — 收集数据 → 发送 → 重置好感度 → 退群（仅管理员）"""
     cfg = get_config()
@@ -4420,6 +4461,8 @@ COMMAND_MAP: dict[str, callable] = {
     "提醒":       cmd_remind,
     "抽":         cmd_chou,
     "stats":      cmd_stats,
+    "llm":        cmd_llm,
+    "回复":       cmd_llm,
     "统计":       cmd_stats,
     "unstats":    cmd_unstats,
     "setstats":   cmd_setstats,
