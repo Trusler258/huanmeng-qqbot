@@ -215,6 +215,14 @@ async def handle_poke_event(sender_name, user_id, chat_id, is_group):
 
     sender_name = _clean_name(sender_name)
 
+    # ★ v2.3.110（2026-10-28 用户实测「LLM 没拦住」）：戳一戳是**独立链路**，
+    #   不经过 process_message，所以总开关在那边拦住了 112 次群消息，
+    #   戳一戳照样回「手好暖，舒服得不想动啦」。这里补同一道闸。
+    from core.llm_switch import is_llm_reply_enabled
+    if not is_llm_reply_enabled():
+        logger.info("LLM 回复总开关已关闭，跳过戳一戳回复（chat=%s user=%s）", chat_id, user_id)
+        return
+
     from modules.fav import ensure_fav
     ensure_fav(chat_id, user_id, is_group)
 
