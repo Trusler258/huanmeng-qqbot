@@ -391,9 +391,14 @@ class EventDispatcher:
                              msg_content, _stripped)
                 msg_content = _stripped
 
+        # ★ v2.3.110：裸 `/xxx` 只有 xxx 是已注册指令时才当指令。
+        #   群里说游戏命令（`/mc`、`/tpa`）会被当成指令回「未知指令」，
+        #   2026-10-28 用户实测 @人 + /mc 刷了一句「未知指令」。
+        #   `/~xxx` / `/#xxx` 依旧无条件算指令（明确意图，写错要提示）。
+        from modules.commands import is_known_bare_command as _is_bare_ok
         is_command = msg_type == "文字" and (
             msg_content.startswith("/~") or msg_content.startswith("/#") or
-            (msg_content.startswith("/") and len(msg_content) > 1 and msg_content[1:2] not in "~#/ ")
+            _is_bare_ok(msg_content)
         )
 
         # ★ 分群指令白名单（群内才检查）

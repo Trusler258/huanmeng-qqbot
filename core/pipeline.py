@@ -664,9 +664,18 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
         #   代码保真）——旧正则在第一个换行截断，多行代码只剩第一行
         if _re.match(r'/~\s*run\b', full_cmd):
             full_cmd = msg_content
-        logger.info("指令拦截: '%s' from=%s", full_cmd.replace("\n", " | "), sender_name)
-        await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message)
-        return
+        # ★ v2.3.110：裸 `/xxx` 必须先查过指令表。正则里的 `/(?=[a-zA-Z])`
+        #   会把 `/mc`、`/tpa` 这类游戏命令也当成指令，回一句「未知指令」；
+        #   查不到就当作普通聊天，继续往下走（不 return）。
+        if not full_cmd.startswith(("/~", "/#")):
+            from modules.commands import is_known_bare_command as _is_bare_ok
+            if not _is_bare_ok(full_cmd):
+                logger.debug("裸 / 指令未注册，按聊天处理: %r", full_cmd)
+                cmd_match = None
+        if cmd_match is not None:
+            logger.info("指令拦截: '%s' from=%s", full_cmd.replace("\n", " | "), sender_name)
+            await _handle_command_route(full_cmd, user_id, chat_id, sender_name, is_group, bot_qq, raw_message=raw_message)
+            return
 
     if msg_type != "文字":
         logger.debug("非文字消息(type=%s)，不进入回复管道", msg_type)

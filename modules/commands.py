@@ -4592,6 +4592,30 @@ def is_heavy_command(text: str) -> bool:
     return name in HEAVY_COMMANDS or name in EXTRA_HEAVY_COMMANDS
 
 
+_BARE_CMD_NAMES: set[str] | None = None
+
+
+def is_known_bare_command(text: str) -> bool:
+    """裸 `/xxx`（不带 `~` / `#`）只有 xxx 是已注册指令时才当指令。
+
+    群里常有人说游戏命令——`/mc`、`/tpa`、`/spawn`。原逻辑把「/ + 字母」一律
+    当指令，于是回一句「未知指令 /mc」，很吵（2026-10-28 用户实测：@人 + /mc）。
+
+    `/~xxx` 和 `/#xxx` 不受影响：那是明确的调用意图，写错了照样提示未知指令。
+    """
+    global _BARE_CMD_NAMES
+    t = (text or "").strip()
+    if not t.startswith("/") or t.startswith(("/~", "/#", "//")):
+        return False
+    body = t[1:].strip()
+    if not body:
+        return False
+    name = body.split()[0].lower()
+    if _BARE_CMD_NAMES is None:
+        _BARE_CMD_NAMES = {str(k).lower() for k in COMMAND_MAP}
+    return name in _BARE_CMD_NAMES
+
+
 async def handle_command(
     text: str,
     user_id: int,

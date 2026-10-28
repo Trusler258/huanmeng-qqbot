@@ -31,6 +31,23 @@ CASES = [
 ]
 
 
+# ── 裸 / 指令白名单（2026-10-28）──
+from modules.commands import is_known_bare_command as B  # noqa: E402
+
+BARE_CASES = [
+    ("/mc 是游戏命令，不是 bot 指令", "/mc", False),
+    ("/tpa home 同理", "/tpa home", False),
+    ("/spawn", "/spawn", False),
+    ("/help 是注册指令", "/help", True),
+    ("/wdsj me 带参数也认", "/wdsj me", True),
+    ("/~ 开头不算裸指令", "/~help", False),
+    ("/# 开头不算裸指令", "/#help", False),
+    ("双斜杠不是指令", "//rick/", False),
+    ("斜杠后接空格", "/ 上海", False),
+    ("单独一个斜杠", "/", False),
+]
+
+
 def main() -> int:
     ok = bad = 0
     for name, src, want in CASES:
@@ -43,6 +60,15 @@ def main() -> int:
             print(f"   输入: {src!r}")
             print(f"   期望: {want!r}")
             print(f"   实际: {got!r}")
+    for name, src, want in BARE_CASES:
+        got = B(src)
+        if got == want:
+            ok += 1
+        else:
+            bad += 1
+            print(f"✗ [裸指令] {name}")
+            print(f"   输入: {src!r}  期望: {want}  实际: {got}")
+
     print(f"\n通过 {ok} / 失败 {bad}")
     return 0 if bad == 0 else 1
 
