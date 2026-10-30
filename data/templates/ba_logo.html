@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>BA Logo</title>
+<!--
+  画法移植自 nulla2011/Bluearchive-logo（MIT）的 src/canvas.ts：
+    左蓝字（#128AFA，斜切）→ 光环光晕 → 右深灰字（白描边 12px）→ 镂空三角 → 十字
+  与原版差异：
+    1) 不用 RoG2 Sans（商业字体），改用系统 Noto Sans CJK SC + 重字重
+    2) 画在 2 倍位图（canvas.width = W*2）后按 CSS 尺寸显示，截图即 2x 清晰
+    3) 画完自动裁掉两侧空白（等价原版 generateImg 的裁剪）
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: transparent; }
+  #canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+(function () {
+  var DATA = __BA_DATA__;
+
+  var CFG = {
+    canvasHeight: 250,
+    canvasWidth: 900,
+    fontSize: 84,
+    textBaseLine: 0.68,
+    horizontalTilt: DATA.tilt,
+    paddingX: 10,
+    graphOffset: { X: DATA.offsetX, Y: DATA.offsetY },
+    hollowPath: [[284, 136], [321, 153], [159, 410], [148, 403]]
+  };
+  var SCALE = 2;   // 位图倍数，保证截图边缘锐利
+
+  var canvas = document.getElementById('canvas');
+  var ctx = canvas.getContext('2d');
+  canvas.height = CFG.canvasHeight * SCALE;
+  canvas.width = CFG.canvasWidth * SCALE;
+
+  var textL = DATA.textL || '';
+  var textR = DATA.textR || '';
+  var transparent = !!DATA.transparent;
+
+  // 字重 900：BA 的标题字很粗，Noto 的 regular 太细（系统没装 Black 时浏览器会合成加粗）
+  var font = '900 ' + CFG.fontSize + 'px "Noto Sans CJK SC", "Source Han Sans SC", ' +
+             '"PingFang SC", "Microsoft YaHei", sans-serif';
+
+  var halo = new Image();
+  var cross = new Image();
+  var pending = 2;
+
+  function ready() {
+    pending -= 1;
+    if (pending === 0) draw();
+  }
+  halo.onload = ready;
+  cross.onload = ready;
+  halo.src = DATA.halo;
+  cross.src = DATA.cross;
+
+  function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!transparent) {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    ctx.font = font;
+    var mL = ctx.measureText(textL || '');
+    var mR = ctx.measureText(textR || '');
+
+    // 文字宽度 + 斜切补偿（原版 setWidth 的公式）
+    var wL = (textL ? mL.width : 0) -
+             (CFG.textBaseLine * CFG.canvasHeight + (mL.fontBoundingBoxDescent || 0)) * CFG.horizontalTilt;
+    var wR = (textR ? mR.width : 0) +
+             (CFG.textBaseLine * CFG.canvasHeight - (mR.fontBoundingBoxAscent || 0)) * CFG.horizontalTilt;
+    if (!textL) wL = 0;
+    if (!textR) wR = 0;
+
+    var half = CFG.canvasWidth / 2;
+    var widthL = Math.max(half, wL + CFG.paddingX);
+    var widthR = Math.max(half, wR + CFG.paddingX);
+    var fullW = widthL + widthR;
+
+    // 先把画布扩到实际宽度（乘 SCALE）
+    canvas.width = fullW * SCALE;
+    canvas.height = CFG.canvasHeight * SCALE;
+    ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+    if (!transparent) {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, fullW, CFG.canvasHeight);
+    }
+    ctx.font = font;
+
+    var baseY = CFG.canvasHeight * CFG.textBaseLine;
+
+    // 左：蓝字，右对齐到中线，斜切
+    if (textL) {
+      ctx.fillStyle = '#128AFA';
+      ctx.textAlign = 'end';
+      ctx.setTransform(SCALE, 0, SCALE * CFG.horizontalTilt, SCALE, 0, 0);
+      ctx.fillText(textL, widthL, baseY);
+      ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+    }
+
+    // 光环光晕（夹在左右文字之间）
+    var gx = widthL - CFG.canvasHeight / 2 + CFG.graphOffset.X;
+    var gy = CFG.graphOffset.Y;
+    ctx.drawImage(halo, gx, gy, CFG.canvasHeight, CFG.canvasHeight);
+
+    // 右：深灰字 + 白描边
+    if (textR) {
+      ctx.fillStyle = '#2B2B2B';
+      ctx.textAlign = 'start';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 12;
+      ctx.setTransform(SCALE, 0, SCALE * CFG.horizontalTilt, SCALE, 0, 0);
+      ctx.strokeText(textR, widthL, baseY);
+      ctx.fillText(textR, widthL, baseY);
+      ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+    }
+
+    // 镂空三角（盖住光晕左下角，形成 BA 的切割感）
+    ctx.beginPath();
+    ctx.moveTo(gx + (CFG.hollowPath[0][0] / 500) * CFG.canvasHeight,
+               gy + (CFG.hollowPath[0][1] / 500) * CFG.canvasHeight);
+    for (var i = 1; i < 4; i++) {
+      ctx.lineTo(gx + (CFG.hollowPath[i][0] / 500) * CFG.canvasHeight,
+                 gy + (CFG.hollowPath[i][1] / 500) * CFG.canvasHeight);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+
+    // 十字
+    ctx.drawImage(cross, gx, gy, CFG.canvasHeight, CFG.canvasHeight);
+
+    // ── 按实际墨迹裁剪 ──
+    // 原版按「文字宽度」算裁剪框，textL 为空时光环在框外，会被切掉半截
+    //（2026-10-30 实测：/~ba 碧蓝档案 → 碧字被切）。改成扫像素取 bbox，任何组合都安全。
+    var W = canvas.width, H = canvas.height;
+    var px = ctx.getImageData(0, 0, W, H).data;
+    var minX = W, maxX = -1, minY = H, maxY = -1;
+    for (var y = 0; y < H; y++) {
+      for (var x = 0; x < W; x++) {
+        var i = (y * W + x) * 4;
+        if (px[i + 3] < 8) continue;                       // 全透明
+        if (!transparent && px[i] > 245 && px[i + 1] > 245 && px[i + 2] > 245) {
+          continue;                                        // 白底上的白像素
+        }
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < 0) { window.__baReady = true; return; }      // 空白画面，不裁
+
+    var m = 8 * SCALE;                                      // 边距（设备像素）
+    minX = Math.max(0, minX - m); minY = Math.max(0, minY - m);
+    maxX = Math.min(W - 1, maxX + m); maxY = Math.min(H - 1, maxY + m);
+    var cw = maxX - minX + 1, ch = maxY - minY + 1;
+
+    var out = document.createElement('canvas');
+    out.width = cw; out.height = ch;
+    out.getContext('2d').drawImage(canvas, minX, minY, cw, ch, 0, 0, cw, ch);
+
+    canvas.width = cw;
+    canvas.height = ch;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(out, 0, 0);
+
+    canvas.style.width = (cw / SCALE) + 'px';
+    canvas.style.height = (ch / SCALE) + 'px';
+    window.__baReady = true;
+  }
+})();
+</script>
+</body>
+</html>
