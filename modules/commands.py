@@ -3009,18 +3009,28 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             wdsj_store(snapshot, player, template_id, summary)
 
             if MD_INLINE_IMAGE:
-                # 图放进 markdown（外链，wdsj 那边不带 Referer 也能取，实测 200 image/webp），
-                # 下面跟引用块方便长按复制玩家名。返回文本由调用方发出，
+                # 图放进 markdown，下面跟引用块方便长按复制玩家名。返回文本由调用方发出，
                 # 这样官方渠道的按钮能跟图挂同一条消息。
                 pj = data.get("player") or {}
                 name = pj.get("name") or player
                 nick = pj.get("nickname") or ""
-                lines = [
-                    f"![]({api.BASE_URL}{image_url})",
-                    "",
-                    "> 快捷复制名称",
-                    f"> {name}",
-                ]
+
+                # ★ 优先转存 QQ 素材库：wdsj 给的是 webp，手机端不渲染 webp 外链
+                img_url, iw, ih = "", 0, 0
+                if MD_IMAGE_UPLOADER is not None:
+                    try:
+                        img_url, iw, ih = await MD_IMAGE_UPLOADER(save_path)
+                    except Exception as e:
+                        logger.warning("战绩图转存素材库失败，回退外链: %s", e, exc_info=True)
+                if img_url:
+                    # markdown 图片必须带尺寸，不带会渲染异常
+                    disp_w = 720
+                    disp_h = max(1, round(disp_w * ih / iw)) if iw else 0
+                    pic = f"![#{disp_w}px #{disp_h}px]({img_url})" if disp_h else f"![]({img_url})"
+                else:
+                    pic = f"![]({api.BASE_URL}{image_url})"
+
+                lines = [pic, "", "> 快捷复制名称", f"> {name}"]
                 if nick and nick != name:
                     lines.append(f"> {nick}")
                 return "\n".join(lines)
@@ -4466,6 +4476,11 @@ SUPPRESS_PROGRESS_TIP = False
 # 这样图和按钮能落在同一条消息里（QQ 的富媒体消息不渲染 keyboard）。
 # NapCat 走原来的本地图 + CQ 码，不受影响。
 MD_INLINE_IMAGE = False
+
+# 官方进程注入的图片转存函数：async (path) -> (url, w, h)。
+# wdsj 的图是 webp，手机 QQ 不渲染 webp 外链 → 转存进 QQ 素材库才能两端可见。
+# None = 不用（NapCat / 未注入时走外链或富媒体）。
+MD_IMAGE_UPLOADER = None
 
 
 def _lazy(plugin: str, attr: str):

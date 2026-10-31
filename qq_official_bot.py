@@ -321,6 +321,77 @@ def send_cq(cq_or_text: str) -> bool:
     return ok
 
 
+# ────────────────────── 素材库（markdown 内嵌图专用） ──────────────────────
+def upload_media_image_sync(path: str) -> tuple[str, int, int]:
+    """把图片传进 QQ 素材库，返回 (qqbot-media 引用, 宽, 高)。
+
+    ★ 为什么不用外链：
+      1. wdsj 的图是 **webp**，手机 QQ 不渲染 webp（电脑端正常）——
+         这是本次「手机看不到图」的根因，社区已有同样结论
+      2. 官方素材库是 QQ 自己的存储，两端都认，发送时平台自动转存
+      3. markdown 图片**必须带尺寸**（`![alt #720px #900px](url)`），不带会渲染异常
+
+    流程：prepare 拿预签名 → PUT 直传 → complete 换 qqbot-media:// 引用。
+    失败返回空串，调用方回退外链。
+    """
+    import hashlib
+    import io as _io
+    from pathlib import Path as _P
+
+    p = _P(path)
+    raw = p.read_bytes()
+    w = h = 0
+
+    # webp → JPEG：手机兼容性最好，体积也小一半以上
+    try:
+        from PIL import Image
+        im = Image.open(_io.BytesIO(raw))
+        w, h = im.size
+        buf = _io.BytesIO()
+        im.convert("RGB").save(buf, "JPEG", quality=90, optimize=True)
+        data, ctype, name = buf.getvalue(), "image/jpeg", p.stem + ".jpg"
+    except Exception as e:
+        log("图片转 JPEG 失败，按原图上传:", type(e).__name__, e)
+        data, ctype, name = raw, "image/webp", p.name
+
+    body = {
+        "file_name": name,
+        "file_size": len(data),
+        "content_type": ctype,
+        "md5": hashlib.md5(data).hexdigest(),
+        "sha1": hashlib.sha1(data).hexdigest(),
+    }
+    st, d = _api("POST", "/v2/media-images/prepare", body, timeout=20)
+    if st != 200 or not d.get("presigned_url"):
+        log("素材 prepare 失败:", st, str(d)[:150])
+        return "", 0, 0
+
+    try:
+        req = urllib.request.Request(
+            d["presigned_url"], data=data, method="PUT",
+            headers={"Content-Type": ctype})
+        urllib.request.urlopen(req, timeout=60).read()
+    except Exception as e:
+        log("素材 PUT 失败:", type(e).__name__, str(e)[:150])
+        return "", 0, 0
+
+    # ⚠️ complete 必须带上 prepare 的全部字段 + upload_id，少一个就是 40093006
+    st2, d2 = _api("POST", "/v2/media-images/complete",
+                   dict(body, upload_id=d.get("upload_id")), timeout=30)
+    if st2 != 200:
+        log("素材 complete 失败:", st2, str(d2)[:150])
+        return "", 0, 0
+
+    url = d2.get("url", "")
+    log(f"素材已入库 {d2.get('image_id')} {w}x{h} {(len(data) / 1024):.0f}KB")
+    return url, w, h
+
+
+async def upload_media_image(path: str) -> tuple[str, int, int]:
+    """异步包装：上传是阻塞 HTTP，不能卡住网关事件循环。"""
+    return await asyncio.to_thread(upload_media_image_sync, path)
+
+
 # ────────────────────────── 给指令层打桩 ──────────────────────────
 def install_sender_shim() -> None:
     """让命令 handler 的 send_* 走官方 API（仅本进程生效）。"""
@@ -477,6 +548,8 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
         from modules.commands import handle_command
         is_group = ctx.scene == "groups"
         uid = _stable_id(ctx.sender or ctx.openid)
+        # 记原文：排查"按钮没出现""指令没认出来"时，必须看到实际收到的字符串
+        log(f"指令原文[{ctx.scene}]:", repr(text))
         # 战绩查询挂「查查我的」按钮（点了自动填 /~wdsj <模式> <绑定>）
         # 挂 keyboard_late：等图片发完再补，按钮才会出现在图片下面
         if _cmd_name(text) == "wdsj":
@@ -556,6 +629,8 @@ async def run_gateway() -> None:
         _cmds.SUPPRESS_PROGRESS_TIP = True
         # 战绩图改用 markdown 内嵌（一条消息里既有图、又有可复制的名字、还能挂按钮）
         _cmds.MD_INLINE_IMAGE = True
+        # 图片转存进 QQ 素材库：手机端不认 webp 外链，走素材库两端都能看
+        _cmds.MD_IMAGE_UPLOADER = upload_media_image
         log(f"插件已加载 {len(names)} 个（仅指令）: {', '.join(names)}")
         log(f"COMMAND_MAP 共 {len(_cmds.COMMAND_MAP)} 条指令")
     except Exception as e:
