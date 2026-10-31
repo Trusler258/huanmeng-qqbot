@@ -327,7 +327,9 @@ def send_cq(cq_or_text: str) -> bool:
 # nginx 侧：at.01240820.xyz.conf 里 `location ^~ /wdsj-img/`（^~ 必须，
 # 否则被宝塔的 `location ~ .*\.(jpg|png)$` 正则抢走 → 404）。
 IMG_DIR = Path("/www/wwwroot/wdsj-img")
-IMG_BASE = "http://at.01240820.xyz:9871/wdsj-img"
+# 用 qq. 子域：它由 ddns-go 跟着家宽 IP 走（at. 子域 CNAME 到 mghost.site，
+# 解析到别人机器上，拉图必 404 —— 2026-10-31 踩过）
+IMG_BASE = "http://qq.01240820.xyz:9871/wdsj-img"
 IMG_KEEP = 300                    # 最多留 300 张，超了删最旧的
 
 _MEDIA_CACHE_FILE = _ROOT / "data" / "wdsj_media_cache.json"
