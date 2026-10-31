@@ -224,6 +224,12 @@ def send_text(text: str) -> bool:
     if _CUR is None or not text:
         return False
     text = str(text).strip()
+    # ★ 官方渠道不认 CQ 码。NapCat 那边 `[CQ:at,qq=123]` 会渲染成 @，
+    #   这里原样露出来就是 "[CQ:at,qq=35063875091] 你今天的运气是 76 喵"。
+    #   指令层（lang.toml）里大量文案带 at 码，统一在出口剥掉。
+    #   顺手把剥完留下的多余空格压掉。
+    text = _CQ_ANY.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text).strip()
     if not text:
         return False
     ok = True
