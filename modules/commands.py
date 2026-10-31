@@ -2901,19 +2901,16 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         _hist = _load_history()
         _key = next((k for k in _hist if k.lower() == str(player).lower()), None)
         if _key is None:
-            _tip = [f"没找到 {player} 的采集记录喵~",
-                    "· 名字按游戏内 ID 写，大小写无所谓",
-                    "· 也可能是这名玩家不在每日采集名单里"]
+            _tip = format_lang("cmd_wdsj.m55", player=player)
             if not _get_bound_player(user_id):
-                _tip.append("· 你还没绑定玩家名：/~wdsj bd <玩家名>，绑了之后直接 /~wdsj trend 就行")
-            return "\n".join(_tip)
+                _tip += "\n" + format_lang("cmd_wdsj.m58")
+            return _tip
 
         _series = get_player_trend(_key, metric)
         if not _series:
-            return f"{player} 没有{label}的记录喵~（可能这个模式没打过）"
+            return format_lang("cmd_wdsj.m56", player=player, label=label)
         if len(_series) < 2:
-            return (f"{player} 的{label}只有 {len(_series)} 天的记录喵~\n"
-                    f"趋势图至少要 2 天，明天 12 点采集后再来看看")
+            return format_lang("cmd_wdsj.m57", n=len(_series), label=label)
 
         # 确认能画了再发「正在生成」，避免"提示完又报错"的割裂感
         tip = format_lang("cmd_wdsj.m48", player=player, label=label)

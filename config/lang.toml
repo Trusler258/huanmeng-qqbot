@@ -588,6 +588,10 @@ m51 = "用法: /~wdsj <模式> <玩家名>\n未绑定玩家名时可用 /~wdsj b
 m52 = "未知模式: ${action}\n用 /~wdsj list 查看所有模式"
 m53 = " 用 text 看文字数据喵~"
 m54 = "${name} 的 ${display} 战绩"
+m55 = "记录里没有 ${player} 这个人喵。\n名字写岔了，还是它根本没被采集到？"
+m56 = "${player} 的 ${label} 一片空白喵。这个模式大概没碰过吧。"
+m57 = "${label}才 ${n} 天，连条线都画不出来喵。\n明天中午采集过再来，就能看了。"
+m58 = "还没绑名字的话，发一次 /~wdsj bd <玩家名>，往后 trend 不用每次报喵。"
 
 [_handle_owner_cmd]
 m1 = "~owner cmd add/remove/list/clear <指令名>"
