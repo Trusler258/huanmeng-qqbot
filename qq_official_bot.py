@@ -536,6 +536,25 @@ def build_wdsj_keyboard(cmd_text: str, user_id: int) -> dict | None:
     }]}]}}
 
 
+def _kb_to_cmd_input(kb: dict | None) -> str:
+    """把 keyboard 按钮转成 markdown 内嵌的 `<qqbot-cmd-input>`。
+
+    官方文档「文本交互」：点击后把 text 插进输入框（用户可改），
+    参数需要 urlencode。keyboard 在群里不渲染，这个标签可能是群里的替代方案。
+    """
+    if not kb:
+        return ""
+    try:
+        btn = kb["content"]["rows"][0]["buttons"][0]
+        label = btn["render_data"]["label"]
+        data = btn["action"]["data"]
+    except Exception:
+        return ""
+    from urllib.parse import quote
+    return ('<qqbot-cmd-input text="{0}" show="{1}" />'
+            .format(quote(str(data), safe=""), quote(str(label), safe="")))
+
+
 async def dispatch(content: str, ctx: ReplyCtx) -> None:
     """指令 → handle_command；非指令直接静默。"""
     global _CUR
@@ -585,7 +604,14 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
             bot_qq=int(APPID) if APPID.isdigit() else 0,
         )
         if reply:
-            send_text(str(reply))
+            body = str(reply)
+            # 按钮同时用 markdown 内嵌标签给一份：keyboard 在群里不渲染，
+            # <qqbot-cmd-input> 可能可以（文档没写群聊不支持）
+            if ctx.keyboard and _MD_STATE.get(ctx.scene, "unknown") != "off":
+                tag = _kb_to_cmd_input(ctx.keyboard)
+                if tag:
+                    body = body + "\n\n" + tag
+            send_text(body)
     except Exception as e:
         log("指令执行异常:", type(e).__name__, e)
         try:
