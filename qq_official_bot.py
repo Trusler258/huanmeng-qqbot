@@ -67,6 +67,9 @@ BANNED_COMMANDS = {
 }
 BANNED_REPLY = "官方渠道不做图片生成和二次元图啦，换个指令试试喵。"
 
+# 图片发完后补的那句（带按钮）。要短，不要抢图片的戏。
+KEYBOARD_HINT = "顺手看看你自己的？"
+
 _CQ_IMAGE = re.compile(r"\[CQ:image,[^\]]*?file=([^,\]]+)[^\]]*\]")
 _CQ_ANY = re.compile(r"\[CQ:[^\]]+\]")
 
@@ -127,6 +130,7 @@ class ReplyCtx:
         self.seq = 0
         self.exhausted = False
         self.keyboard = None        # 下一条文本消息要带的按钮（用一次就清）
+        self.keyboard_late = None   # 等图片发完之后再补一条带按钮的短文本
 
 
 _CUR: ReplyCtx | None = None
@@ -267,10 +271,16 @@ def send_image(path: Path) -> bool:
     body = {"content": "", "msg_type": 7, "media": {"file_info": info},
             "msg_id": _CUR.msg_id, "msg_seq": seq}
     st, data = _post_message(body)
-    if st in (200, 201):
-        return True
-    log("图片发送失败 HTTP", st, str(data)[:200])
-    return False
+    if st not in (200, 201):
+        log("图片发送失败 HTTP", st, str(data)[:200])
+        return False
+
+    # 图片发完再把按钮补上：按钮只能挂文本消息，挂在「正在查询」那条会在图片上方，
+    # 观感不对（2026-10-31 用户实测）。
+    if _CUR.keyboard_late:
+        _CUR.keyboard, _CUR.keyboard_late = _CUR.keyboard_late, None
+        send_text(KEYBOARD_HINT)
+    return True
 
 
 def send_cq(cq_or_text: str) -> bool:
@@ -443,10 +453,11 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
         is_group = ctx.scene == "groups"
         uid = _stable_id(ctx.sender or ctx.openid)
         # 战绩查询挂「查查我的」按钮（点了自动填 /~wdsj <模式> <绑定>）
+        # 挂 keyboard_late：等图片发完再补，按钮才会出现在图片下面
         if _cmd_name(text) == "wdsj":
             kb = build_wdsj_keyboard(text, uid)
             if kb:
-                ctx.keyboard = kb
+                ctx.keyboard_late = kb
         reply = await handle_command(
             text,
             user_id=uid,
