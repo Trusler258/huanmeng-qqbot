@@ -321,75 +321,84 @@ def send_cq(cq_or_text: str) -> bool:
     return ok
 
 
-# ────────────────────── 素材库（markdown 内嵌图专用） ──────────────────────
-def upload_media_image_sync(path: str) -> tuple[str, int, int]:
-    """把图片传进 QQ 素材库，返回 (qqbot-media 引用, 宽, 高)。
+# ────────────────────── 本地图床（markdown 内嵌图专用） ──────────────────────
+# wdsj 只给 webp，手机 QQ 不渲染 webp；素材库上传又要多花 1.4s。
+# 改成：下载 → 转 JPEG → 存到 nginx 的 /wdsj-img/ → 直接给 URL。
+# nginx 侧：at.01240820.xyz.conf 里 `location ^~ /wdsj-img/`（^~ 必须，
+# 否则被宝塔的 `location ~ .*\.(jpg|png)$` 正则抢走 → 404）。
+IMG_DIR = Path("/www/wwwroot/wdsj-img")
+IMG_BASE = "http://at.01240820.xyz:9871/wdsj-img"
+IMG_KEEP = 300                    # 最多留 300 张，超了删最旧的
 
-    ★ 为什么不用外链：
-      1. wdsj 的图是 **webp**，手机 QQ 不渲染 webp（电脑端正常）——
-         这是本次「手机看不到图」的根因，社区已有同样结论
-      2. 官方素材库是 QQ 自己的存储，两端都认，发送时平台自动转存
-      3. markdown 图片**必须带尺寸**（`![alt #720px #900px](url)`），不带会渲染异常
+_MEDIA_CACHE_FILE = _ROOT / "data" / "wdsj_media_cache.json"
 
-    流程：prepare 拿预签名 → PUT 直传 → complete 换 qqbot-media:// 引用。
-    失败返回空串，调用方回退外链。
+
+def _load_media_cache() -> dict:
+    try:
+        return json.loads(_MEDIA_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_media_cache(d: dict) -> None:
+    try:
+        _MEDIA_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _MEDIA_CACHE_FILE.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        log("图床缓存写入失败:", type(e).__name__, e)
+
+
+def _trim_images() -> None:
+    """文件太多时删最旧的，别把系统盘撑满。"""
+    try:
+        files = sorted(IMG_DIR.glob("wdsj_*.jpg"), key=lambda f: f.stat().st_mtime)
+        for f in files[:max(0, len(files) - IMG_KEEP)]:
+            f.unlink(missing_ok=True)
+    except Exception as e:
+        log("图床清理失败:", type(e).__name__, e)
+
+
+async def resolve_wdsj_image(snapshot: str, image_url: str) -> tuple[str, int, int]:
+    """把战绩图变成「手机电脑都能看」的 JPEG 公网地址。
+
+    缓存命中 → 直接返回（连下载都跳过，整条指令 ~0.9s）
+    未命中   → 下载 webp → 转 JPEG → 落盘 → 返回 URL（约 2.4s）
     """
-    import hashlib
     import io as _io
-    from pathlib import Path as _P
 
-    p = _P(path)
-    raw = p.read_bytes()
-    w = h = 0
+    key = f"wdsj_{snapshot}"
+    out = IMG_DIR / f"{key}.jpg"
+    cache = _load_media_cache()
+    hit = cache.get(key)
+    if hit and hit.get("url") and out.exists():
+        log("图床缓存命中:", key)
+        return hit["url"], hit.get("w", 0), hit.get("h", 0)
 
-    # webp → JPEG：手机兼容性最好，体积也小一半以上
+    from services import wdsj_api as api
+    tmp = _ROOT / "data" / "img_temp" / f"{key}.webp"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    if not await api.download_stats_image(image_url, str(tmp)):
+        log("战绩图下载失败:", image_url)
+        return "", 0, 0
+
     try:
         from PIL import Image
-        im = Image.open(_io.BytesIO(raw))
+        im = Image.open(tmp)
         w, h = im.size
-        buf = _io.BytesIO()
-        im.convert("RGB").save(buf, "JPEG", quality=90, optimize=True)
-        data, ctype, name = buf.getvalue(), "image/jpeg", p.stem + ".jpg"
+        IMG_DIR.mkdir(parents=True, exist_ok=True)
+        im.convert("RGB").save(out, "JPEG", quality=88, optimize=True)
     except Exception as e:
-        log("图片转 JPEG 失败，按原图上传:", type(e).__name__, e)
-        data, ctype, name = raw, "image/webp", p.name
-
-    body = {
-        "file_name": name,
-        "file_size": len(data),
-        "content_type": ctype,
-        "md5": hashlib.md5(data).hexdigest(),
-        "sha1": hashlib.sha1(data).hexdigest(),
-    }
-    st, d = _api("POST", "/v2/media-images/prepare", body, timeout=20)
-    if st != 200 or not d.get("presigned_url"):
-        log("素材 prepare 失败:", st, str(d)[:150])
+        log("转 JPEG 失败:", type(e).__name__, e)
         return "", 0, 0
+    finally:
+        tmp.unlink(missing_ok=True)
 
-    try:
-        req = urllib.request.Request(
-            d["presigned_url"], data=data, method="PUT",
-            headers={"Content-Type": ctype})
-        urllib.request.urlopen(req, timeout=60).read()
-    except Exception as e:
-        log("素材 PUT 失败:", type(e).__name__, str(e)[:150])
-        return "", 0, 0
-
-    # ⚠️ complete 必须带上 prepare 的全部字段 + upload_id，少一个就是 40093006
-    st2, d2 = _api("POST", "/v2/media-images/complete",
-                   dict(body, upload_id=d.get("upload_id")), timeout=30)
-    if st2 != 200:
-        log("素材 complete 失败:", st2, str(d2)[:150])
-        return "", 0, 0
-
-    url = d2.get("url", "")
-    log(f"素材已入库 {d2.get('image_id')} {w}x{h} {(len(data) / 1024):.0f}KB")
+    url = f"{IMG_BASE}/{key}.jpg"
+    cache[key] = {"url": url, "w": w, "h": h, "ts": int(time.time())}
+    _save_media_cache(cache)
+    _trim_images()
+    log(f"图床已就绪 {key} {w}x{h} {(out.stat().st_size / 1024):.0f}KB")
     return url, w, h
-
-
-async def upload_media_image(path: str) -> tuple[str, int, int]:
-    """异步包装：上传是阻塞 HTTP，不能卡住网关事件循环。"""
-    return await asyncio.to_thread(upload_media_image_sync, path)
 
 
 # ────────────────────────── 给指令层打桩 ──────────────────────────
@@ -499,11 +508,12 @@ def build_wdsj_keyboard(cmd_text: str, user_id: int) -> dict | None:
             mode = low
         else:
             named = True
-    if not named:
-        return None                      # 本来就是查自己
-
     bound = _get_bound_player(user_id)
-    if bound:
+    if not named:
+        # 查的就是自己 → 「查查我的」没意义，改成看趋势图（2026-10-31 用户反馈
+        # 「按钮呢」：原来这种情况直接不挂按钮，看起来像坏了）
+        label, data = "看趋势图", "/~wdsj trend"
+    elif bound:
         label, data = "查查我的", f"/~wdsj {mode} {bound}"
     else:
         label, data = "先绑定玩家名", "/~wdsj bd"
@@ -629,8 +639,9 @@ async def run_gateway() -> None:
         _cmds.SUPPRESS_PROGRESS_TIP = True
         # 战绩图改用 markdown 内嵌（一条消息里既有图、又有可复制的名字、还能挂按钮）
         _cmds.MD_INLINE_IMAGE = True
-        # 图片转存进 QQ 素材库：手机端不认 webp 外链，走素材库两端都能看
-        _cmds.MD_IMAGE_UPLOADER = upload_media_image
+        # 战绩图走本地图床（nginx /wdsj-img/）：转 JPEG + 直接给 URL，
+        # 比素材库少一次 1.4s 上传；手机上也能显示
+        _cmds.MD_IMAGE_RESOLVER = resolve_wdsj_image
         log(f"插件已加载 {len(names)} 个（仅指令）: {', '.join(names)}")
         log(f"COMMAND_MAP 共 {len(_cmds.COMMAND_MAP)} 条指令")
     except Exception as e:

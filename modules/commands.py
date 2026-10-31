@@ -2994,6 +2994,19 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             return "官方图片尚未生成喵~ 用 /~wdsj {} {} text 看文字数据".format(action, player)
         image_url = f"/api/v1/images/{snapshot}"
 
+        # ★ 官方渠道：先问 resolver（缓存命中时连下载都省了）
+        if MD_INLINE_IMAGE and MD_IMAGE_RESOLVER is not None:
+            md_url, md_w, md_h = "", 0, 0
+            try:
+                md_url, md_w, md_h = await MD_IMAGE_RESOLVER(snapshot, image_url)
+            except Exception as e:
+                logger.warning("战绩图转图床失败，回退原路径: %s", e, exc_info=True)
+            if md_url:
+                from services.wdsj_cache import store as wdsj_store
+                data["_template_display"] = display
+                wdsj_store(snapshot, player, template_id, _build_wdsj_summary(data))
+                return _wdsj_md_pic(md_url, md_w, md_h, data, player)
+
         # 下载到项目 img_temp 目录（NapCat 可访问）
         from pathlib import Path as _Path
         out_dir = _Path(__file__).resolve().parent.parent / "data" / "img_temp"
@@ -3009,31 +3022,8 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             wdsj_store(snapshot, player, template_id, summary)
 
             if MD_INLINE_IMAGE:
-                # 图放进 markdown，下面跟引用块方便长按复制玩家名。返回文本由调用方发出，
-                # 这样官方渠道的按钮能跟图挂同一条消息。
-                pj = data.get("player") or {}
-                name = pj.get("name") or player
-                nick = pj.get("nickname") or ""
-
-                # ★ 优先转存 QQ 素材库：wdsj 给的是 webp，手机端不渲染 webp 外链
-                img_url, iw, ih = "", 0, 0
-                if MD_IMAGE_UPLOADER is not None:
-                    try:
-                        img_url, iw, ih = await MD_IMAGE_UPLOADER(save_path)
-                    except Exception as e:
-                        logger.warning("战绩图转存素材库失败，回退外链: %s", e, exc_info=True)
-                if img_url:
-                    # markdown 图片必须带尺寸，不带会渲染异常
-                    disp_w = 720
-                    disp_h = max(1, round(disp_w * ih / iw)) if iw else 0
-                    pic = f"![#{disp_w}px #{disp_h}px]({img_url})" if disp_h else f"![]({img_url})"
-                else:
-                    pic = f"![]({api.BASE_URL}{image_url})"
-
-                lines = [pic, "", "> 快捷复制名称", f"> {name}"]
-                if nick and nick != name:
-                    lines.append(f"> {nick}")
-                return "\n".join(lines)
+                # resolver 没给地址（没注入/失败）→ 回退 wdsj 外链（电脑能看，手机可能不行）
+                return _wdsj_md_pic(f"{api.BASE_URL}{image_url}", 0, 0, data, player)
 
             cq = f"[CQ:image,file=file:///{save_path.replace(chr(92), '/')}]"
             await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
@@ -4477,10 +4467,28 @@ SUPPRESS_PROGRESS_TIP = False
 # NapCat 走原来的本地图 + CQ 码，不受影响。
 MD_INLINE_IMAGE = False
 
-# 官方进程注入的图片转存函数：async (path) -> (url, w, h)。
-# wdsj 的图是 webp，手机 QQ 不渲染 webp 外链 → 转存进 QQ 素材库才能两端可见。
-# None = 不用（NapCat / 未注入时走外链或富媒体）。
-MD_IMAGE_UPLOADER = None
+# 官方进程注入的图片解析函数：async (snapshot, image_url) -> (url, w, h)。
+# wdsj 的图是 webp，手机 QQ 不渲染 webp → 官方渠道换成自己的 JPEG 图床地址。
+# ★ 在**下载之前**调用，缓存命中时连下载都跳过（整条指令 ~0.9s）。
+# None = 不用（NapCat 走原来的本地图 + CQ 码）。
+MD_IMAGE_RESOLVER = None
+
+
+def _wdsj_md_pic(url: str, w: int, h: int, data: dict, player: str) -> str:
+    """拼 markdown：图 + 可复制的玩家名引用块。"""
+    pj = data.get("player") or {}
+    name = pj.get("name") or player
+    nick = pj.get("nickname") or ""
+    if w and h:
+        # markdown 图片必须带尺寸，不带渲染异常
+        disp_w = 720
+        pic = f"![#{disp_w}px #{max(1, round(disp_w * h / w))}px]({url})"
+    else:
+        pic = f"![]({url})"
+    lines = [pic, "", "> 快捷复制名称", f"> {name}"]
+    if nick and nick != name:
+        lines.append(f"> {nick}")
+    return "\n".join(lines)
 
 
 def _lazy(plugin: str, attr: str):
