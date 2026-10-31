@@ -126,6 +126,7 @@ class ReplyCtx:
         self.sender = sender
         self.seq = 0
         self.exhausted = False
+        self.keyboard = None        # 下一条文本消息要带的按钮（用一次就清）
 
 
 _CUR: ReplyCtx | None = None
@@ -153,35 +154,58 @@ def _post_message(payload: dict) -> tuple[int, dict]:
 #   on      → 后续回复一律富文本（**加粗**、列表、代码块都能渲染）
 #   off     → 不再尝试，省一次失败请求
 _MD_STATE: dict[str, str] = {}
+# 按钮（keyboard）能力：官方要单独开「消息按钮」权限，没开时带 keyboard 会整条失败。
+# 失败一次就永久关掉，避免每条回复都浪费一次请求。
+_KB_OK = True
+
+
+def _msg_body(chunk: str, use_md: bool, with_kb: bool) -> dict:
+    seq = _next_seq()
+    body: dict = {"msg_id": _CUR.msg_id, "msg_seq": seq}
+    if use_md:
+        body.update({"content": "", "msg_type": 2,
+                     "markdown": {"content": chunk}})
+    else:
+        body.update({"content": chunk, "msg_type": 0})
+    if with_kb and _CUR.keyboard:
+        body["keyboard"] = _CUR.keyboard
+    return body
 
 
 def _send_chunk(chunk: str) -> tuple[int, dict]:
-    """发一段文本：markdown 可用就富文本，否则纯文本。"""
+    """发一段文本：优先 markdown+按钮，逐级降级到纯文本。"""
+    global _KB_OK
     assert _CUR is not None
     scene = _CUR.scene
     state = _MD_STATE.get(scene, "unknown")
+    use_md = state != "off"
+    use_kb = bool(_CUR.keyboard) and _KB_OK
 
-    if state != "off":
-        seq = _next_seq()
-        st, data = _post_message({
-            "content": "",
-            "msg_type": 2,
-            "markdown": {"content": chunk},
-            "msg_id": _CUR.msg_id,
-            "msg_seq": seq,
-        })
+    st, data = _post_message(_msg_body(chunk, use_md, use_kb))
+    if st in (200, 201):
+        if use_md and state == "unknown":
+            _MD_STATE[scene] = "on"
+            log(f"markdown 可用（{scene}），后续回复切富文本")
+        _CUR.keyboard = None
+        return st, data
+
+    # ① 带按钮失败 → 多半是没开「消息按钮」权限，去掉重试并永久关闭
+    if use_kb:
+        _KB_OK = False
+        log(f"按钮发送失败（{scene} HTTP {st}），后续不再带按钮:", str(data)[:140])
+        st, data = _post_message(_msg_body(chunk, use_md, False))
         if st in (200, 201):
-            if state == "unknown":
-                _MD_STATE[scene] = "on"
-                log(f"markdown 可用（{scene}），后续回复切富文本")
-            return st, data
-        _MD_STATE[scene] = "off"
-        log(f"markdown 不可用（{scene} HTTP {st}），回退纯文本:", str(data)[:160])
-        if _CUR.exhausted:
+            _CUR.keyboard = None
             return st, data
 
-    body = {"content": chunk, "msg_type": 0, "msg_id": _CUR.msg_id, "msg_seq": _next_seq()}
-    return _post_message(body)
+    # ② markdown 失败 → 回退纯文本
+    if use_md:
+        _MD_STATE[scene] = "off"
+        log(f"markdown 不可用（{scene} HTTP {st}），回退纯文本:", str(data)[:140])
+        st, data = _post_message(_msg_body(chunk, False, False))
+
+    _CUR.keyboard = None
+    return st, data
 
 
 def md_enabled(scene: str | None = None) -> bool:
@@ -336,6 +360,63 @@ def _is_command(text: str) -> bool:
     return True     # 裸 / 交给 handle_command 自己判断是否已注册
 
 
+# 「查查我的」按钮：官方 API 的 action.type=2 是指令按钮，点了客户端替用户
+# 发出 data 里的指令，等于一键自动填充。
+_WDSJ_SKIP_ACTIONS = {
+    "me", "trend", "趋势", "走势", "折线", "lb", "榜", "排行榜", "boards", "list",
+    "collect", "bd", "绑定", "help", "列表", "?",
+}
+
+
+def build_wdsj_keyboard(cmd_text: str, user_id: int) -> dict | None:
+    """给「查别人战绩」挂一个「查查我的」按钮。
+
+    - 模式沿用原消息：`/~wdsj arena X` → 按钮发 `/~wdsj arena <绑定>`
+    - 玩家名取该用户的绑定；没绑定就把按钮改成引导绑定
+    - 原消息没点名（走的就是绑定）、或属于 trend/lb/me 这类子指令 → 不挂
+    """
+    try:
+        from modules.commands import _get_bound_player
+        from services.wdsj_api import resolve_template
+    except Exception:
+        return None
+
+    parts = (cmd_text or "").strip().lstrip("/").lstrip("~#").split()
+    if len(parts) < 2 or parts[0].lower() != "wdsj":
+        return None
+    if parts[1].lower() in _WDSJ_SKIP_ACTIONS:
+        return None
+
+    mode, named = "bw", False
+    for tk in parts[1:]:
+        low = tk.lower()
+        if low in ("text", "img", "图片", "文字"):
+            continue
+        if resolve_template(low):
+            mode = low
+        else:
+            named = True
+    if not named:
+        return None                      # 本来就是查自己
+
+    bound = _get_bound_player(user_id)
+    if bound:
+        label, data = "查查我的", f"/~wdsj {mode} {bound}"
+    else:
+        label, data = "先绑定玩家名", "/~wdsj bd"
+
+    return {"content": {"rows": [{"buttons": [{
+        "id": "wdsj_mine",
+        "render_data": {"label": label, "visited_label": label, "style": 1},
+        "action": {
+            "type": 2,                   # 2 = 指令按钮（点击替用户发消息）
+            "permission": {"type": 2},   # 2 = 所有人可点
+            "data": data,
+            "unsupport_tips": "请升级到最新版 QQ 再点这个按钮喵",
+        },
+    }]}]}}
+
+
 async def dispatch(content: str, ctx: ReplyCtx) -> None:
     """指令 → handle_command；非指令直接静默。"""
     global _CUR
@@ -360,9 +441,15 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
     try:
         from modules.commands import handle_command
         is_group = ctx.scene == "groups"
+        uid = _stable_id(ctx.sender or ctx.openid)
+        # 战绩查询挂「查查我的」按钮（点了自动填 /~wdsj <模式> <绑定>）
+        if _cmd_name(text) == "wdsj":
+            kb = build_wdsj_keyboard(text, uid)
+            if kb:
+                ctx.keyboard = kb
         reply = await handle_command(
             text,
-            user_id=_stable_id(ctx.sender or ctx.openid),
+            user_id=uid,
             group_id=_stable_id(ctx.openid) if is_group else 0,
             sender_name="官方渠道用户",
             is_group=is_group,
