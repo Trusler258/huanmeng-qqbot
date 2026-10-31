@@ -224,10 +224,15 @@ def send_text(text: str) -> bool:
     if _CUR is None or not text:
         return False
     text = str(text).strip()
-    # ★ 官方渠道不认 CQ 码。NapCat 那边 `[CQ:at,qq=123]` 会渲染成 @，
-    #   这里原样露出来就是 "[CQ:at,qq=35063875091] 你今天的运气是 76 喵"。
-    #   指令层（lang.toml）里大量文案带 at 码，统一在出口剥掉。
-    #   顺手把剥完留下的多余空格压掉。
+    # ★ CQ 码在官方渠道不认（NapCat 会渲染成 @，这边原样显示成文字）。
+    #   官方 markdown 的 @ 语法是 `<qqbot-at-user id="member_openid" />`，
+    #   但文案里存的是（哈希后的）QQ 号，反查不到 openid。
+    #   实际场景几乎都是「@ 当前发消息的人」→ 直接用发送者 openid 顶替。
+    #   ⚠️ @ 标签只在 markdown 消息里渲染；markdown 不可用时直接剥掉。
+    if _MD_STATE.get(_CUR.scene, "unknown") != "off" and _CUR.sender:
+        text = re.sub(r"\[CQ:at,qq=[^\]]+\]",
+                      f'<qqbot-at-user id="{_CUR.sender}" />', text)
+    # 其余 CQ 码（image/face/record…）一律剥掉，别让它们露出来
     text = _CQ_ANY.sub("", text)
     text = re.sub(r"[ \t]{2,}", " ", text).strip()
     if not text:
