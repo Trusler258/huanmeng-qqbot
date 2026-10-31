@@ -677,11 +677,11 @@ async def run_gateway() -> None:
         import modules.commands as _cmds
         # 官方渠道不显示「正在查询…」这类进度提示：它会横在战绩图和按钮之间，
         # 观感是按钮跑到图片上面。NapCat 那边保持原样。
-        _cmds.SUPPRESS_PROGRESS_TIP = True
-        # 战绩图改用 markdown 内嵌（一条消息里既有图、又有可复制的名字、还能挂按钮）
-        _cmds.MD_INLINE_IMAGE = True
+        # 渠道行为（不显示进度提示、战绩图走 markdown）由 BOT_CHANNEL=official
+        # 在 modules/commands.py 里静态决定，这里不再运行期改全局变量。
+        # 只剩这个函数对象必须注入（环境变量传不了 callable）。
         # 战绩图走本地图床（nginx /wdsj-img/）：转 JPEG + 直接给 URL，
-        # 比素材库少一次 1.4s 上传；手机上也能显示
+        # 比素材库少一次 1.4s 上传；手机上也能显示。
         _cmds.MD_IMAGE_RESOLVER = resolve_wdsj_image
         log(f"插件已加载 {len(names)} 个（仅指令）: {', '.join(names)}")
         log(f"COMMAND_MAP 共 {len(_cmds.COMMAND_MAP)} 条指令")

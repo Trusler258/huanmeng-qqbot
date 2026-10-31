@@ -325,6 +325,43 @@ Python 规则：函数内任何地方赋值 → 整个函数把它当局部变�
 表现是「所有带图片的回复都没了」，不只是战绩。已补 `global` 并加注释。
 这条和项目记忆里记的老坑是同一个（函数内 import/赋值同名 → 整个函数局部变量）。
 
+### 十五、渠道分流：官方机器人独立于 NapCat（2026-11-01 凌晨）
+
+用户要求：官方机器人的行为要和 NapCat 那套**明确区分**，不能靠"碰巧是两个进程"。
+
+做法：用**启动方式**区分，不在运行期改全局变量。
+
+```ini
+# /etc/systemd/system/qq-official-listen.service
+Environment=BOT_CHANNEL=official
+Environment=BOT_NAME=织梦
+```
+
+- `modules/commands.py` 顶部：
+  ```python
+  CHANNEL = os.environ.get("BOT_CHANNEL", "napcat").strip().lower()
+  IS_OFFICIAL = CHANNEL == "official"
+  SUPPRESS_PROGRESS_TIP = IS_OFFICIAL     # 官方不显示「正在查询…」
+  MD_INLINE_IMAGE = IS_OFFICIAL           # 官方战绩图走 markdown 内嵌
+  ```
+- `core/config.py::load_bot_config()` 末尾读 `BOT_NAME` 覆盖 `instance.bot_name`，
+  放在 `build_system_prompt()` 之前，自我认知里也是渠道名
+- `qq_official_bot.py` 删掉原来的运行时赋值，只保留 `MD_IMAGE_RESOLVER` 注入
+  （函数对象没法用环境变量传）
+
+实测两套环境：
+
+```
+BOT_CHANNEL=official BOT_NAME=织梦
+  CHANNEL=official  IS_OFFICIAL=True   SUPPRESS=True   MD_INLINE=True   bot_name=织梦
+
+（不设变量，主 bot / NapCat）
+  CHANNEL=napcat    IS_OFFICIAL=False  SUPPRESS=False  MD_INLINE=False  bot_name=幻梦
+```
+
+好处：渠道身份在**启动时定死**，代码里一眼能看出哪条是官方专属；
+以后加 KOOK 或第三个渠道，`BOT_CHANNEL=kook` 就行。
+
 ### 八点五、AGC 内容限制：官方渠道禁用生图类指令
 
 官方平台对机器人产出的内容有审核要求，AI 生图、二次元图（含 R18）这类不能给。

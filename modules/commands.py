@@ -4457,15 +4457,21 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
     return result
 
 
+# ── 渠道身份（2026-11-01）──────────────────────────────
+# 由**启动方式**决定，不在运行期改：systemd 里 Environment=BOT_CHANNEL=official。
+# 官方机器人（qq-official-listen）与主 bot / NapCat 是两套独立进程，
+# 行为差异全部从这里分流，避免"某个进程偷偷改了全局变量"导致串台。
+CHANNEL = os.environ.get("BOT_CHANNEL", "napcat").strip().lower()
+IS_OFFICIAL = CHANNEL == "official"
+
 # 官方渠道没有「消息处理中」的中间态：进度提示会横在战绩图和按钮之间，
-# 观感是"按钮跑到了图片上面"（2026-10-31 用户实测）。官方进程启动时置 True
-# 跳过这一类提示，NapCat 保持原样。
-SUPPRESS_PROGRESS_TIP = False
+# 观感是"按钮跑到了图片上面"（2026-10-31 用户实测）。NapCat 保持原样。
+SUPPRESS_PROGRESS_TIP = IS_OFFICIAL
 
 # 官方渠道：战绩图改成 markdown 内嵌（`![](url)`）+ 可长按复制的引用块，
 # 这样图和按钮能落在同一条消息里（QQ 的富媒体消息不渲染 keyboard）。
 # NapCat 走原来的本地图 + CQ 码，不受影响。
-MD_INLINE_IMAGE = False
+MD_INLINE_IMAGE = IS_OFFICIAL
 
 # 官方进程注入的图片解析函数：async (snapshot, image_url) -> (url, w, h)。
 # wdsj 的图是 webp，手机 QQ 不渲染 webp → 官方渠道换成自己的 JPEG 图床地址。

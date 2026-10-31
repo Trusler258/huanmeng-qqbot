@@ -497,9 +497,16 @@ def load_bot_config() -> BotConfig:
     instance.cheap_model = _make_model(models_section.get("judge_cheap", {}), env_providers)
     instance.image_model = _make_model(models_section.get("picture", {}), env_providers)
     
-    # 组装提示词
+    # ★ 渠道级显示名覆盖（2026-11-01）：官方机器人叫「织梦」，主 bot 叫「幻梦」。
+    #   走启动方式区分（systemd Environment=BOT_NAME=...），不在运行期改全局配置，
+    #   也不会串到别的进程。所有读 cfg.bot_name / get_bot_name() 的地方自动生效。
+    _name_override = os.environ.get("BOT_NAME", "").strip()
+    if _name_override:
+        instance.bot_name = _name_override
+
+    # 组装提示词（放在覆盖之后，自我认知里用的就是渠道名）
     instance.build_system_prompt()
-    
+
     _instance = instance
     return instance
 
