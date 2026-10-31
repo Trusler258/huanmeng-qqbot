@@ -3002,13 +3002,31 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
 
         ok = await api.download_stats_image(image_url, save_path)
         if ok:
-            cq = f"[CQ:image,file=file:///{save_path.replace(chr(92), '/')}]"
-            await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             # ★ 缓存数据：引用此图时直接返回文字数据，不调视觉模型
             from services.wdsj_cache import store as wdsj_store
             data["_template_display"] = display
             summary = _build_wdsj_summary(data)
             wdsj_store(snapshot, player, template_id, summary)
+
+            if MD_INLINE_IMAGE:
+                # 图放进 markdown（外链，wdsj 那边不带 Referer 也能取，实测 200 image/webp），
+                # 下面跟引用块方便长按复制玩家名。返回文本由调用方发出，
+                # 这样官方渠道的按钮能跟图挂同一条消息。
+                pj = data.get("player") or {}
+                name = pj.get("name") or player
+                nick = pj.get("nickname") or ""
+                lines = [
+                    f"![]({api.BASE_URL}{image_url})",
+                    "",
+                    "> 快捷复制名称",
+                    f"> {name}",
+                ]
+                if nick and nick != name:
+                    lines.append(f"> {nick}")
+                return "\n".join(lines)
+
+            cq = f"[CQ:image,file=file:///{save_path.replace(chr(92), '/')}]"
+            await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
             return None
         else:
             return format_lang("wdsj.img_download_fail") + format_lang("cmd_wdsj.m53")
@@ -4443,6 +4461,11 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
 # 观感是"按钮跑到了图片上面"（2026-10-31 用户实测）。官方进程启动时置 True
 # 跳过这一类提示，NapCat 保持原样。
 SUPPRESS_PROGRESS_TIP = False
+
+# 官方渠道：战绩图改成 markdown 内嵌（`![](url)`）+ 可长按复制的引用块，
+# 这样图和按钮能落在同一条消息里（QQ 的富媒体消息不渲染 keyboard）。
+# NapCat 走原来的本地图 + CQ 码，不受影响。
+MD_INLINE_IMAGE = False
 
 
 def _lazy(plugin: str, attr: str):

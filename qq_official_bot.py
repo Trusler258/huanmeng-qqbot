@@ -479,7 +479,11 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
         if _cmd_name(text) == "wdsj":
             kb = build_wdsj_keyboard(text, uid)
             if kb:
-                ctx.keyboard_late = kb
+                from modules.commands import MD_INLINE_IMAGE as _mdimg
+                if _mdimg:
+                    ctx.keyboard = kb        # 图在 markdown 里，按钮挂同一条消息
+                else:
+                    ctx.keyboard_late = kb   # 图是富媒体，只能等图发完再补
         reply = await handle_command(
             text,
             user_id=uid,
@@ -547,6 +551,8 @@ async def run_gateway() -> None:
         # 官方渠道不显示「正在查询…」这类进度提示：它会横在战绩图和按钮之间，
         # 观感是按钮跑到图片上面。NapCat 那边保持原样。
         _cmds.SUPPRESS_PROGRESS_TIP = True
+        # 战绩图改用 markdown 内嵌（一条消息里既有图、又有可复制的名字、还能挂按钮）
+        _cmds.MD_INLINE_IMAGE = True
         log(f"插件已加载 {len(names)} 个（仅指令）: {', '.join(names)}")
         log(f"COMMAND_MAP 共 {len(_cmds.COMMAND_MAP)} 条指令")
     except Exception as e:
