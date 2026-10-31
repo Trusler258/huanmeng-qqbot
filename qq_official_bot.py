@@ -259,6 +259,9 @@ def upload_image(path: Path) -> str:
 
 
 def send_image(path: Path) -> bool:
+    # ⚠️ 本函数内给 _KB_OK 赋值，必须显式 global，否则它变成局部变量，
+    #    前面的读取会 UnboundLocalError（2026-10-31 踩过，整个图片发送挂掉）
+    global _KB_OK
     if _CUR is None:
         return False
     if _CUR.exhausted:
