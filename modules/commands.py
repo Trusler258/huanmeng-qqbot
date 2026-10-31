@@ -2878,22 +2878,26 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     # ★ 折线图
     if action in ("trend", "趋势", "走势", "折线"):
         from services.wdsj_tracker import (
-            generate_trend_card, get_player_trend, _load_history,
+            generate_trend_card, get_player_trend, _load_history, _TREND_LABELS,
         )
         player = None
-        metric = "bw_kills"
+        metrics = []
         for a in args[1:]:
             a_lower = a.lower().strip()
-            if a_lower in ("bw_kills", "bw_wins", "bw_finals", "bw_deaths", "arena_kills"):
-                metric = a_lower
+            if a_lower in _TREND_LABELS:
+                if a_lower not in metrics:
+                    metrics.append(a_lower)          # 支持多指标叠加，最多 3 条
             else:
                 player = a
+        if not metrics:
+            metrics = ["bw_kills"]
+        metrics = metrics[:3]
         if not player:
             player = _get_bound_player(user_id)
         if not player:
             return format_lang("cmd_wdsj.m47")
 
-        label = {"bw_kills":"击杀","bw_wins":"胜场","bw_finals":"最终击杀","bw_deaths":"死亡","arena_kills":"竞技场击杀"}.get(metric, metric)
+        label = "+".join(_TREND_LABELS.get(m, m) for m in metrics)
 
         # ★ 2026-10-31：先分三种情况再动手。
         #   原来只有「出图 / 出不来」两分支，失败一律回「需要至少 2 天记录」——
@@ -2906,18 +2910,31 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
                 _tip += "\n" + format_lang("cmd_wdsj.m58")
             return _tip
 
-        _series = get_player_trend(_key, metric)
-        if not _series:
-            return format_lang("cmd_wdsj.m56", player=player, label=label)
-        if len(_series) < 2:
-            return format_lang("cmd_wdsj.m57", n=len(_series), label=label)
+        # 逐个指标取序列：够 2 天的留下，其余记下来提示一句
+        _ok, _short = [], []
+        for _m in metrics:
+            _s = get_player_trend(_key, _m)
+            if len(_s) >= 2:
+                _ok.append(_m)
+            else:
+                _short.append((_m, len(_s)))
+
+        if not _ok:
+            if all(n == 0 for _m, n in _short):
+                return format_lang("cmd_wdsj.m56", player=player,
+                                   label=_TREND_LABELS.get(metrics[0], metrics[0]))
+            _m, _n = max(_short, key=lambda x: x[1])
+            return format_lang("cmd_wdsj.m57", n=_n, label=_TREND_LABELS.get(_m, _m))
 
         # 确认能画了再发「正在生成」，避免"提示完又报错"的割裂感
+        label = "+".join(_TREND_LABELS.get(m, m) for m in _ok)
         tip = format_lang("cmd_wdsj.m48", player=player, label=label)
+        if _short:
+            tip += "（" + "、".join(_TREND_LABELS.get(m, m) for m, _ in _short) + "还没攒够两天，这次先不画喵）"
         await (send_group_msg(tip, group_id) if is_group
                else send_private_msg(tip, user_id))
 
-        img = await generate_trend_card(_key, metric)
+        img = await generate_trend_card(_key, _ok)
         if img:
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
             await (send_group_msg(cq, group_id) if is_group

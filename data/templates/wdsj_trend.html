@@ -81,6 +81,9 @@
   }
   .panel-title{font-size:17px;font-weight:700;color:#3a332c}
   .panel-note{font-size:13.5px;color:#a29890}
+  .legend{margin-left:16px;display:flex;align-items:center;gap:14px}
+  .lg{display:inline-flex;align-items:center;gap:6px;font-size:14px;color:#6b6259;font-weight:600}
+  .lg i{width:11px;height:11px;border-radius:3px;display:block}
   svg{display:block;width:100%;height:auto}
 
   /* ── 统计条 ── */
@@ -133,17 +136,12 @@
     <div class="panel-head">
       <span class="panel-title">{{METRIC_LABEL}}累积走势</span>
       <span class="panel-note">{{NOTE}}</span>
+      <span class="legend">{{LEGEND}}</span>
     </div>
     {{SVG}}
   </div>
 
-  <div class="stats">
-    <div class="stat"><div class="k">起始</div><div class="v flat">{{V_FIRST}}</div></div>
-    <div class="stat"><div class="k">当前</div><div class="v">{{V_LAST}}</div></div>
-    <div class="stat"><div class="k">{{DELTA_LABEL}}</div><div class="v {{DELTA_CLASS}}">{{V_DELTA}}</div></div>
-    <div class="stat"><div class="k">日均增长</div><div class="v flat">{{V_PERDAY}}</div></div>
-    <div class="stat"><div class="k">单日最高</div><div class="v flat">{{V_MAXDAY}}</div></div>
-  </div>
+  <div class="stats">{{STATS}}</div>
 
   <div class="foot">
     <span class="r" id="f-time"></span>

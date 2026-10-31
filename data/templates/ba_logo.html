@@ -11,6 +11,7 @@
     2) 画在 2 倍位图（canvas.width = W*2）后按 CSS 尺寸显示，截图即 2x 清晰
     3) 画完自动裁掉两侧空白（等价原版 generateImg 的裁剪）
 -->
+<style id="ba-fontface">/*__FONT_FACE__*/</style>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { background: transparent; }
@@ -45,21 +46,36 @@
   var transparent = !!DATA.transparent;
 
   // 字重 900：BA 的标题字很粗，Noto 的 regular 太细（系统没装 Black 时浏览器会合成加粗）
-  var font = '900 ' + CFG.fontSize + 'px "Noto Sans CJK SC", "Source Han Sans SC", ' +
+  // 如果 data/fonts/ 里放了字体，Python 会把 @font-face 塞进 #ba-fontface 并用它打头
+  var FAMILY = DATA.useCustomFont ? '"BALogoFont", ' : '';
+  var font = '900 ' + CFG.fontSize + 'px ' + FAMILY +
+             '"Noto Sans CJK SC", "Source Han Sans SC", ' +
              '"PingFang SC", "Microsoft YaHei", sans-serif';
 
   var halo = new Image();
   var cross = new Image();
-  var pending = 2;
 
-  function ready() {
-    pending -= 1;
-    if (pending === 0) draw();
+  function loadImg(img, src) {
+    return new Promise(function (res) {
+      img.onload = res;
+      img.onerror = res;      // 素材缺失也要出图，不能整张卡挂掉
+      img.src = src;
+    });
   }
-  halo.onload = ready;
-  cross.onload = ready;
-  halo.src = DATA.halo;
-  cross.src = DATA.cross;
+
+  // 自定义字体必须先 load 再 measureText，否则首帧用的是回退字体，宽度算错
+  var fontReady = Promise.resolve();
+  if (DATA.useCustomFont && DATA.fontFace) {
+    document.getElementById('ba-fontface').textContent = DATA.fontFace;
+    try {
+      fontReady = document.fonts.load(font).catch(function () {});
+    } catch (e) {
+      fontReady = Promise.resolve();
+    }
+  }
+
+  Promise.all([loadImg(halo, DATA.halo), loadImg(cross, DATA.cross), fontReady])
+    .then(draw);
 
   function draw() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);

@@ -570,202 +570,279 @@ def _fmt_num(v: int) -> str:
     return f"{v:,}" if abs(v) >= 10000 else str(v)
 
 
-def _trend_svg(series: list, accent: str, accent2: str) -> str:
-    """把每日采样画成 SVG：面积渐变 + 折线 + 采样点 + 网格。
+# ── 多指标配色（最多 3 条线，色相拉开，避免同色系分不清）──
+_TREND_PALETTE = [
+    {"accent": "#ee5a3a", "accent2": "#ff9e7a"},   # 暖橙
+    {"accent": "#4a6cf7", "accent2": "#8fa9ff"},   # 冷蓝
+    {"accent": "#0f9d58", "accent2": "#6cd39b"},   # 青绿
+]
 
-    点少的日期全部标注数值；点多时只标首尾与极值，避免糊成一片。
+# 指标 key → 中文名（命令解析与图例共用）
+_TREND_LABELS = {
+    "bw_kills": "击杀", "bw_wins": "胜场", "bw_finals": "最终击杀",
+    "bw_deaths": "死亡", "arena_kills": "竞技场击杀",
+}
+
+
+def _axis_scale(vmin: float, vmax: float, target: int = 4):
+    """整数友好刻度：步长取 1/2/2.5/5×10ⁿ，网格最多 6 条。"""
+    import math as _m
+    if vmax <= vmin:
+        d = max(1, int(round(abs(vmax) * 0.05)))
+        vmin, vmax = vmax - d, vmax + d
+    span = max(1.0, vmax - vmin)
+    raw = span / target
+    mag = 10 ** _m.floor(_m.log10(raw)) if raw > 0 else 1
+    step = mag
+    for mul in (1, 2, 2.5, 5, 10):
+        if raw <= mul * mag:
+            step = mul * mag
+            break
+    step = max(1, round(step))
+    y0 = _m.floor(vmin / step) * step
+    y1 = _m.ceil(vmax / step) * step
+    if y1 - y0 < step:
+        y1 = y0 + step
+    while (y1 - y0) / step > 6:
+        step *= 2
+        y0 = _m.floor(vmin / step) * step
+        y1 = _m.ceil(vmax / step) * step
+    return y0, y1, step
+
+
+def _trend_svg(datasets: list) -> str:
+    """多序列折线图（纯 SVG）。
+
+    datasets: [{"key","label","series":[{"ts","val"}],"accent","accent2","axis"}]
+      axis="l" 挂左轴 / "r" 挂右轴——量级差太大时拆双轴，
+      否则「胜场 300」和「击杀 7000」画在一起，胜场会被压成一条贴底的直线。
     """
     W, H = 1640, 520
-    L, R, T, B = 70, 32, 24, 54
+    has_right = any(d["axis"] == "r" for d in datasets)
+    L, R, T, B = 64, (92 if has_right else 30), 22, 54
     pw, ph = W - L - R, H - T - B
 
-    n = len(series)
-    vals = [s["val"] for s in series]
-    labels = [s["ts"][5:10].replace("-", "/") for s in series]   # MM/DD
-
-    vmin, vmax = min(vals), max(vals)
-    if vmax == vmin:
-        # 5 天都卡在同一个值时，折线会贴在底边上、刻度还会出现 48/48 这种重复
-        # （2026-10-27 实测 sb91786713lll 类玩家）。上下各留 5%（至少 1）居中。
-        _d = max(1, int(round(abs(vmax) * 0.05)))
-        vmin, vmax = vmax - _d, vmax + _d
-    pad = (vmax - vmin) * 0.10
-    y0, y1 = vmin - pad, vmax + pad
-
-    # y 轴取「好看的整数刻度」：步长落在 1/2/2.5/5 × 10^n，避免 7412/6529 这种碎值
-    import math as _m
-    span = max(1.0, y1 - y0)
-    raw_step = span / 4
-    mag = 10 ** _m.floor(_m.log10(raw_step)) if raw_step > 0 else 1
-    step_y = mag
-    for _mul in (1, 2, 2.5, 5, 10):
-        if raw_step <= _mul * mag:
-            step_y = _mul * mag
-            break
-    # 直接用「数据极值」对齐刻度，不再额外留白——否则 4267 会被拉到 3000 起，
-    # 图下方空出一大块。留白由刻度本身给（最多一个 step）。
-    step_y = max(1, round(step_y))        # 计数指标只用整数刻度
-    y0 = _m.floor(vmin / step_y) * step_y
-    y1 = _m.ceil(vmax / step_y) * step_y
-    if y1 - y0 < step_y:
-        y1 = y0 + step_y
-    while (y1 - y0) / step_y > 6:          # 最多 6 条网格线，避免刻度刷屏
-        step_y *= 2
-        y0 = _m.floor(vmin / step_y) * step_y
-        y1 = _m.ceil(vmax / step_y) * step_y
-    n_ticks = max(2, int(round((y1 - y0) / step_y)) + 1)
+    dates = sorted({s["ts"][:10] for d in datasets for s in d["series"]})
+    n = len(dates)
+    idx = {d: i for i, d in enumerate(dates)}
 
     def X(i: int) -> float:
         return L + (pw / 2 if n == 1 else pw * i / (n - 1))
 
-    def Y(v: float) -> float:
-        return T + ph - (v - y0) / (y1 - y0) * ph
+    left = [d for d in datasets if d["axis"] == "l"] or datasets
+    right = [d for d in datasets if d["axis"] == "r"]
 
-    # ── 网格与 y 轴刻度（5 条）──
-    grid, ticks = [], []
-    for k in range(n_ticks):
-        v = y0 + step_y * k
-        y = Y(v)
+    lv = [s["val"] for d in left for s in d["series"]]
+    ly0, ly1, lstep = _axis_scale(min(lv), max(lv))
+    if right:
+        rv = [s["val"] for d in right for s in d["series"]]
+        ry0, ry1, rstep = _axis_scale(min(rv), max(rv))
+
+    def YL(v: float) -> float:
+        return T + ph - (v - ly0) / max(1e-9, (ly1 - ly0)) * ph
+
+    def YR(v: float) -> float:
+        return T + ph - (v - ry0) / max(1e-9, (ry1 - ry0)) * ph
+
+    # ── 网格与左轴刻度 ──
+    grid, ltick = [], []
+    k = 0
+    while ly0 + k * lstep <= ly1 + 1e-6:
+        v = ly0 + k * lstep
+        y = YL(v)
         grid.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W-R}" y2="{y:.1f}" '
                     f'stroke="rgba(120,100,80,.13)" stroke-width="1" stroke-dasharray="4 6"/>')
-        ticks.append(f'<text x="{L-14}" y="{y+4:.1f}" text-anchor="end" '
-                     f'font-size="15" fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">'
-                     f'{_fmt_num(int(round(v)))}</text>')
+        ltick.append(f'<text x="{L-14}" y="{y+4:.1f}" text-anchor="end" font-size="15" '
+                     f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(int(round(v)))}</text>')
+        k += 1
 
-    # ── 折线与面积 ──
-    pts = [(X(i), Y(v)) for i, v in enumerate(vals)]
-    line = "M " + " L ".join(f"{x:.1f} {y:.1f}" for x, y in pts)
-    area = (f'M {pts[0][0]:.1f} {T+ph:.1f} L ' +
-            " L ".join(f"{x:.1f} {y:.1f}" for x, y in pts) +
-            f' L {pts[-1][0]:.1f} {T+ph:.1f} Z')
+    # ── 右轴刻度（用该序列的颜色，避免和左轴混淆）──
+    rtick = []
+    if right:
+        rc = right[0]["accent"]
+        k = 0
+        while ry0 + k * rstep <= ry1 + 1e-6:
+            v = ry0 + k * rstep
+            y = YR(v)
+            rtick.append(f'<text x="{W-R+14}" y="{y+4:.1f}" text-anchor="start" font-size="15" '
+                         f'fill="{rc}" opacity=".85" '
+                         f'font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(int(round(v)))}</text>')
+            k += 1
 
-    # ── 采样点 ──
-    dots = []
-    dr, dw = (5.6, 3.0) if n <= 30 else ((4.0, 2.4) if n <= 60 else (2.8, 1.8))
-    for i, (x, y) in enumerate(pts):
-        dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{dr}" fill="#fff" '
-                    f'stroke="{accent}" stroke-width="{dw}"/>')
+    # ── 折线 / 采样点 ──
+    paths, dots, labels = [], [], []
+    end_pts = []                 # 多序列的末点标注，画完统一定位（防重叠）
+    multi = len(datasets) > 1
+    for d in datasets:
+        ys = YL if d["axis"] == "l" else YR
+        pts = [(X(idx[s["ts"][:10]]), ys(s["val"]), s["val"]) for s in d["series"]]
+        line = "M " + " L ".join(f"{x:.1f} {y:.1f}" for x, y, _ in pts)
+        paths.append(
+            f'<path d="{line}" fill="none" stroke="{d["accent"]}" stroke-width="4" '
+            f'stroke-linecap="round" stroke-linejoin="round"/>'
+        )
+        r = 5.0 if len(pts) <= 30 else (3.6 if len(pts) <= 60 else 2.6)
+        for x, y, _v in pts:
+            dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="#fff" '
+                        f'stroke="{d["accent"]}" stroke-width="2.2"/>')
 
-    # ── 数值标注：按「标注宽度 + 间距」自适应，整条线最多约 15 个 ──
-    #   Monocraft 的数字近似等宽，按 0.62em 估字宽；每格至少留 (字宽 + 10px)，
-    #   否则 101 个点的数字会连成一串（2026-10-27 用户反馈）。
-    _FS, _GAP, _CAP = 16, 10, 15
-    _max_chars = max(len(_fmt_num(v)) for v in vals)
-    _label_w = _max_chars * _FS * 0.62
-    _fit = int(pw // (_label_w + _GAP)) + 1          # 宽度允许的最多个数
-    _k = max(2, min(_CAP, _fit, n))
-    if _k >= n:
-        ann_idx = list(range(n))
-    else:
-        ann_idx = sorted({round(i * (n - 1) / (_k - 1)) for i in range(_k)})
-    # 首尾标注是向内对齐的（anchor start/end），实际占位比居中的宽半格，
-    # 等距取样后会出现「4267 和 4625 贴在一起」——按真实横向距离再筛一遍
-    _kept: list[int] = []
-    for _i in ann_idx:
-        if not _kept:
-            _kept.append(_i)
-            continue
-        _need = _label_w + _GAP
-        if _i in (0, n - 1) or _kept[-1] in (0, n - 1):
-            _need += _label_w * 0.5
-        if X(_i) - X(_kept[-1]) >= _need:
-            _kept.append(_i)
-    ann_idx = _kept
-    anns = []
-    for i in ann_idx:
-        x, y = pts[i]
-        # 首尾贴边：顶到画布边缘会被裁或压住 y 轴刻度，改成向内对齐
-        # ⚠️ anchor 必须在下面算 dy 之前定，否则引用了还没赋值的名字（会静默回退兜底）
-        anchor, dx = "middle", 0
-        if i == 0:
-            anchor, dx = "start", 2
-        elif i == n - 1:
-            anchor, dx = "end", -2
-        # 标注高度按「自身横向覆盖范围内折线的最高点」动态抬升，
-        # 否则上升段会把文字穿过（2026-10-27：首点 4267 的末位被数据点盖住）。
-        _x_lo, _x_hi = x - _label_w / 2, x + _label_w / 2
-        if anchor == "start":
-            _x_lo, _x_hi = x - 2, x + _label_w
-        elif anchor == "end":
-            _x_lo, _x_hi = x - _label_w, x + 2
-        _ys = [py for (px, py) in pts if _x_lo <= px <= _x_hi]
-        _top = min(_ys) if _ys else y             # 像素 y 越小 = 位置越高
-        dy = min(-16, _top - y - 14)              # 至少高出该段最高点 14px
-        dy = max(dy, -62)                         # 别飘得太远
-        if (y - T) < 30:
-            dy = 22                               # 贴画布顶端时改放下方，避免被裁
-        anns.append(f'<text x="{x+dx:.1f}" y="{y+dy:.1f}" text-anchor="{anchor}" font-size="16" '
-                    f'font-weight="700" fill="{accent}" '
-                    f'font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(vals[i])}</text>')
+        # 数值标注：单序列走自适应密度（最多 15 个）；多序列只标末点，避免互相压
+        if not multi:
+            picks = _label_picks([p[2] for p in pts], pw, len(str(max(p[2] for p in pts))))
+            for i in picks:
+                x, y, v = pts[i]
+                labels.append(_value_label(x, y, v, d["accent"], i == 0, i == len(pts) - 1))
+        else:
+            x, y, v = pts[-1]
+            end_pts.append((x, y, v, d["accent"]))
 
-    # ── x 轴日期：同款自适应（日期固定 5 字符 MM/DD，比数值标注宽，上限 10 个）──
-    _DFS, _DGAP, _DCAP = 15, 12, 10
-    _dw = 5 * _DFS * 0.62
-    _dfit = int(pw // (_dw + _DGAP)) + 1
-    _dk = max(2, min(_DCAP, _dfit, n))
-    if _dk >= n:
-        x_idx = list(range(n))
-    else:
-        x_idx = sorted({round(i * (n - 1) / (_dk - 1)) for i in range(_dk)})
+    # 多序列末点标注：按 y 排序，挨太近的逐个下移，避免「475 / 7356」叠在一起
+    end_pts.sort(key=lambda tp: tp[1])
+    used_y = []
+    for x, y, v, c in end_pts:
+        ny = y
+        while any(abs(ny - uy) < 26 for uy in used_y):
+            ny += 30
+        used_y.append(ny)
+        labels.append(_value_label(x, ny, v, c, False, True))
+
+    # 单序列保留面积渐变；多序列叠加面积会糊成一团
+    area = ""
+    if not multi:
+        d0 = datasets[0]
+        ys = YL if d0["axis"] == "l" else YR
+        pts = [(X(idx[s["ts"][:10]]), ys(s["val"])) for s in d0["series"]]
+        path = "M " + " L ".join(f"{x:.1f} {y:.1f}" for x, y in pts)
+        area = (f'<path d="M {pts[0][0]:.1f} {T+ph:.1f} L ' +
+                " L ".join(f"{x:.1f} {y:.1f}" for x, y in pts) +
+                f' L {pts[-1][0]:.1f} {T+ph:.1f} Z" fill="url(#ag)"/>')
+
+    # ── x 轴日期（最多 10 个，首尾向内对齐）──
     xlab = []
-    for i in x_idx:
-        # 首尾日期同样向内对齐，否则贴边那颗会被面板内边切掉（2026-10-27 实测 10/23 被裁）
-        _a = "start" if i == 0 else ("end" if i == n - 1 else "middle")
-        xlab.append(f'<text x="{X(i):.1f}" y="{H-18}" text-anchor="{_a}" font-size="15" '
-                    f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{labels[i]}</text>')
+    step_x = max(1, (n - 1) // 9) if n > 1 else 1
+    xs_pick = list(range(0, n, step_x))
+    if n > 1:
+        # 末位日期一定要有；但它和上一格的像素距离不足一个字宽+18 时，把上一格挤掉
+        gap_px = pw * (n - 1 - xs_pick[-1]) / max(1, n - 1)
+        if gap_px >= 46 + 34:   # 日期 5 字符约 46px，再留 34px 才不至于糊在一起
+            xs_pick.append(n - 1)
+        elif len(xs_pick) > 1:
+            xs_pick[-1] = n - 1
+    for i in xs_pick:
+        anchor = "start" if i == 0 else ("end" if i == n - 1 else "middle")
+        xlab.append(f'<text x="{X(i):.1f}" y="{H-18}" text-anchor="{anchor}" font-size="15" '
+                    f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">'
+                    f'{dates[i][5:].replace("-", "/")}</text>')
+
+    grad = ""
+    if not multi:
+        c = datasets[0]["accent"]
+        grad = (f'<linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">'
+                f'<stop offset="0%" stop-color="{c}" stop-opacity=".26"/>'
+                f'<stop offset="72%" stop-color="{c}" stop-opacity=".05"/>'
+                f'<stop offset="100%" stop-color="{c}" stop-opacity="0"/></linearGradient>')
 
     return f'''<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="{accent}" stop-opacity=".26"/>
-      <stop offset="72%" stop-color="{accent}" stop-opacity=".05"/>
-      <stop offset="100%" stop-color="{accent}" stop-opacity="0"/>
-    </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="7" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-  </defs>
+  <defs>{grad}</defs>
   {''.join(grid)}
-  <path d="{area}" fill="url(#ag)"/>
-  <path d="{line}" fill="none" stroke="{accent2}" stroke-width="9" stroke-opacity=".35"
-        stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
-  <path d="{line}" fill="none" stroke="{accent}" stroke-width="4.2"
-        stroke-linecap="round" stroke-linejoin="round"/>
+  {area}
+  {''.join(paths)}
   {''.join(dots)}
-  {''.join(anns)}
+  {''.join(labels)}
   {''.join(xlab)}
-  {''.join(ticks)}
+  {''.join(ltick)}
+  {''.join(rtick)}
 </svg>'''
 
 
-def build_trend_card_html(player: str, metric: str, metric_label: str,
-                          series: list, days: int | None = None,
-                          head_uri: str = "") -> str:
-    """趋势卡 HTML（主题同双模式战绩卡）。
+def _label_picks(vals: list, plot_w: float, max_chars: int) -> list:
+    """按「数字宽度 + 间隔」决定标几个数值，整条线最多 15 个。"""
+    n = len(vals)
+    if n <= 1:
+        return [0]
+    fs, gap, cap = 16, 10, 15
+    label_w = max_chars * fs * 0.62
+    fit = int(plot_w // (label_w + gap)) + 1
+    k = max(2, min(cap, fit, n))
+    if k >= n:
+        return list(range(n))
+    picks = sorted({round(i * (n - 1) / (k - 1)) for i in range(k)})
+    kept = []
+    for i in picks:
+        if not kept:
+            kept.append(i)
+            continue
+        need = label_w + gap + (label_w * 0.5 if (i in (0, n - 1) or kept[-1] in (0, n - 1)) else 0)
+        if (i - kept[-1]) / max(1, n - 1) * plot_w >= need:
+            kept.append(i)
+    return kept
 
-    head_uri: 玩家皮肤头像的 data URI（services.wdsj_api.fetch_player_head_data_uri
-    取回）。为空时回退成首字母徽章——头像服务抖动不该让整张卡渲染失败。
-    """
+
+def _value_label(x: float, y: float, v: int, color: str, first: bool, last: bool) -> str:
+    anchor = "start" if first else ("end" if last else "middle")
+    dx = 2 if first else (-2 if last else 0)
+    return (f'<text x="{x+dx:.1f}" y="{y-16:.1f}" text-anchor="{anchor}" font-size="16" '
+            f'font-weight="700" fill="{color}" '
+            f'font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(v)}</text>')
+
+
+def build_trend_card_html(player: str, datasets: list, days: int | None = None,
+                          head_uri: str = "") -> str:
+    """趋势卡 HTML（主题同双模式战绩卡）。datasets 见 _trend_svg。"""
     global _trend_tpl_cache
     if _trend_tpl_cache is None:
         _trend_tpl_cache = _TREND_TPL_PATH.read_text(encoding="utf-8")
 
-    th = _TREND_THEME["ar"] if metric.startswith("arena") else _TREND_THEME["bw"]
-    accent, accent2 = th["accent"], th["accent2"]
-    mode_label = "竞技场" if metric.startswith("arena") else "起床战争"
+    first_key = datasets[0]["key"]
+    th = _TREND_THEME["ar"] if first_key.startswith("arena") else _TREND_THEME["bw"]
+    accent, accent2 = datasets[0]["accent"], datasets[0]["accent2"]
 
-    vals = [s["val"] for s in series]
-    n = len(vals)
-    first, last = vals[0], vals[-1]
-    delta = last - first
-    span_days = max(1, n - 1)
-    per_day = delta / span_days
-    diffs = [vals[i] - vals[i - 1] for i in range(1, n)]
-    max_day = max(diffs) if diffs else 0
+    n = len(datasets[0]["series"])
+    d0 = datasets[0]["series"][0]["ts"][:10].replace("-", ".")
+    d1 = datasets[0]["series"][-1]["ts"][:10].replace("-", ".")
+    multi = len(datasets) > 1
 
-    d0 = series[0]["ts"][:10].replace("-", ".")
-    d1 = series[-1]["ts"][:10].replace("-", ".")
+    # 图例：多序列才需要，单序列标题已经写明指标
+    if multi:
+        legend = "".join(
+            f'<span class="lg"><i style="background:{d["accent"]}"></i>{_esc_html(d["label"])}</span>'
+            for d in datasets
+        )
+    else:
+        legend = ""
+
+    # 统计条：单序列 5 格；多序列每指标一格（当前 + 增长）
+    if multi:
+        stats = ""
+        for d in datasets:
+            vals = [s["val"] for s in d["series"]]
+            delta = vals[-1] - vals[0]
+            stats += (
+                f'<div class="stat"><div class="k">{_esc_html(d["label"])} 当前</div>'
+                f'<div class="v" style="color:{d["accent"]}">{_fmt_num(vals[-1])}</div>'
+                f'<div class="k" style="margin-top:3px">增长 {"+" if delta > 0 else ""}{_fmt_num(delta)}</div></div>'
+            )
+    else:
+        vals = [s["val"] for s in datasets[0]["series"]]
+        first, last = vals[0], vals[-1]
+        delta = last - first
+        per_day = delta / max(1, len(vals) - 1)
+        diffs = [vals[i] - vals[i - 1] for i in range(1, len(vals))]
+        max_day = max(diffs) if diffs else 0
+        stats = (
+            f'<div class="stat"><div class="k">起始</div><div class="v flat">{_fmt_num(first)}</div></div>'
+            f'<div class="stat"><div class="k">当前</div><div class="v">{_fmt_num(last)}</div></div>'
+            f'<div class="stat"><div class="k">{"增长" if delta >= 0 else "减少"}</div>'
+            f'<div class="v {"up" if delta > 0 else "flat"}">{"+" if delta > 0 else ""}{_fmt_num(delta)}</div></div>'
+            f'<div class="stat"><div class="k">日均增长</div><div class="v flat">{"+" if per_day > 0 else ""}{per_day:.1f}</div></div>'
+            f'<div class="stat"><div class="k">单日最高</div>'
+            f'<div class="v flat">{"+" if max_day > 0 else ""}{_fmt_num(int(max_day))}</div></div>'
+        )
+
+    title = datasets[0]["label"] if not multi else " / ".join(d["label"] for d in datasets)
+    note = f"每日一个采样点 · 共 {n} 个点"
+    if any(d["axis"] == "r" for d in datasets):
+        note += " · 两条量级差太多，右侧另起一轴"
 
     html = (_trend_tpl_cache
             .replace("{{WIDTH}}", str(_TREND_CARD_W))
@@ -782,20 +859,15 @@ def build_trend_card_html(player: str, metric: str, metric_label: str,
                 f'<img src="{head_uri}" alt="">' if head_uri
                 else _esc_html((player or "?")[0].upper())
             ))
-            .replace("{{MODE_LABEL}}", mode_label)
-            .replace("{{METRIC_LABEL}}", _esc_html(metric_label))
+            .replace("{{MODE_LABEL}}", "竞技场" if first_key.startswith("arena") else "起床战争")
+            .replace("{{METRIC_LABEL}}", _esc_html(title))
             .replace("{{DAYS}}", str(n))
             .replace("{{RANGE_LABEL}}", f"近 {days} 天" if days else "全量")
             .replace("{{SPAN}}", f"{d0} → {d1}")
-            .replace("{{NOTE}}", f"每日一个采样点 · 共 {n} 个点 · 累计值走势")
-            .replace("{{SVG}}", _trend_svg(series, accent, accent2))
-            .replace("{{V_FIRST}}", _fmt_num(first))
-            .replace("{{V_LAST}}", _fmt_num(last))
-            .replace("{{DELTA_LABEL}}", "增长" if delta >= 0 else "减少")
-            .replace("{{DELTA_CLASS}}", "up" if delta > 0 else "flat")
-            .replace("{{V_DELTA}}", ("+" if delta > 0 else "") + _fmt_num(delta))
-            .replace("{{V_PERDAY}}", ("+" if per_day > 0 else "") + f"{per_day:.1f}")
-            .replace("{{V_MAXDAY}}", ("+" if max_day > 0 else "") + _fmt_num(int(max_day))))
+            .replace("{{NOTE}}", note)
+            .replace("{{LEGEND}}", legend)
+            .replace("{{STATS}}", stats)
+            .replace("{{SVG}}", _trend_svg(datasets)))
 
     from services.card_base import inject_stamp
     import time as _t
@@ -807,31 +879,78 @@ def _esc_html(s) -> str:
     return _h.escape(str(s), quote=True)
 
 
-async def generate_trend_card(player: str, metric: str, days: int | None = None) -> str | None:
-    """趋势卡主入口：HTML → Playwright 截图。失败时回退 matplotlib 版。"""
-    series = get_player_trend(player, metric, days)
-    if not series:
+def _assign_axes(datasets: list) -> None:
+    """按「量级」分簇决定左右轴。就地改 axis 字段。
+
+    只看最大最小比值不够：三条线里两条同量级、一条小一大截时，
+    若把「最大的那条」单独放左轴，另一条同级的会被推去右轴，
+    结果两条大值挤在一条轴上、小值那侧轴被撑到 0~8000，压成贴底的直线
+    （2026-10-31 实测：死亡 6300 / 击杀 4267 / 胜场 280 三条线）。
+
+    正确做法：先把量级相近（最大值差 10 倍以内）的指标并成一簇，
+    簇内共用一条轴；最大那簇放左轴，其余各簇放右轴。
+    """
+    for d in datasets:
+        d["axis"] = "l"
+    if len(datasets) < 2:
+        return
+
+    highs = [max(s["val"] for s in d["series"]) for d in datasets]
+    order = sorted(range(len(datasets)), key=lambda i: -highs[i])
+
+    clusters: list[list[int]] = []
+    for i in order:
+        for c in clusters:
+            if highs[i] * 10 >= max(highs[j] for j in c):   # 同量级（差不到一个数量级）
+                c.append(i)
+                break
+        else:
+            clusters.append([i])
+
+    clusters.sort(key=lambda c: -max(highs[j] for j in c))
+    for c in clusters[1:]:
+        for i in c:
+            datasets[i]["axis"] = "r"
+
+
+async def generate_trend_card(player: str, metrics, days: int | None = None) -> str | None:
+    """趋势卡主入口。metrics 传字符串或列表（最多 3 条线）。
+
+    数据不足 2 天的指标会被静默丢掉；一条都画不了时返回 None，由调用方回文案。
+    """
+    if isinstance(metrics, str):
+        metrics = [metrics]
+    metrics = [m for m in metrics if m][:3]
+
+    datasets = []
+    for i, m in enumerate(metrics):
+        series = get_player_trend(player, m, days)
+        if len(series) < 2:
+            continue
+        datasets.append({
+            "key": m,
+            "label": _TREND_LABELS.get(m, m),
+            "series": series,
+            **_TREND_PALETTE[i % len(_TREND_PALETTE)],
+            "axis": "l",
+        })
+    if not datasets:
         return None
-    label = metric
-    for mid, tid, fn, lb in _TREND_METRICS:
-        if mid == metric:
-            label = lb
-            break
+    _assign_axes(datasets)
+
     try:
         import time as _t
         from modules.changelog import render_card_to_image
-        # 头像走 API 的 /api/v1/player-heads/{name}/head.png，转 data URI 内联，
-        # 避免截图时等外部网络（失败就用首字母徽章兜底）
         head_uri = ""
         try:
             from services.wdsj_api import fetch_player_head_data_uri
             head_uri = await fetch_player_head_data_uri(player)
         except Exception as e:
             logger.warning("趋势卡头像获取失败（回退首字母）: %s", e)
-        html = build_trend_card_html(player, metric, label, series, days, head_uri=head_uri)
+        html = build_trend_card_html(player, datasets, days, head_uri=head_uri)
         out = await render_card_to_image(
             html,
-            output_filename=f"trend_{player}_{metric}_{int(_t.time())}.png",
+            output_filename=f"trend_{player}_{'_'.join(d['key'] for d in datasets)}_{int(_t.time())}.png",
             width=_TREND_CARD_W + 40,
         )
         if out:
@@ -839,4 +958,4 @@ async def generate_trend_card(player: str, metric: str, days: int | None = None)
         logger.warning("趋势卡截图返回空，回退 matplotlib")
     except Exception as e:
         logger.error("趋势卡 HTML 渲染失败，回退 matplotlib: %s", e, exc_info=True)
-    return generate_trend_chart(player, metric, days)
+    return generate_trend_chart(player, datasets[0]["key"], days)
