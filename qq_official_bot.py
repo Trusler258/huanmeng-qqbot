@@ -607,10 +607,17 @@ async def run_gateway() -> None:
                             user = d.get("user", {})
                             log("READY:", user.get("username"), user.get("id"))
                             backoff = 3
-                        elif t == "GROUP_AT_MESSAGE_CREATE":
+                        elif t in ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"):
+                            # GROUP_MESSAGE_CREATE 是「群内全量消息」（本应用有这个权限）。
+                            # 只处理它的好处：群里发 /~ 指令不用先 @；非指令一律静默，
+                            # 不会变成"什么都插嘴"。两者数据结构一致。
                             gid = d.get("group_openid", "")
-                            author = (d.get("author") or {}).get("member_openid") or gid
-                            log(f"群@ 收到 group={gid[:8]}…")
+                            au = d.get("author") or {}
+                            author = au.get("member_openid") or au.get("id") or gid
+                            if au.get("bot"):
+                                continue          # 机器人自己发的，别回自己
+                            tag = "群@" if t.endswith("AT_MESSAGE_CREATE") else "群"
+                            log(f"{tag} 收到 group={gid[:8]}…")
                             await dispatch(d.get("content", ""),
                                            ReplyCtx("groups", gid, d.get("id", ""), author))
                         elif t == "C2C_MESSAGE_CREATE":
