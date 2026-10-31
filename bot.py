@@ -134,6 +134,14 @@ class HuanmengBot:
         """主循环：连接 → 接收事件 → 分发 → 断线重连"""
         self._running = True
 
+        # ★ 无头模式（2026-10-31 账号被封 7 天期间用）：不连 NapCat，只跑采集与生成。
+        #   拦在 services.sender 这一层，任何 send_* / call_api 都不会真的发出去。
+        import os as _os
+        _headless = str(_os.getenv("BOT_HEADLESS", "")).strip().lower() in ("1", "true", "yes", "on")
+        if _headless:
+            from core.headless import install as _install_headless
+            _install_headless()
+
         # ★ 启动后台任务：提醒轮询 & 每日统计推送
         import asyncio as _asyncio
         # ★ v2.0.4t(2026-09-03): 提醒轮询/控制文件监听/节假日服务已由 bg_tasks 插件统一负责。
@@ -186,6 +194,12 @@ class HuanmengBot:
             info("渲染队列就绪（Chromium 懒加载 + 空闲 10 分钟自动回收）")
         except Exception as e:
             warning("渲染队列启动失败: %s (仍会在首次使用时懒加载)", e)
+
+        if _headless:
+            info("★ 无头模式：跳过 NapCat 连接，后台任务继续跑（停止用 systemctl stop）")
+            while self._running:
+                await asyncio.sleep(3600)
+            return
 
         while self._running:
             try:

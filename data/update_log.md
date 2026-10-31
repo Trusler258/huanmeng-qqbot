@@ -149,6 +149,51 @@ trend trusler        → 正在生成… → 输出 CQ:image 图片
 - x 轴末位日期一定要保留；它和上一格不足 80px 时挤掉上一格（保留最新日期更重要）
 - 数据不足 2 天的指标自动跳过，并在提示里点名：「（胜场还没攒够两天，这次先不画喵）」
 
+### 六、无头模式 BOT_HEADLESS（账号封禁期专用）
+
+2026-10-31 QQ 账号被风控封 7 天（11-07 解）。停机等解封会让 `wdsj_history.json`
+断 7 天采样，趋势图中间空一段；但采集和日榜生成只依赖 `wdsj.net` 的 HTTP API，
+不需要 QQ。
+
+所以加了环境变量开关：
+
+```
+BOT_HEADLESS=1 →  不连 NapCat，所有对外发送被拦掉，采集/日榜生成照跑
+（不设）        →  正常在线
+```
+
+拦截点在 `core/headless.py`：把 `services.sender` 的 8 个 `send_*` 换成空实现，
+`get_ws_manager()` 换成永远返回成功的假客户端。这样不论调用方是
+`send_group_msg` 还是直接 `call_api`（qzone 那条路），都不会真发出去，
+也不会因为连不上 WS 反复刷错误日志。
+
+指令天然不可用——没有 WS 就没有消息进来，不需要额外开关。
+
+服务器上用 systemd drop-in 挂环境变量：
+
+```
+/etc/systemd/system/bot.service.d/headless.conf
+[Service]
+Environment=BOT_HEADLESS=1
+```
+
+解封后删掉这个文件 + `systemctl daemon-reload`，再按「先 napcat 扫码、后 bot」启动。
+
+实测（22:19 启动）：
+
+```
+★ 无头模式已启用：不连 NapCat，所有发送被拦截，采集/生成照常
+插件系统已启动: 加载 27 个插件
+★ 无头模式：跳过 NapCat 连接，后台任务继续跑
+战绩采集将在 1h41m 后执行 (11-01 00:01, 每 12h)
+每日统计推送已启动（等待凌晨0点...）
+send_group_msg  → True（日志「已拦截发送」）
+call_api        → {"status":"ok","retcode":0}（日志「拦截 API 调用」）
+```
+
+日榜卡在发送之前就已渲染落盘（`data/img_temp/`），所以这 7 天卡片照常生成，
+只是不发群、不同步空间。
+
 ### 五、BA 字体可配
 
 `/~ba` 现在会优先用 `data/fonts/` 下的自定义字体（文件名以 `ba` 开头，
