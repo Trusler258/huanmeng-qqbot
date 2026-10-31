@@ -69,7 +69,7 @@ CQ 码、零宽字符、疑问句、正文中间斜杠，全绿。
 现在两条链路（群消息 / 戳一戳）共用 `core.llm_switch.is_llm_reply_enabled()`，
 一处关闭、处处静默。指令仍然只走 COMMAND_MAP，不受影响。
 
-## v2.3.111 — trend 多指标叠加 + 提示分情况 + BA 字体可配 (2026.10.31)
+## v2.3.111 — 官方机器人接入 + LLM 全关 + 无头模式 + trend 多指标 (2026.10.31)
 
 一句话总结：查趋势查不到时说人话——没这个人的记录、这个模式没打过、还是天数不够，
 三种情况分别提示，不再一律甩「至少 2 天记录」。
@@ -174,6 +174,73 @@ READY: 织梦 3403560730654943348
 ```
 
 `/~wdsj bw trusler` 在官方渠道走通，说明整条链路成立。
+
+### 九、官方渠道加载全部插件（27 个 / 144 条指令）
+
+上一节说过一个短板：官方进程只 `import modules.commands`，只有 110 条内置指令，
+插件指令（`/~ba`、`/~weather`、`/~netmusic`、`/~ping`…）在那个进程里根本不存在。
+
+现在补齐了，但**不能直接 `load_all()`**：
+
+```
+PluginManager.load_all()
+  └── load → init(on_load) → enable(on_enable)
+                                  ↑
+                    plugins/bg_tasks 在这里起了 6 个后台循环
+                    （wdsj 每 12h 采集、故障巡检、提醒、节日、画像…）
+```
+
+官方进程是独立进程，再跑一遍采集会和主 bot **抢同一份 `wdsj_history.json`**——
+并发写 + 上游压力翻倍，正是 v2.0.4s 那次「日志双进度流 + 批量 ConnectTimeout」的成因。
+
+所以只走到 `init`（即 `on_load`），**不调 `enable`**：
+
+```python
+for name in pm.load_order():
+    await pm.load(name)      # 实例化
+    await pm.init(name)      # 只跑 on_load ← 指令在这里注册
+    # 不调 enable：后台任务一个不起
+```
+
+逐个核对过全部 24 个插件的 `on_load` / `on_enable`：**指令全部在 `on_load` 里注册，
+`on_enable` 只负责起后台任务**。所以跳过 enable 一条指令都不丢，后台任务一个不起。
+
+实测：
+
+```
+插件已加载 27 个（仅指令）: agnes, ba, bg_tasks, box, dice, earthquake, gh,
+  memory_link, motou, nasa, netmusic, op, pgr, phi, ping, points, power,
+  qzone, relay, reward, shop, skin, steam, tuf, voice, wdsj, weather
+COMMAND_MAP 共 144 条指令          ← 原来 110
+READY: 织梦 3403560730654943348
+
+插件状态：bg_tasks=loaded（不是 enabled）、ba=loaded
+进程正常退出（无残留后台任务）
+```
+
+顺带给 `get_ws_manager()` 也装了假客户端——插件里少数地方
+（`ctx.message.send_ex`、直接 `call_api`）绕开 `send_*`，不拦的话会去连
+`127.0.0.1:8099`（本进程没有 NapCat），每次超时重试。
+
+### 十、markdown 回复打通
+
+官方 API 支持 `msg_type=2` 的 markdown 消息，比纯文本能表达的多（加粗、列表、
+代码块、引用）。已接到 `send_text()` 里，**自动探测 + 失败回退**：
+
+| 状态 | 行为 |
+|---|---|
+| unknown | 第一次发送试 markdown；成功记 `on`，失败记 `off` |
+| on | 后续回复一律 `msg_type=2` |
+| off | 不再尝试，走 `msg_type=0` 纯文本 |
+
+状态按 scene 分开记（`groups` / `users`），因为群聊和私聊是两套权限。
+失败时用同一个 `msg_id` 补发纯文本，消息不会丢——代价是消耗一次被动回复额度
+（上限 5 次/条）。
+
+⚠️ NapCat 通道仍然不渲染 markdown（QQ 客户端对第三方协议端不解析），
+所以**文案本身还是纯文本**，markdown 只是把它用富文本通道发出去。
+真要用上格式化（加粗数字、列表排版），得给高频指令加「官方渠道专用文案分支」，
+那是下一步。
 
 ### 八点五、AGC 内容限制：官方渠道禁用生图类指令
 

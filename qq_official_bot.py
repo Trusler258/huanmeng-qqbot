@@ -146,8 +146,53 @@ def _post_message(payload: dict) -> tuple[int, dict]:
     return _api("POST", f"/v2/{_CUR.scene}/{_CUR.openid}/messages", payload)
 
 
+# ── markdown 能力探测 ───────────────────────────────────
+# 官方 API 的 msg_type=2 走 markdown，但要「markdown 消息」权限；群聊和私聊
+# 是两套权限，所以按 scene 分别记状态。
+#   unknown → 第一次尝试，成功记 on、失败记 off 并原地回退纯文本
+#   on      → 后续回复一律富文本（**加粗**、列表、代码块都能渲染）
+#   off     → 不再尝试，省一次失败请求
+_MD_STATE: dict[str, str] = {}
+
+
+def _send_chunk(chunk: str) -> tuple[int, dict]:
+    """发一段文本：markdown 可用就富文本，否则纯文本。"""
+    assert _CUR is not None
+    scene = _CUR.scene
+    state = _MD_STATE.get(scene, "unknown")
+
+    if state != "off":
+        seq = _next_seq()
+        st, data = _post_message({
+            "content": "",
+            "msg_type": 2,
+            "markdown": {"content": chunk},
+            "msg_id": _CUR.msg_id,
+            "msg_seq": seq,
+        })
+        if st in (200, 201):
+            if state == "unknown":
+                _MD_STATE[scene] = "on"
+                log(f"markdown 可用（{scene}），后续回复切富文本")
+            return st, data
+        _MD_STATE[scene] = "off"
+        log(f"markdown 不可用（{scene} HTTP {st}），回退纯文本:", str(data)[:160])
+        if _CUR.exhausted:
+            return st, data
+
+    body = {"content": chunk, "msg_type": 0, "msg_id": _CUR.msg_id, "msg_seq": _next_seq()}
+    return _post_message(body)
+
+
+def md_enabled(scene: str | None = None) -> bool:
+    """markdown 是否已确认可用（scene 为空则任一群/私聊可用即算）。"""
+    if scene:
+        return _MD_STATE.get(scene) == "on"
+    return any(v == "on" for v in _MD_STATE.values())
+
+
 def send_text(text: str) -> bool:
-    """发纯文本（被动回复）。超长按 1800 字切块。"""
+    """发文本（被动回复）。markdown 可用时自动走富文本。超长按 1800 字切块。"""
     if _CUR is None or not text:
         return False
     text = str(text).strip()
@@ -159,9 +204,7 @@ def send_text(text: str) -> bool:
         if _CUR.exhausted:
             log("被动回复次数用尽，丢弃文本:", chunk[:40])
             return False
-        seq = _next_seq()
-        body = {"content": chunk, "msg_type": 0, "msg_id": _CUR.msg_id, "msg_seq": seq}
-        st, data = _post_message(body)
+        st, data = _send_chunk(chunk)
         if st not in (200, 201):
             log("文本回复失败 HTTP", st, str(data)[:200])
             ok = False
@@ -244,6 +287,24 @@ def install_sender_shim() -> None:
     S.send_private_msg = _send_private        # type: ignore[assignment]
     S.send_by_chat_type = _send_group         # type: ignore[assignment]
     S.send_file = _send_file                  # type: ignore[assignment]
+
+    # 插件里少数地方（ctx.message.send_ex / 直接 call_api）绕开上面四个，
+    # 走 get_ws_manager() 拿原生 WS。这里给个假客户端，避免它们去连
+    # 127.0.0.1:8099（本进程没有 NapCat，连了就是超时重试）。
+    class _DummyWS:
+        ws = None
+
+        async def call_api(self, action, params=None, timeout=8.0):
+            log("拦截原生 API 调用:", action)
+            return {"status": "ok", "retcode": 0, "data": {}, "echo": "official"}
+
+        async def send(self, *a, **k):
+            return True
+
+        async def ensure_connected(self):
+            return False
+
+    S.get_ws_manager = lambda: _DummyWS()     # type: ignore[assignment]
     log("sender 已接管：所有回复走官方 API")
 
 
@@ -319,11 +380,55 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
         _CUR = None
 
 
+# ────────────────────── 插件（只到 on_load，不启用） ──────────────────────
+async def load_plugin_commands() -> list[str]:
+    """加载插件到「注册完指令」为止，**不调 on_enable**。
+
+    ★ 为什么不用 PluginManager.load_all()：load_all 会走 enable → on_enable，
+      而 plugins/bg_tasks 的 on_enable 里起了 6 个后台循环（含每 12h 的 wdsj 采集、
+      每 300s 的故障巡检）。官方进程是独立进程，再跑一遍会和主 bot 抢同一份
+      wdsj_history.json —— 并发采集、上游压力翻倍，正是 v2.0.4s 那次
+      「日志双进度流 + 批量 ConnectTimeout」的成因。
+
+    ★ 为什么跳过 enable 不丢指令：全部 24 个插件都在 on_load 里 register_command
+      （2026-10-31 逐个核对过），on_enable 只负责起后台任务。所以只走到 init，
+      指令一条不少，后台任务一个不起。
+    """
+    from core.plugin import get_plugin_manager
+    pm = get_plugin_manager()
+    pm.discover()
+    loaded: list[str] = []
+    for name in pm.load_order():
+        miss = pm.missing_deps(name)
+        if miss:
+            log(f"插件 {name} 跳过：缺依赖 {miss}")
+            continue
+        ok, err = await pm.load(name)
+        if not ok:
+            log(f"插件 {name} 加载失败: {err}")
+            continue
+        ok2, err2 = await pm.init(name)      # 只跑到 on_load
+        if not ok2:
+            log(f"插件 {name} on_load 失败: {err2}")
+            continue
+        loaded.append(name)
+    return loaded
+
+
 # ────────────────────────── 网关 ──────────────────────────
 INTENTS = 1 << 25      # GROUP_AND_C2C_EVENT
 
 
 async def run_gateway() -> None:
+    # 插件指令（后台任务一律不启，见 load_plugin_commands 的说明）
+    try:
+        names = await load_plugin_commands()
+        from modules.commands import COMMAND_MAP
+        log(f"插件已加载 {len(names)} 个（仅指令）: {', '.join(names)}")
+        log(f"COMMAND_MAP 共 {len(COMMAND_MAP)} 条指令")
+    except Exception as e:
+        log("插件加载失败，只用内置指令:", type(e).__name__, e)
+
     backoff = 3
     while True:
         try:
