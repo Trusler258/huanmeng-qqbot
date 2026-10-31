@@ -112,6 +112,7 @@ from core.logger import get_logger
 from core.config import BotConfig, ModelConfig, get_config
 from utils.format_lang import format_lang
 
+_LLM_OFF_LOGGED = False
 logger = get_logger("llm")
 
 # ── "先找后写"请求识别（v2.3.81c）─────────────────────────
@@ -1536,7 +1537,22 @@ async def call_llm(
 
     Returns:
         模型返回的文本内容；出错返回空字符串
+
+    ★ 2026-10-31：这里也是全站 LLM 的总闸。`data/llm_reply_disabled` 存在时
+      直接返回空串、一个网络请求都不发——回复、记忆压缩、会话摘要、用户画像、
+      工具里的代码生成统统停摆。各调用方本来就按「空 = 失败」兜底。
     """
+    global _LLM_OFF_LOGGED
+    try:
+        from core.llm_switch import is_llm_enabled
+        if not is_llm_enabled():
+            if not _LLM_OFF_LOGGED:
+                logger.info("[LLM] 总开关已关闭，跳过全部模型调用（含记忆压缩/摘要/工具）")
+                _LLM_OFF_LOGGED = True
+            return ""
+    except Exception:
+        pass
+
     client = _create_client(model_cfg, timeout=timeout + 5.0)
     loop = asyncio.get_running_loop()
     
@@ -1659,6 +1675,23 @@ class ToolCallResult:
         self.reasoning = reasoning or ""
         # v2.1.12: reasoning 非空时记录本轮耗时（思考时长秒），供 [已思考N秒] 标注
         self.reasoning_duration = reasoning_duration or 0.0
+
+async def call_llm_raw(prompt: str, *, timeout: float = 60.0,
+                       max_tokens: int | None = None) -> str:
+    """单轮纯文本调用（/~analyze 这类临时场景）。
+
+    2026-10-31 补：commands.cmd_analyze 一直在 import 这个名字，但本文件从未定义，
+    那条指令一直是 ImportError 状态（一直没人踩到，藏了两个月）。
+    """
+    from core.config import get_config
+    cfg = get_config()
+    return await call_llm(
+        cfg.reply_model,
+        [{"role": "user", "content": prompt}],
+        max_tokens=max_tokens, temperature=0.3, timeout=timeout,
+        scene="raw",
+    )
+
 
 async def call_llm_with_tools(
     model_cfg: "ModelConfig",

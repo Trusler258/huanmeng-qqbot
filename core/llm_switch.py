@@ -30,9 +30,18 @@ _ROOT = Path(__file__).resolve().parent.parent
 FLAG_FILE = _ROOT / "data" / "llm_reply_disabled"
 
 
-def is_llm_reply_enabled() -> bool:
-    """LLM 回复是否开启（默认开启，只有开关文件存在时才是关闭）。"""
+def is_llm_enabled() -> bool:
+    """全站 LLM 是否可用（默认开启，开关文件存在即全关）。
+
+    2026-10-31 扩义：原来只拦「回复」，现在连记忆压缩、会话摘要、用户画像、
+    工具里的代码生成一起停——用户要求「LLM 完全禁用，不是删代码」。
+    真正的收口在 services.llm.call_llm，所有调用方都会经过它。
+    """
     return not FLAG_FILE.exists()
+
+
+# 兼容旧名（pipeline 等处还在用）
+is_llm_reply_enabled = is_llm_enabled
 
 
 def state() -> dict:

@@ -1408,11 +1408,11 @@ async def cmd_llm(args, user_id, group_id, sender_name, is_group, bot_qq):
     if sub in ("status", "状态", ""):
         st = state()
         if st["enabled"]:
-            return "LLM 回复：开启中 · 按群白名单正常对话\n关闭用 /~llm off（管理员）"
+            return "LLM：开启中 · 回复与后台调用均正常\n关闭用 /~llm off（管理员）"
         since = st["since"] or "未知"
-        return (f"LLM 回复：已关闭（{since} 起）\n"
-                f"· 群里不会再回话，指令照常执行\n"
-                f"· 恢复用 /~llm on（管理员）")
+        return (f"LLM：全部关闭（{since} 起）\n"
+                f"· 不回话，记忆压缩/会话摘要/工具生成也一并停\n"
+                f"· 指令照常执行，恢复用 /~llm on（管理员）")
 
     if sub in ("on", "开", "开启", "打开"):
         if not cfg.is_admin(user_id, group_id):
@@ -1420,7 +1420,7 @@ async def cmd_llm(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not set_llm_reply_enabled(True, by=user_id):
             return "LLM 回复本来就是开着的"
         logger.info("指令 /~llm on: 操作者=%d 群=%d", user_id, group_id)
-        return "LLM 回复已开启，按群白名单正常对话"
+        return "LLM 已开启：回复与后台调用恢复正常"
 
     if sub in ("off", "关", "关闭", "停"):
         if not cfg.is_admin(user_id, group_id):
@@ -1428,8 +1428,8 @@ async def cmd_llm(args, user_id, group_id, sender_name, is_group, bot_qq):
         if not set_llm_reply_enabled(False, by=user_id):
             return "LLM 回复本来就是关着的"
         logger.info("指令 /~llm off: 操作者=%d 群=%d", user_id, group_id)
-        return ("LLM 回复已关闭：群里不再回话，指令照常执行\n"
-                "恢复：/~llm on")
+        return ("LLM 已全部关闭：不回话，记忆压缩等后台调用一并停\n"
+                "指令照常执行，恢复：/~llm on")
 
     return "用法：/~llm [status|on|off]（on/off 仅管理员）"
 
