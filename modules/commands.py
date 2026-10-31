@@ -2777,7 +2777,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if mode == "are":
             # ★ v2.3.24: 日榜渲染 ~1-3s，先回执避免用户以为没反应（原来全程静默）
             _is_push0 = len(args) >= 2 and args[-1].lower() in ("send", "push", "推送", "发送")
-            if not _is_push0:
+            if not _is_push0 and not SUPPRESS_PROGRESS_TIP:
                 await (send_group_msg(format_lang("cmd_wdsj.m37"), group_id) if is_group
                        else send_private_msg(format_lang("cmd_wdsj.m38"), user_id))
             rows, today, time_start, time_end, fb = build_arena_daily_rankings(label_date=label_date)
@@ -2790,7 +2790,7 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             # ★ 查询过去日期时自动用跨天模式
             use_cross = label_date and label_date != _date.today().isoformat()
             # ★ v2.3.24: 先回执（push 模式是后台推送，不用回执）
-            if not is_push:
+            if not is_push and not SUPPRESS_PROGRESS_TIP:
                 _d = label_date or _date.today().isoformat()
                 await (send_group_msg(format_lang("cmd_wdsj.m39", _d=_d), group_id) if is_group
                        else send_private_msg(format_lang("cmd_wdsj.m40", _d=_d), user_id))

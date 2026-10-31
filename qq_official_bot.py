@@ -485,9 +485,18 @@ def _is_command(text: str) -> bool:
 
 # 「查查我的」按钮：官方 API 的 action.type=2 是指令按钮，点了客户端替用户
 # 发出 data 里的指令，等于一键自动填充。
+# 这些子指令跟「查某个人的战绩」无关，一律不挂按钮。
+# ⚠️ 2026-11-01：漏了 daily/rank 等，日榜下面也被挂了「查查我的」（用户实测指出）。
+# 改这个集合时必须把 cmd_wdsj 的 action 分支全部过一遍。
 _WDSJ_SKIP_ACTIONS = {
-    "me", "trend", "趋势", "走势", "折线", "lb", "榜", "排行榜", "boards", "list",
-    "collect", "bd", "绑定", "help", "列表", "?",
+    # 卡片/图表
+    "me", "dual", "double", "双模式", "双段",
+    "trend", "趋势", "走势", "折线",
+    # 榜单
+    "lb", "ldb", "榜", "榜单", "排行榜", "boards", "rank", "排名", "群排名",
+    "daily", "今日", "今天",
+    # 其它
+    "list", "列表", "collect", "bd", "bind", "绑定", "help", "?",
 }
 
 
