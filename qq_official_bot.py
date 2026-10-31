@@ -454,7 +454,10 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
     global _CUR
     text = (content or "").strip()
     # 群里 @ 之后常带空格/CQ，先剥
-    text = re.sub(r"^(\s|\[CQ:[^\]]+\])+", "", text).strip()
+    # 官方群里 @ 机器人时，content 里会带 `<@3E40895D3C0C6805...>` 这样的记号
+    # （2026-10-31 实测：`<@3E40...> 晚安+1`）。不剥掉的话，@ 之后的指令
+    # 永远被判成"非指令"——这正是"某个群必须 @"却指令无效的原因。
+    text = re.sub(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>)+", "", text).strip()
 
     if not _is_command(text):
         log("非指令，忽略:", text[:40])
