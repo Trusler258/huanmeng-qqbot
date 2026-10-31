@@ -56,6 +56,17 @@ TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 # 每条收到的消息最多被动回复 5 次（官方限制），第 6 次起要主动消息配额
 MAX_PASSIVE_REPLIES = 5
 
+# ── AGC（应用生成内容）限制 ──────────────────────────────
+# 官方平台对机器人产出的内容有审核要求：AI 生图、二次元图（含 R18）这类
+# 在官方渠道一律不提供。第三方协议端（NapCat）没有这条平台规则，不受影响。
+# 2026-10-31 用户要求：这些指令在官方机器人上禁用。
+BANNED_COMMANDS = {
+    "img", "img18", "pic", "图片", "图", "色图",
+    "draw", "绘画", "生图", "画图",
+    "video", "视频", "img2video", "图生视频",
+}
+BANNED_REPLY = "官方渠道不做图片生成和二次元图啦，换个指令试试喵。"
+
 _CQ_IMAGE = re.compile(r"\[CQ:image,[^\]]*?file=([^,\]]+)[^\]]*\]")
 _CQ_ANY = re.compile(r"\[CQ:[^\]]+\]")
 
@@ -243,6 +254,18 @@ def _stable_id(s: str) -> int:
     return int(h, 16)
 
 
+def _cmd_name(text: str) -> str:
+    """从 `/~img 甘雨` 里取出 `img`。"""
+    raw = (text or "").strip().lstrip("/")
+    raw = raw.lstrip("~#").strip()
+    return raw.split()[0].lower() if raw else ""
+
+
+def _is_banned(text: str) -> bool:
+    """AGC 限制的指令（生图 / 二次元图 / 视频生成）。"""
+    return _cmd_name(text) in BANNED_COMMANDS
+
+
 def _is_command(text: str) -> bool:
     t = (text or "").strip()
     if not t.startswith("/"):
@@ -261,6 +284,15 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
 
     if not _is_command(text):
         log("非指令，忽略:", text[:40])
+        return
+
+    if _is_banned(text):
+        log("AGC 限制指令，拒绝:", text[:30])
+        _CUR = ctx
+        try:
+            send_text(BANNED_REPLY)
+        finally:
+            _CUR = None
         return
 
     _CUR = ctx
