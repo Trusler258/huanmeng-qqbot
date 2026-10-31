@@ -366,8 +366,6 @@ async def resolve_wdsj_image(snapshot: str, image_url: str) -> tuple[str, int, i
     缓存命中 → 直接返回（连下载都跳过，整条指令 ~0.9s）
     未命中   → 下载 webp → 转 JPEG → 落盘 → 返回 URL（约 2.4s）
     """
-    import io as _io
-
     key = f"wdsj_{snapshot}"
     out = IMG_DIR / f"{key}.jpg"
     cache = _load_media_cache()
@@ -501,21 +499,16 @@ def build_wdsj_keyboard(cmd_text: str, user_id: int) -> dict | None:
     if parts[1].lower() in _WDSJ_SKIP_ACTIONS:
         return None
 
-    mode, named = "bw", False
+    mode = "bw"
     for tk in parts[1:]:
         low = tk.lower()
         if low in ("text", "img", "图片", "文字"):
             continue
         if resolve_template(low):
             mode = low
-        else:
-            named = True
+    # 按钮统一是「查查我的」（用户要的），有绑定就直接查，没绑定引导先绑定
     bound = _get_bound_player(user_id)
-    if not named:
-        # 查的就是自己 → 「查查我的」没意义，改成看趋势图（2026-10-31 用户反馈
-        # 「按钮呢」：原来这种情况直接不挂按钮，看起来像坏了）
-        label, data = "看趋势图", "/~wdsj trend"
-    elif bound:
+    if bound:
         label, data = "查查我的", f"/~wdsj {mode} {bound}"
     else:
         label, data = "先绑定玩家名", "/~wdsj bd"
