@@ -270,14 +270,33 @@ def send_image(path: Path) -> bool:
     seq = _next_seq()
     body = {"content": "", "msg_type": 7, "media": {"file_info": info},
             "msg_id": _CUR.msg_id, "msg_seq": seq}
+
+    # 图片消息也带 keyboard：客户端若认，按钮就和图在同一个气泡里
+    # （2026-10-31 用户要求「图和按钮在同一个消息」）。
+    kb = (_CUR.keyboard_late or _CUR.keyboard) if _KB_OK else None
+    if kb:
+        body["keyboard"] = kb
+
     st, data = _post_message(body)
+    kb_used = bool(kb)
+    if st not in (200, 201) and kb_used:
+        # 带按钮失败 → 平台可能不允许富媒体带键盘，去掉重试
+        _KB_OK = False
+        log("图片带按钮失败，去掉按钮重试:", st, str(data)[:140])
+        body.pop("keyboard", None)
+        st, data = _post_message(body)
+        kb_used = False
+
     if st not in (200, 201):
         log("图片发送失败 HTTP", st, str(data)[:200])
         return False
 
-    # 图片发完再把按钮补上：按钮只能挂文本消息，挂在「正在查询」那条会在图片上方，
-    # 观感不对（2026-10-31 用户实测）。
-    if _CUR.keyboard_late:
+    if kb_used:
+        # 按钮已经随图片发出去了，不再补一条文本
+        _CUR.keyboard = None
+        _CUR.keyboard_late = None
+    elif _CUR.keyboard_late and _KB_OK:
+        # 没带上（比如按钮能力被关）→ 退回「补一条短文本」，至少按钮还在
         _CUR.keyboard, _CUR.keyboard_late = _CUR.keyboard_late, None
         send_text(KEYBOARD_HINT)
     return True
