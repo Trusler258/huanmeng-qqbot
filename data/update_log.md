@@ -279,6 +279,52 @@ markdown + 按钮  →  markdown  →  纯文本 + 按钮  →  纯文本
 ⚠️ 指令按钮的 `data` 是**完整的 `/~wdsj bw xxx`**（含前缀）。如果客户端会自动
 补 `/`，点击后会变成 `//~wdsj`，那时要把 data 改成不带前缀的写法——实测为准。
 
+### 十二、战绩回复改成 markdown 内嵌图
+
+第十一节的按钮挂在「图片之后补一条文本」上，观感不对；用户要求「图和按钮在同一个消息」。
+
+先试了富媒体带 keyboard（`msg_type=7` + `keyboard`）：**图片正常发出，按钮完全不渲染**
+——客户端对图片气泡不支持按钮。这条路死了。
+
+于是换成用户提的方案：**图放进 markdown**。
+
+```
+![](https://www.wdsj.net/nexus/api/v1/images/<snapshot>)
+
+> 快捷复制名称
+> trusler
+```
+
+图片走 wdsj 的图床外链（实测不带 Referer 也 200、`image/webp`、220KB），
+QQ 侧能直接拉。图在 markdown 里，按钮就能跟它挂同一条消息，
+引用块里的名字还能长按复制——图里的字复制不了，这点比纯图片强。
+
+配套：
+
+- `modules/commands.py` 加 `MD_INLINE_IMAGE`（默认 False）。开启时 img 分支
+  **不发富媒体**，直接返回上面那段 markdown；缓存逻辑照旧
+- 官方进程置 True；NapCat 走原来的本地图 + CQ 码，一点没变
+- 中文名拿不到：接口的 `player` 只有 `{uid, name, uuid}`。图片上的
+  `trusler#天在水丶枕月` 是服务端渲染时拼的，没暴露。`nick:` 前缀只能
+  昵称→玩家，反向查不出来，`/players/{name}` 档案接口 404。所以引用块只放 ID
+
+### 十三、官方渠道去掉进度提示
+
+「正在查询 xxx 的战绩喵~」会横在图片和按钮之间，观感是按钮跑到了图上面。
+加 `SUPPRESS_PROGRESS_TIP`（官方进程置 True），三处进度提示（战绩 / 趋势 / 排行榜）
+在官方渠道跳过；NapCat 保留。
+
+代价：官方渠道发完指令到出图之间没有中间反馈，等 3~8 秒。
+
+### 十四、踩坑：`global` 漏写导致所有图片发不出去
+
+给 `send_image` 加按钮逻辑时写了 `_KB_OK = False` 却没在函数开头 `global _KB_OK`。
+Python 规则：函数内任何地方赋值 → 整个函数把它当局部变量 → 前面的读取直接
+`UnboundLocalError: local variable '_KB_OK' referenced before assignment`。
+
+表现是「所有带图片的回复都没了」，不只是战绩。已补 `global` 并加注释。
+这条和项目记忆里记的老坑是同一个（函数内 import/赋值同名 → 整个函数局部变量）。
+
 ### 八点五、AGC 内容限制：官方渠道禁用生图类指令
 
 官方平台对机器人产出的内容有审核要求，AI 生图、二次元图（含 R18）这类不能给。
