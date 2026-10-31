@@ -2877,7 +2877,9 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
 
     # ★ 折线图
     if action in ("trend", "趋势", "走势", "折线"):
-        from services.wdsj_tracker import generate_trend_card
+        from services.wdsj_tracker import (
+            generate_trend_card, get_player_trend, _load_history,
+        )
         player = None
         metric = "bw_kills"
         for a in args[1:]:
@@ -2890,13 +2892,35 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             player = _get_bound_player(user_id)
         if not player:
             return format_lang("cmd_wdsj.m47")
-        
+
         label = {"bw_kills":"击杀","bw_wins":"胜场","bw_finals":"最终击杀","bw_deaths":"死亡","arena_kills":"竞技场击杀"}.get(metric, metric)
+
+        # ★ 2026-10-31：先分三种情况再动手。
+        #   原来只有「出图 / 出不来」两分支，失败一律回「需要至少 2 天记录」——
+        #   玩家名压根没采集过时，这句是错的（用户实测 BeBygones 未绑定/无记录）。
+        _hist = _load_history()
+        _key = next((k for k in _hist if k.lower() == str(player).lower()), None)
+        if _key is None:
+            _tip = [f"没找到 {player} 的采集记录喵~",
+                    "· 名字按游戏内 ID 写，大小写无所谓",
+                    "· 也可能是这名玩家不在每日采集名单里"]
+            if not _get_bound_player(user_id):
+                _tip.append("· 你还没绑定玩家名：/~wdsj bd <玩家名>，绑了之后直接 /~wdsj trend 就行")
+            return "\n".join(_tip)
+
+        _series = get_player_trend(_key, metric)
+        if not _series:
+            return f"{player} 没有{label}的记录喵~（可能这个模式没打过）"
+        if len(_series) < 2:
+            return (f"{player} 的{label}只有 {len(_series)} 天的记录喵~\n"
+                    f"趋势图至少要 2 天，明天 12 点采集后再来看看")
+
+        # 确认能画了再发「正在生成」，避免"提示完又报错"的割裂感
         tip = format_lang("cmd_wdsj.m48", player=player, label=label)
         await (send_group_msg(tip, group_id) if is_group
                else send_private_msg(tip, user_id))
-        
-        img = await generate_trend_card(player, metric)
+
+        img = await generate_trend_card(_key, metric)
         if img:
             cq = f"[CQ:image,file=file:///{img.replace(chr(92), '/')}]"
             await (send_group_msg(cq, group_id) if is_group
