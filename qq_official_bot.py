@@ -521,9 +521,12 @@ async def run_gateway() -> None:
     # 插件指令（后台任务一律不启，见 load_plugin_commands 的说明）
     try:
         names = await load_plugin_commands()
-        from modules.commands import COMMAND_MAP
+        import modules.commands as _cmds
+        # 官方渠道不显示「正在查询…」这类进度提示：它会横在战绩图和按钮之间，
+        # 观感是按钮跑到图片上面。NapCat 那边保持原样。
+        _cmds.SUPPRESS_PROGRESS_TIP = True
         log(f"插件已加载 {len(names)} 个（仅指令）: {', '.join(names)}")
-        log(f"COMMAND_MAP 共 {len(COMMAND_MAP)} 条指令")
+        log(f"COMMAND_MAP 共 {len(_cmds.COMMAND_MAP)} 条指令")
     except Exception as e:
         log("插件加载失败，只用内置指令:", type(e).__name__, e)
 

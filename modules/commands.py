@@ -2470,9 +2470,10 @@ async def _handle_wdsj_lb(args, is_group, group_id, user_id):
 
     # 先发提示
     from utils.format_lang import format_lang
-    tip = format_lang("wdsj.lb_searching")
-    await (send_group_msg(tip, group_id) if is_group 
-           else send_private_msg(tip, user_id))
+    if not SUPPRESS_PROGRESS_TIP:
+        tip = format_lang("wdsj.lb_searching")
+        await (send_group_msg(tip, group_id) if is_group 
+               else send_private_msg(tip, user_id))
 
     # 检测 img 模式
     want_img = args[-1].lower() in ("img", "pic", "card", "图片")
@@ -2928,11 +2929,12 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
 
         # 确认能画了再发「正在生成」，避免"提示完又报错"的割裂感
         label = "+".join(_TREND_LABELS.get(m, m) for m in _ok)
-        tip = format_lang("cmd_wdsj.m48", player=player, label=label)
-        if _short:
-            tip += "（" + "、".join(_TREND_LABELS.get(m, m) for m, _ in _short) + "还没攒够两天，这次先不画喵）"
-        await (send_group_msg(tip, group_id) if is_group
-               else send_private_msg(tip, user_id))
+        if not SUPPRESS_PROGRESS_TIP:
+            tip = format_lang("cmd_wdsj.m48", player=player, label=label)
+            if _short:
+                tip += "（" + "、".join(_TREND_LABELS.get(m, m) for m, _ in _short) + "还没攒够两天，这次先不画喵）"
+            await (send_group_msg(tip, group_id) if is_group
+                   else send_private_msg(tip, user_id))
 
         img = await generate_trend_card(_key, _ok)
         if img:
@@ -2976,9 +2978,10 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     display = api.TEMPLATES.get(template_id, template_id)
     logger.info("查询wdsj战绩: player=%s template=%s img=%s", player, template_id, want_img)
 
-    tip = format_lang("wdsj.player_searching", player=player, template=display)
-    await (send_group_msg(tip, group_id) if is_group
-           else send_private_msg(tip, user_id))
+    if not SUPPRESS_PROGRESS_TIP:
+        tip = format_lang("wdsj.player_searching", player=player, template=display)
+        await (send_group_msg(tip, group_id) if is_group
+               else send_private_msg(tip, user_id))
 
     data = await api.query_player_stats(player, template_id)
     if not data:
@@ -4434,6 +4437,12 @@ async def cmd_run(args, user_id, group_id, sender_name, is_group, bot_qq,
         result += "\n\n" + "\n".join(send_msgs)
     logger.info("/~run 完成: lang=%s rc=%s", lang, res.get("returncode"))
     return result
+
+
+# 官方渠道没有「消息处理中」的中间态：进度提示会横在战绩图和按钮之间，
+# 观感是"按钮跑到了图片上面"（2026-10-31 用户实测）。官方进程启动时置 True
+# 跳过这一类提示，NapCat 保持原样。
+SUPPRESS_PROGRESS_TIP = False
 
 
 def _lazy(plugin: str, attr: str):
