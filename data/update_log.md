@@ -233,6 +233,34 @@ timer 最初用 `OnBootSec=2min` + `OnUnitActiveSec=5min`，`enable --now` 之�
 > `请先 /~phi login`。网页日志面板把 ANSI 着色的 `/~phi` 当成后台路径做了链接化，
 > 复制出来才带上 `admin">`。文案没问题，是面板渲染。
 
+### 九、图床改名 bot-img
+
+之前叫 `wdsj-img`，是给战绩图单独开的时候起的名字。现在所有图片都往里放，
+名字对不上了，改成 `bot-img`：
+
+```
+目录   /www/wwwroot/wdsj-img  → /www/wwwroot/bot-img
+URL    .../9871/wdsj-img/     → .../9871/bot-img/
+nginx  location ^~ /wdsj-img/ → location ^~ /bot-img/
+```
+
+改动四处，缺一不可：
+
+1. nginx location（`^~` 保留，否则被宝塔的 `location ~ .*\.(jpg|png)$` 抢走）
+2. 目录 `mv`（原目录整体搬过去，文件不用重传）
+3. 代码 `IMG_DIR` / `IMG_BASE`
+4. **`data/wdsj_media_cache.json` 里的 url 前缀**——13 条全部指向旧路径，
+   不改就会返回 404 导致战绩图裂掉
+
+验证：
+
+```
+bot-img/img_xxx.jpg    HTTP 200
+wdsj-img/img_xxx.jpg   HTTP 404（旧路径已彻底失效）
+```
+
+文件名前缀 `wdsj_` 保留没动——那是文件命名，跟目录无关。
+
 ## v2.3.111 — 官方机器人接入 + LLM 全关 + 无头模式 + trend 多指标 (2026.10.31)
 
 一句话总结：查趋势查不到时说人话——没这个人的记录、这个模式没打过、还是天数不够，

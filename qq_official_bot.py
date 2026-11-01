@@ -352,13 +352,13 @@ def send_cq(cq_or_text: str) -> bool:
 
 # ────────────────────── 本地图床（markdown 内嵌图专用） ──────────────────────
 # wdsj 只给 webp，手机 QQ 不渲染 webp；素材库上传又要多花 1.4s。
-# 改成：下载 → 转 JPEG → 存到 nginx 的 /wdsj-img/ → 直接给 URL。
-# nginx 侧：at.01240820.xyz.conf 里 `location ^~ /wdsj-img/`（^~ 必须，
+# 改成：下载 → 转 JPEG → 存到 nginx 的 /bot-img/ → 直接给 URL。
+# nginx 侧：at.01240820.xyz.conf 里 `location ^~ /bot-img/`（^~ 必须，
 # 否则被宝塔的 `location ~ .*\.(jpg|png)$` 正则抢走 → 404）。
-IMG_DIR = Path("/www/wwwroot/wdsj-img")
+IMG_DIR = Path("/www/wwwroot/bot-img")
 # 用 qq. 子域：它由 ddns-go 跟着家宽 IP 走（at. 子域 CNAME 到 mghost.site，
 # 解析到别人机器上，拉图必 404 —— 2026-10-31 踩过）
-IMG_BASE = "http://qq.01240820.xyz:9871/wdsj-img"
+IMG_BASE = "http://qq.01240820.xyz:9871/bot-img"
 IMG_KEEP = 500                    # 所有图片都进图床，留 500 张（约 200MB）
 
 _MEDIA_CACHE_FILE = _ROOT / "data" / "wdsj_media_cache.json"
@@ -737,7 +737,7 @@ async def run_gateway() -> None:
         # 渠道行为（不显示进度提示、战绩图走 markdown）由 BOT_CHANNEL=official
         # 在 modules/commands.py 里静态决定，这里不再运行期改全局变量。
         # 只剩这个函数对象必须注入（环境变量传不了 callable）。
-        # 战绩图走本地图床（nginx /wdsj-img/）：转 JPEG + 直接给 URL，
+        # 战绩图走本地图床（nginx /bot-img/）：转 JPEG + 直接给 URL，
         # 比素材库少一次 1.4s 上传；手机上也能显示。
         _cmds.MD_IMAGE_RESOLVER = resolve_wdsj_image
         log(f"插件已加载 {len(names)} 个（仅指令）: {', '.join(names)}")
