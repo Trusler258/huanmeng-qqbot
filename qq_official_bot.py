@@ -732,6 +732,12 @@ async def run_gateway() -> None:
                         #   实际上平台是「WS 握手放行 → IDENTIFY 时校验来源 IP →
                         #   不匹配就 op=9 + close 4924」。不记 close code 的话，
                         #   日志里只有「会话失效」，看起来像 token 问题，会白查很久。
+                        # 平台是先发 op=9、再发 close frame，这里读太早会拿到 None
+                        # （2026-11-01 实测日志全是 close=None）。主动等一下再读。
+                        try:
+                            await asyncio.wait_for(ws.recv(), timeout=1.5)
+                        except Exception:
+                            pass
                         _code = getattr(ws, "close_code", None)
                         _reason = getattr(ws, "close_reason", "") or ""
                         if _code == 4924 or "ip forbidden" in str(_reason):
