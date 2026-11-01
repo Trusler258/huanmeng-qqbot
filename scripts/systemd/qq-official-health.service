@@ -1,0 +1,7 @@
+[Unit]
+Description=QQ official bot health check (IP whitelist drift / service state)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/bot/scripts/check_official_health.py

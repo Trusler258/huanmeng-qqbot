@@ -728,7 +728,17 @@ async def run_gateway() -> None:
                         log("网关要求重连")
                         break
                     elif op == 9:                    # 会话失效
-                        log("会话失效，重新 IDENTIFY")
+                        # ★ 2026-11-01：这里原来只打四个字，close code 全丢了。
+                        #   实际上平台是「WS 握手放行 → IDENTIFY 时校验来源 IP →
+                        #   不匹配就 op=9 + close 4924」。不记 close code 的话，
+                        #   日志里只有「会话失效」，看起来像 token 问题，会白查很久。
+                        _code = getattr(ws, "close_code", None)
+                        _reason = getattr(ws, "close_reason", "") or ""
+                        if _code == 4924 or "ip forbidden" in str(_reason):
+                            log(f"会话失效：close={_code} {_reason}"
+                                " —— IP 白名单不匹配，去开放平台加当前出口 IP")
+                        else:
+                            log(f"会话失效（op=9）close={_code} {_reason}")
                         break
                     elif op == 0:
                         t = ev.get("t")

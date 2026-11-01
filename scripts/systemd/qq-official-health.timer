@@ -1,0 +1,13 @@
+[Unit]
+Description=Run QQ official bot health check every 5 minutes
+
+[Timer]
+# 用日历触发而不是 OnUnitActiveSec：后者在 enable 时没有锚点，
+# systemctl list-timers 会显示 NEXT n/a，实际不跑（2026-11-01 踩到）
+OnCalendar=*:0/5
+AccuracySec=30s
+Persistent=false
+Unit=qq-official-health.service
+
+[Install]
+WantedBy=timers.target

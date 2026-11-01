@@ -69,6 +69,92 @@ CQ 码、零宽字符、疑问句、正文中间斜杠，全绿。
 现在两条链路（群消息 / 戳一戳）共用 `core.llm_switch.is_llm_reply_enabled()`，
 一处关闭、处处静默。指令仍然只走 COMMAND_MAP，不受影响。
 
+## v2.3.112 — 官方通道健康检查 + 修复「连不上时日志看不出原因」(2026.11.01)
+
+一句话总结：给官方机器人加了 5 分钟一次的健康检查（IP 漂移、卡在重连都会报），
+顺手补上 `op=9` 丢 close code 的老毛病——这次排查就是被它坑了半个多小时。
+
+### 一、起因
+
+用户问「IP 白名单一直手动改很麻烦，怎么解决」。
+
+先确认了能不能自动改：**不能**。开放平台没有公开的管理 API，管理端用的是内部 CGI
+`q.qq.com/cgi-bin/dev_info/update_white_ip_config`，2026-11-01 实测不带 cookie 直接 404，
+必须带浏览器登录态。任何脚本化的前提都是把管理端 cookie 放服务器上，那个 cookie
+等于整个开发者后台的登录态，比 IP 白名单本身敏感得多，不划算。
+
+### 二、排查中踩的坑：日志根本没记原因
+
+服务日志长这样，看了一个小时：
+
+```
+14:46:58  IDENTIFY 已发送
+14:46:58  HELLO，心跳 41.25 s
+14:46:58  会话失效，重新 IDENTIFY
+14:46:58  60s 后重连
+```
+
+`grep 4924` 一条都没有，很容易判成 token 问题。实际是：
+
+```python
+elif op == 9:
+    log("会话失效，重新 IDENTIFY")
+    break        # ← close frame 还没读，4924 就这么丢了
+```
+
+平台的真实行为是「WS 握手放行 → 回 HELLO → IDENTIFY 时才校验来源 IP →
+不匹配就发 op=9 并 close 4924」。程序在 op=9 直接 break，跳过了那次 recv，
+close code 永远到不了日志。
+
+已改成读 `ws.close_code` / `ws.close_reason`，命中 4924 时直接打印
+「IP 白名单不匹配，去开放平台加当前出口 IP」。
+
+顺带验证了另一件事：**IDENTIFY 必须等 HELLO 之后再发**。手动按正确顺序测过，
+即使顺序对了，白名单不匹配一样是 op=9 + close 4924，所以顺序不是本次的病因
+（但这仍是隐患，值得单独改天处理）。
+
+### 三、加的东西
+
+`scripts/check_official_health.py` + systemd timer（每 5 分钟）：
+
+| 检测 | 判据 |
+|---|---|
+| 服务挂了 | `systemctl is-active` 不是 active |
+| 白名单不匹配 | 近 15 分钟日志含 `4924` / `ip forbidden` |
+| **卡在重连** | 近 10 分钟重连 ≥2 次且一次 READY 都没有 |
+| IP 漂移 | 当前出口 IPv4 与上次记录不同 |
+
+产物：
+
+- `data/official_ip_state.json` 上次见到的出口 IP
+- `data/official_alert.json` 异常时存在，恢复后自动删除（含持续时长）
+- 恢复时推一条「已恢复（持续 N 分钟）」
+
+告警文案直接把要填的 IP 写出来，不用再去查：
+
+```
+[织梦] 官方通道异常
+· 10 分钟内重连 16 次、没有一次 READY（连不上网关）
+当前出口: 123.163.118.83
+上次记录: 123.163.118.83
+开放平台 → 机器人 → 开发设置 → IP 白名单，加 123.163.118.83（旧的留着别删）
+```
+
+可选外部推送：配 `config/official_alert.json` 的 `webhook` 就会 POST 过去，
+不配就只写文件 + journal。
+
+### 四、踩坑：OnUnitActiveSec 不排程
+
+timer 最初用 `OnBootSec=2min` + `OnUnitActiveSec=5min`，`enable --now` 之后
+`systemctl list-timers` 显示 `NEXT n/a`，根本不跑。改成 `OnCalendar=*:0/5`
+立刻正常排程（NEXT 15:00:00）。
+
+### 五、当前状态
+
+- 服务能连上 WS、能收 HELLO，但 IDENTIFY 后被 close 4924
+- 出口 IP `123.163.118.83`（昨天是 `123.163.121.236`）
+- 需要去开放平台把这个 IP 加进白名单；旧 IP 留着别删
+
 ## v2.3.111 — 官方机器人接入 + LLM 全关 + 无头模式 + trend 多指标 (2026.10.31)
 
 一句话总结：查趋势查不到时说人话——没这个人的记录、这个模式没打过、还是天数不够，
