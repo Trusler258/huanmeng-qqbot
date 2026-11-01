@@ -2950,7 +2950,11 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
         if player:
             args = [args[0], player] + (args[1:] if len(args) > 1 else [])
         if len(args) < 2:
-            return format_lang("cmd_wdsj.m50")
+            # 有模式但没名字、又没绑定 → 引导绑定，不要甩「用法」。
+            # ⚠️ 这里原来用 m50，和下面 2976 那个 m51 是**内容完全一样的两条文案**，
+            #    改的时候只改一处会以为没生效（2026-11-01 踩过）。
+            #    完全没参数的 /~wdsj 走的是上面的帮助卡分支，到不了这里。
+            return format_lang("cmd_wdsj.m59")
 
     # 提取输出模式标记（在绑定补齐之后）
     # v2.3.20: 默认发官方图片卡片（去文字刷屏）；img/pic/card/图片 兼容旧写法（等同默认）；
@@ -2969,7 +2973,11 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
             player_parts = [player]
     player = " ".join(player_parts)
     if not player:
-        return format_lang("cmd_wdsj.m51")
+        # 指定了模式却没给名字、又没绑定 → 直接引导绑定。
+        # 原来统一甩「用法: /~wdsj <模式> <玩家名>」，用户会以为自己打错了
+        # （2026-11-01 实测：点「查查我的」按钮的未绑定用户看到这句一脸问号）。
+        # 完全没参数的 /~wdsj 走的是上面的帮助卡分支，到不了这里。
+        return format_lang("cmd_wdsj.m59")
 
     template_id = api.resolve_template(action)
     if not template_id:

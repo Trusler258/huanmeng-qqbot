@@ -592,6 +592,7 @@ m55 = "记录里没有 ${player} 这个人喵。\n名字写岔了，还是它根
 m56 = "${player} 的 ${label} 一片空白喵。这个模式大概没碰过吧。"
 m57 = "${label}才 ${n} 天，连条线都画不出来喵。\n明天中午采集过再来，就能看了。"
 m58 = "还没绑名字的话，发一次 /~wdsj bd <玩家名>，往后 trend 不用每次报喵。"
+m59 = "你还没绑玩家名喵。\n发一次 /~wdsj bd <游戏内ID>，之后 /~wdsj bw 就直接查自己了。"
 
 [_handle_owner_cmd]
 m1 = "~owner cmd add/remove/list/clear <指令名>"

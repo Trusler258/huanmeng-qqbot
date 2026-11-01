@@ -565,7 +565,6 @@ def build_wdsj_keyboard(cmd_text: str, user_id: int) -> dict | None:
     - 原消息没点名（走的就是绑定）、或属于 trend/lb/me 这类子指令 → 不挂
     """
     try:
-        from modules.commands import _get_bound_player
         from services.wdsj_api import resolve_template
     except Exception:
         return None
@@ -583,12 +582,13 @@ def build_wdsj_keyboard(cmd_text: str, user_id: int) -> dict | None:
             continue
         if resolve_template(low):
             mode = low
-    # 按钮统一是「查查我的」（用户要的），有绑定就直接查，没绑定引导先绑定
-    bound = _get_bound_player(user_id)
-    if bound:
-        label, data = "查查我的", f"/~wdsj {mode} {bound}"
-    else:
-        label, data = "先绑定玩家名", "/~wdsj bd"
+    # ★ 按钮 data 绝对不能带玩家名。
+    #   QQ 把指令按钮的内容填进输入框（不是直接发），带名字等于把「原消息发送者」
+    #   写死——任何人点都变成查别人（2026-11-01 实测：A 发 /~wdsj bw img，
+    #   B 点「查查我的」，输入框里填的是 A 的名字，B 当场以为按钮坏了）。
+    #   统一发 `/~wdsj <模式>`，点了发送就是查「点击者自己」的绑定；
+    #   没绑定会走 m59 的引导文案。
+    label, data = "查查我的", f"/~wdsj {mode}"
 
     return {"content": {"rows": [{"buttons": [{
         "id": "wdsj_mine",
