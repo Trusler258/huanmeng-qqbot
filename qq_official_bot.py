@@ -269,6 +269,12 @@ def upload_image(path: Path) -> str:
     return ""
 
 
+# 二维码这类要扫码的图仍走富媒体：markdown 内嵌图在部分客户端长按识别不稳。
+# 其余图片统一走图床（markdown 内嵌），这样能带按钮、能写引用块。
+_RICH_IMAGE_PREFIXES = ("phi_qr_",)
+_MD_IMAGE_ALL = True
+
+
 def send_image(path: Path) -> bool:
     # ⚠️ 本函数内给 _KB_OK 赋值，必须显式 global，否则它变成局部变量，
     #    前面的读取会 UnboundLocalError（2026-10-31 踩过，整个图片发送挂掉）
@@ -278,6 +284,18 @@ def send_image(path: Path) -> bool:
     if _CUR.exhausted:
         log("被动回复次数用尽，丢弃图片:", path.name)
         return False
+
+    # ★ 图片统一走本地图床（markdown 内嵌）：markdown 图能和按钮/引用块同一条消息，
+    #   富媒体气泡挂不了 keyboard；统一转 JPEG 也避开手机端不认 webp 的问题。
+    if _MD_IMAGE_ALL and not Path(str(path)).name.startswith(_RICH_IMAGE_PREFIXES):
+        url, w, h = to_public_jpeg(path)
+        if url:
+            # 攒着的按钮直接挂到这条 markdown 上（不再需要「图后补一条」）
+            if _CUR.keyboard_late and not _CUR.keyboard:
+                _CUR.keyboard, _CUR.keyboard_late = _CUR.keyboard_late, None
+            return send_text(f"![#{w}px #{h}px]({url})")
+        log("图床失败，回退富媒体:", Path(str(path)).name)
+
     info = upload_image(path)
     if not info:
         return False
@@ -341,7 +359,7 @@ IMG_DIR = Path("/www/wwwroot/wdsj-img")
 # 用 qq. 子域：它由 ddns-go 跟着家宽 IP 走（at. 子域 CNAME 到 mghost.site，
 # 解析到别人机器上，拉图必 404 —— 2026-10-31 踩过）
 IMG_BASE = "http://qq.01240820.xyz:9871/wdsj-img"
-IMG_KEEP = 300                    # 最多留 300 张，超了删最旧的
+IMG_KEEP = 500                    # 所有图片都进图床，留 500 张（约 200MB）
 
 _MEDIA_CACHE_FILE = _ROOT / "data" / "wdsj_media_cache.json"
 
@@ -361,10 +379,49 @@ def _save_media_cache(d: dict) -> None:
         log("图床缓存写入失败:", type(e).__name__, e)
 
 
+def to_public_jpeg(path, *, max_long_side: int = 1440, quality: int = 88) -> tuple[str, int, int]:
+    """任意图片 → JPEG → 本地图床，返回 (url, w, h)。失败返回 ("", 0, 0)。
+
+    ★ 2026-11-01 用户要求「图片都走图床，可玩性高」：
+      markdown 内嵌图能和按钮、引用块落在同一条消息里，富媒体气泡做不到；
+      统一转 JPEG 顺带解决手机端不认 webp 的老问题。
+    按内容 md5 命名 → 同一张图只存一份，天然去重。
+    """
+    import hashlib
+    import io as _io
+
+    p = Path(str(path))
+    raw = p.read_bytes()
+    key = "img_" + hashlib.md5(raw).hexdigest()[:16]
+    out = IMG_DIR / f"{key}.jpg"
+    url = f"{IMG_BASE}/{key}.jpg"
+
+    try:
+        from PIL import Image
+        if out.exists():
+            with Image.open(out) as im:
+                return url, im.width, im.height
+        im = Image.open(_io.BytesIO(raw))
+        w, h = im.size
+        if max(w, h) > max_long_side:
+            r = max_long_side / max(w, h)
+            im = im.resize((max(1, int(w * r)), max(1, int(h * r))), Image.LANCZOS)
+            w, h = im.size
+        IMG_DIR.mkdir(parents=True, exist_ok=True)
+        im.convert("RGB").save(out, "JPEG", quality=quality, optimize=True)
+    except Exception as e:
+        log("图床转换失败:", p.name, type(e).__name__, str(e)[:120])
+        return "", 0, 0
+
+    _trim_images()
+    log(f"图床已就绪 {key} {w}x{h} {(out.stat().st_size / 1024):.0f}KB")
+    return url, w, h
+
+
 def _trim_images() -> None:
     """文件太多时删最旧的，别把系统盘撑满。"""
     try:
-        files = sorted(IMG_DIR.glob("wdsj_*.jpg"), key=lambda f: f.stat().st_mtime)
+        files = sorted(IMG_DIR.glob("*.jpg"), key=lambda f: f.stat().st_mtime)
         for f in files[:max(0, len(files) - IMG_KEEP)]:
             f.unlink(missing_ok=True)
     except Exception as e:
