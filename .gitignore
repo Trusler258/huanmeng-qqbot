@@ -9,6 +9,8 @@ config/roles.toml
 
 # === 运行时数据 ===
 data/img_temp/
+# Windows 备用机的图床落盘目录（core/hostenv.py 默认值），不可提交
+/bot-img/
 data/fav.json
 data/luck.json
 data/search_cache.json

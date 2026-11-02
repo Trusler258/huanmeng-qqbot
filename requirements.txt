@@ -25,5 +25,10 @@ markdown>=3.5.0
 # === 无头浏览器截图（HTML 卡片 → PNG） ===
 playwright>=1.40.0
 
+# === 图片处理（图床 webp → JPEG 转码） ===
+# qq_official_bot.to_public_jpeg / resolve_wdsj_image 直接用 PIL。
+# 服务器上是被 playwright 之类的间接依赖带进来的，Windows 全新 venv 会 ImportError。
+pillow>=10.0.0
+
 # === 可选：系统资源监控（/~info 指令） ===
 # psutil>=5.9.0

@@ -47,6 +47,31 @@ import websockets
 _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT))
 
+
+def _load_env_file(path: Path) -> None:
+    """补齐 systemd `EnvironmentFile=` 的等价物（Windows 备用机上没有 systemd）。
+
+    只补**缺失**的键：服务器上 systemd 已经把 QQ_APPID/QQ_SECRET 注进环境，
+    这里逐条 `k not in os.environ` 全部跳过，行为与改动前完全一致。
+    """
+    if not path.exists():
+        return
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+    except Exception:
+        pass
+
+
+_load_env_file(_ROOT / "config" / "official_bot.env")
+
 APPID = os.environ.get("QQ_APPID", "").strip()
 SECRET = os.environ.get("QQ_SECRET", "").strip()
 GATEWAY = "wss://api.sgroup.qq.com/websocket"
@@ -355,10 +380,11 @@ def send_cq(cq_or_text: str) -> bool:
 # 改成：下载 → 转 JPEG → 存到 nginx 的 /bot-img/ → 直接给 URL。
 # nginx 侧：at.01240820.xyz.conf 里 `location ^~ /bot-img/`（^~ 必须，
 # 否则被宝塔的 `location ~ .*\.(jpg|png)$` 正则抢走 → 404）。
-IMG_DIR = Path("/www/wwwroot/bot-img")
-# 用 qq. 子域：它由 ddns-go 跟着家宽 IP 走（at. 子域 CNAME 到 mghost.site，
-# 解析到别人机器上，拉图必 404 —— 2026-10-31 踩过）
-IMG_BASE = "http://qq.01240820.xyz:9871/bot-img"
+# ★ 2026-11-02：IMG_DIR / IMG_BASE 收口到 core.hostenv —— 这是全项目唯一的
+#   平台差异点（Linux 走 /www 静态目录，Windows 走项目内目录 + 隧道）。
+#   服务器不设 BOT_IMG_DIR / BOT_IMG_BASE 时取 Linux 默认值，与改动前完全一致。
+from core.hostenv import IMG_BASE, IMG_DIR  # noqa: E402
+
 IMG_KEEP = 500                    # 所有图片都进图床，留 500 张（约 200MB）
 
 _MEDIA_CACHE_FILE = _ROOT / "data" / "wdsj_media_cache.json"
