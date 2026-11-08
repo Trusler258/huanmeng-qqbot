@@ -233,9 +233,19 @@ class BotConfig:
         return user_id in self.op_qqs
 
     def is_admin(self, user_id: int, group_id: int = 0) -> bool:
-        """检查用户是否有 admin 权限（主人 + 分群 OP 指派）"""
+        """检查用户是否有 admin 权限（主人 + 分群 OP 指派 + 官方渠道白名单）"""
         if user_id == self.admin_qq:
             return True
+        # ★ 2026-11-07：官方渠道（织梦）拿不到 QQ 号，只有 openid 的 sha1 哈希
+        #   （qq_official_bot._stable_id），永远不可能等于 admin_qq，导致
+        #   /~wdsj collect 这类管理指令在官方渠道全废。
+        #   OFFICIAL_ADMIN_IDS 用逗号分隔这些哈希值；只在官方进程的 env 里设置，
+        #   NapCat 端不设 → 空 → 行为与改动前完全一致。
+        _raw = os.environ.get("OFFICIAL_ADMIN_IDS", "")
+        if _raw.strip():
+            for _x in re.split(r"[,，\s]+", _raw.strip()):
+                if _x.isdigit() and int(_x) == user_id:
+                    return True
         if group_id and user_id in self.group_owners.get(group_id, []):
             return True
         return False

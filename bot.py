@@ -355,7 +355,7 @@ class HuanmengBot:
             try:
                 last_dt = datetime.fromisoformat(last_ts)
                 if (datetime.now() - last_dt).total_seconds() > 4 * 3600:
-                    logger.info("上次采集 %s 距今超过 4h，启动时立即补采", last_ts[:16])
+                    logger.info("上次采集 %s 距今超过 4h，启动时立即补采", last_ts)
                     from services.wdsj_tracker import daily_stats_collect
                     status_file.write_text(json.dumps({"status": "running", "ts": datetime.now().isoformat()}, ensure_ascii=False), encoding="utf-8")
                     await daily_stats_collect()

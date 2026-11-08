@@ -758,7 +758,7 @@ def _render(html_path: Path, png_path: Path, w: int, h: int, scale: int = 2) -> 
             proc = subprocess.run(base, capture_output=True, timeout=35)
             if png_path.exists() and png_path.stat().st_size > 1000:
                 return True
-            logger.warning("motd 渲染无输出: %s", proc.stderr.decode("utf-8", "ignore")[-300:])
+            logger.warning("motd 渲染无输出: %s", proc.stderr.decode("utf-8", "ignore"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("motd 渲染异常: %s", exc)
     return False

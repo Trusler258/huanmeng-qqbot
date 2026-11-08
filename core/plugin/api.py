@@ -27,6 +27,7 @@ Plugin API（移植自 huanmeng-kook-bot core/plugin/api.py，适配 qqbot）
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 import secrets
@@ -440,12 +441,21 @@ class PluginCapability:
                                     for m in _re.finditer(r'"type"\s*:\s*"at"\s*,\s*"data"\s*:\s*\{[^}]*"qq"\s*:\s*"?(\d+)"?', raw_message):
                                         if m.group(1) not in mentions:
                                             mentions.append(m.group(1))
+                                # ★ 2026-11-08 官方渠道 @：<@openid> 或 <qqbot-at-user id="openid"/>
+                                #   官方没有 CQ 码，上面两条永远匹配不到，这里补一条。
+                                #   mentions 里放的是原始 openid（不是哈希），
+                                #   fetch_user_avatar 会按 ID 形态选 qqapp 头像地址。
+                                if not mentions:
+                                    for m in _re.finditer(r'<@([0-9A-Za-z]{16,})>|<qqbot-at-user\s+id="([^"]+)"', raw_message or ""):
+                                        v = m.group(1) or m.group(2)
+                                        if v and v not in mentions:
+                                            mentions.append(v)
                                 qm = _re.search(r'"message_id":(\d+)', raw_message) or \
                                      _re.search(r'\[CQ:reply,id=(\d+)\]', raw_message) or \
                                      _re.search(r'"type"\s*:\s*"reply"\s*,\s*"data"\s*:\s*\{[^}]*"id"\s*:\s*"?(\d+)"?', raw_message)
                                 if qm:
                                     quote_id = qm.group(1)
-                            logger.debug("插件bridge [%s] mentions=%s quote_id=%s raw=%.120s",
+                            logger.debug("插件bridge [%s] mentions=%s quote_id=%s raw=%s",
                                          self._plugin, mentions, quote_id, raw_message)
                             return await handler({
                                 "args": list(args or []),
@@ -545,20 +555,33 @@ class PluginImage:
         return [m.rstrip(")") for m in re.findall(r"https?://[^\s)\]>\uFF09]+", text or "")]
 
     @staticmethod
-    async def fetch_user_avatar(user_id: int) -> str:
-        """按 QQ 号返回头像 URL。
+    async def fetch_user_avatar(user_id) -> str:
+        """按用户标识返回头像 URL（同时支持 QQ 号和官方 openid）。
 
-        QQ 头像有固定公开 URL：https://q1.qlogo.cn/g?b=qq&nk=<QQ号>&s=640
-        无需调 API（get_stranger_info 不返回头像字段）。先试 s=640 高清，
-        再试 s=100（部分号段 640 无图时 100 有）。
+        两种渠道的头像地址格式完全不同：
+          · NapCat / OneBot：https://q1.qlogo.cn/g?b=qq&nk=<QQ号>&s=640
+          · 官方渠道（织梦）：https://thirdqq.qlogo.cn/qqapp/<APPID>/<openid>/640
+        ★ 2026-11-08：官方渠道只有 openid，不能套 qlogo 的 nk= 参数
+          （那会指向一个不存在的号，只能拿到默认头像）。按 ID 形态分流。
         """
-        try:
-            uid = int(user_id)
-        except (TypeError, ValueError):
+        s = str(user_id or "").strip()
+        if not s:
             return ""
-        base = "https://q1.qlogo.cn/g?b=qq&nk={}&s={}"
-        # 640 是标准高清头像，QQ 客户端通用；失败场景极少，直接返回 640
-        return base.format(uid, 640)
+
+        # QQ 号：纯数字，5-11 位
+        if s.isdigit() and 5 <= len(s) <= 11:
+            # ★ 官方渠道不会有真实 QQ 号，传进来的纯数字是 _stable_id 哈希，
+            #   套 qlogo 的 nk= 只会得到默认头像。宁可返回空，让调用方走兜底。
+            if os.environ.get("BOT_CHANNEL", "").strip().lower() == "official":
+                return ""
+            return f"https://q1.qlogo.cn/g?b=qq&nk={s}&s=640"
+
+        # 官方 openid：32 位左右的十六进制/字母数字
+        appid = os.environ.get("QQ_APPID", "").strip()
+        if appid and re.fullmatch(r"[0-9A-Za-z\-_]{16,}", s):
+            return f"https://thirdqq.qlogo.cn/qqapp/{appid}/{s}/640"
+
+        return ""
 
     @staticmethod
     async def fetch_quote_images(message_id) -> list[str]:

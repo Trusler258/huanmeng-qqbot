@@ -583,6 +583,35 @@ _TREND_LABELS = {
     "bw_deaths": "死亡", "arena_kills": "竞技场击杀",
 }
 
+# ★ 2026-11-06：用户输入 → 指标 key 的别名层。
+#   原来命令解析只认上面那五个英文 key，用户发 `/~wdsj trend jjc`（竞技场缩写）
+#   会被当成玩家名，回一句「记录里没有 jjc 这个人」——完全是误导。
+#   这里把常见中英文缩写都收进来；命令侧统一走 resolve_metric()。
+_TREND_ALIAS = {
+    # 竞技场（arena-stats）
+    "jjc": "arena_kills", "竞技场": "arena_kills", "竞技": "arena_kills",
+    "arena": "arena_kills", "ak": "arena_kills", "竞技场击杀": "arena_kills",
+    # 起床战争（bedwars-stats）
+    "bw": "bw_kills", "起床": "bw_kills", "起床战争": "bw_kills",
+    "击杀": "bw_kills", "kills": "bw_kills", "kill": "bw_kills",
+    "胜场": "bw_wins", "wins": "bw_wins", "win": "bw_wins",
+    "最终击杀": "bw_finals", "finals": "bw_finals", "final": "bw_finals",
+    "死亡": "bw_deaths", "deaths": "bw_deaths", "death": "bw_deaths",
+}
+
+
+def resolve_metric(token: str) -> str | None:
+    """把用户输入归一化成趋势指标 key；认不出来返回 None。
+
+    认不出的一律交给调用方当玩家名处理，保持原有行为。
+    """
+    k = (token or "").strip().lower()
+    if not k:
+        return None
+    if k in _TREND_LABELS:
+        return k
+    return _TREND_ALIAS.get(k)
+
 
 def _axis_scale(vmin: float, vmax: float, target: int = 4):
     """整数友好刻度：步长取 1/2/2.5/5×10ⁿ，网格最多 6 条。"""

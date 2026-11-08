@@ -30,6 +30,7 @@ COMMAND_MAP 与 26 个插件**，不重复实现业务。
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 import asyncio
 import base64
 import hashlib
@@ -156,24 +157,58 @@ class ReplyCtx:
         self.exhausted = False
         self.keyboard = None        # 下一条文本消息要带的按钮（用一次就清）
         self.keyboard_late = None   # 等图片发完之后再补一条带按钮的短文本
+        self.last_msg_id = None     # ★ 最近一条**已发出**回复的消息 id（撤回用）
 
 
-_CUR: ReplyCtx | None = None
+# ★ 2026-11-06：模块级全局改成 ContextVar。
+#   插件（netmusic / skin / weather）都是「先回一句提示，再 asyncio.create_task
+#   请求接口，拿到结果后二次发送」。原来 _CUR 是全局变量，dispatch 的 finally
+#   一置 None，后台任务再调 send_text 就撞上 `assert _CUR is not None`，
+#   结果全部丢失 —— 现象就是「只有提示，没有后续」。
+#   create_task 会复制当前 context，异步任务因此能拿到发起这次请求的 ReplyCtx；
+#   不同群的并发请求也互不干扰（全局变量会被后来的消息覆盖）。
+_CUR_VAR: ContextVar[ReplyCtx | None] = ContextVar("official_reply_ctx", default=None)
+
+
+def _cur() -> ReplyCtx | None:
+    """当前回复上下文。异步任务内自动继承创建任务时的值。"""
+    return _CUR_VAR.get()
 
 
 def _next_seq() -> int:
-    global _CUR
-    if _CUR is None:
+    if _cur() is None:
         return 0
-    _CUR.seq += 1
-    if _CUR.seq > MAX_PASSIVE_REPLIES:
-        _CUR.exhausted = True
-    return _CUR.seq
+    _cur().seq += 1
+    if _cur().seq > MAX_PASSIVE_REPLIES:
+        _cur().exhausted = True
+    return _cur().seq
 
 
 def _post_message(payload: dict) -> tuple[int, dict]:
-    assert _CUR is not None
-    return _api("POST", f"/v2/{_CUR.scene}/{_CUR.openid}/messages", payload)
+    assert _cur() is not None
+    st, data = _api("POST", f"/v2/{_cur().scene}/{_cur().openid}/messages", payload)
+    # ★ 2026-11-03：记下这条回复的消息 id，插件的 delete_msg 撤回要靠它。
+    #   官方 API 撤回的是「机器人自己发出的消息」，不是用户那条入站的。
+    if st in (200, 201) and isinstance(data, dict) and data.get("id"):
+        _cur().last_msg_id = data["id"]
+    return st, data
+
+
+def _delete_message(msg_id: str) -> tuple[int, dict]:
+    """撤回机器人自己发出的消息。
+
+    官方接口：`DELETE /v2/{scene}/{openid}/messages/{message_id}`
+    —— 只能撤自己发的，且有时限（约 2 分钟），超时返回 4xx。
+    """
+    if _cur() is None or not msg_id:
+        return 0, {"err": "no_msg_id"}
+    try:
+        st, data = _api("DELETE", f"/v2/{_cur().scene}/{_cur().openid}/messages/{msg_id}")
+        log(f"撤回消息 {msg_id} → HTTP {st}")
+        return st, data
+    except Exception as e:
+        log("撤回失败:", type(e).__name__, e)
+        return 0, {}
 
 
 # ── markdown 能力探测 ───────────────────────────────────
@@ -190,50 +225,98 @@ _KB_OK = True
 
 def _msg_body(chunk: str, use_md: bool, with_kb: bool) -> dict:
     seq = _next_seq()
-    body: dict = {"msg_id": _CUR.msg_id, "msg_seq": seq}
+    body: dict = {"msg_id": _cur().msg_id, "msg_seq": seq}
     if use_md:
         body.update({"content": "", "msg_type": 2,
                      "markdown": {"content": chunk}})
     else:
         body.update({"content": chunk, "msg_type": 0})
-    if with_kb and _CUR.keyboard:
-        body["keyboard"] = _CUR.keyboard
+    if with_kb and _cur().keyboard:
+        body["keyboard"] = _cur().keyboard
     return body
+
+
+def _content_with_attachments(d: dict) -> str:
+    """把图片附件的 URL 并入 content。
+
+    ★ 2026-11-08：官方图片消息的图在 attachments 里，content 往往是空的。
+      插件（/~摸头 等）只会从文本里提取 URL，不并进来就永远"找不到图片来源"。
+    """
+    content = d.get("content", "") or ""
+    for att in (d.get("attachments") or []):
+        if not str(att.get("content_type", "")).startswith("image"):
+            continue
+        u = att.get("url") or ""
+        if u and u not in content:
+            content = (content + " " + u).strip()
+    return content
+
+
+def _get_message(msg_id: str) -> tuple[int, dict]:
+    """查单条消息，返回 OneBot 风格的 data。
+
+    官方接口：`GET /v2/{scene}/{openid}/messages/{message_id}`
+    ★ 2026-11-08：插件的 fetch_quote_images 依赖 get_msg 取被引用消息里的图片，
+      而这个 action 原先不在转发白名单，静默返回空 data —— 于是「引用一张图再用
+      /~摸头」在官方渠道永远提示"找不到图片来源"。这里把官方 attachments 转成
+      插件期待的 message 段格式（type=image / data.url）。
+    """
+    if _cur() is None or not msg_id:
+        return 0, {}
+    try:
+        st, data = _api("GET", f"/v2/{_cur().scene}/{_cur().openid}/messages/{msg_id}")
+    except Exception as e:
+        log("查询消息失败:", type(e).__name__, str(e))
+        return 0, {}
+    if st != 200:
+        return st, {}
+    segs = []
+    for att in (data.get("attachments") or []):
+        if str(att.get("content_type", "")).startswith("image"):
+            segs.append({"type": "image",
+                         "data": {"url": att.get("url", ""),
+                                  "file": att.get("filename", "")}})
+    if data.get("content"):
+        segs.append({"type": "text", "data": {"text": data["content"]}})
+    return st, {"message": segs,
+                "raw_message": data.get("content", ""),
+                "message_id": msg_id,
+                "sender": (data.get("author") or {}).get("id", "")}
 
 
 def _send_chunk(chunk: str) -> tuple[int, dict]:
     """发一段文本：优先 markdown+按钮，逐级降级到纯文本。"""
     global _KB_OK
-    assert _CUR is not None
-    scene = _CUR.scene
+    assert _cur() is not None
+    scene = _cur().scene
     state = _MD_STATE.get(scene, "unknown")
     use_md = state != "off"
-    use_kb = bool(_CUR.keyboard) and _KB_OK
+    use_kb = bool(_cur().keyboard) and _KB_OK
 
     st, data = _post_message(_msg_body(chunk, use_md, use_kb))
     if st in (200, 201):
         if use_md and state == "unknown":
             _MD_STATE[scene] = "on"
             log(f"markdown 可用（{scene}），后续回复切富文本")
-        _CUR.keyboard = None
+        _cur().keyboard = None
         return st, data
 
     # ① 带按钮失败 → 多半是没开「消息按钮」权限，去掉重试并永久关闭
     if use_kb:
         _KB_OK = False
-        log(f"按钮发送失败（{scene} HTTP {st}），后续不再带按钮:", str(data)[:140])
+        log(f"按钮发送失败（{scene} HTTP {st}），后续不再带按钮:", str(data))
         st, data = _post_message(_msg_body(chunk, use_md, False))
         if st in (200, 201):
-            _CUR.keyboard = None
+            _cur().keyboard = None
             return st, data
 
     # ② markdown 失败 → 回退纯文本
     if use_md:
         _MD_STATE[scene] = "off"
-        log(f"markdown 不可用（{scene} HTTP {st}），回退纯文本:", str(data)[:140])
+        log(f"markdown 不可用（{scene} HTTP {st}），回退纯文本:", str(data))
         st, data = _post_message(_msg_body(chunk, False, False))
 
-    _CUR.keyboard = None
+    _cur().keyboard = None
     return st, data
 
 
@@ -246,7 +329,7 @@ def md_enabled(scene: str | None = None) -> bool:
 
 def send_text(text: str) -> bool:
     """发文本（被动回复）。markdown 可用时自动走富文本。超长按 1800 字切块。"""
-    if _CUR is None or not text:
+    if _cur() is None or not text:
         return False
     text = str(text).strip()
     # ★ CQ 码在官方渠道不认（NapCat 会渲染成 @，这边原样显示成文字）。
@@ -254,9 +337,9 @@ def send_text(text: str) -> bool:
     #   但文案里存的是（哈希后的）QQ 号，反查不到 openid。
     #   实际场景几乎都是「@ 当前发消息的人」→ 直接用发送者 openid 顶替。
     #   ⚠️ @ 标签只在 markdown 消息里渲染；markdown 不可用时直接剥掉。
-    if _MD_STATE.get(_CUR.scene, "unknown") != "off" and _CUR.sender:
+    if _MD_STATE.get(_cur().scene, "unknown") != "off" and _cur().sender:
         text = re.sub(r"\[CQ:at,qq=[^\]]+\]",
-                      f'<qqbot-at-user id="{_CUR.sender}" />', text)
+                      f'<qqbot-at-user id="{_cur().sender}" />', text)
     # 其余 CQ 码（image/face/record…）一律剥掉，别让它们露出来
     text = _CQ_ANY.sub("", text)
     text = re.sub(r"[ \t]{2,}", " ", text).strip()
@@ -265,19 +348,19 @@ def send_text(text: str) -> bool:
     ok = True
     while text:
         chunk, text = text[:1800], text[1800:]
-        if _CUR.exhausted:
-            log("被动回复次数用尽，丢弃文本:", chunk[:40])
+        if _cur().exhausted:
+            log("被动回复次数用尽，丢弃文本:", chunk)
             return False
         st, data = _send_chunk(chunk)
         if st not in (200, 201):
-            log("文本回复失败 HTTP", st, str(data)[:200])
+            log("文本回复失败 HTTP", st, str(data))
             ok = False
     return ok
 
 
 def upload_image(path: Path) -> str:
     """上传图片拿 file_info（file_type=1 图片）。失败返回空串。"""
-    if _CUR is None or not path.is_file():
+    if _cur() is None or not path.is_file():
         return ""
     if path.stat().st_size > 8 * 1024 * 1024:
         log("图片过大，跳过:", path.name)
@@ -287,16 +370,22 @@ def upload_image(path: Path) -> str:
         "file_data": base64.b64encode(path.read_bytes()).decode(),
         "srv_send_msg": False,
     }
-    st, data = _api("POST", f"/v2/{_CUR.scene}/{_CUR.openid}/files", body, timeout=60)
+    st, data = _api("POST", f"/v2/{_cur().scene}/{_cur().openid}/files", body, timeout=60)
     if st in (200, 201) and data.get("file_info"):
         return data["file_info"]
-    log("图片上传失败 HTTP", st, str(data)[:200])
+    log("图片上传失败 HTTP", st, str(data))
     return ""
 
 
 # 二维码这类要扫码的图仍走富媒体：markdown 内嵌图在部分客户端长按识别不稳。
-# 其余图片统一走图床（markdown 内嵌），这样能带按钮、能写引用块。
-_RICH_IMAGE_PREFIXES = ("phi_qr_",)
+# ★ 2026-11-03：phi 卡片也改走富媒体 —— 用户明确要求「纯发图片」，
+#   而 markdown 内嵌会在 QQ 客户端外面套一层消息气泡（"聊天框"）。
+#   走富媒体还能绕过 JPEG 压缩，卡片按原图 PNG 直发，清晰度不损失。
+# ★ 2026-11-06：加 skin_ —— 皮肤动图（skin_spin_*.gif / skin_<action>_*.gif）
+#   走富媒体原图直发才能保住动画；万一素材库权限没开，仍会自动退回图床
+#   （to_public_image 对 gif 原样落盘，退回后也是动的）。
+# ★ 2026-11-07：加 motou_ —— 摸头 GIF 同理，10 帧动画不能压成静态图。
+_RICH_IMAGE_PREFIXES = ("phi_", "skin_", "motou_")
 _MD_IMAGE_ALL = True
 
 
@@ -304,33 +393,40 @@ def send_image(path: Path) -> bool:
     # ⚠️ 本函数内给 _KB_OK 赋值，必须显式 global，否则它变成局部变量，
     #    前面的读取会 UnboundLocalError（2026-10-31 踩过，整个图片发送挂掉）
     global _KB_OK
-    if _CUR is None:
+    if _cur() is None:
         return False
-    if _CUR.exhausted:
+    if _cur().exhausted:
         log("被动回复次数用尽，丢弃图片:", path.name)
         return False
 
     # ★ 图片统一走本地图床（markdown 内嵌）：markdown 图能和按钮/引用块同一条消息，
     #   富媒体气泡挂不了 keyboard；统一转 JPEG 也避开手机端不认 webp 的问题。
     if _MD_IMAGE_ALL and not Path(str(path)).name.startswith(_RICH_IMAGE_PREFIXES):
-        url, w, h = to_public_jpeg(path)
+        url, w, h = to_public_image(path)
         if url:
             # 攒着的按钮直接挂到这条 markdown 上（不再需要「图后补一条」）
-            if _CUR.keyboard_late and not _CUR.keyboard:
-                _CUR.keyboard, _CUR.keyboard_late = _CUR.keyboard_late, None
+            if _cur().keyboard_late and not _cur().keyboard:
+                _cur().keyboard, _cur().keyboard_late = _cur().keyboard_late, None
             return send_text(f"![#{w}px #{h}px]({url})")
         log("图床失败，回退富媒体:", Path(str(path)).name)
 
     info = upload_image(path)
     if not info:
+        # ★ 2026-11-03：富媒体上传失败时退回图床 + markdown，
+        #   否则（如素材库权限没开）图片会彻底发不出去，用户只看到空气。
+        if _MD_IMAGE_ALL:
+            url, w, h = to_public_image(path)
+            if url:
+                log("富媒体失败，退回 markdown:", Path(str(path)).name)
+                return send_text(f"![#{w}px #{h}px]({url})")
         return False
     seq = _next_seq()
     body = {"content": "", "msg_type": 7, "media": {"file_info": info},
-            "msg_id": _CUR.msg_id, "msg_seq": seq}
+            "msg_id": _cur().msg_id, "msg_seq": seq}
 
     # 图片消息也带 keyboard：客户端若认，按钮就和图在同一个气泡里
     # （2026-10-31 用户要求「图和按钮在同一个消息」）。
-    kb = (_CUR.keyboard_late or _CUR.keyboard) if _KB_OK else None
+    kb = (_cur().keyboard_late or _cur().keyboard) if _KB_OK else None
     if kb:
         body["keyboard"] = kb
 
@@ -339,29 +435,29 @@ def send_image(path: Path) -> bool:
     if st not in (200, 201) and kb_used:
         # 带按钮失败 → 平台可能不允许富媒体带键盘，去掉重试
         _KB_OK = False
-        log("图片带按钮失败，去掉按钮重试:", st, str(data)[:140])
+        log("图片带按钮失败，去掉按钮重试:", st, str(data))
         body.pop("keyboard", None)
         st, data = _post_message(body)
         kb_used = False
 
     if st not in (200, 201):
-        log("图片发送失败 HTTP", st, str(data)[:200])
+        log("图片发送失败 HTTP", st, str(data))
         return False
 
     if kb_used:
         # 按钮已经随图片发出去了，不再补一条文本
-        _CUR.keyboard = None
-        _CUR.keyboard_late = None
-    elif _CUR.keyboard_late and _KB_OK:
+        _cur().keyboard = None
+        _cur().keyboard_late = None
+    elif _cur().keyboard_late and _KB_OK:
         # 没带上（比如按钮能力被关）→ 退回「补一条短文本」，至少按钮还在
-        _CUR.keyboard, _CUR.keyboard_late = _CUR.keyboard_late, None
+        _cur().keyboard, _cur().keyboard_late = _cur().keyboard_late, None
         send_text(KEYBOARD_HINT)
     return True
 
 
 def send_cq(cq_or_text: str) -> bool:
     """把 CQ 码字符串拆成「文本 + 图片」依次发出。"""
-    if _CUR is None or not cq_or_text:
+    if _cur() is None or not cq_or_text:
         return False
     raw = str(cq_or_text)
     images = _CQ_IMAGE.findall(raw)
@@ -405,42 +501,74 @@ def _save_media_cache(d: dict) -> None:
         log("图床缓存写入失败:", type(e).__name__, e)
 
 
-def to_public_jpeg(path, *, max_long_side: int = 1440, quality: int = 88) -> tuple[str, int, int]:
-    """任意图片 → JPEG → 本地图床，返回 (url, w, h)。失败返回 ("", 0, 0)。
+def to_public_image(path, *, max_long_side: int = 2560, quality: int = 95) -> tuple[str, int, int]:
+    """任意图片 → 本地图床，返回 (url, w, h)。失败返回 ("", 0, 0)。
 
     ★ 2026-11-01 用户要求「图片都走图床，可玩性高」：
-      markdown 内嵌图能和按钮、引用块落在同一条消息里，富媒体气泡做不到；
-      统一转 JPEG 顺带解决手机端不认 webp 的老问题。
-    按内容 md5 命名 → 同一张图只存一份，天然去重。
+      markdown 内嵌图能和按钮、引用块落在同一条消息里，富媒体气泡做不到。
+
+    ★ 2026-11-06：改成**按格式分派**，不再一律转 JPEG。
+      原来全转 JPEG 的后果：gif 只剩第一帧（动图没了）、png 透明层变白底。
+      现在：
+        webp → JPEG   （手机端不认 webp，这是唯一必须转的）
+        gif  → 原样落盘（保留动画，动图不缩放，缩了会丢帧）
+        png  → 原样落盘（保留 alpha）
+        jpg/jpeg/bmp → 原样落盘，仅在超过 max_long_side 时重编码
+      按内容 md5 命名 → 同一张图只存一份，天然去重。
     """
     import hashlib
     import io as _io
 
     p = Path(str(path))
     raw = p.read_bytes()
+    suffix = p.suffix.lower()
     key = "img_" + hashlib.md5(raw).hexdigest()[:16]
-    out = IMG_DIR / f"{key}.jpg"
-    url = f"{IMG_BASE}/{key}.jpg"
+
+    if suffix in (".png", ".gif", ".jpg", ".jpeg", ".bmp"):
+        target_ext = suffix
+    else:
+        target_ext = ".jpg"          # webp 及其他：转 JPEG
+    out = IMG_DIR / f"{key}{target_ext}"
+    url = f"{IMG_BASE}/{key}{target_ext}"
 
     try:
         from PIL import Image
         if out.exists():
             with Image.open(out) as im:
                 return url, im.width, im.height
+
         im = Image.open(_io.BytesIO(raw))
         w, h = im.size
-        if max(w, h) > max_long_side:
-            r = max_long_side / max(w, h)
-            im = im.resize((max(1, int(w * r)), max(1, int(h * r))), Image.LANCZOS)
-            w, h = im.size
+        animated = bool(getattr(im, "is_animated", False))
         IMG_DIR.mkdir(parents=True, exist_ok=True)
-        im.convert("RGB").save(out, "JPEG", quality=quality, optimize=True)
+
+        need_resize = max(w, h) > max_long_side and not animated
+
+        # ⚠️ 是否「原样拷贝」必须看**源格式**，不能看目标扩展名。
+        #   webp 的目标扩展名是 .jpg，若按目标判断就会把 webp 字节写进 .jpg 文件，
+        #   浏览器按 JPEG 解析直接裂图（2026-11-06 实测踩到）。
+        passthrough = suffix in (".png", ".gif", ".jpg", ".jpeg", ".bmp")
+
+        if not need_resize and passthrough:
+            # 原样落盘：不重编码，无损、快，gif 动画与 png 透明都保住
+            out.write_bytes(raw)
+        else:
+            if need_resize:
+                r = max_long_side / max(w, h)
+                im = im.resize((max(1, int(w * r)), max(1, int(h * r))), Image.LANCZOS)
+                w, h = im.size
+            fmt = {".jpg": "JPEG", ".jpeg": "JPEG", ".gif": "GIF",
+                   ".bmp": "BMP", ".png": "PNG"}.get(target_ext, "JPEG")
+            if fmt == "JPEG":
+                im.convert("RGB").save(out, "JPEG", quality=quality, optimize=True)
+            else:
+                im.save(out, fmt)
     except Exception as e:
-        log("图床转换失败:", p.name, type(e).__name__, str(e)[:120])
+        log("图床转换失败:", p.name, type(e).__name__, str(e))
         return "", 0, 0
 
     _trim_images()
-    log(f"图床已就绪 {key} {w}x{h} {(out.stat().st_size / 1024):.0f}KB")
+    log(f"图床已就绪 {key} {w}x{h} {target_ext} {(out.stat().st_size / 1024):.0f}KB")
     return url, w, h
 
 
@@ -524,7 +652,61 @@ def install_sender_shim() -> None:
     class _DummyWS:
         ws = None
 
+        # ⚠️ 2026-11-03：插件的 `ctx.message.send_ex()` 走的是原生 WS API
+        #   （services/sender.send_group_msg → get_ws_manager().call_api），
+        #   绕开上面那四个打桩函数。原先这里一律返回空 data，于是
+        #   `/~phi login` 出二维码的那条消息被静默吞掉 —— 指令执行了、
+        #   日志有「拦截原生 API 调用: send_group_msg」，但群里什么都没收到。
+        #   现在把发送类 action 转成官方被动回复，其余（撤回/禁言/表情等）仍拦截。
+        _SEND_ACTIONS = ("send_group_msg", "send_private_msg", "send_msg")
+
         async def call_api(self, action, params=None, timeout=8.0):
+            params = params or {}
+            if action in self._SEND_ACTIONS:
+                msg = params.get("message", "")
+                if isinstance(msg, list):     # OneBot 段格式 → CQ 码
+                    buf = []
+                    for seg in msg:
+                        stype = seg.get("type")
+                        sdata = seg.get("data") or {}
+                        if stype == "text":
+                            buf.append(str(sdata.get("text", "")))
+                        else:
+                            kv = ",".join(f"{k}={v}" for k, v in sdata.items())
+                            buf.append(f"[CQ:{stype},{kv}]")
+                    msg = "".join(buf)
+                ok = send_cq(str(msg)) if msg else True
+                return {"status": "ok" if ok else "failed", "retcode": 0,
+                        "data": {"message_id": _cur().last_msg_id if _cur() else 0},
+                        "echo": "official"}
+            if action == "get_msg":
+                # 官方有单条消息查询接口，转成 OneBot 段格式给插件用
+                _st, _data = _get_message(str(params.get("message_id") or ""))
+                return {"status": "ok" if _st == 200 else "failed",
+                        "retcode": 0 if _st == 200 else 1404,
+                        "data": _data, "echo": "official"}
+            if action in ("delete_msg", "delete_group_msg", "delete_private_msg"):
+                # 插件拿到的 message_id 多半是上面回填的那个；拿不到就撤最近一条
+                mid = params.get("message_id") or (_cur().last_msg_id if _cur() else None)
+                st, _ = _delete_message(str(mid) if mid else "")
+                return {"status": "ok" if st in (200, 204) else "failed",
+                        "retcode": 0, "data": {}, "echo": "official"}
+            if action in ("upload_group_file", "upload_private_file"):
+                # ★ 2026-11-06：phi 的二维码走的是 send_file_ex → 这个 action。
+                #   原先进下面的兜底被静默吞掉，二维码图从来没到过群里
+                #   （11-03 用户报「没有图片」，当时误判成 markdown 分流问题）。
+                #   官方没有独立文件消息，图片按富媒体发，非图片明确回失败。
+                fp = params.get("file") or params.get("path") or ""
+                p = Path(str(fp).replace("file:///", "").replace("file://", ""))
+                if p.is_file() and p.suffix.lower() in (
+                        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+                    ok = send_image(p)
+                    return {"status": "ok" if ok else "failed",
+                            "retcode": 0 if ok else 1,
+                            "data": {"message_id": _cur().last_msg_id if _cur() else 0},
+                            "echo": "official"}
+                log("拦截原生 API 调用（非图片文件，官方渠道不支持）:", action, p.name)
+                return {"status": "failed", "retcode": 1404, "data": {}, "echo": "official"}
             log("拦截原生 API 调用:", action)
             return {"status": "ok", "retcode": 0, "data": {}, "echo": "official"}
 
@@ -649,7 +831,6 @@ def _kb_to_cmd_input(kb: dict | None) -> str:
 
 async def dispatch(content: str, ctx: ReplyCtx) -> None:
     """指令 → handle_command；非指令直接静默。"""
-    global _CUR
     text = (content or "").strip()
     # 群里 @ 之后常带空格/CQ，先剥
     # 官方群里 @ 机器人时，content 里会带 `<@3E40895D3C0C6805...>` 这样的记号
@@ -658,19 +839,19 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
     text = re.sub(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>)+", "", text).strip()
 
     if not _is_command(text):
-        log("非指令，忽略:", text[:40])
+        log("非指令，忽略:", text)
         return
 
     if _is_banned(text):
-        log("AGC 限制指令，拒绝:", text[:30])
-        _CUR = ctx
+        log("AGC 限制指令，拒绝:", text)
+        _CUR_VAR.set(ctx)
         try:
             send_text(BANNED_REPLY)
         finally:
-            _CUR = None
+            _CUR_VAR.set(None)
         return
 
-    _CUR = ctx
+    _CUR_VAR.set(ctx)
     try:
         from modules.commands import handle_command
         is_group = ctx.scene == "groups"
@@ -694,6 +875,10 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
             sender_name="官方渠道用户",
             is_group=is_group,
             bot_qq=int(APPID) if APPID.isdigit() else 0,
+            # ★ 2026-11-08：把原文传下去，插件 bridge 才能从中解析 @ 的 openid
+            #   （/~摸头 @某人 要靠它取对方头像）。官方没有 CQ 码，
+            #   bridge 里对应加了 <@openid> / <qqbot-at-user id="..."> 的解析。
+            raw_message=text,
         )
         if reply:
             body = str(reply)
@@ -711,7 +896,7 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
         except Exception:
             pass
     finally:
-        _CUR = None
+        _CUR_VAR.set(None)
 
 
 # ────────────────────── 插件（只到 on_load，不启用） ──────────────────────
@@ -846,13 +1031,13 @@ async def run_gateway() -> None:
                             if au.get("bot"):
                                 continue          # 机器人自己发的，别回自己
                             tag = "群@" if t.endswith("AT_MESSAGE_CREATE") else "群"
-                            log(f"{tag} 收到 group={gid[:8]}…")
-                            await dispatch(d.get("content", ""),
+                            log(f"{tag} 收到 group={gid}")
+                            await dispatch(_content_with_attachments(d),
                                            ReplyCtx("groups", gid, d.get("id", ""), author))
                         elif t == "C2C_MESSAGE_CREATE":
                             uid = (d.get("author") or {}).get("user_openid", "")
-                            log(f"私聊 收到 user={uid[:8]}…")
-                            await dispatch(d.get("content", ""),
+                            log(f"私聊 收到 user={uid}")
+                            await dispatch(_content_with_attachments(d),
                                            ReplyCtx("users", uid, d.get("id", ""), uid))
                         elif t:
                             log("其他事件:", t)
