@@ -62,6 +62,9 @@ class BotConfig:
     # 官方渠道管理员（openid 哈希）。写在 config/bot_config.toml 的「官方管理员ID」
     # 数组里，只在 BOT_CHANNEL=official 时参与判定。
     official_admin_ids: list[int] = field(default_factory=list)
+    # 官方渠道启用群（群名或 group_openid）。非空时，只有名单内的群能触发
+    # 指令与聊天，其余群一律静默 —— 防止功能外泄。
+    official_enabled_groups: list[str] = field(default_factory=list)
     friend_qqs: list[int] = field(default_factory=list)
     qq_name_map: dict[str, str] = field(default_factory=dict)
     group_nicknames: dict[str, dict[str, str]] = field(default_factory=dict)  # 分群昵称: {群号: {QQ: 昵称}} (来自 nickname_sync)
@@ -500,6 +503,7 @@ def load_bot_config() -> BotConfig:
         debug_mode=bool(bot_section.get("调试模式", False)),
         admin_qq=admin_qq,
         official_admin_ids=[int(q) for q in bot_section.get("官方管理员ID", []) or []],
+        official_enabled_groups=[str(x) for x in bot_section.get("官方启用群", []) or []],
         friend_qqs=[int(q) for q in friend_qqs],
         qq_name_map={str(k): v for k, v in qq_name_map.items()},
         group_nicknames=group_nicknames,

@@ -896,6 +896,46 @@ def _kb_to_cmd_input(kb: dict | None) -> str:
             .format(quote(str(data), safe=""), quote(str(label), safe="")))
 
 
+_GROUP_NAME_CACHE: dict[str, str] = {}
+
+
+def _group_name(gid: str) -> str:
+    """取群名（带内存缓存）。失败返回空串。"""
+    if gid in _GROUP_NAME_CACHE:
+        return _GROUP_NAME_CACHE[gid]
+    try:
+        st, d = _api("GET", f"/v2/groups/{gid}/info")
+        if st == 200:
+            name = str(d.get("group_name") or "")
+            _GROUP_NAME_CACHE[gid] = name
+            return name
+        log("查群名失败 HTTP", st, str(d))
+    except Exception as e:
+        log("查群名异常:", type(e).__name__, e)
+    return ""
+
+
+def _group_allowed(ctx: ReplyCtx) -> bool:
+    """官方渠道群白名单。名单为空 → 放行（兼容旧行为）。
+
+    ★ 2026-11-09：公共服务上线后，机器人可能被拉进任意群。名单外一律静默，
+      避免指令/聊天能力外泄。支持填群名或 group_openid。
+    """
+    try:
+        from core.config import get_config
+        allow = get_config().official_enabled_groups or []
+    except Exception:
+        return True
+    if not allow:
+        return True
+    if ctx.scene != "groups":
+        return True
+    if ctx.openid in allow:
+        return True
+    name = _group_name(ctx.openid)
+    return bool(name) and name in allow
+
+
 async def _enqueue_chat(text: str, ctx: ReplyCtx) -> None:
     """把一条聊天消息投入 pipeline 队列（不阻塞网关循环）。
 
@@ -939,6 +979,13 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
     # （2026-10-31 实测：`<@3E40...> 晚安+1`）。不剥掉的话，@ 之后的指令
     # 永远被判成"非指令"——这正是"某个群必须 @"却指令无效的原因。
     text = re.sub(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>)+", "", text).strip()
+
+    # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
+    #   避免机器人被拉进别的群后能力外泄。
+    if not _group_allowed(ctx):
+        _nm = _group_name(ctx.openid) if ctx.scene == "groups" else ""
+        log(f"群不在启用名单，忽略[{ctx.scene}]:", ctx.openid, f"群名={_nm!r}", text)
+        return
 
     if not _is_command(text):
         # ★ 2026-11-09：官方渠道转公共服务后，群内「仅 @ 触发」聊天；
