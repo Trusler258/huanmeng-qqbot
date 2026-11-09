@@ -816,6 +816,36 @@ def _is_command(text: str) -> bool:
     return True     # 裸 / 交给 handle_command 自己判断是否已注册
 
 
+# ── 入站正文清理（指令/聊天分流的前提）────────────────────────
+# 零宽与方向控制符：QQ 会在 @ 与正文之间插这些，肉眼看不见，`strip()` 也不动它们。
+_INVISIBLE_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
+# 行首 @ 记号：CQ at、`<@openid>`、markdown 的 `<qqbot-at-user id="..." />`
+_MENTION_HEAD_RE = re.compile(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>|<qqbot-at-user[^>]*>)+")
+# 客户端把 @机器人 拼成纯文本：`@织梦 /~wdsj bw`
+_AT_TEXT_HEAD_RE = re.compile(r"^@\S+\s+(?=/)")
+
+
+def _clean_incoming(text: str) -> str:
+    """把入站正文清理成「用户真正打出来的字」。
+
+    顺序很重要：
+      1. 先剔零宽字符——它们在 @ 和正文之间，肉眼看不见，`strip()` 清不掉；
+         不清的话 `startswith("/")` 判假，指令会被当成聊天送进 LLM。
+      2. 再剥行首 @ 记号（三种形态，可能交替出现，反复剥到稳定）。
+      3. 最后处理客户端拼出来的纯文本 `@名字 /~cmd`。
+    """
+    t = _INVISIBLE_RE.sub("", text or "")
+    prev = None
+    while prev != t:
+        prev = t
+        t = _MENTION_HEAD_RE.sub("", t).strip()
+    m = _AT_TEXT_HEAD_RE.match(t)
+    if m:
+        t = t[m.end():]
+    return t.strip()
+
+
+
 # 「查查我的」按钮：官方 API 的 action.type=2 是指令按钮，点了客户端替用户
 # 发出 data 里的指令，等于一键自动填充。
 # 这些子指令跟「查某个人的战绩」无关，一律不挂按钮。
@@ -979,19 +1009,14 @@ async def _enqueue_chat(text: str, ctx: ReplyCtx) -> None:
 
 
 async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
-    """指令 → handle_command；非指令且被 @（或私聊）→ 交给 LLM 管道。"""
-    text = (content or "").strip()
-    # 群里 @ 之后常带空格/CQ，先剥
-    # 官方群里 @ 机器人时，content 里会带 `<@3E40895D3C0C6805...>` 这样的记号
-    # （2026-10-31 实测：`<@3E40...> 晚安+1`）。不剥掉的话，@ 之后的指令
-    # 永远被判成"非指令"——这正是"某个群必须 @"却指令无效的原因。
-    text = re.sub(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>|<qqbot-at-user[^>]*>)+", "", text).strip()
-    # ★ 2026-11-09：客户端有时把 @机器人 拼成纯文本（`@织梦 /~wdsj bw`），
-    #   上面那几条都剥不掉 → 指令被判成聊天，点按钮变成"开始闲聊"。
-    #   只在这种「@xxx 后面紧跟 /」的形态下剥前缀，不碰普通聊天内容。
-    _at_prefix = re.match(r"^@\S+\s+(?=/)", text)
-    if _at_prefix:
-        text = text[_at_prefix.end():]
+    """指令 → handle_command；非指令且被 @（或私聊）→ 交给 LLM 管道。
+
+    ★ 2026-11-09 隔离约定：**@ 之后只有一条指令时，这条消息永远不进 LLM 管道**。
+      指令层和聊天层是两条独立的路：指令直接 handle_command，聊天才入队跑模型。
+      判定放在最前面、并先把各种「看不见的前缀」清干净 —— 只要有一个零宽字符或
+      一段 @ 记号没剥掉，`startswith("/")` 就会假，指令就会被当成聊天丢给模型。
+    """
+    text = _clean_incoming(content)
 
     # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
     #   避免机器人被拉进别的群后能力外泄。
@@ -1008,6 +1033,9 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
         else:
             log("非指令，忽略:", text)
         return
+
+    # 走到这里就是「只有指令」—— 下面全程不碰 LLM。日志写明，排查时一眼可见。
+    log("指令隔离（不进 LLM）:", text)
 
     if _is_banned(text):
         log("AGC 限制指令，拒绝:", text)
