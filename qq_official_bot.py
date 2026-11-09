@@ -1021,14 +1021,12 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
     """
     text = _clean_incoming(content)
 
-    # ★ 2026-11-09：@ 的判定不能只信事件类型。
-    #   实测 16:31 用户 @ 了机器人发「你好」，这条的 t 是 GROUP_MESSAGE_CREATE
-    #   （群全量消息）而不是 GROUP_AT_MESSAGE_CREATE，于是 is_at=False →
-    #   被判「非指令，忽略」，用户看到的就是「@ 了没反应」。
-    #   内容开头只要有 mention 记号（<@id> / <qqbot-at-user> / CQ at），就是 @ 了。
-    if not is_at and _REAL_MENTION_HEAD_RE.match(_INVISIBLE_RE.sub("", content or "")):
-        is_at = True
-        log("@ 判定：事件类型非 AT，但内容带 mention 记号，按 @ 处理")
+    # ★ 2026-11-09：对话的唯一入口是「真的 @ 了机器人」（事件类型 AT）。
+    #   曾经加过一条兜底「内容开头有 mention 记号也算 @」，为的是救一类被平台
+    #   按全量消息投递的 @ 消息；但它分不清 mention 的是谁 —— 群友 @ 别人也会命中，
+    #   表现为「没 @ 它却插嘴」。用户明确要求「@ 了才是对话，其余一律静止」，
+    #   所以这条兜底已撤。若某群确实把 @ 投递成 GROUP_MESSAGE_CREATE，
+    #   网关日志会打出 `原始正文（含 mention）`，按那条日志再决定要不要精确比对 openid。
 
     # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
     #   避免机器人被拉进别的群后能力外泄。
@@ -1241,6 +1239,12 @@ async def run_gateway() -> None:
                                 continue          # 机器人自己发的，别回自己
                             tag = "群@" if t.endswith("AT_MESSAGE_CREATE") else "群"
                             log(f"{tag} 收到 group={gid}")
+                            # ★ 2026-11-09 诊断：确认「@ 消息」在不同群里到底以哪种
+                            #   事件投递、mention 里的 openid 长什么样。
+                            #   只在正文含 mention 记号时打印，平时不吵；原文完整不截断。
+                            _raw_c = d.get("content", "") or ""
+                            if "<@" in _raw_c or "<qqbot-at-user" in _raw_c or "[CQ:at" in _raw_c:
+                                log(f"{tag} 原始正文（含 mention） t={t}", repr(_raw_c))
                             await dispatch(_content_with_attachments(d),
                                            ReplyCtx("groups", gid, d.get("id", ""), author),
                                            is_at=t.endswith("AT_MESSAGE_CREATE"))

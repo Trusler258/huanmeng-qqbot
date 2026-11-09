@@ -363,6 +363,37 @@ ERROR (llm:_build_reminder:1122) 提示词章节缺失: reply_reminder
 验证：官方渠道现在加载 3 个章节（`prompt_header` / `markdown_rule` / `reply_reminder_official`），
 `_build_reminder("reply_reminder")` 命中模板，`markdown_rule` 自动追加。
 
+### 十六、对话只认「真的 @ 了机器人」（11-09）
+
+用户明确要求：「@ 机器人后才是对话，其余时间一律静止」。
+
+上一版为了救「@ 被平台按全量消息投递」而加的内容判定——
+「正文开头有 mention 记号就当作 @」——被撤掉。它分不清 mention 的是谁，
+群友发 `<@张三> 你好` 也会命中，表现就是「没 @ 它却插嘴」。放开全部群之后
+这个误判的代价太大，不如先严格。
+
+现在的规则只剩一条：
+
+| 事件 | 处理 |
+|---|---|
+| `GROUP_AT_MESSAGE_CREATE` | 是 @ → 进对话 |
+| `C2C_MESSAGE_CREATE` | 私聊，等同 @ |
+| `GROUP_MESSAGE_CREATE`（全量消息） | 不进对话，非指令一律静默 |
+
+代价要说清楚：如果某个群确实把 @ 投递成 `GROUP_MESSAGE_CREATE`，
+那个群里 @ 它会没反应。网关留了一行诊断日志（只在正文含 mention 时打印、
+原文不截断），一眼能看出是不是这种情况：
+
+```
+群 原始正文（含 mention） t=GROUP_MESSAGE_CREATE '<@xxxx> 在吗'
+```
+
+拿到这行才能决定要不要按 openid 精确比对——那需要先知道机器人自己在群里的
+member_openid，目前手上只有 APPID/uin，不够。
+
+指令不受影响：群里 `/~cmd` 仍然不需要 @（指令是明确意图，不是对话）。
+若之后要求指令也必须 @，改 `dispatch()` 里那一个判断即可。
+
 ### 备注
 
 11-03 到 11-09 这几天的改动一直没发版，按「同一天合并」的规矩，这里合成一个 patch 版本。
