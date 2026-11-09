@@ -41,6 +41,36 @@ def _clean_reply(text: str) -> str:
             text = text[:matches[0].start()] + text[matches[0].start():matches[0].end()].strip()
     return text
 
+
+def _split_multiline_replies(replies: list[str], max_parts: int = 6) -> list[str]:
+    """把「模型用换行把两段话塞进同一条」的回复拆成多条。
+
+    2026-11-09 实测：`replies` 只有一个元素，内容却是
+    「就是陪大家聊天呀…也能帮你搜一下～\\n不过发文件…别指望我啦 qwq」，
+    用户看到一条里挤着两句，要求拆开发。提示词里写了「两个意思要分条」，
+    但模型只用了换行——程序又不能只看 ` || `，所以这里按换行兜一层。
+
+    保守边界：
+      · 含 ``` 的整段不动（代码块拆开就废了）
+      · 行数 > max_parts 的整段不动（多半是列表/排版，不是闲聊分条）
+      · 只有首尾空行导致的"单行"→ 还原成一行
+    """
+    out: list[str] = []
+    for s in replies:
+        if not s or "\n" not in s:
+            out.append(s)
+            continue
+        if "```" in s:
+            out.append(s)
+            continue
+        parts = [p.strip() for p in s.split("\n")]
+        parts = [p for p in parts if p]
+        if len(parts) < 2 or len(parts) > max_parts:
+            out.append(" ".join(parts) if parts else s)
+            continue
+        out.extend(parts)
+    return out
+
 from core.logger import get_logger
 from core.config import get_config
 from core.plugin import get_pipeline_hooks
@@ -1196,6 +1226,15 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     sentences = filtered
     sentences = [_clean_reply(s) for s in sentences]
 
+    # ★ 2026-11-09：模型常用换行把两段话塞进同一条 replies，按换行兜底拆开。
+    #   ⚠️ 只在**没有 calls** 时拆：交错指令的 `_after` 是原始句序号，
+    #   中途改变句数会把指令插错位置。
+    if not llm_calls:
+        _before_split = len(sentences)
+        sentences = _split_multiline_replies(sentences)
+        if len(sentences) != _before_split:
+            logger.info("换行拆条: %d 句 → %d 句", _before_split, len(sentences))
+
     # actor 始终以真实发送者为准，不信任 LLM 输出
     if origin == "user" and (not actor or actor.get("qq") != user_id):
         actor = {"name": display_name, "qq": user_id}
@@ -1560,17 +1599,19 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     except Exception as _e:
         logger.warning("碎片合并失败（忽略）: %s", _e)
 
-    # ★ 2026-11-09：官方渠道每条入站消息最多回 5 次（平台硬限制），
-    #   这里压到 4 句，留 1 次给图片/补充提示，避免第 5+ 条被平台丢弃。
+    # ★ 2026-11-09：官方渠道每条入站消息最多回 5 次（平台硬限制）。
+    #   用户口径：「不超过 5 句就行」。有配图时压到 4 句，留 1 次给表情/图片；
+    #   纯文字没有额外消息，直接放到 5 句。
     try:
         from core.prompt_mode import IS_OFFICIAL as _IS_OFF
     except Exception:
         _IS_OFF = False
-    if _IS_OFF and len(sentences) > 4:
-        logger.info("官方渠道拆条上限 4（原 %d 句）", len(sentences))
-        sentences = sentences[:4]
+    _off_cap = 4 if any(_faces_per_sentence) else 5
+    if _IS_OFF and len(sentences) > _off_cap:
+        logger.info("官方渠道拆条上限 %d（原 %d 句）", _off_cap, len(sentences))
+        sentences = sentences[:_off_cap]
         if _faces_per_sentence:
-            _faces_per_sentence = _faces_per_sentence[:4]
+            _faces_per_sentence = _faces_per_sentence[:_off_cap]
 
     old_task = ctx.cancel_old_task(chat_id)
     if old_task:
