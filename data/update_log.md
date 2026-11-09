@@ -411,6 +411,31 @@ member_openid，目前手上只有 APPID/uin，不够。
 
 代码回到「键盘按钮 + 标签也附一份」：标签认就当兜底，不认也只是被忽略。
 
+### 十八、决策模型已停用（11-09）
+
+日志里每条聊天都有：
+
+```
+WARNING (decision:decide:139) 决策模型 HTTP 404（fail-open）:
+{"message":"No endpoints found for inception/mercury-decide:free."}
+```
+
+查证结果：拉 OpenRouter 的模型列表（461 个），`mercury` / `inception` **一个都不剩**。
+不是临时 404，是模型下架。
+
+它用的也不是普通 chat completion，而是 Mercury 专有的判定协议
+（请求体是 `{"model","state","questions"}`），所以不能简单换个模型顶上。
+
+影响面很小：`decision` 本来就是 fail-open，404 之后一直回退到关键词判定
+（`_detect_skill_needs`）。功能没断，只是每条消息白等 1.3~1.4 秒，还刷一行 WARNING。
+
+处理：`[decision] enabled = false`（按 section 边界定位改的，没碰文件里别处那个 `enabled = true`）。
+重启后 `decision.enabled()` 返回 False，判定直接走关键词表——与这几天的实际行为完全一致，
+唯一区别是省掉那次注定失败的请求。
+
+要恢复的话两条路：① 有可用端点时把 enabled 改回 true + `.env` 的 `DECISION_MODEL` 换掉；
+② 把 `services/decision.py` 改成调普通 chat completion（DeepSeek）做判定，那是改协议，工作量另算。
+
 ### 备注
 
 11-03 到 11-09 这几天的改动一直没发版，按「同一天合并」的规矩，这里合成一个 patch 版本。
