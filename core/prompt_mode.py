@@ -41,8 +41,4 @@ DISABLED_SKILL_SECTIONS: frozenset[str] = (
     if IS_OFFICIAL else frozenset()
 )
 
-# 官方渠道管理员（写死，不再依赖 OFFICIAL_ADMIN_IDS 环境变量漏配）
-#   54078007750 = Trusler 在织梦渠道的稳定 ID（openid 经 _stable_id 哈希后的 11 位）
-#   ⚠️ openid 是「机器人 × 用户」维度：换机器人或换账号，这个值就变了，届时改这里。
-OFFICIAL_ADMIN_IDS: frozenset[int] = frozenset({54078007750})
 

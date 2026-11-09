@@ -389,6 +389,67 @@ _RICH_IMAGE_PREFIXES = ("phi_", "skin_", "motou_")
 _MD_IMAGE_ALL = True
 
 
+def _is_face_image(path) -> bool:
+    """是否表情素材（data/faces/ 下的图）。
+
+    ★ 2026-11-09：表情文件名是 `<标签>_<编号>.png`（sleeping_026.png），没有统一前缀，
+      不能靠 _RICH_IMAGE_PREFIXES 匹配。按父目录判断最稳。
+    """
+    try:
+        return Path(str(path)).parent.name == "faces"
+    except Exception:
+        return False
+
+
+def _shrink_face(path, max_side: int = 240):
+    """表情按“小图”发：webp 转 png/gif，超尺寸缩到 max_side 以内。
+
+    - 动图（多帧 webp）→ gif；静图 → png（保留透明）
+    - 产物写到 data/img_temp/，不污染 data/faces/（face_lib 会扫描该目录）
+    - 任何异常都回退原路径，保证表情不至于发不出去
+    """
+    src = Path(str(path))
+    try:
+        from PIL import Image
+
+        suffix = src.suffix.lower()
+        need_fmt = suffix == ".webp"
+        with Image.open(src) as im:
+            n_frames = getattr(im, "n_frames", 1)
+            w, h = im.size
+            need_resize = max(w, h) > max_side
+            if not need_fmt and not need_resize:
+                return src
+            if need_resize:
+                r = max_side / max(w, h)
+                size = (max(1, int(w * r)), max(1, int(h * r)))
+            else:
+                size = (w, h)
+            out_dir = Path(__file__).resolve().parent / "data" / "img_temp"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            if need_fmt and n_frames > 1:
+                out = out_dir / (src.stem + "_sm.gif")
+                frames, durations = [], []
+                for i in range(n_frames):
+                    im.seek(i)
+                    durations.append(im.info.get("duration", 100))
+                    frames.append(im.convert("RGBA").resize(size, Image.LANCZOS)
+                                  .convert("P", palette=Image.ADAPTIVE))
+                frames[0].save(out, save_all=True, append_images=frames[1:],
+                               duration=durations, loop=0, disposal=2)
+            elif need_fmt:
+                out = out_dir / (src.stem + "_sm.png")
+                im.convert("RGBA").resize(size, Image.LANCZOS).save(out, "PNG")
+            else:
+                out = out_dir / (src.stem + "_sm" + suffix)
+                im.convert("RGBA").resize(size, Image.LANCZOS).save(out)
+        log(f"表情小图已生成: {out.name} {size[0]}x{size[1]}")
+        return out
+    except Exception as e:
+        log("表情图处理失败，按原图发送:", src.name, type(e).__name__, e)
+        return src
+
+
 def send_image(path: Path) -> bool:
     # ⚠️ 本函数内给 _KB_OK 赋值，必须显式 global，否则它变成局部变量，
     #    前面的读取会 UnboundLocalError（2026-10-31 踩过，整个图片发送挂掉）
@@ -401,7 +462,11 @@ def send_image(path: Path) -> bool:
 
     # ★ 图片统一走本地图床（markdown 内嵌）：markdown 图能和按钮/引用块同一条消息，
     #   富媒体气泡挂不了 keyboard；统一转 JPEG 也避开手机端不认 webp 的问题。
-    if _MD_IMAGE_ALL and not Path(str(path)).name.startswith(_RICH_IMAGE_PREFIXES):
+    # ★ 2026-11-09：表情素材强制走富媒体（纯图片），并按小图发送
+    _is_face = _is_face_image(path)
+    if _is_face:
+        path = _shrink_face(path)
+    if _MD_IMAGE_ALL and not _is_face and not Path(str(path)).name.startswith(_RICH_IMAGE_PREFIXES):
         url, w, h = to_public_image(path)
         if url:
             # 攒着的按钮直接挂到这条 markdown 上（不再需要「图后补一条」）

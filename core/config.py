@@ -59,6 +59,9 @@ class BotConfig:
     
     # ── 角色权限 ──
     admin_qq: int = 0
+    # 官方渠道管理员（openid 哈希）。写在 config/bot_config.toml 的「官方管理员ID」
+    # 数组里，只在 BOT_CHANNEL=official 时参与判定。
+    official_admin_ids: list[int] = field(default_factory=list)
     friend_qqs: list[int] = field(default_factory=list)
     qq_name_map: dict[str, str] = field(default_factory=dict)
     group_nicknames: dict[str, dict[str, str]] = field(default_factory=dict)  # 分群昵称: {群号: {QQ: 昵称}} (来自 nickname_sync)
@@ -239,11 +242,14 @@ class BotConfig:
         # ★ 2026-11-09：官方渠道管理员写死在 core/prompt_mode.py，不再依赖 env。
         #   之前靠 OFFICIAL_ADMIN_IDS 环境变量，换机器/漏配 systemd 就失效，
         #   表现为「管理指令突然没权限」，排查成本高。现在常量优先，env 仅作补充。
+        # ★ 2026-11-09：官方渠道管理员写在 config/bot_config.toml 的「官方管理员ID」，
+        #   不写死在代码里（换机器人/换人只改配置）。仍只在官方渠道生效，
+        #   避免这个 11 位哈希在 NapCat 侧与真实 QQ 号碰撞。
         try:
-            from core.prompt_mode import IS_OFFICIAL as _IS_OFF, OFFICIAL_ADMIN_IDS as _HARDCODED_IDS
+            from core.prompt_mode import IS_OFFICIAL as _IS_OFF
         except Exception:
-            _IS_OFF, _HARDCODED_IDS = False, frozenset()
-        if _IS_OFF and user_id in _HARDCODED_IDS:
+            _IS_OFF = False
+        if _IS_OFF and user_id in (self.official_admin_ids or ()):
             return True
         # 兼容旧配置：env 里仍可追加（逗号分隔）
         _raw = os.environ.get("OFFICIAL_ADMIN_IDS", "")
@@ -459,6 +465,7 @@ def load_bot_config() -> BotConfig:
         enable_private=bot_section.get("enable_private_chat", False),
         debug_mode=bool(bot_section.get("调试模式", False)),
         admin_qq=admin_qq,
+        official_admin_ids=[int(q) for q in bot_section.get("官方管理员ID", []) or []],
         friend_qqs=[int(q) for q in friend_qqs],
         qq_name_map={str(k): v for k, v in qq_name_map.items()},
         group_nicknames=group_nicknames,
