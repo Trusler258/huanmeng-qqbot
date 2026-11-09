@@ -179,7 +179,9 @@ def _next_seq() -> int:
     if _cur() is None:
         return 0
     _cur().seq += 1
-    if _cur().seq > MAX_PASSIVE_REPLIES:
+    # ★ 平台硬限制：群聊每条消息最多回 5 次，单聊只有 4 次
+    _limit = 4 if _cur().scene == "users" else MAX_PASSIVE_REPLIES
+    if _cur().seq > _limit:
         _cur().exhausted = True
     return _cur().seq
 
@@ -894,8 +896,43 @@ def _kb_to_cmd_input(kb: dict | None) -> str:
             .format(quote(str(data), safe=""), quote(str(label), safe="")))
 
 
-async def dispatch(content: str, ctx: ReplyCtx) -> None:
-    """指令 → handle_command；非指令直接静默。"""
+async def _enqueue_chat(text: str, ctx: ReplyCtx) -> None:
+    """把一条聊天消息投入 pipeline 队列（不阻塞网关循环）。
+
+    ⚠️ 不能在网关里直接 await process_message：心跳挂在 ws.recv() 的 5 秒超时
+       分支上，LLM 一次十几秒会把心跳拖停，平台判掉线。
+    上下文经 `_chat_ctx` 传给队列 worker，由其用 ContextVar 设/复位。
+    """
+    try:
+        from core.queues import enqueue_message
+
+        is_group = ctx.scene == "groups"
+        uid = _stable_id(ctx.sender or ctx.openid)
+        gid = _stable_id(ctx.openid) if is_group else 0
+        await enqueue_message(
+            msg_type="text",
+            msg_content=text,
+            chat_id=gid if is_group else uid,
+            sender_name=(f"群友{str(uid)[-4:]}" if is_group else "对方"),
+            user_id=uid,
+            is_group=is_group,
+            bot_qq=int(APPID) if str(APPID).isdigit() else 0,
+            raw_event=None,
+            raw_message=text,
+            quoted_msg="",
+            error_report=None,
+            error_report_kind="mc",
+            is_command=False,
+            _detached=False,
+            _chat_ctx=ctx,
+        )
+        log(f"聊天入队[{ctx.scene}]:", text)
+    except Exception as e:
+        log("聊天入队失败:", type(e).__name__, e)
+
+
+async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
+    """指令 → handle_command；非指令且被 @（或私聊）→ 交给 LLM 管道。"""
     text = (content or "").strip()
     # 群里 @ 之后常带空格/CQ，先剥
     # 官方群里 @ 机器人时，content 里会带 `<@3E40895D3C0C6805...>` 这样的记号
@@ -904,7 +941,12 @@ async def dispatch(content: str, ctx: ReplyCtx) -> None:
     text = re.sub(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>)+", "", text).strip()
 
     if not _is_command(text):
-        log("非指令，忽略:", text)
+        # ★ 2026-11-09：官方渠道转公共服务后，群内「仅 @ 触发」聊天；
+        #   私聊等同于 @。非 @ 的消息一律静默，避免 bot 变成话痨。
+        if (is_at or ctx.scene == "users"):
+            await _enqueue_chat(text, ctx)
+        else:
+            log("非指令，忽略:", text)
         return
 
     if _is_banned(text):
@@ -1098,12 +1140,14 @@ async def run_gateway() -> None:
                             tag = "群@" if t.endswith("AT_MESSAGE_CREATE") else "群"
                             log(f"{tag} 收到 group={gid}")
                             await dispatch(_content_with_attachments(d),
-                                           ReplyCtx("groups", gid, d.get("id", ""), author))
+                                           ReplyCtx("groups", gid, d.get("id", ""), author),
+                                           is_at=t.endswith("AT_MESSAGE_CREATE"))
                         elif t == "C2C_MESSAGE_CREATE":
                             uid = (d.get("author") or {}).get("user_openid", "")
                             log(f"私聊 收到 user={uid}")
                             await dispatch(_content_with_attachments(d),
-                                           ReplyCtx("users", uid, d.get("id", ""), uid))
+                                           ReplyCtx("users", uid, d.get("id", ""), uid),
+                                           is_at=True)
                         elif t:
                             log("其他事件:", t)
         except Exception as e:
@@ -1120,6 +1164,13 @@ def main() -> int:
         return 2
     log(f"官方机器人启动 appid={APPID}")
     install_sender_shim()
+    # ★ 2026-11-09：把 ReplyCtx 的设/复位能力交给队列 worker，
+    #   否则 LLM 在 worker 里回复时 _cur() 为空，全部撞 assert。
+    try:
+        import core.queues as _Q
+        _Q.set_chat_ctx_hooks(lambda c: _CUR_VAR.set(c), lambda t: _CUR_VAR.reset(t))
+    except Exception as e:
+        log("注册队列上下文钩子失败:", type(e).__name__, e)
     try:
         asyncio.run(run_gateway())
     except KeyboardInterrupt:

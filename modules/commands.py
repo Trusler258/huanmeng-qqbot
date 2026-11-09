@@ -271,113 +271,49 @@ async def cmd_favlist(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 
 async def cmd_info(args, user_id, group_id, sender_name, is_group, bot_qq):
-    """返回系统和运行状态"""
-    import platform
-    import time as _time
-    
+    """精简运行信息：版本 / 平台 / 模型状态 / 时间戳（2026-11-09 按用户要求压缩）"""
+    import platform as _pf
+    from datetime import datetime as _dt
+
     cfg = get_config()
-    name = cfg.bot_name
     logger.info("指令 /~info 触发 user=%d", user_id)
 
-    lines: list[str] = []
-    lines.append(format_lang("cmd_info.m1", name=name))
-    lines.append("")
-
-    # ── 系统 ──
-    lines.append("[System]")
-    lines.append(f"  OS     : {platform.system()} {platform.release()} ({platform.machine()})")
-    lines.append(f"  Python : {platform.python_version()}")
     try:
-        import psutil
-        mem = psutil.virtual_memory()
-        total_mb = mem.total // (1024**2)
-        used_mb = mem.used // (1024**2)
-        lines.append(f"  Memory : {used_mb}MB / {total_mb}MB ({mem.percent}%)")
-        cpu_name = platform.processor() or "Unknown"
-        cpu_count = psutil.cpu_count(logical=True)
-        cpu_percent = psutil.cpu_percent(interval=0.3)
-        lines.append(f"  CPU    : {cpu_name} ({cpu_count}c) [{cpu_percent}%]")
-        disk = psutil.disk_usage('/')
-        disk_gb = disk.used / (1024**3)
-        disk_total = disk.total / (1024**3)
-        lines.append(f"  Disk   : {disk_gb:.1f}GB / {disk_total:.1f}GB ({disk.percent}%)")
-    except ImportError:
-        lines.append(f"  Memory : unavailable (install psutil)")
-        lines.append(f"  Disk   : unavailable")
-
-    lines.append("")
-
-    # ── 运行 ──
-    lines.append("[Runtime]")
-    try:
-        import psutil
-        proc = psutil.Process()
-        create_time = proc.create_time()
-        uptime_sec = int(_time.time() - create_time)
-        hours = uptime_sec // 3600
-        mins = (uptime_sec % 3600) // 60
-        lines.append(f"  Uptime : {hours}h {mins}m")
+        from core.prompt_mode import IS_OFFICIAL as _IS_OFF
     except Exception:
-        lines.append(f"  Uptime : unknown")
+        _IS_OFF = False
+    _plat = ("官方 · 织梦" if _IS_OFF else "NapCat · 幻梦") + f" / {_pf.system()}"
 
-    from core.dispatcher import get_current_dispatcher
-    from core.context_manager import get_context_mgr
-    disp = get_current_dispatcher()
-    ctx = get_context_mgr()
-    stats = ctx.get_stats()
-    lines.append(f"  Msgs   : {disp.msg_count if disp else '?'} processed")
-    lines.append(f"  Chats  : {stats.get('active_chats', 0)} active")
-    lines.append(f"  Tasks  : {stats.get('active_tasks', 0)} pending")
-
-    from modules.judge import get_cache_stats
-    cache_s = get_cache_stats()
-    lines.append(f"  S-Cache: {cache_s.get('entries', 0)} entries")
-
-    lines.append("")
-
-    # ── 连接 ──
-    lines.append("[Connection]")
-    from services.sender import get_ws_manager
-    ws = get_ws_manager()
-    lines.append(f"  WS     : {'connected' if ws.is_connected else 'disconnected'}")
-    lines.append(f"  Reconn : {ws._connect_count} times")
-
-    lines.append("")
-
-    # ── 配置 ──
-    lines.append("[Config]")
-    lines.append(f"  Reply Threshold : {cfg.reply_interest}")
-    lines.append(f"  Context Length  : {cfg.context_length}")
-    lines.append(f"  Private Chat    : {'ON' if cfg.enable_private else 'OFF'}")
-    lines.append(f"  Image Recog     : {'ON' if cfg.image_model.switch else 'OFF'}")
-    lines.append(f"  Groups          : {len(cfg.group_list)} whitelisted")
-    lines.append(f"  Debug           : {'ON' if cfg.debug_mode else 'OFF'}")
-
-    lines.append("")
-
-    # ── 模型 ──（从运行时配置读取，不写死）
-    lines.append("[Models]")
-    lines.append(f"  Reply  : {cfg.reply_model.name} @ {cfg.reply_model.provider}")
-    lines.append(f"  Cheap  : {cfg.cheap_model.name} @ {cfg.cheap_model.provider}")
-    lines.append(f"  Judge  : {cfg.judge_model.name} @ {cfg.judge_model.provider}")
-    img_enabled = "ON" if cfg.image_model.switch else "DISABLED"
-    lines.append(f"  Vision : {cfg.image_model.name} @ {cfg.image_model.provider} ({img_enabled})")
-
-    lines.append("")
-
-    # ── Token 消耗 ──
-    lines.append("[Token]")
     try:
-        from core.token_tracker import calc_cost
-        cost = calc_cost(today_only=False)
-        t = cost["today"]
-        total = cost["total"]
-        lines.append(f"  Today  : {t['calls']} calls, {t['prompt']+t['completion']:,} tokens = ¥{t['cost']:.4f}")
-        lines.append(f"  Total  : {total['calls']} calls, {total['prompt']+total['completion']:,} tokens = ¥{total['cost']:.2f}")
+        from core.llm_switch import is_llm_enabled as _llm_ok
+        _llm = "正常" if _llm_ok() else "已关闭"
     except Exception:
-        lines.append("  (unavailable)")
+        _llm = "未知"
 
-    return "\n".join(lines)
+    _ds = getattr(getattr(cfg, "reply_model", None), "name", "") or "-"
+    _vim = getattr(cfg, "image_model", None)
+    _glm = getattr(_vim, "name", "") or "-"
+    if _vim is not None and not getattr(_vim, "switch", False):
+        _glm += "（关）"
+
+    try:
+        from services.decision import threshold as _dth
+        _dec = "开启（阈值 %s）" % _dth()
+    except Exception:
+        _dec = "未知"
+
+    _now = _dt.now()
+    _ts = _now.strftime("%Y.%m.%d %H:%M:%S.") + "%03d" % (_now.microsecond // 1000)
+
+    return "\n".join([
+        "版本: %s" % cfg.version,
+        "平台: %s" % _plat,
+        "模型状态",
+        "DeepSeek: %s / %s" % (_ds, _llm),
+        "GLM ZhiPu: %s" % _glm,
+        "决策模型: %s" % _dec,
+        _ts,
+    ])
 
 
 async def cmd_balance(args, user_id, group_id, sender_name, is_group, bot_qq):

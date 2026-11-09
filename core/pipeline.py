@@ -1554,6 +1554,18 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     except Exception as _e:
         logger.warning("碎片合并失败（忽略）: %s", _e)
 
+    # ★ 2026-11-09：官方渠道每条入站消息最多回 5 次（平台硬限制），
+    #   这里压到 4 句，留 1 次给图片/补充提示，避免第 5+ 条被平台丢弃。
+    try:
+        from core.prompt_mode import IS_OFFICIAL as _IS_OFF
+    except Exception:
+        _IS_OFF = False
+    if _IS_OFF and len(sentences) > 4:
+        logger.info("官方渠道拆条上限 4（原 %d 句）", len(sentences))
+        sentences = sentences[:4]
+        if _faces_per_sentence:
+            _faces_per_sentence = _faces_per_sentence[:4]
+
     old_task = ctx.cancel_old_task(chat_id)
     if old_task:
         logger.debug("取消旧发送任务 chat=%d", chat_id)

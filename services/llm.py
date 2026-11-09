@@ -278,7 +278,16 @@ def _load_skill_sections() -> dict[str, str]:
     return sections
 
 
-_SKILLS_DIR = Path(__file__).resolve().parent.parent / "data" / "skills"
+_DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+# ★ 2026-11-09：官方渠道用独立的人设/技能目录 data/skills_official/，
+#   改人设不会影响 NapCat（那边仍读 data/skills/）。目录不存在则回退。
+try:
+    from core.prompt_mode import SKILLS_SUBDIR as _SK_SUB
+except Exception:
+    _SK_SUB = ""
+_OFFICIAL_SKILLS = _DATA_ROOT / _SK_SUB if _SK_SUB else None
+_SKILLS_DIR = (_OFFICIAL_SKILLS if (_OFFICIAL_SKILLS and _OFFICIAL_SKILLS.is_dir())
+               else _DATA_ROOT / "skills")
 # ★ v2.3.105：黑话词库唯一真相源迁到 JSON（原 15_slang.md 降级为人读备份）
 _SLANG_JSON = Path(__file__).resolve().parent.parent / "data" / "slang.json"
 _slang_json_cache: tuple[int, int, list] | None = None

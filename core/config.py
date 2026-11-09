@@ -107,7 +107,35 @@ class BotConfig:
     mute_duration: int = 1800         # 禁言时长（秒），0=仅警告
     
     # ── 构建完整系统提示词 ──
+    def _official_persona(self) -> str:
+        """官方渠道独立人设：data/skills_official/00_persona.md 的 prompt_header 段。
+
+        与 NapCat 的 [personality] 配置完全隔离 —— 改这边不影响那边。
+        """
+        import re
+        _p = Path(__file__).resolve().parent.parent / "data" / "skills_official" / "00_persona.md"
+        if not _p.exists():
+            return ""
+        try:
+            text = _p.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+        m = re.search(r"## prompt_header\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+        return m.group(1).strip() if m else ""
+
     def build_system_prompt(self) -> str:
+        # ★ 2026-11-09：官方渠道走独立人设文件，不再套用 [personality] 配置
+        try:
+            from core.prompt_mode import IS_OFFICIAL as _IS_OFF
+        except Exception:
+            _IS_OFF = False
+        if _IS_OFF:
+            _persona = self._official_persona()
+            if _persona:
+                self.system_prompt = (
+                    f"# 核心人格\n{_persona}\n---\n{self._build_self_awareness()}"
+                )
+                return self.system_prompt
         self.system_prompt = (
             f"# 核心人格\n{self.personality_core}\n"
             f"---\n"
@@ -131,9 +159,15 @@ class BotConfig:
 
         # 读取模板：先扫 skills 目录，再回退遗留单文件
         _data = Path(__file__).resolve().parent.parent / "data"
-        candidates = sorted((_data / "skills").glob("*.md")) if (_data / "skills").is_dir() else []
-        legacy = _data / "main_skill.md"
-        if legacy.exists():
+        # ★ 2026-11-09：官方渠道读 data/skills_official/，与 NapCat 的人设隔离
+        try:
+            from core.prompt_mode import SKILLS_SUBDIR as _SK_SUB
+        except Exception:
+            _SK_SUB = ""
+        _skills_dir = (_data / _SK_SUB) if (_SK_SUB and (_data / _SK_SUB).is_dir()) else (_data / "skills")
+        candidates = sorted(_skills_dir.glob("*.md")) if _skills_dir.is_dir() else []
+        legacy = _data / "main_skill.md" if _skills_dir.name == "skills" else None
+        if legacy is not None and legacy.exists():
             candidates.append(legacy)
 
         template = ""

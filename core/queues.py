@@ -20,6 +20,40 @@ logger = get_logger("queues")
 # 卡在单条消息上 10 分钟，队列积压 17 条无人消费），超时强制跳过继续出队。
 _GROUP_MSG_TIMEOUT = 200.0
 
+# ── 通道上下文钩子 ──────────────────────────────────────────
+# 官方渠道的发送依赖 ContextVar。worker 是长驻任务，拿不到入队时的上下文，
+# 所以由渠道进程注册「设置/复位」回调，每条消息前后各调一次。
+# NapCat 不注册 → 行为与改动前完全一致。
+_chat_ctx_set = None
+_chat_ctx_reset = None
+
+
+def set_chat_ctx_hooks(setter, resetter) -> None:
+    global _chat_ctx_set, _chat_ctx_reset
+    _chat_ctx_set, _chat_ctx_reset = setter, resetter
+
+
+async def _run_with_ctx(kwargs: dict):
+    """带通道上下文地跑一条消息。"""
+    from core.pipeline import process_message
+
+    ctx = kwargs.pop("_chat_ctx", None)
+    tok = None
+    if ctx is not None and _chat_ctx_set is not None:
+        try:
+            tok = _chat_ctx_set(ctx)
+        except Exception as e:
+            logger.warning("[队列] 上下文注入失败: %s", e)
+    try:
+        return await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
+    finally:
+        if tok is not None and _chat_ctx_reset is not None:
+            try:
+                _chat_ctx_reset(tok)
+            except Exception:
+                pass
+
+
 # ── 消息队列 ──
 _group_queues: dict[int, asyncio.PriorityQueue] = {}
 _group_tasks: dict[int, asyncio.Task] = {}
@@ -72,7 +106,7 @@ def _spawn_detached(chat_id: int, kwargs: dict) -> None:
         from core.pipeline import process_message
         async with _detached_semaphore:
             try:
-                await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
+                await _run_with_ctx(kwargs)
             except asyncio.TimeoutError:
                 logger.error("[队列] 群%d 旁路命令超时(>%.0fs)已放弃: '%s'",
                              chat_id, _GROUP_MSG_TIMEOUT,
@@ -118,7 +152,7 @@ async def _group_worker(chat_id: int, queue: asyncio.PriorityQueue):
 
             _t0 = _time.monotonic()
             try:
-                await asyncio.wait_for(process_message(**kwargs), timeout=_GROUP_MSG_TIMEOUT)
+                await _run_with_ctx(kwargs)
                 _dt = _time.monotonic() - _t0
                 if _dt > 5:
                     logger.info("[队列] 群%d 消息处理完成 耗时%.1fs: '%s'",

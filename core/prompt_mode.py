@@ -31,6 +31,9 @@ ALLOW_MARKDOWN: bool = IS_OFFICIAL
 # 长期记忆子目录（相对 data/）。空串 = 直接用 data/
 MEMORY_SUBDIR: str = "official_mem" if IS_OFFICIAL else ""
 
+# 官方渠道独立的技能/人设目录（data/skills_official/），与 NapCat 的 data/skills/ 隔离
+SKILLS_SUBDIR: str = "skills_official" if IS_OFFICIAL else ""
+
 # 官方渠道不加载的技能章节（写死在 skills/*.md 里的 ## 名称）
 #   command_tools     : 告诉模型「有哪些指令可以调」
 #   command_table     : 指令清单（按需注入）
