@@ -236,11 +236,16 @@ class BotConfig:
         """检查用户是否有 admin 权限（主人 + 分群 OP 指派 + 官方渠道白名单）"""
         if user_id == self.admin_qq:
             return True
-        # ★ 2026-11-07：官方渠道（织梦）拿不到 QQ 号，只有 openid 的 sha1 哈希
-        #   （qq_official_bot._stable_id），永远不可能等于 admin_qq，导致
-        #   /~wdsj collect 这类管理指令在官方渠道全废。
-        #   OFFICIAL_ADMIN_IDS 用逗号分隔这些哈希值；只在官方进程的 env 里设置，
-        #   NapCat 端不设 → 空 → 行为与改动前完全一致。
+        # ★ 2026-11-09：官方渠道管理员写死在 core/prompt_mode.py，不再依赖 env。
+        #   之前靠 OFFICIAL_ADMIN_IDS 环境变量，换机器/漏配 systemd 就失效，
+        #   表现为「管理指令突然没权限」，排查成本高。现在常量优先，env 仅作补充。
+        try:
+            from core.prompt_mode import IS_OFFICIAL as _IS_OFF, OFFICIAL_ADMIN_IDS as _HARDCODED_IDS
+        except Exception:
+            _IS_OFF, _HARDCODED_IDS = False, frozenset()
+        if _IS_OFF and user_id in _HARDCODED_IDS:
+            return True
+        # 兼容旧配置：env 里仍可追加（逗号分隔）
         _raw = os.environ.get("OFFICIAL_ADMIN_IDS", "")
         if _raw.strip():
             for _x in re.split(r"[,，\s]+", _raw.strip()):
