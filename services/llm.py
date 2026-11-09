@@ -110,6 +110,13 @@ from openai import OpenAI
 
 from core.logger import get_logger
 from core.config import BotConfig, ModelConfig, get_config
+# ★ 2026-11-09：渠道能力策略（官方渠道 = 纯聊天 + 搜索，无工具/指令，允许 Markdown）
+from core.prompt_mode import (
+    ALLOW_MARKDOWN as _ALLOW_MD,
+    ALLOW_TOOLS as _ALLOW_TOOLS,
+    DISABLED_SKILL_SECTIONS as _DISABLED_SECTIONS,
+    IS_OFFICIAL as _IS_OFFICIAL,
+)
 from utils.format_lang import format_lang
 
 _LLM_OFF_LOGGED = False
@@ -365,6 +372,10 @@ def _merge_skills_dir(sections: dict[str, str]) -> None:
         if parsed:
             # 文件内含 ## 分节：逐节并入（同时剥离 @skill: 元数据行，登记索引）
             for k, v in parsed.items():
+                # ★ 2026-11-09：官方渠道按渠道策略跳过整节（指令/工具相关）
+                if k in _DISABLED_SECTIONS:
+                    logger.info("官方渠道跳过 skill 章节: %s", k)
+                    continue
                 body, meta = _extract_skill_meta(v)
                 sections[k] = body
                 if meta and (meta.get("title") or meta.get("keywords")):
@@ -504,7 +515,7 @@ def _build_system_text(bot_name: str, personality: str, is_group: bool, custom_p
         sec.get(fmt_key, ""),
         _face_inline_part,
         _sweet_part,
-        sec.get("command_tools", ""),
+        sec.get("command_tools", "") if _ALLOW_TOOLS else "",
         sec.get("fav_format", ""),
         sec.get("fav_tiers", ""),
         _self_aware,
@@ -889,7 +900,7 @@ def _build_skill_refs(needs: set, is_group: bool, msg: str = "") -> str:
             parts.append(v)
             added.add(key)
 
-    if "tools" in needs:
+    if "tools" in needs and _ALLOW_TOOLS:
         _add("command_table")
         cl = _build_dynamic_command_list()
         if cl:
@@ -1093,6 +1104,10 @@ def _build_reminder(name: str, append_plain: bool = True, **vars) -> str:
       字面量塞给模型
     """
     sec = _load_skill_sections()
+    # ★ 2026-11-09：官方渠道用 reply_reminder_official —— 同一套 JSON 约束，
+    #   但去掉「指令穿插 / {"cmd": ...}」这类官方渠道用不到的规则。
+    if _IS_OFFICIAL and name == "reply_reminder" and (sec.get("reply_reminder_official") or "").strip():
+        name = "reply_reminder_official"
     tpl = (sec.get(name) or "").strip()
     if not tpl:
         logger.error("提示词章节缺失: %s —— 已回退兜底提醒（检查 data/skills/40_reminders.md）", name)
@@ -1104,7 +1119,10 @@ def _build_reminder(name: str, append_plain: bool = True, **vars) -> str:
     if _leftover:
         logger.warning("提醒模板 %s 存在未赋值占位符: %s", name, _leftover)
         tpl = re.sub(r"\$\{\w+\}", "", tpl)
-    plain = (sec.get("plain_text_rule") or "").strip()
+    # ★ 2026-11-09：官方渠道允许 Markdown（平台渲染 msg_type=2），不再追加纯文本禁令；
+    #   NapCat 端继续用 plain_text_rule（QQ 不渲染，符号会露出来）。
+    plain = (sec.get("markdown_rule") or "") if _ALLOW_MD else (sec.get("plain_text_rule") or "")
+    plain = plain.strip()
     if append_plain and plain:
         tpl = tpl + "\n" + plain
     # 插值后变空的行（可选段落未启用）直接丢弃，别留空行/空壳标题
@@ -2160,7 +2178,8 @@ async def generate_multi_reply_with_tools(
     """
     from core.tools import get_tool_schemas, execute_tool
 
-    tools = get_tool_schemas()
+    # ★ 2026-11-09：官方渠道不给模型任何工具（纯聊天 + 搜索由独立搜索链路完成）
+    tools = [] if not _ALLOW_TOOLS else get_tool_schemas()
     # ★ v2.3.89（B）：决策模型选中的工具 → 第 0 轮强制调用。
     #   校验名字合法性：名字不在工具表里会让 API 直接 400（决策模型理论上只会给
     #   列表内的名字，但选项是动态派生的，插件卸载后可能消失）。
@@ -2249,7 +2268,7 @@ async def generate_multi_reply_with_tools(
         #   永远不会被执行，等于白补一次调用还照样发空话（2026-10-21 群聊
         #   「文件这就发你」走的正是这条路径，两轮 tool_calls 都是 0）。
         if (round_idx == 0 and not result.tool_calls and not _promise_retried
-                and _looks_like_tool_promise(result.content)):
+                and _ALLOW_TOOLS and _looks_like_tool_promise(result.content)):
             _promise_retried = True
             logger.warning(
                 "检测到「承诺调用工具但 calls 为空」→ 补一轮强制调用 | 原文=%s",
@@ -2438,7 +2457,8 @@ async def generate_multi_reply_with_tools(
         # ★ v2.3.48: FC 原生工具也发"[工具调用: xxx]"提示（此前只有 JSON calls 路径有，
         #   用户实测搜索时毫无提示，还以为 bot 没搜）。经 interim_cb 就地发出——
         #   与指令执行同时（用户 12:35 的要求同样适用于 FC 路径）。
-        if interim_cb is not None:
+        # ★ 2026-11-09：官方渠道不发工具提示（用户要求“别提示”）
+        if interim_cb is not None and _ALLOW_TOOLS:
             async def _hint(tc):
                 try:
                     _a = str(tc.get("arguments") or "").strip()

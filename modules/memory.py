@@ -20,7 +20,13 @@ from utils.format_lang import format_lang
 logger = get_logger("memory")
 
 # ── 配置 ────────────────────────────────────────────────────
-MEMORY_DIR = Path(__file__).resolve().parent.parent / "data"
+# ★ 2026-11-09：按渠道隔离长期记忆。官方渠道（织梦）写 data/official_mem/，
+#   与 NapCat 侧的 data/memory_<群号>.md 完全不共享 —— 用户明确“换号了，
+#   不认识他们也正常”，所以不做旧记忆迁移。
+from core.prompt_mode import MEMORY_SUBDIR as _MEM_SUBDIR
+
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+MEMORY_DIR = (_DATA_DIR / _MEM_SUBDIR) if _MEM_SUBDIR else _DATA_DIR
 _MSGLOG_DIR = MEMORY_DIR / "msglog"
 MAX_MEMORY_LINES = 999999  # 永久保存
 MEMORY_COOLDOWN_SECONDS = 600
