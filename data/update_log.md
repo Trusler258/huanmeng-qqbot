@@ -436,6 +436,31 @@ WARNING (decision:decide:139) 决策模型 HTTP 404（fail-open）:
 要恢复的话两条路：① 有可用端点时把 enabled 改回 true + `.env` 的 `DECISION_MODEL` 换掉；
 ② 把 `services/decision.py` 改成调普通 chat completion（DeepSeek）做判定，那是改协议，工作量另算。
 
+### 十九、`/~wdsj me <玩家名>` 报「未知模式: me」（11-10）
+
+用户实测 `/~wdsj me xInAnimus` → 「未知模式: me」。
+
+`me` 是「双模式横屏卡（起床战争 + 竞技场）」的关键词，解析分支只判了**末尾**：
+
+```python
+if action in ("dual", ...) or args[-1].lower() in _ME_WORDS:
+    ... name_args = args[:-1]
+```
+
+`args[-1]` 是 `xinanimus`，不是 me 词，分支没进去；`action` 又被当模式名拿去
+`resolve_template("me")`，自然查不到。也就是说只有 `<玩家名> me` 这一个顺序能用。
+
+修成两种顺序等价：
+
+| 写法 | 结果 |
+|---|---|
+| `/~wdsj me` | 用绑定玩家的双模式卡 |
+| `/~wdsj me xInAnimus` | xInAnimus 的双模式卡（本次新增） |
+| `/~wdsj xInAnimus me` | 同上（原有写法） |
+
+判 `action` 时加了一个 `_me_head`，命中就走 `args[1:]` 当玩家名。
+纯粹的放宽，原写法行为不变。
+
 ### 备注
 
 11-03 到 11-09 这几天的改动一直没发版，按「同一天合并」的规矩，这里合成一个 patch 版本。

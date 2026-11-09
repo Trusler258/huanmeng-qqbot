@@ -2805,8 +2805,13 @@ async def cmd_wdsj(args, user_id, group_id, sender_name, is_group, bot_qq):
     #    主用法: /~wdsj me（用绑定玩家） | /~wdsj <玩家名> me（指定玩家）
     #    兼容旧写法: /~wdsj dual <玩家名>
     _ME_WORDS = ("me", "我", format_lang("cmd_wdsj.m46"), "my")
-    if action in ("dual", "double", "双模式", "双段") or args[-1].lower() in _ME_WORDS:
-        if action in ("dual", "double", "双模式", "双段"):
+    # ★ 2026-11-10：`me` 放在最前面也要认。
+    #   原来只判 args[-1]，写成 `/~wdsj me xInAnimus` 会拿 me 当模式名去查模板，
+    #   查不到就报「未知模式: me」（用户 00:05 实测）。两种顺序等价：
+    #     /~wdsj me <玩家>  ==  /~wdsj <玩家> me
+    _me_head = action.lower() in _ME_WORDS
+    if action in ("dual", "double", "双模式", "双段") or _me_head or args[-1].lower() in _ME_WORDS:
+        if action in ("dual", "double", "双模式", "双段") or _me_head:
             name_args = args[1:]
         else:
             name_args = args[:-1]
