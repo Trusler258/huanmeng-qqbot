@@ -248,6 +248,21 @@ INFO 级别完全看不出来。指令走的是另一条路，所以「指令能
 顺带把官方渠道上限从写死 4 改成动态：有配图 4 句（留 1 次给图片），纯文字 5 句
 （平台每条入站消息最多被动回 5 次）。回归 `tests/_test_split_multiline.py`，7 条用例。
 
+### 十一、字符表情只有 qwq / ovo（11-09）
+
+用户反馈「怎么只有 qwq 和 ovo 了」。查 `data/skills_official/00_persona.md`，
+字符表情那行只列了 4 个（qwq、ovo、awa、orz），模型自然反复用最熟的两个。
+
+改成三组可用池，并加了「别当句尾默认」的约束：
+
+| 组 | 内容 |
+|---|---|
+| 纯字母 | ovo OVO owo OwO uwu UwU qwq QwQ qaq QAQ qvq QvQ TAT TvT TwT TUT TuT TT QQ xwx XwX ewe EwE awa AwA uvu UvU oao OAO OvO OuO OxO QnQ QoQ |
+| 字母＋数字 | 0w0 0v0 0u0 0o0 o3o O3O u3u U3U w3w X3X x3x T3T Q3Q 8D O7 |
+| 象形／梗文字 | orz Orz OTZ OTL XD xD Xd xd |
+
+仍然是一条最多一个、不是每条都带；连着几条重复同一个算翻车。
+
 ### 备注
 
 11-03 到 11-09 这几天的改动一直没发版，按「同一天合并」的规矩，这里合成一个 patch 版本。
