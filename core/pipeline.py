@@ -513,7 +513,7 @@ def _dedup_repeated_sentences(sentences: list, chat_id: int, *,
 
 async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, is_group, bot_qq,
                           raw_event=None, raw_message="", quoted_msg="", error_report=None,
-                          error_report_kind="mc", **extra_kwargs):
+                          error_report_kind="mc", force_reply=False, **extra_kwargs):
     """消息处理主管道。
     **extra_kwargs 用于前向兼容：避免未来 dispatcher/enqueue 新增参数时
     process_message 签名不匹配直接抛出 TypeError 导致全量消息静默（P0 事故）。
@@ -720,6 +720,12 @@ async def process_message(msg_type, msg_content, chat_id, sender_name, user_id, 
     if not is_group:
         should_reply = True
         logger.debug("私聊消息 → 直接回复")
+    elif force_reply:
+        # ★ 2026-11-09：渠道已判定必须回（官方 QQ 群的「@机器人」/私聊）。
+        #   官方消息没有 CQ 码，is_mentioned 永远为假，若不显式传下来，
+        #   消息会掉进 should_respond() 让模型自己猜要不要回 → 实测频繁不吭声。
+        should_reply = True
+        logger.info("渠道强制回复（已被 @）→ 直接回复")
     elif at_only:
         should_reply = is_mentioned
     elif is_mentioned:

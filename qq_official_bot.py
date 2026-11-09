@@ -950,7 +950,11 @@ async def _enqueue_chat(text: str, ctx: ReplyCtx) -> None:
         uid = _stable_id(ctx.sender or ctx.openid)
         gid = _stable_id(ctx.openid) if is_group else 0
         await enqueue_message(
-            msg_type="text",
+            # ★ 2026-11-09：必须是「文字」——pipeline 用中文类型名判定
+            #   （`if msg_type != "文字": return`）。这里写 "text" 会让每条
+            #   聊天消息在回复管道入口被静默丢弃，且只有 debug 日志，
+            #   INFO 级别完全看不出问题（本次「@ 了没反应」的根因）。
+            msg_type="文字",
             msg_content=text,
             chat_id=gid if is_group else uid,
             sender_name=(f"群友{str(uid)[-4:]}" if is_group else "对方"),
@@ -965,6 +969,8 @@ async def _enqueue_chat(text: str, ctx: ReplyCtx) -> None:
             is_command=False,
             _detached=False,
             _chat_ctx=ctx,
+            # 能入队就代表「@了机器人」或私聊，回复判断不必再让模型猜
+            force_reply=True,
         )
         log(f"聊天入队[{ctx.scene}]:", text)
     except Exception as e:
