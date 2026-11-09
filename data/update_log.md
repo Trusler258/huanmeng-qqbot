@@ -333,6 +333,36 @@ markdown 被判为不可用时才退回原键盘按钮。
 注意用的是一条更严格的 `_REAL_MENTION_HEAD_RE`，**前导空格不算 @**——
 清理用的 `_MENTION_HEAD_RE` 把 `\s` 也算一种前缀，直接拿它判会把「  你好」误判成 @。
 
+### 十五、官方渠道每条消息都有「提示词章节缺失」ERROR（11-09）
+
+用户让看日志，翻出两条问题，先修这条确定的。
+
+```
+ERROR (llm:_build_reminder:1122) 提示词章节缺失: reply_reminder
+      —— 已回退兜底提醒（检查 data/skills/40_reminders.md）
+```
+
+每条聊天消息都打一次。根因是渠道隔离的副作用：
+
+- 官方渠道 `SKILLS_SUBDIR = "skills_official"`，`_SKILLS_DIR` 直接指向 `data/skills_official/`
+- 那个目录里只有 `00_persona.md`
+- `reply_reminder` 模板住在 `data/skills/40_reminders.md`，根本没被扫描到
+
+`_build_reminder()` 早就留了分支——官方渠道优先取 `reply_reminder_official`，
+但这一节一直没写，于是每次都掉进 `_REMINDER_FALLBACK`（只有一句「必须输出 JSON」）。
+
+**丢掉的硬规则里有一条很关键：句尾不许写句号。** 这直接关系到用户反馈的「不咋活泼」——
+模型拿不到这条，就会写成「…支持～」那种半正式腔。
+
+补 `data/skills_official/10_reminders.md`：
+
+- `## reply_reminder_official` —— JSON 必填、句尾禁用句号（附正反例）、
+  一个回合只说一个意思，最后是 `${ctx_hint}` / `${no_repeat}` 两个占位符
+- 不含「指令穿插 / `{"cmd": ...}`」——官方渠道没有指令，那套规则用不上
+
+验证：官方渠道现在加载 3 个章节（`prompt_header` / `markdown_rule` / `reply_reminder_official`），
+`_build_reminder("reply_reminder")` 命中模板，`markdown_rule` 自动追加。
+
 ### 备注
 
 11-03 到 11-09 这几天的改动一直没发版，按「同一天合并」的规矩，这里合成一个 patch 版本。
