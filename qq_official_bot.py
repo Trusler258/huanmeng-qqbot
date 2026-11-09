@@ -157,6 +157,7 @@ class ReplyCtx:
         self.exhausted = False
         self.keyboard = None        # 下一条文本消息要带的按钮（用一次就清）
         self.keyboard_late = None   # 等图片发完之后再补一条带按钮的短文本
+        self.button_tag = None      # markdown 内嵌 <qqbot-cmd-input>（点击只填输入框，不 @ 机器人）
         self.last_msg_id = None     # ★ 最近一条**已发出**回复的消息 id（撤回用）
 
 
@@ -984,7 +985,13 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
     # 官方群里 @ 机器人时，content 里会带 `<@3E40895D3C0C6805...>` 这样的记号
     # （2026-10-31 实测：`<@3E40...> 晚安+1`）。不剥掉的话，@ 之后的指令
     # 永远被判成"非指令"——这正是"某个群必须 @"却指令无效的原因。
-    text = re.sub(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>)+", "", text).strip()
+    text = re.sub(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>|<qqbot-at-user[^>]*>)+", "", text).strip()
+    # ★ 2026-11-09：客户端有时把 @机器人 拼成纯文本（`@织梦 /~wdsj bw`），
+    #   上面那几条都剥不掉 → 指令被判成聊天，点按钮变成"开始闲聊"。
+    #   只在这种「@xxx 后面紧跟 /」的形态下剥前缀，不碰普通聊天内容。
+    _at_prefix = re.match(r"^@\S+\s+(?=/)", text)
+    if _at_prefix:
+        text = text[_at_prefix.end():]
 
     # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
     #   避免机器人被拉进别的群后能力外泄。
@@ -1018,16 +1025,18 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
         uid = _stable_id(ctx.sender or ctx.openid)
         # 记原文：排查"按钮没出现""指令没认出来"时，必须看到实际收到的字符串
         log(f"指令原文[{ctx.scene}]:", repr(text))
-        # 战绩查询挂「查查我的」按钮（点了自动填 /~wdsj <模式> <绑定>）
-        # 挂 keyboard_late：等图片发完再补，按钮才会出现在图片下面
+        # 战绩查询挂「查查我的」按钮（点了自动填 /~wdsj <模式>）
+        # ★ 2026-11-09 用户要求：按钮不要带「@机器人」。
+        #   keyboard 的 action.type=2 是「指令按钮」，客户端会替用户发一条
+        #   `@机器人 /~wdsj ...`；只要那个 @ 有任何残留没被剥干净，消息就会掉进
+        #   聊天管道（表现为「点按钮它开始跟我闲聊」）。
+        #   改成只发 markdown 内嵌的 <qqbot-cmd-input>：点击只把文字填进输入框，
+        #   不产生 @ 消息；用户自己按发送。
+        _kb = None
         if _cmd_name(text) == "wdsj":
-            kb = build_wdsj_keyboard(text, uid)
-            if kb:
-                from modules.commands import MD_INLINE_IMAGE as _mdimg
-                if _mdimg:
-                    ctx.keyboard = kb        # 图在 markdown 里，按钮挂同一条消息
-                else:
-                    ctx.keyboard_late = kb   # 图是富媒体，只能等图发完再补
+            _kb = build_wdsj_keyboard(text, uid)
+            if _kb:
+                ctx.button_tag = _kb_to_cmd_input(_kb)
         reply = await handle_command(
             text,
             user_id=uid,
@@ -1042,12 +1051,12 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
         )
         if reply:
             body = str(reply)
-            # 按钮同时用 markdown 内嵌标签给一份：keyboard 在群里不渲染，
-            # <qqbot-cmd-input> 可能可以（文档没写群聊不支持）
-            if ctx.keyboard and _MD_STATE.get(ctx.scene, "unknown") != "off":
-                tag = _kb_to_cmd_input(ctx.keyboard)
-                if tag:
-                    body = body + "\n\n" + tag
+            # ★ 2026-11-09：优先用 markdown 内嵌 <qqbot-cmd-input>（点击只填输入框、
+            #   不带 @）。markdown 被判不可用时退回原键盘按钮 —— 那种会带 @，但至少按钮还在。
+            if ctx.button_tag and _MD_STATE.get(ctx.scene, "unknown") != "off":
+                body = body + "\n\n" + ctx.button_tag
+            elif _kb:
+                ctx.keyboard = _kb
             send_text(body)
     except Exception as e:
         log("指令执行异常:", type(e).__name__, e)
