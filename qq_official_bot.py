@@ -157,7 +157,6 @@ class ReplyCtx:
         self.exhausted = False
         self.keyboard = None        # 下一条文本消息要带的按钮（用一次就清）
         self.keyboard_late = None   # 等图片发完之后再补一条带按钮的短文本
-        self.button_tag = None      # markdown 内嵌 <qqbot-cmd-input>（点击只填输入框，不 @ 机器人）
         self.last_msg_id = None     # ★ 最近一条**已发出**回复的消息 id（撤回用）
 
 
@@ -1064,17 +1063,20 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
         # 记原文：排查"按钮没出现""指令没认出来"时，必须看到实际收到的字符串
         log(f"指令原文[{ctx.scene}]:", repr(text))
         # 战绩查询挂「查查我的」按钮（点了自动填 /~wdsj <模式>）
-        # ★ 2026-11-09 用户要求：按钮不要带「@机器人」。
-        #   keyboard 的 action.type=2 是「指令按钮」，客户端会替用户发一条
-        #   `@机器人 /~wdsj ...`；只要那个 @ 有任何残留没被剥干净，消息就会掉进
-        #   聊天管道（表现为「点按钮它开始跟我闲聊」）。
-        #   改成只发 markdown 内嵌的 <qqbot-cmd-input>：点击只把文字填进输入框，
-        #   不产生 @ 消息；用户自己按发送。
+        # ★ 2026-11-09 回滚：markdown 内嵌的 <qqbot-cmd-input> 在群里不渲染，
+        #   改成它之后按钮直接消失了（用户实测「按钮没了」）。退回键盘按钮。
+        #   键盘的 action.type=2 是指令按钮，客户端会替用户发一条
+        #   `@机器人 /~wdsj ...` —— 这个 @ 无所谓：指令在 dispatch() 里先剥 mention
+        #   再判 `startswith("/")`，跟是不是 @ 无关，永远不会掉进聊天。
         _kb = None
         if _cmd_name(text) == "wdsj":
             _kb = build_wdsj_keyboard(text, uid)
             if _kb:
-                ctx.button_tag = _kb_to_cmd_input(_kb)
+                from modules.commands import MD_INLINE_IMAGE as _mdimg
+                if _mdimg:
+                    ctx.keyboard = _kb        # 图在 markdown 里，按钮挂同一条消息
+                else:
+                    ctx.keyboard_late = _kb   # 图是富媒体，只能等图发完再补
         reply = await handle_command(
             text,
             user_id=uid,
@@ -1089,12 +1091,12 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
         )
         if reply:
             body = str(reply)
-            # ★ 2026-11-09：优先用 markdown 内嵌 <qqbot-cmd-input>（点击只填输入框、
-            #   不带 @）。markdown 被判不可用时退回原键盘按钮 —— 那种会带 @，但至少按钮还在。
-            if ctx.button_tag and _MD_STATE.get(ctx.scene, "unknown") != "off":
-                body = body + "\n\n" + ctx.button_tag
-            elif _kb:
-                ctx.keyboard = _kb
+            # ★ 2026-11-09：按钮走键盘（keyboard），markdown 内嵌标签在群里不渲染。
+            #   标签仍然附一份，纯文本客户端认的话就是兜底；不认也只是被忽略。
+            if ctx.keyboard and _MD_STATE.get(ctx.scene, "unknown") != "off":
+                _tag = _kb_to_cmd_input(ctx.keyboard)
+                if _tag:
+                    body = body + "\n\n" + _tag
             send_text(body)
     except Exception as e:
         log("指令执行异常:", type(e).__name__, e)
