@@ -49,6 +49,21 @@ def main() -> int:
     # 6. 指令后面的正文属于指令参数，不做聊天
     ck("指令带参数", C("@织梦 /~wdsj bw 我菜不菜"), "/~wdsj bw 我菜不菜", True)
 
+    # 7. @ 判定：内容带 mention 记号就算 @（事件类型可能是全量消息）
+    def at(text):
+        return bool(m._REAL_MENTION_HEAD_RE.match(m._INVISIBLE_RE.sub("", text)))
+
+    for name, text, want in [
+        ("<@> 打头", "\u200b<@ABC> 你好", True),
+        ("qqbot-at-user 打头", '<qqbot-at-user id="x" /> 你好', True),
+        ("CQ at 打头", "[CQ:at,qq=1] 你好", True),
+        ("前导空格不算 @", "  你好", False),
+        ("普通文字不算 @", "你好", False),
+        ("纯文本 @ 不算标签", "@织梦 你好", False),
+    ]:
+        if at(text) != want:
+            fails.append(f"@判定 {name}\n  got={at(text)}")
+
     if fails:
         print("FAIL")
         for f in fails:

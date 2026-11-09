@@ -823,6 +823,9 @@ _INVISIBLE_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u20
 _MENTION_HEAD_RE = re.compile(r"^(\s|\[CQ:[^\]]+\]|<@[^>]*>|<qqbot-at-user[^>]*>)+")
 # 客户端把 @机器人 拼成纯文本：`@织梦 /~wdsj bw`
 _AT_TEXT_HEAD_RE = re.compile(r"^@\S+\s+(?=/)")
+# 「这条消息真的 @ 了机器人」——必须是真的 mention 记号，光有前导空格不算
+_REAL_MENTION_HEAD_RE = re.compile(
+    r"^\s*(?:\[CQ:at,[^\]]*\]|<@[^>]*>|<qqbot-at-user[^>]*>)")
 
 
 def _clean_incoming(text: str) -> str:
@@ -1017,6 +1020,15 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
       一段 @ 记号没剥掉，`startswith("/")` 就会假，指令就会被当成聊天丢给模型。
     """
     text = _clean_incoming(content)
+
+    # ★ 2026-11-09：@ 的判定不能只信事件类型。
+    #   实测 16:31 用户 @ 了机器人发「你好」，这条的 t 是 GROUP_MESSAGE_CREATE
+    #   （群全量消息）而不是 GROUP_AT_MESSAGE_CREATE，于是 is_at=False →
+    #   被判「非指令，忽略」，用户看到的就是「@ 了没反应」。
+    #   内容开头只要有 mention 记号（<@id> / <qqbot-at-user> / CQ at），就是 @ 了。
+    if not is_at and _REAL_MENTION_HEAD_RE.match(_INVISIBLE_RE.sub("", content or "")):
+        is_at = True
+        log("@ 判定：事件类型非 AT，但内容带 mention 记号，按 @ 处理")
 
     # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
     #   避免机器人被拉进别的群后能力外泄。
