@@ -49,7 +49,11 @@ _Q_NEED_SEARCH = {
 
 
 def _key() -> str:
-    return os.environ.get("OPENROUTER_KEY", "") or os.environ.get("DECISION_KEY", "")
+    # ★ 2026-11-13：DECISION_KEY 优先于 OPENROUTER_KEY。
+    #   原来 OpenRouter 优先，换到别的供应商（例如 Inception 官方
+    #   https://api.inceptionlabs.ai/v1/decisions）时，会在没改 OPENROUTER_KEY
+    #   的情况下把 OpenRouter 的 key 发给新端点 → 401。
+    return os.environ.get("DECISION_KEY", "") or os.environ.get("OPENROUTER_KEY", "")
 
 
 def _url() -> str:
