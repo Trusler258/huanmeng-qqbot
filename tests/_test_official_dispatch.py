@@ -64,12 +64,32 @@ def main() -> int:
         if at(text) != want:
             fails.append(f"@判定 {name}\n  got={at(text)}")
 
+    # 8. 分流优先级：@ 之后**先看是不是只有指令**，是则走指令、绝不进 LLM
+    def route(text, is_at):
+        t = C(text)
+        if m._is_command(t):
+            return "cmd"
+        return "chat" if is_at else "ignore"
+
+    for name, text, is_at, want in [
+        ("@ + 纯指令", "@织梦 /~wdsj bw", True, "cmd"),
+        ("@ + 纯指令(带零宽)", "\u200b<@A> /~reload", True, "cmd"),
+        ("@ + 指令带参数", "@织梦 /~wdsj bw 玩家名", True, "cmd"),
+        ("@ + 聊天", "@织梦 你好", True, "chat"),
+        ("@ + 聊天里夹指令", "@织梦 你好 /~wdsj bw", True, "chat"),
+        ("未 @ 的聊天", "你好", False, "ignore"),
+        ("未 @ 的指令", "/~ping", False, "cmd"),
+    ]:
+        got = route(text, is_at)
+        if got != want:
+            fails.append(f"分流 {name}\n  got ={got}\n  want={want}")
+
     if fails:
         print("FAIL")
         for f in fails:
             print(" -", f)
         return 1
-    print("OK 12/12")
+    print("OK 19/19")
     return 0
 
 
