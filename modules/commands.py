@@ -785,8 +785,11 @@ async def cmd_unignore(args, user_id, group_id, sender_name, is_group, bot_qq):
 
 async def cmd_reload(args, user_id, group_id, sender_name, is_group, bot_qq):
     """热重载配置（不重启进程）"""
-    roles = load_roles_config()
-    if user_id != roles.get("admin_qq"):
+    # ★ 2026-11-12：原来直接和 roles["admin_qq"] 比，官方渠道 user_id 是
+    #   openid 哈希（54078007750），永远对不上 → 管理员点 /~reload 报「权限不足」。
+    #   统一走 cfg.is_admin()（内部含官方管理员ID / 分群 OP / env 兼容）。
+    from core.config import get_config as _get_cfg
+    if not _get_cfg().is_admin(user_id):
         logger.warning("非管理员尝试 reload user=%d", user_id)
         return format_lang("reload.permission_denied")
 
@@ -860,9 +863,9 @@ async def cmd_reset_fav(args, user_id, group_id, sender_name, is_group, bot_qq):
     """重置好感度数据（仅管理员）"""
     logger.info("指令 /~resetfav 触发 user=%d", user_id)
     
-    # 权限检查
-    roles = load_roles_config()
-    if user_id != roles.get("admin_qq"):
+    # 权限检查（同上：不能直接比 admin_qq，官方渠道 user_id 是哈希）
+    from core.config import get_config as _get_cfg
+    if not _get_cfg().is_admin(user_id):
         return format_lang("reload.permission_denied")
     
     import modules.fav as fav_module

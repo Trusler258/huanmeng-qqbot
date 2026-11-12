@@ -175,6 +175,69 @@ def _cur() -> ReplyCtx | None:
     return _CUR_VAR.get()
 
 
+# ── 机器人自己的群内 openid（用于精确判断「是不是 @ 了我」）──────────
+# 背景 2026-11-12：有些群把 @ 消息按 GROUP_MESSAGE_CREATE（全量消息）投递，
+#   事件类型靠不住；而只看「正文有没有 mention」又分不清 @ 的是谁 ——
+#   群友 @ 别人也会命中。唯一可靠的判据是 mention 里的 openid 等于本群机器人自己。
+#   member_openid 是**按群**分配的，所以按 group_openid 分别缓存。
+#   来源有两种：① AT 事件正文里的首个 mention；② 机器人自己发出的那条消息的 author。
+_BOT_ID_FILE = Path(__file__).resolve().parent / "data" / "official_bot_openid.json"
+_BOT_IDS: dict[str, str] = {}
+
+
+def _load_bot_ids() -> None:
+    try:
+        if _BOT_ID_FILE.exists():
+            _BOT_IDS.update(json.loads(_BOT_ID_FILE.read_text(encoding="utf-8")) or {})
+            log(f"机器人 openid 缓存已加载: {len(_BOT_IDS)} 个群")
+    except Exception as e:
+        log("读取机器人 openid 缓存失败（忽略）:", type(e).__name__, e)
+
+
+def _remember_bot_id(gid: str, oid: str) -> None:
+    """记住某群里机器人自己的 member_openid。"""
+    if not gid or not oid or _BOT_IDS.get(gid) == oid:
+        return
+    _BOT_IDS[gid] = oid
+    try:
+        _BOT_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _BOT_ID_FILE.write_text(json.dumps(_BOT_IDS, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+        log(f"已记录本群机器人 openid: group={gid} id={oid}")
+    except Exception as e:
+        log("保存机器人 openid 失败（忽略）:", type(e).__name__, e)
+
+
+_MENTION_ID_RE = re.compile(r'<@!?([0-9A-Za-z]{16,})>|<qqbot-at-user\s+id="([^"]+)"')
+
+
+def _head_mention_id(text: str) -> str:
+    """取正文里**第一个** mention 的 openid；没有返回空串。"""
+    m = _MENTION_ID_RE.search(text or "")
+    if not m:
+        return ""
+    return m.group(1) or m.group(2) or ""
+
+
+async def _learn_bot_id_from_message(gid: str, msg_id: str) -> None:
+    """查自己刚发出的那条消息，从 author.member_openid 学本群机器人 id。"""
+    if not gid or not msg_id or gid in _BOT_IDS:
+        return
+    try:
+        st, data = await asyncio.to_thread(
+            _api, "GET", f"/v2/groups/{gid}/messages/{msg_id}")
+    except Exception as e:
+        log("学习机器人 openid 失败（请求异常）:", type(e).__name__, e)
+        return
+    if st != 200:
+        return
+    oid = str(((data or {}).get("author") or {}).get("member_openid") or "")
+    if oid:
+        _remember_bot_id(gid, oid)
+    else:
+        log(f"消息详情里没有 author.member_openid，学不到（group={gid}）")
+
+
 def _next_seq() -> int:
     if _cur() is None:
         return 0
@@ -301,6 +364,15 @@ def _send_chunk(chunk: str) -> tuple[int, dict]:
             _MD_STATE[scene] = "on"
             log(f"markdown 可用（{scene}），后续回复切富文本")
         _cur().keyboard = None
+        # ★ 2026-11-12：本群还没记录机器人 openid 时，用自己刚发的这条去学一次
+        #   （查消息详情拿 author.member_openid）。每个群只会触发一次。
+        _gid = _cur().openid
+        _sent_id = str(((data or {}).get("id") or ""))
+        if scene == "groups" and _sent_id and _gid not in _BOT_IDS:
+            try:
+                asyncio.ensure_future(_learn_bot_id_from_message(_gid, _sent_id))
+            except Exception:
+                pass
         return st, data
 
     # ① 带按钮失败 → 多半是没开「消息按钮」权限，去掉重试并永久关闭
@@ -1020,12 +1092,24 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
     """
     text = _clean_incoming(content)
 
-    # ★ 2026-11-09：对话的唯一入口是「真的 @ 了机器人」（事件类型 AT）。
-    #   曾经加过一条兜底「内容开头有 mention 记号也算 @」，为的是救一类被平台
-    #   按全量消息投递的 @ 消息；但它分不清 mention 的是谁 —— 群友 @ 别人也会命中，
-    #   表现为「没 @ 它却插嘴」。用户明确要求「@ 了才是对话，其余一律静止」，
-    #   所以这条兜底已撤。若某群确实把 @ 投递成 GROUP_MESSAGE_CREATE，
-    #   网关日志会打出 `原始正文（含 mention）`，按那条日志再决定要不要精确比对 openid。
+    # ★ 2026-11-09：对话的唯一入口是「真的 @ 了机器人」。
+    #   事件类型优先（GROUP_AT_MESSAGE_CREATE / 私聊）；有些群把 @ 按全量消息投递，
+    #   于是再补一道内容判定 —— 但**必须是本群机器人自己的 openid**，
+    #   不能只看「有没有 mention」，否则群友 @ 别人也会命中（11-09 踩过）。
+    #   本群机器人 openid 缺失时不猜：先按 @ 处理，并在回复后自动学习（见 _learn_bot_id_from_message）。
+    if not is_at and ctx.scene == "groups":
+        _mid = _head_mention_id(content or "")
+        if _mid:
+            _known = _BOT_IDS.get(ctx.openid)
+            if _known:
+                is_at = (_mid == _known)
+                if is_at:
+                    log("@ 判定：mention 与本群机器人 openid 一致，按 @ 处理")
+                else:
+                    log(f"@ 判定：mention={_mid} 不是本群机器人({_known})，忽略")
+            else:
+                is_at = True
+                log(f"@ 判定：本群还没记录机器人 openid，先按 @ 处理（mention={_mid}）")
 
     # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
     #   避免机器人被拉进别的群后能力外泄。
@@ -1247,6 +1331,11 @@ async def run_gateway() -> None:
                             _raw_c = d.get("content", "") or ""
                             if "<@" in _raw_c or "<qqbot-at-user" in _raw_c or "[CQ:at" in _raw_c:
                                 log(f"{tag} 原始正文（含 mention） t={t}", repr(_raw_c))
+                            # ★ AT 事件里首个 mention 就是机器人自己 → 记下来
+                            if t.endswith("AT_MESSAGE_CREATE"):
+                                _bid = _head_mention_id(_raw_c)
+                                if _bid:
+                                    _remember_bot_id(gid, _bid)
                             await dispatch(_content_with_attachments(d),
                                            ReplyCtx("groups", gid, d.get("id", ""), author),
                                            is_at=t.endswith("AT_MESSAGE_CREATE"))
@@ -1271,6 +1360,7 @@ def main() -> int:
         log("缺少 QQ_APPID / QQ_SECRET 环境变量，拒绝启动")
         return 2
     log(f"官方机器人启动 appid={APPID}")
+    _load_bot_ids()
     install_sender_shim()
     # ★ 2026-11-09：把 ReplyCtx 的设/复位能力交给队列 worker，
     #   否则 LLM 在 worker 里回复时 _cur() 为空，全部撞 assert。
