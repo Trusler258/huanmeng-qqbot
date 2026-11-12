@@ -533,6 +533,39 @@ WARNING (commands:cmd_reload:790) 非管理员尝试 reload user=54078007750
 ⚠️ 已知代价：如果某个群前两次 @ 的都是同一个人（不是机器人），会被误认。
 这种情况删掉 `data/official_bot_openid.json` 对应条目再重启即可重置。
 
+### 二十二、@ 判定找到官方正解：事件体 mentions 里的 bot 标记（11-12 晚）
+
+翻官方文档 + 社区实现后确认，前面几版都在绕远路。事件体本来就有：
+
+```
+mentions: []User
+```
+
+`User` 的字段里有 **`bot: boolean`（是否为机器人）**，`member_openid` 是群内身份。
+`content` 里 @ 某人写成 `<@member_openid>`，@全体是 `<@all>`。
+
+所以判断「有没有 @ 机器人」根本不需要 openid 猜谜：
+
+```python
+[b["member_openid"] for b in d["mentions"] if b.get("bot") is True]
+```
+
+社区项目 `ecustmc-qqbot` 的 ADVANCED.md 明确写了这条（`mentions` 里出现 `bot=true`
+的条目即 @ 了机器人），因为他们也踩过「botpy 的 `robot.id` 是数字 appid、
+和 content 里的 openid 对不上」这个坑。
+
+现在的判定：
+
+| 事件 | 处理 |
+|---|---|
+| `GROUP_AT_MESSAGE_CREATE` | 直接是 @（content 已去掉 @ 前缀，mentions 不含机器人自身） |
+| `GROUP_MESSAGE_CREATE` + mentions 里有 bot=true | 是 @ |
+| `GROUP_MESSAGE_CREATE` + 只有 bot=false | 不是 @，静默 |
+| 多个 bot=true 且本群机器人已知 | 只认缓存里那个 id |
+
+顺带把 `mentions` 数量打进 `群 收到` 那行日志，以后一眼能看出这条带没带 @。
+之前那套「按重复次数认定」的猜测逻辑已删除。
+
 ### 备注
 
 11-03 到 11-12 这几天的改动一直没发版，按「同一天合并」的规矩，这里合成一个 patch 版本。

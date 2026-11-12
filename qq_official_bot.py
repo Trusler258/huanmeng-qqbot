@@ -209,11 +209,6 @@ def _remember_bot_id(gid: str, oid: str) -> None:
 
 
 _HEAD_MENTION_RE = re.compile(r'<@!?([0-9A-Za-z]{16,})>|<qqbot-at-user\s+id="([^"]+)"')
-# 本群候选 mention 出现次数：{(group_openid, mention_id): count}
-# 只出现一次的多半是 @ 别人；同一个 id 反复出现，才是常被 @ 的那个对象（= 机器人）。
-# 达到 _ADOPT_AFTER 次才写进缓存，避免第一次误判就把整个群带偏。
-_MENTION_SEEN: dict[tuple[str, str], int] = {}
-_ADOPT_AFTER = 2
 
 
 def _head_mention_id(text: str) -> str:
@@ -224,11 +219,22 @@ def _head_mention_id(text: str) -> str:
     return m.group(1) or m.group(2) or ""
 
 
-def _note_mention(gid: str, mid: str) -> int:
-    """累加某个 mention 在本群的出现次数，返回累计值。"""
-    k = (gid, mid)
-    _MENTION_SEEN[k] = _MENTION_SEEN.get(k, 0) + 1
-    return _MENTION_SEEN[k]
+def _bot_mention_ids(d: dict) -> list[str]:
+    """事件 mentions 里「被 @ 的机器人」的 openid 列表。
+
+    ★ 2026-11-12 官方文档确认：事件体带 `mentions: []User`，每个元素有
+      `bot: boolean`；@ 某成员时 content 写成 `<@member_openid>`，@全体是 `<@all>`。
+      所以判断「有没有 @ 机器人」不需要猜 openid —— 直接看 mentions 里 bot=true 的项。
+      实践依据：ecustmc-qqbot 的 ADVANCED.md 明确写了这条（"mentions 里出现
+      bot=true 的条目"），因为 botpy 的 robot.id 是数字 appid，和 openid 对不上。
+    """
+    out: list[str] = []
+    for m in (d.get("mentions") or []):
+        if m.get("bot") is True:
+            oid = str(m.get("member_openid") or m.get("id") or "")
+            if oid:
+                out.append(oid)
+    return out
 
 
 def _next_seq() -> int:
@@ -1076,32 +1082,8 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
     """
     text = _clean_incoming(content)
 
-    # ★ 2026-11-09：对话的唯一入口是「真的 @ 了机器人」。
-    #   事件类型优先（GROUP_AT_MESSAGE_CREATE / 私聊）；有些群把 @ 按全量消息投递，
-    #   于是再补一道内容判定 —— 但**必须是本群机器人自己的 openid**，
-    #   不能只看「有没有 mention」，否则群友 @ 别人也会命中（11-09 踩过）。
-    #   本群机器人 openid 缺失时不猜：先按 @ 处理；同一个 mention 反复出现说明
-    #   它就是常被 @ 的对象（机器人本体），第 _ADOPT_AFTER 次时写进缓存。
-    #   ⚠️ 不能靠「查自己发出的消息」学 —— 官方 GET 消息详情返回 405（实测 11-12）。
-    if not is_at and ctx.scene == "groups":
-        _mid = _head_mention_id(content or "")
-        if _mid:
-            _known = _BOT_IDS.get(ctx.openid)
-            if _known:
-                is_at = (_mid == _known)
-                if is_at:
-                    log("@ 判定：mention 与本群机器人 openid 一致，按 @ 处理")
-                else:
-                    log(f"@ 判定：mention={_mid} 不是本群机器人({_known})，忽略")
-            else:
-                _n = _note_mention(ctx.openid, _mid)
-                is_at = True
-                if _n >= _ADOPT_AFTER:
-                    # 同一个 mention 反复出现 → 就是常被 @ 的那个对象（机器人本体）
-                    _remember_bot_id(ctx.openid, _mid)
-                    log(f"@ 判定：mention={_mid} 第 {_n} 次出现，认定为本群机器人")
-                else:
-                    log(f"@ 判定：本群机器人 id 未定，mention={_mid} 第 {_n} 次 → 先按 @ 处理")
+    # ★ 2026-11-12：@ 的判定已上移到网关（依据事件体 mentions 里的 bot=true），
+    #   这里只负责「剥干净 → 分流」，不再看正文猜 @。
 
     # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
     #   避免机器人被拉进别的群后能力外泄。
@@ -1316,21 +1298,32 @@ async def run_gateway() -> None:
                             if au.get("bot"):
                                 continue          # 机器人自己发的，别回自己
                             tag = "群@" if t.endswith("AT_MESSAGE_CREATE") else "群"
-                            log(f"{tag} 收到 group={gid}")
+                            log(f"{tag} 收到 group={gid} mentions={len(d.get('mentions') or [])}")
                             # ★ 2026-11-09 诊断：确认「@ 消息」在不同群里到底以哪种
                             #   事件投递、mention 里的 openid 长什么样。
                             #   只在正文含 mention 记号时打印，平时不吵；原文完整不截断。
                             _raw_c = d.get("content", "") or ""
                             if "<@" in _raw_c or "<qqbot-at-user" in _raw_c or "[CQ:at" in _raw_c:
                                 log(f"{tag} 原始正文（含 mention） t={t} id={d.get('id','')}", repr(_raw_c))
-                            # ★ AT 事件里首个 mention 就是机器人自己 → 记下来
-                            if t.endswith("AT_MESSAGE_CREATE"):
-                                _bid = _head_mention_id(_raw_c)
-                                if _bid:
-                                    _remember_bot_id(gid, _bid)
+                            # ★ 2026-11-12：@ 判定按官方事件体的 mentions 来
+                            #   （每个 User 带 bot:boolean）。全量模式下 @ 了机器人，
+                            #   mentions 里会有一条 bot=true；@ 别人则 bot=false。
+                            #   AT 事件本身就是 @，不用看 mentions（那里不含机器人自身）。
+                            _is_at = t.endswith("AT_MESSAGE_CREATE")
+                            _bids = _bot_mention_ids(d)
+                            if not _is_at and _bids:
+                                _known = _BOT_IDS.get(gid)
+                                if _known:
+                                    _is_at = _known in _bids
+                                else:
+                                    _is_at = True
+                                    if len(_bids) == 1:
+                                        _remember_bot_id(gid, _bids[0])
+                                log(f"@ 判定：mentions={len(d.get('mentions') or [])} "
+                                    f"bots={_bids} known={_known!r} → is_at={_is_at}")
                             await dispatch(_content_with_attachments(d),
                                            ReplyCtx("groups", gid, d.get("id", ""), author),
-                                           is_at=t.endswith("AT_MESSAGE_CREATE"))
+                                           is_at=_is_at)
                         elif t == "C2C_MESSAGE_CREATE":
                             uid = (d.get("author") or {}).get("user_openid", "")
                             log(f"私聊 收到 user={uid}")
