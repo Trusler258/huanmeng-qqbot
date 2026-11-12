@@ -208,34 +208,27 @@ def _remember_bot_id(gid: str, oid: str) -> None:
         log("保存机器人 openid 失败（忽略）:", type(e).__name__, e)
 
 
-_MENTION_ID_RE = re.compile(r'<@!?([0-9A-Za-z]{16,})>|<qqbot-at-user\s+id="([^"]+)"')
+_HEAD_MENTION_RE = re.compile(r'<@!?([0-9A-Za-z]{16,})>|<qqbot-at-user\s+id="([^"]+)"')
+# 本群候选 mention 出现次数：{(group_openid, mention_id): count}
+# 只出现一次的多半是 @ 别人；同一个 id 反复出现，才是常被 @ 的那个对象（= 机器人）。
+# 达到 _ADOPT_AFTER 次才写进缓存，避免第一次误判就把整个群带偏。
+_MENTION_SEEN: dict[tuple[str, str], int] = {}
+_ADOPT_AFTER = 2
 
 
 def _head_mention_id(text: str) -> str:
     """取正文里**第一个** mention 的 openid；没有返回空串。"""
-    m = _MENTION_ID_RE.search(text or "")
+    m = _HEAD_MENTION_RE.search(text or "")
     if not m:
         return ""
     return m.group(1) or m.group(2) or ""
 
 
-async def _learn_bot_id_from_message(gid: str, msg_id: str) -> None:
-    """查自己刚发出的那条消息，从 author.member_openid 学本群机器人 id。"""
-    if not gid or not msg_id or gid in _BOT_IDS:
-        return
-    try:
-        st, data = await asyncio.to_thread(
-            _api, "GET", f"/v2/groups/{gid}/messages/{msg_id}")
-    except Exception as e:
-        log("学习机器人 openid 失败（请求异常）:", type(e).__name__, e)
-        return
-    if st != 200:
-        return
-    oid = str(((data or {}).get("author") or {}).get("member_openid") or "")
-    if oid:
-        _remember_bot_id(gid, oid)
-    else:
-        log(f"消息详情里没有 author.member_openid，学不到（group={gid}）")
+def _note_mention(gid: str, mid: str) -> int:
+    """累加某个 mention 在本群的出现次数，返回累计值。"""
+    k = (gid, mid)
+    _MENTION_SEEN[k] = _MENTION_SEEN.get(k, 0) + 1
+    return _MENTION_SEEN[k]
 
 
 def _next_seq() -> int:
@@ -364,15 +357,6 @@ def _send_chunk(chunk: str) -> tuple[int, dict]:
             _MD_STATE[scene] = "on"
             log(f"markdown 可用（{scene}），后续回复切富文本")
         _cur().keyboard = None
-        # ★ 2026-11-12：本群还没记录机器人 openid 时，用自己刚发的这条去学一次
-        #   （查消息详情拿 author.member_openid）。每个群只会触发一次。
-        _gid = _cur().openid
-        _sent_id = str(((data or {}).get("id") or ""))
-        if scene == "groups" and _sent_id and _gid not in _BOT_IDS:
-            try:
-                asyncio.ensure_future(_learn_bot_id_from_message(_gid, _sent_id))
-            except Exception:
-                pass
         return st, data
 
     # ① 带按钮失败 → 多半是没开「消息按钮」权限，去掉重试并永久关闭
@@ -1096,7 +1080,9 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
     #   事件类型优先（GROUP_AT_MESSAGE_CREATE / 私聊）；有些群把 @ 按全量消息投递，
     #   于是再补一道内容判定 —— 但**必须是本群机器人自己的 openid**，
     #   不能只看「有没有 mention」，否则群友 @ 别人也会命中（11-09 踩过）。
-    #   本群机器人 openid 缺失时不猜：先按 @ 处理，并在回复后自动学习（见 _learn_bot_id_from_message）。
+    #   本群机器人 openid 缺失时不猜：先按 @ 处理；同一个 mention 反复出现说明
+    #   它就是常被 @ 的对象（机器人本体），第 _ADOPT_AFTER 次时写进缓存。
+    #   ⚠️ 不能靠「查自己发出的消息」学 —— 官方 GET 消息详情返回 405（实测 11-12）。
     if not is_at and ctx.scene == "groups":
         _mid = _head_mention_id(content or "")
         if _mid:
@@ -1108,8 +1094,14 @@ async def dispatch(content: str, ctx: ReplyCtx, is_at: bool = False) -> None:
                 else:
                     log(f"@ 判定：mention={_mid} 不是本群机器人({_known})，忽略")
             else:
+                _n = _note_mention(ctx.openid, _mid)
                 is_at = True
-                log(f"@ 判定：本群还没记录机器人 openid，先按 @ 处理（mention={_mid}）")
+                if _n >= _ADOPT_AFTER:
+                    # 同一个 mention 反复出现 → 就是常被 @ 的那个对象（机器人本体）
+                    _remember_bot_id(ctx.openid, _mid)
+                    log(f"@ 判定：mention={_mid} 第 {_n} 次出现，认定为本群机器人")
+                else:
+                    log(f"@ 判定：本群机器人 id 未定，mention={_mid} 第 {_n} 次 → 先按 @ 处理")
 
     # ★ 2026-11-09：群白名单闸。名单外的群一律静默（连指令也不响应），
     #   避免机器人被拉进别的群后能力外泄。
@@ -1330,7 +1322,7 @@ async def run_gateway() -> None:
                             #   只在正文含 mention 记号时打印，平时不吵；原文完整不截断。
                             _raw_c = d.get("content", "") or ""
                             if "<@" in _raw_c or "<qqbot-at-user" in _raw_c or "[CQ:at" in _raw_c:
-                                log(f"{tag} 原始正文（含 mention） t={t}", repr(_raw_c))
+                                log(f"{tag} 原始正文（含 mention） t={t} id={d.get('id','')}", repr(_raw_c))
                             # ★ AT 事件里首个 mention 就是机器人自己 → 记下来
                             if t.endswith("AT_MESSAGE_CREATE"):
                                 _bid = _head_mention_id(_raw_c)
