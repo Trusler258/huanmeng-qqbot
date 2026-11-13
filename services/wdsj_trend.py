@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from pathlib import Path
 
 from services.sender import send_group_msg, send_private_msg
 from services.wdsj_tracker import (
@@ -42,6 +44,10 @@ async def handle_trend(args, user_id: int, group_id: int, is_group: bool,
     args[0] 是指令名（trend/趋势/...），args[1:] 是「玩家名 + 指标」，
     两者顺序不限，靠 resolve_metric 识别哪些是指标。
     """
+    # ★ 2026-11-13：trend help / 趋势帮助 → 发说明卡（风格同 /~wdsj help）
+    if any(str(a).strip().lower() in ("help", "帮助", "?", "？", "-h") for a in args[1:]):
+        return await _send_trend_help(user_id, group_id, is_group)
+
     player = None
     metrics: list[str] = []
     for a in args[1:]:
@@ -107,3 +113,46 @@ async def handle_trend(args, user_id: int, group_id: int, is_group: bool,
                else send_private_msg(cq, user_id))
         return None
     return format_lang("cmd_wdsj.m49", player=player, label=label)
+
+
+_TREND_HELP_FALLBACK = """洛花星雨 · 战绩趋势 /~wdsj trend <玩家> [指标…]
+  单指标       /~wdsj trend 小明 击杀
+  多指标(≤3)   /~wdsj trend 小明 击杀 胜场
+  不写玩家     用你绑定的名字
+  别名          jjc=竞技场  bw=起床；中文/英文字段名都认
+起床 {bw} 项：{bw_list}
+竞技 {ar} 项：{ar_list}
+需 ≥2 天采集记录；同一天多条只取最后一条。"""
+
+
+async def _send_trend_help(user_id: int, group_id: int, is_group: bool):
+    """发趋势帮助卡；渲染失败退回文字版。"""
+    from services import wdsj_api as api
+    from services.wdsj_tracker import _ARENA_TREND_FIELDS, _BW_TREND_FIELDS, _metric_id
+
+    try:
+        from core.config import get_config
+        bot_name = get_config().bot_name
+        html = api.build_trend_help_card_html(bot_name)
+        from modules.changelog import _ensure_browser
+        browser = await _ensure_browser()
+        page = await browser.new_page(viewport={"width": 640, "height": 120})
+        await page.set_content(html)
+        await page.wait_for_timeout(600)
+        await page.set_viewport_size({"width": 640, "height": 120})
+        out = str(Path(__file__).resolve().parent.parent / "data" / "img_temp"
+                  / f"trend_help_{int(time.time())}.png")
+        await page.screenshot(path=out, full_page=True)
+        await page.close()
+        cq = f"[CQ:image,file=file:///{out.replace(chr(92), '/')}]"
+        await (send_group_msg(cq, group_id) if is_group else send_private_msg(cq, user_id))
+        return None
+    except Exception as e:
+        logger.warning("趋势帮助卡渲染失败，回退文字版: %s", e, exc_info=True)
+
+    return _TREND_HELP_FALLBACK.format(
+        bw=len(_BW_TREND_FIELDS),
+        ar=len(_ARENA_TREND_FIELDS),
+        bw_list="、".join(f"{_metric_id('bw_', f)}={cn}" for f, cn, _ in _BW_TREND_FIELDS),
+        ar_list="、".join(f"{_metric_id('arena_', f)}={cn}" for f, cn, _ in _ARENA_TREND_FIELDS),
+    )

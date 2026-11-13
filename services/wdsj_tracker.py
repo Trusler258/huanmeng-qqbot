@@ -205,7 +205,16 @@ def get_player_trend(player, metric, days=None):
             by_day = {}
             for s in raw:
                 day = s["ts"][:10]  # YYYY-MM-DD
-                by_day[day] = {"ts": s["ts"], "val": int(s["values"].get(fn, 0))}
+                # ★ 2026-11-13：values 里的数字全是**字符串**（"1.32" / "5354"）。
+                #   原来 int(v) 对整数没问题，但 kd 这种小数会抛 ValueError 被吞成 0；
+                #   现在统一先转 float 再定类型：整数值→int（千分位格式依赖），否则留 2 位小数。
+                _v = s["values"].get(fn, 0)
+                try:
+                    _f = float(_v)
+                    _v = int(_f) if _f.is_integer() else round(_f, 2)
+                except (TypeError, ValueError):
+                    _v = 0
+                by_day[day] = {"ts": s["ts"], "val": _v}
             return [by_day[k] for k in sorted(by_day)]
     return []
 
@@ -570,6 +579,13 @@ def _fmt_num(v: int) -> str:
     return f"{v:,}" if abs(v) >= 10000 else str(v)
 
 
+def _dec_fmt(v: float, dec: int) -> str:
+    """刻度文本：dec>0 用固定小数位，否则千分位整数。"""
+    if dec:
+        return f"{v:.{dec}f}"
+    return _fmt_num(int(round(v)))
+
+
 # ── 多指标配色（最多 3 条线，色相拉开，避免同色系分不清）──
 _TREND_PALETTE = [
     {"accent": "#ee5a3a", "accent2": "#ff9e7a"},   # 暖橙
@@ -578,26 +594,101 @@ _TREND_PALETTE = [
 ]
 
 # 指标 key → 中文名（命令解析与图例共用）
-_TREND_LABELS = {
-    "bw_kills": "击杀", "bw_wins": "胜场", "bw_finals": "最终击杀",
-    "bw_deaths": "死亡", "arena_kills": "竞技场击杀",
-}
+# ── 趋势指标表（★ 2026-11-13 从 5 项扩到 50 项）────────────────
+# 背景：采集一直把 values 整个 dict 存进 wdsj_history.json，起床战争 33 个字段、
+#   竞技场 17 个字段，但趋势只暴露了 5 个。用户要求「全加上」。
+# 每个条目：(字段名, 中文名, 额外别名)。字段名 = wdsj_api values 的 key。
+_BW_TREND_FIELDS = [
+    ("kills", "击杀", ("kill", "bwkill")),
+    ("finalKills", "终杀", ("final", "finals", "fk")),
+    ("wins", "胜场", ("win", "wins")),
+    ("losses", "败场", ("loss", "lose")),
+    ("deaths", "死亡", ("death",)),
+    ("kd", "KD", ("kd值",)),
+    ("score", "分数", ("积分",)),
+    ("blockPlace", "放方块", ("放置", "place")),
+    ("blockBreak", "破坏方块", ("破坏", "break")),
+    ("breakBed", "摧床", ("拆床", "beds")),
+    ("shoot", "射箭", ("射击", "arrow")),
+    ("projectileKillPlayer", "远程击杀", ("远程", "proj")),
+    ("airKill", "空杀", ("空击", "air")),
+    ("eggKill", "蛋杀", ("egg",)),
+    ("explosionKill", "爆炸击杀", ("爆炸", "explode")),
+    ("fireballKill", "火球击杀", ("火球",)),
+    ("firstKill", "首杀", ("一血", "firstblood")),
+    ("hitFireball", "击火球", ("打火球", "hitfb")),
+    ("hitFirework", "击烟花", ("打烟花", "firework")),
+    ("landmineKill", "地雷击杀", ("地雷", "mine")),
+    ("noBed3Kill", "无床三杀", ("无床", "nobed")),
+    ("voidDeaths", "虚空死亡", ("虚空", "void")),
+    ("bedRestore", "补床", ("补床数", "restore")),
+    ("bedAbandonment3minSurvive", "弃床存活", ("弃床", "abandon")),
+    ("eatMeat", "吃肉", ("meat",)),
+    ("eatVegetarianDiet", "吃素", ("素食", "vegetarian")),
+    ("luckBlock", "幸运方块", ("幸运", "luck")),
+    ("paint", "涂色", ("刷色",)),
+    ("partyNoobPlayed", "陪菜鸟", ("陪玩", "noob")),
+    ("perishTogether", "同归于尽", ("同归", "perish")),
+    ("shootingHitFireball", "射中火球", ("射火球", "shootfb")),
+    ("killBridgeBuildChicken", "搭桥杀鸡", ("杀鸡", "chicken")),
+    ("killRoadBuildCat", "铺路杀猫", ("杀猫", "cat")),
+]
 
-# ★ 2026-11-06：用户输入 → 指标 key 的别名层。
-#   原来命令解析只认上面那五个英文 key，用户发 `/~wdsj trend jjc`（竞技场缩写）
-#   会被当成玩家名，回一句「记录里没有 jjc 这个人」——完全是误导。
-#   这里把常见中英文缩写都收进来；命令侧统一走 resolve_metric()。
-_TREND_ALIAS = {
-    # 竞技场（arena-stats）
+_ARENA_TREND_FIELDS = [
+    ("kills", "击杀", ("kill", "arenakill")),
+    ("wins", "胜场", ("win",)),
+    ("losses", "败场", ("loss", "lose")),
+    ("deaths", "死亡", ("death",)),
+    ("kd", "KD", ("kd值",)),
+    ("score", "分数", ("积分",)),
+    ("coins", "金币", ("coin", "钱")),
+    ("experience", "经验", ("exp", "经验值")),
+    ("level", "等级", ("lvl",)),
+    ("globalElo", "ELO", ("elo", "分数elo")),
+    ("winstreak", "连胜", ("连赢", "ws")),
+    ("highestWinstreak", "最高连胜", ("最高连赢", "hws")),
+    ("bedfightWins", "床战胜", ("床战胜利", "bfw")),
+    ("bedfightLosses", "床战负", ("床战失败", "bfl")),
+    ("fireballfightWins", "火球战胜", ("火球战胜利", "ffw")),
+    ("fireballfightLosses", "火球战负", ("火球战失败", "ffl")),
+]
+# 非数值字段（段位是带颜色代码的字符串），不进趋势
+_ARENA_NON_NUMERIC = {"division"}
+
+_METRIC_ID_OVERRIDE = {"finalKills": "bw_finals"}
+
+
+def _metric_id(prefix: str, field: str) -> str:
+    return _METRIC_ID_OVERRIDE.get(field) or (prefix + field.lower())
+
+
+# 趋势图指标列表：(指标 id, 模板 id, values 字段, 图例名)
+_TREND_METRICS = []
+_TREND_LABELS = {}
+_TREND_ALIAS = {}
+for _prefix, _tid, _fields in (
+    ("bw_", "bedwars-stats", _BW_TREND_FIELDS),
+    ("arena_", "arena-stats", _ARENA_TREND_FIELDS),
+):
+    for _f, _cn, _extra in _fields:
+        _mid = _metric_id(_prefix, _f)
+        _TREND_METRICS.append((_mid, _tid, _f, _cn))
+        _TREND_LABELS[_mid] = _cn
+        for _a in (_mid, _f.lower(), _cn, *_extra):
+            _TREND_ALIAS.setdefault(_a.lower(), _mid)
+        # 「bw击杀」这种拼写也认
+        _TREND_ALIAS.setdefault((_prefix.rstrip("_") + _cn).lower(), _mid)
+
+# 分组别名：一个词指向某个游戏的「默认指标」（击杀）。
+#   保留 2026-11-06 的行为：/~wdsj trend jjc / bw 直接出图。
+_TREND_GROUP_ALIAS = {
     "jjc": "arena_kills", "竞技场": "arena_kills", "竞技": "arena_kills",
-    "arena": "arena_kills", "ak": "arena_kills", "竞技场击杀": "arena_kills",
-    # 起床战争（bedwars-stats）
+    "arena": "arena_kills", "ak": "arena_kills",
     "bw": "bw_kills", "起床": "bw_kills", "起床战争": "bw_kills",
-    "击杀": "bw_kills", "kills": "bw_kills", "kill": "bw_kills",
-    "胜场": "bw_wins", "wins": "bw_wins", "win": "bw_wins",
-    "最终击杀": "bw_finals", "finals": "bw_finals", "final": "bw_finals",
-    "死亡": "bw_deaths", "deaths": "bw_deaths", "death": "bw_deaths",
+    "竞技场击杀": "arena_kills", "起床击杀": "bw_kills",
 }
+_TREND_ALIAS.update(_TREND_GROUP_ALIAS)
+
 
 
 def resolve_metric(token: str) -> str | None:
@@ -613,13 +704,18 @@ def resolve_metric(token: str) -> str | None:
     return _TREND_ALIAS.get(k)
 
 
-def _axis_scale(vmin: float, vmax: float, target: int = 4):
-    """整数友好刻度：步长取 1/2/2.5/5×10ⁿ，网格最多 6 条。"""
+def _axis_scale(vmin: float, vmax: float, target: int = 4, decimals: int = 0):
+    """刻度：步长取 1/2/2.5/5×10ⁿ，网格最多 6 条。
+
+    decimals > 0 时按小数算（kd 这类 0.9~1.4 的比值），不再强行取整 ——
+    原来 `step = max(1, round(step))` 会把 0.9/1.0/1.1 全压成 1，图是平的。
+    """
     import math as _m
+    floor_step = 10 ** (-decimals) if decimals else 1
     if vmax <= vmin:
-        d = max(1, int(round(abs(vmax) * 0.05)))
+        d = max(floor_step, abs(vmax) * 0.05)
         vmin, vmax = vmax - d, vmax + d
-    span = max(1.0, vmax - vmin)
+    span = max(floor_step, vmax - vmin)
     raw = span / target
     mag = 10 ** _m.floor(_m.log10(raw)) if raw > 0 else 1
     step = mag
@@ -627,6 +723,17 @@ def _axis_scale(vmin: float, vmax: float, target: int = 4):
         if raw <= mul * mag:
             step = mul * mag
             break
+    if decimals:
+        step = max(floor_step, round(step, decimals))
+        y0 = round(_m.floor(vmin / step) * step, decimals)
+        y1 = round(_m.ceil(vmax / step) * step, decimals)
+        if y1 - y0 < step:
+            y1 = round(y0 + step, decimals)
+        while (y1 - y0) / step > 6:
+            step = round(step * 2, decimals)
+            y0 = round(_m.floor(vmin / step) * step, decimals)
+            y1 = round(_m.ceil(vmax / step) * step, decimals)
+        return y0, y1, step
     step = max(1, round(step))
     y0 = _m.floor(vmin / step) * step
     y1 = _m.ceil(vmax / step) * step
@@ -662,10 +769,12 @@ def _trend_svg(datasets: list) -> str:
     right = [d for d in datasets if d["axis"] == "r"]
 
     lv = [s["val"] for d in left for s in d["series"]]
-    ly0, ly1, lstep = _axis_scale(min(lv), max(lv))
+    # 有小数指标（kd）时轴也按小数走，否则刻度会被压成 1/1/1
+    _dec = 2 if any(isinstance(s["val"], float) for d in datasets for s in d["series"]) else 0
+    ly0, ly1, lstep = _axis_scale(min(lv), max(lv), decimals=_dec)
     if right:
         rv = [s["val"] for d in right for s in d["series"]]
-        ry0, ry1, rstep = _axis_scale(min(rv), max(rv))
+        ry0, ry1, rstep = _axis_scale(min(rv), max(rv), decimals=_dec)
 
     def YL(v: float) -> float:
         return T + ph - (v - ly0) / max(1e-9, (ly1 - ly0)) * ph
@@ -682,7 +791,7 @@ def _trend_svg(datasets: list) -> str:
         grid.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W-R}" y2="{y:.1f}" '
                     f'stroke="rgba(120,100,80,.13)" stroke-width="1" stroke-dasharray="4 6"/>')
         ltick.append(f'<text x="{L-14}" y="{y+4:.1f}" text-anchor="end" font-size="15" '
-                     f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(int(round(v)))}</text>')
+                     f'fill="#a89e96" font-family="Monocraft,PingFang SC,sans-serif">{_dec_fmt(v, _dec)}</text>')
         k += 1
 
     # ── 右轴刻度（用该序列的颜色，避免和左轴混淆）──
@@ -695,7 +804,7 @@ def _trend_svg(datasets: list) -> str:
             y = YR(v)
             rtick.append(f'<text x="{W-R+14}" y="{y+4:.1f}" text-anchor="start" font-size="15" '
                          f'fill="{rc}" opacity=".85" '
-                         f'font-family="Monocraft,PingFang SC,sans-serif">{_fmt_num(int(round(v)))}</text>')
+                         f'font-family="Monocraft,PingFang SC,sans-serif">{_dec_fmt(v, _dec)}</text>')
             k += 1
 
     # ── 折线 / 采样点 ──
@@ -807,6 +916,13 @@ def _label_picks(vals: list, plot_w: float, max_chars: int) -> list:
     return kept
 
 
+def _stat_num(v, dec: int = 0) -> str:
+    """统计条数值：dec>0 固定小数位（kd），否则千分位整数。"""
+    if dec:
+        return f"{v:.{dec}f}"
+    return _fmt_num(int(round(v)))
+
+
 def _value_label(x: float, y: float, v: int, color: str, first: bool, last: bool) -> str:
     anchor = "start" if first else ("end" if last else "middle")
     dx = 2 if first else (-2 if last else 0)
@@ -846,10 +962,11 @@ def build_trend_card_html(player: str, datasets: list, days: int | None = None,
         for d in datasets:
             vals = [s["val"] for s in d["series"]]
             delta = vals[-1] - vals[0]
+            _dec = 2 if any(isinstance(v, float) for v in vals) else 0
             stats += (
                 f'<div class="stat"><div class="k">{_esc_html(d["label"])} 当前</div>'
-                f'<div class="v" style="color:{d["accent"]}">{_fmt_num(vals[-1])}</div>'
-                f'<div class="k" style="margin-top:3px">增长 {"+" if delta > 0 else ""}{_fmt_num(delta)}</div></div>'
+                f'<div class="v" style="color:{d["accent"]}">{_stat_num(vals[-1], _dec)}</div>'
+                f'<div class="k" style="margin-top:3px">增长 {"+" if delta > 0 else ""}{_stat_num(delta, _dec)}</div></div>'
             )
     else:
         vals = [s["val"] for s in datasets[0]["series"]]
@@ -858,14 +975,17 @@ def build_trend_card_html(player: str, datasets: list, days: int | None = None,
         per_day = delta / max(1, len(vals) - 1)
         diffs = [vals[i] - vals[i - 1] for i in range(1, len(vals))]
         max_day = max(diffs) if diffs else 0
+        # ★ 2026-11-13：kd 这类小数指标要按 2 位小数显示，
+        #   否则会出现 +0.30000000000000004 这种浮点尾数
+        _dec = 2 if any(isinstance(v, float) for v in vals) else 0
         stats = (
-            f'<div class="stat"><div class="k">起始</div><div class="v flat">{_fmt_num(first)}</div></div>'
-            f'<div class="stat"><div class="k">当前</div><div class="v">{_fmt_num(last)}</div></div>'
+            f'<div class="stat"><div class="k">起始</div><div class="v flat">{_stat_num(first, _dec)}</div></div>'
+            f'<div class="stat"><div class="k">当前</div><div class="v">{_stat_num(last, _dec)}</div></div>'
             f'<div class="stat"><div class="k">{"增长" if delta >= 0 else "减少"}</div>'
-            f'<div class="v {"up" if delta > 0 else "flat"}">{"+" if delta > 0 else ""}{_fmt_num(delta)}</div></div>'
-            f'<div class="stat"><div class="k">日均增长</div><div class="v flat">{"+" if per_day > 0 else ""}{per_day:.1f}</div></div>'
+            f'<div class="v {"up" if delta > 0 else "flat"}">{"+" if delta > 0 else ""}{_stat_num(delta, _dec)}</div></div>'
+            f'<div class="stat"><div class="k">日均增长</div><div class="v flat">{"+" if per_day > 0 else ""}{_stat_num(per_day, _dec)}</div></div>'
             f'<div class="stat"><div class="k">单日最高</div>'
-            f'<div class="v flat">{"+" if max_day > 0 else ""}{_fmt_num(int(max_day))}</div></div>'
+            f'<div class="v flat">{"+" if max_day > 0 else ""}{_stat_num(max_day, _dec)}</div></div>'
         )
 
     title = datasets[0]["label"] if not multi else " / ".join(d["label"] for d in datasets)

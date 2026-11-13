@@ -636,7 +636,7 @@ html,body{{width:640px;
     </div>
 
     <div class="panel"><div class="k">趋势 TREND（折线图，需 ≥2 天采集记录）</div>
-      <div class="row"><code>trend</code><span class="d">指标：bw_kills / bw_wins / bw_finals / bw_deaths / arena_kills</span><span class="u">/~wdsj trend &lt;玩家&gt; bw_wins</span></div>
+      <div class="row"><code>trend</code><span class="d">49 项指标（起床 33 / 竞技 16），最多叠 3 条线；trend help 看全表</span><span class="u">/~wdsj trend &lt;玩家&gt; 击杀</span></div>
     </div>
 
     <div class="foot">
@@ -647,3 +647,96 @@ html,body{{width:640px;
 </div>
 </body></html>"""
 
+
+
+def build_trend_help_card_html(bot_name: str) -> str:
+    """构建 /~wdsj trend help 卡片（主题与战绩帮助卡一致）。
+
+    ★ 2026-11-13：趋势指标从 5 项扩到 50 项，需要一张能列全的说明卡。
+      指标表直接读 wdsj_tracker 的 _BW_TREND_FIELDS / _ARENA_TREND_FIELDS，
+      以后加字段卡片自动跟上，不再两处维护。
+    """
+    from services.wdsj_tracker import (
+        _ARENA_TREND_FIELDS,
+        _BW_TREND_FIELDS,
+        _metric_id,
+    )
+
+    def chips(fields, prefix):
+        out = []
+        for f, cn, _extra in fields:
+            out.append(f'<span class="chip"><b>{_metric_id(prefix, f)}</b>{cn}</span>')
+        return "".join(out)
+
+    bw_chips = chips(_BW_TREND_FIELDS, "bw_")
+    arena_chips = chips(_ARENA_TREND_FIELDS, "arena_")
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{width:640px;
+  font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased;}}
+:root{{--ink:#3a332c;--muted:#8a7f76;--accent:#f0875c;}}
+.card{{width:640px;padding:34px 38px 30px;position:relative;overflow:hidden;color:var(--ink);
+  background:
+    radial-gradient(620px 300px at 10% -6%, rgba(255,183,154,.34), transparent 60%),
+    radial-gradient(620px 300px at 92% -6%, rgba(158,188,255,.36), transparent 60%),
+    linear-gradient(160deg,#fbf6f0 0%,#f4f0ec 42%,#eef1f6 100%);
+  border-radius:30px;}}
+.wrap{{position:relative;z-index:2;display:flex;flex-direction:column;gap:14px;}}
+.top{{display:flex;align-items:baseline;gap:12px;}}
+.brand{{font-size:21px;font-weight:800;letter-spacing:.02em;}}
+.brand i{{font-style:normal;font-size:12.5px;color:var(--muted);font-weight:400;margin-left:8px;}}
+.main{{background:rgba(255,255,255,.62);backdrop-filter:blur(14px);
+  border:1px solid rgba(255,255,255,.9);border-radius:18px;padding:14px 18px;
+  box-shadow:0 8px 20px rgba(120,80,60,.08);}}
+.main code{{font-size:16px;font-weight:800;color:var(--accent);}}
+.main .n{{font-size:12.5px;color:var(--muted);margin-top:6px;line-height:1.6;}}
+.panel{{background:rgba(255,255,255,.55);backdrop-filter:blur(18px);
+  border:1px solid rgba(255,255,255,.85);border-radius:20px;padding:15px 18px;
+  box-shadow:0 10px 24px rgba(120,80,60,.07), inset 0 1px 0 rgba(255,255,255,.9);}}
+.k{{font-size:11.5px;letter-spacing:.2em;color:var(--muted);margin-bottom:9px;font-weight:700;}}
+.row{{display:flex;align-items:baseline;gap:10px;padding:5px 0;font-size:13px;}}
+.row code{{color:var(--accent);font-weight:800;min-width:186px;margin-right:6px;}}
+.row .d{{color:var(--ink);flex:1;}}
+.row .u{{color:var(--muted);font-size:12px;}}
+.chips{{display:flex;flex-wrap:wrap;gap:6px;}}
+.chip{{font-size:12px;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.72);
+  border:1px solid rgba(150,130,110,.2);color:var(--ink);white-space:nowrap;}}
+.chip b{{color:var(--accent);margin-right:5px;font-weight:800;font-family:Monocraft,monospace;}}
+.chip.arena b{{color:#4a6cf7;}}
+.foot{{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);padding:0 4px;}}
+.foot .pill{{background:rgba(240,135,92,.14);color:#c4562f;border-radius:999px;
+  padding:3px 10px;font-weight:700;}}
+</style></head>
+<body><div class="card"><div class="wrap">
+  <div class="top"><div class="brand">洛花星雨 · 战绩趋势<i>TREND</i></div></div>
+
+  <div class="main">
+    <code>/~wdsj trend &lt;玩家&gt; [指标…]</code>
+    <div class="n">最多叠 3 条线；省略玩家名就用你绑定的那个；指标可写中文、英文或字段名。</div>
+  </div>
+
+  <div class="panel"><div class="k">用法 USAGE</div>
+    <div class="row"><code>trend 玩家 指标</code><span class="d">单指标折线</span><span class="u">/~wdsj trend 小明 击杀</span></div>
+    <div class="row"><code>trend 玩家 指标1 指标2</code><span class="d">多指标叠图（≤3）</span><span class="u">/~wdsj trend 小明 击杀 胜场</span></div>
+    <div class="row"><code>trend jjc</code><span class="d">竞技场默认看击杀</span><span class="u">jjc=竞技场 bw=起床</span></div>
+    <div class="row"><code>trend help</code><span class="d">本卡</span><span class="u">—</span></div>
+  </div>
+
+  <div class="panel"><div class="k">起床战争 BEDWARS · {len(_BW_TREND_FIELDS)} 项</div>
+    <div class="chips">{bw_chips}</div>
+  </div>
+
+  <div class="panel"><div class="k">竞技场 ARENA · {len(_ARENA_TREND_FIELDS)} 项</div>
+    <div class="chips">{arena_chips}</div>
+  </div>
+
+  <div class="foot">
+    <span class="pill">需 ≥2 天采集</span>
+    <span>同一天多条只取最后一条 ｜ 段位是非数值，不在趋势里</span>
+    <span style="flex:1"></span><span>{bot_name}</span>
+  </div>
+</div></div></body></html>"""
