@@ -27,6 +27,7 @@ from services.wdsj_tracker import (
     generate_trend_card,
     get_player_trend,
     resolve_metric,
+    resolve_scoped,
 )
 from utils.format_lang import format_lang
 
@@ -50,8 +51,20 @@ async def handle_trend(args, user_id: int, group_id: int, is_group: bool,
 
     player = None
     metrics: list[str] = []
-    for a in args[1:]:
-        # ★ 先按别名归一化（jjc/竞技场/bw/胜场…），认不出来才当玩家名。
+    _toks = list(args[1:])
+    _i = 0
+    while _i < len(_toks):
+        a = _toks[_i]
+        # ★ 2026-11-13：「游戏 + 指标」两段式优先 —— `bw 放方块` / `arena 击杀`。
+        #   击杀/胜场/死亡/KD/分数 两个游戏同名，只有两段式才说得清是哪一个。
+        if _i + 1 < len(_toks):
+            _sm = resolve_scoped(a, _toks[_i + 1])
+            if _sm:
+                if _sm not in metrics:
+                    metrics.append(_sm)
+                _i += 2
+                continue
+        # ★ 再按别名归一化（jjc/竞技场/bw/胜场…），认不出来才当玩家名。
         #   原来只认五个英文 key，用户发 `trend jjc` 会被当成玩家名，
         #   回「记录里没有 jjc 这个人」——纯误导（2026-11-06 用户实测）。
         m = resolve_metric(a)
@@ -60,6 +73,7 @@ async def handle_trend(args, user_id: int, group_id: int, is_group: bool,
                 metrics.append(m)          # 多指标叠加，最多 3 条
         else:
             player = a
+        _i += 1
 
     if not metrics:
         metrics = ["bw_kills"]

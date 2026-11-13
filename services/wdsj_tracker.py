@@ -666,16 +666,32 @@ def _metric_id(prefix: str, field: str) -> str:
 _TREND_METRICS = []
 _TREND_LABELS = {}
 _TREND_ALIAS = {}
+# ★ 2026-11-13：按游戏分组的作用域别名表 {模板 id: {别名: 指标 id}}。
+#   用来支持「游戏 + 指标」两段式写法：`/~wdsj trend 小明 bw 放方块`。
+#   击杀/胜场/死亡/KD/分数 在两个游戏里同名，只有带作用域才能指定是哪一个。
+_SCOPED_ALIAS: dict[str, dict[str, str]] = {}
+_SCOPE_TO_TID = {
+    "bw": "bedwars-stats", "起床": "bedwars-stats", "起床战争": "bedwars-stats",
+    "arena": "arena-stats", "jjc": "arena-stats", "竞技场": "arena-stats",
+    "竞技": "arena-stats",
+}
 for _prefix, _tid, _fields in (
     ("bw_", "bedwars-stats", _BW_TREND_FIELDS),
     ("arena_", "arena-stats", _ARENA_TREND_FIELDS),
 ):
+    _scope_tbl = _SCOPED_ALIAS.setdefault(_tid, {})
+    _short = _prefix.rstrip("_")
     for _f, _cn, _extra in _fields:
         _mid = _metric_id(_prefix, _f)
         _TREND_METRICS.append((_mid, _tid, _f, _cn))
         _TREND_LABELS[_mid] = _cn
         for _a in (_mid, _f.lower(), _cn, *_extra):
             _TREND_ALIAS.setdefault(_a.lower(), _mid)
+            # 作用域表里同时收「去掉前缀的短名」，`bw blockplace` / `bw 放方块` 都认
+            if not _a.lower().startswith(_short + "_"):
+                _scope_tbl.setdefault(_a.lower(), _mid)
+            else:
+                _scope_tbl.setdefault(_a.lower()[len(_short) + 1:], _mid)
         # 「bw击杀」这种拼写也认
         _TREND_ALIAS.setdefault((_prefix.rstrip("_") + _cn).lower(), _mid)
 
@@ -689,6 +705,21 @@ _TREND_GROUP_ALIAS = {
 }
 _TREND_ALIAS.update(_TREND_GROUP_ALIAS)
 
+
+
+def resolve_scoped(scope: str, token: str) -> str | None:
+    """「游戏 + 指标」两段式：`bw 放方块` / `arena 击杀` / `jjc 胜场`。
+
+    scope 认 bw/起床/起床战争/arena/jjc/竞技场/竞技；token 只在该游戏的指标里找，
+    因此可以精确指定重名指标（击杀、胜场、死亡、KD、分数两个游戏都有）。
+    """
+    tid = _SCOPE_TO_TID.get((scope or "").strip().lower())
+    if not tid:
+        return None
+    k = (token or "").strip().lower()
+    if not k:
+        return None
+    return _SCOPED_ALIAS.get(tid, {}).get(k)
 
 
 def resolve_metric(token: str) -> str | None:

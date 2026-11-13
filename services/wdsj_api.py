@@ -662,14 +662,17 @@ def build_trend_help_card_html(bot_name: str) -> str:
         _metric_id,
     )
 
-    def chips(fields, prefix):
+    # ★ 2026-11-13：展示成「游戏 + 中文指标」两段式（bw 放方块），
+    #   而不是 bw_blockplace —— 后者既长又难记。完整 id 放进 title 备查。
+    def chips(fields, prefix, scope):
         out = []
         for f, cn, _extra in fields:
-            out.append(f'<span class="chip"><b>{_metric_id(prefix, f)}</b>{cn}</span>')
+            mid = _metric_id(prefix, f)
+            out.append(f'<span class="chip" title="{mid}"><b>{scope}</b>{cn}</span>')
         return "".join(out)
 
-    bw_chips = chips(_BW_TREND_FIELDS, "bw_")
-    arena_chips = chips(_ARENA_TREND_FIELDS, "arena_")
+    bw_chips = chips(_BW_TREND_FIELDS, "bw_", "bw")
+    arena_chips = chips(_ARENA_TREND_FIELDS, "arena_", "arena")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -716,13 +719,14 @@ html,body{{width:640px;
 
   <div class="main">
     <code>/~wdsj trend &lt;玩家&gt; [指标…]</code>
-    <div class="n">最多叠 3 条线；省略玩家名就用你绑定的那个；指标可写中文、英文或字段名。</div>
+    <div class="n">最多叠 3 条线；省略玩家名就用你绑定的那个；指标写中文最省事（放方块 / 床战胜），也认英文和字段名。</div>
   </div>
 
   <div class="panel"><div class="k">用法 USAGE</div>
-    <div class="row"><code>trend 玩家 指标</code><span class="d">单指标折线</span><span class="u">/~wdsj trend 小明 击杀</span></div>
-    <div class="row"><code>trend 玩家 指标1 指标2</code><span class="d">多指标叠图（≤3）</span><span class="u">/~wdsj trend 小明 击杀 胜场</span></div>
-    <div class="row"><code>trend jjc</code><span class="d">竞技场默认看击杀</span><span class="u">jjc=竞技场 bw=起床</span></div>
+    <div class="row"><code>trend 玩家 指标</code><span class="d">单指标折线，中文直接写</span><span class="u">trend 小明 放方块</span></div>
+    <div class="row"><code>trend 玩家 游戏 指标</code><span class="d">两段式，重名指标靠它区分</span><span class="u">trend 小明 bw 击杀</span></div>
+    <div class="row"><code>trend 玩家 指标1 指标2</code><span class="d">多指标叠图（≤3）</span><span class="u">trend 小明 击杀 胜场</span></div>
+    <div class="row"><code>trend 玩家 竞技场 击杀</code><span class="d">中文游戏名也认</span><span class="u">bw/起床 · arena/jjc/竞技场</span></div>
     <div class="row"><code>trend help</code><span class="d">本卡</span><span class="u">—</span></div>
   </div>
 
