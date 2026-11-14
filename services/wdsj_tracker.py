@@ -63,6 +63,8 @@ def slots_hint() -> str:
 _TEMPLATES = {
     "bedwars-stats": "起床战争",
     "arena-stats": "竞技场",
+    # ★ 2026-11-14：官网新模板，采集一并纳入（每玩家每轮多一次请求）
+    "arenanext-stats": "洛花竞技场",
 }
 
 # 日报卡片用的字段映射（起床战争）
@@ -652,6 +654,32 @@ _ARENA_TREND_FIELDS = [
     ("fireballfightWins", "火球战胜", ("火球战胜利", "ffw")),
     ("fireballfightLosses", "火球战负", ("火球战失败", "ffl")),
 ]
+# ★ 2026-11-14 新增：官网 19 个模板里的 arenanext-stats（displayName「洛花竞技场」）。
+#   字段名与中文名直接取自接口返回的 labels，跟官网显示完全一致。
+_ARENA_NEXT_TREND_FIELDS = [
+    ("kills", "击杀", ("kill",)),
+    ("wins", "胜利", ("win",)),
+    ("losses", "失败", ("loss", "lose")),
+    ("deaths", "死亡", ("death",)),
+    ("matches", "对局", ("match", "场次")),
+    ("score", "积分", ("分数",)),
+    ("kd", "K/D", ("kd值",)),
+    ("wl", "W/L", ("胜负比",)),
+    ("winRate", "胜率", ("胜率", "rate")),
+    ("currentStreak", "当前连胜", ("连胜", "streak")),
+    ("bestStreak", "最高连胜", ("最高连赢", "best")),
+    ("experience", "经验", ("exp",)),
+    ("coins", "金币", ("coin", "钱")),
+    ("eventTokens", "活动代币", ("代币", "token")),
+    ("globalElo", "全局 ELO", ("elo",)),
+    ("rankedWins", "排位胜利", ("rw",)),
+    ("rankedLosses", "排位失败", ("rl",)),
+    ("rankedMatches", "排位对局", ("rm",)),
+    ("unrankedWins", "休闲胜利", ("uw",)),
+    ("unrankedLosses", "休闲失败", ("ul",)),
+    ("unrankedMatches", "休闲对局", ("um",)),
+]
+
 # 非数值字段（段位是带颜色代码的字符串），不进趋势
 _ARENA_NON_NUMERIC = {"division"}
 
@@ -674,10 +702,13 @@ _SCOPE_TO_TID = {
     "bw": "bedwars-stats", "起床": "bedwars-stats", "起床战争": "bedwars-stats",
     "arena": "arena-stats", "jjc": "arena-stats", "竞技场": "arena-stats",
     "竞技": "arena-stats",
+    "anext": "arenanext-stats", "a2": "arenanext-stats",
+    "洛花": "arenanext-stats", "洛花竞技场": "arenanext-stats",
 }
 for _prefix, _tid, _fields in (
     ("bw_", "bedwars-stats", _BW_TREND_FIELDS),
     ("arena_", "arena-stats", _ARENA_TREND_FIELDS),
+    ("anext_", "arenanext-stats", _ARENA_NEXT_TREND_FIELDS),
 ):
     _scope_tbl = _SCOPED_ALIAS.setdefault(_tid, {})
     _short = _prefix.rstrip("_")

@@ -143,6 +143,8 @@ TEMPLATES = {
     "buildbattle-stats": "建筑战争", "villagedefense-stats": "村庄保卫战",
     "naturaldisasters-stats": "天灾逃生", "csgo-stats": "反恐精英",
     "arena-modern-stats": "高版本竞技场", "luckypillars-stats": "幸运之柱",
+    # ★ 2026-11-14：官网 /api/v1/templates 新增，displayName 叫「洛花竞技场」
+    "arenanext-stats": "洛花竞技场",
 }
 
 ALIASES = {
@@ -155,6 +157,8 @@ ALIASES = {
     "cs": "csgo-stats", "csgo": "csgo-stats",
     "am": "arena-modern-stats", "modern": "arena-modern-stats",
     "lp": "luckypillars-stats", "pillar": "luckypillars-stats",
+    "anext": "arenanext-stats", "a2": "arenanext-stats",
+    "洛花": "arenanext-stats", "洛花竞技场": "arenanext-stats",
 }
 
 # 模板中文名 -> id（支持 /~wdsj 幸运之柱 xxx 这种自然说法）
@@ -534,6 +538,7 @@ def build_wdsj_help_card_html(bot_name: str) -> str:
         ("mm", "神秘谋杀"), ("uhc", "极限生存"), ("wc", "星跃水立方"),
         ("bb", "建筑战争"), ("vd", "村庄保卫战"), ("nd", "天灾逃生"),
         ("cs", "反恐精英"), ("am", "高版本竞技场"), ("lp", "幸运之柱"),
+        ("anext", "洛花竞技场"),
     ]
     mode_chips = "".join(
         f'<span class="chip"><b>{a}</b> {n}</span>' for a, n in modes
@@ -657,6 +662,7 @@ def build_trend_help_card_html(bot_name: str) -> str:
       以后加字段卡片自动跟上，不再两处维护。
     """
     from services.wdsj_tracker import (
+        _ARENA_NEXT_TREND_FIELDS,
         _ARENA_TREND_FIELDS,
         _BW_TREND_FIELDS,
         _metric_id,
@@ -673,6 +679,7 @@ def build_trend_help_card_html(bot_name: str) -> str:
 
     bw_chips = chips(_BW_TREND_FIELDS, "bw_", "bw")
     arena_chips = chips(_ARENA_TREND_FIELDS, "arena_", "arena")
+    anext_chips = chips(_ARENA_NEXT_TREND_FIELDS, "anext_", "anext")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -727,6 +734,7 @@ html,body{{width:640px;
     <div class="row"><code>trend 玩家 游戏 指标</code><span class="d">两段式，重名指标靠它区分</span><span class="u">trend 小明 bw 击杀</span></div>
     <div class="row"><code>trend 玩家 指标1 指标2</code><span class="d">多指标叠图（≤3）</span><span class="u">trend 小明 击杀 胜场</span></div>
     <div class="row"><code>trend 玩家 竞技场 击杀</code><span class="d">中文游戏名也认</span><span class="u">bw/起床 · arena/jjc/竞技场</span></div>
+    <div class="row"><code>trend 玩家 洛花 击杀</code><span class="d">洛花竞技场（新模板）</span><span class="u">anext / a2 / 洛花</span></div>
     <div class="row"><code>trend help</code><span class="d">本卡</span><span class="u">—</span></div>
   </div>
 
@@ -736,6 +744,10 @@ html,body{{width:640px;
 
   <div class="panel"><div class="k">竞技场 ARENA · {len(_ARENA_TREND_FIELDS)} 项</div>
     <div class="chips">{arena_chips}</div>
+  </div>
+
+  <div class="panel"><div class="k">洛花竞技场 ARENA NEXT · {len(_ARENA_NEXT_TREND_FIELDS)} 项</div>
+    <div class="chips">{anext_chips}</div>
   </div>
 
   <div class="foot">
