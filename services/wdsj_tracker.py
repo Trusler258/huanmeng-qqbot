@@ -170,8 +170,17 @@ async def daily_stats_collect(max_retry_rounds: int = 3, retry_delay: float = 8.
                     failed[(player, tid)] = api.last_error or "empty data"
 
         # 首轮全量 + 对失败名单统一重试（最多 max_retry_rounds 轮）
+        # ★ 2026-11-14：4xx 不重试。官网前面挂的是 CrowdSec，http-probing 场景
+        #   容量只有 10（400/403/404，非静态资源，10 秒漏 1），连续 10 个错误码
+        #   就封 IP 4 小时。原来对所有失败一律重试 3 轮，等于把 404 放大 4 倍。
         for rnd in range(1 + max_retry_rounds):
-            targets = all_targets if rnd == 0 else list(failed.keys())
+            if rnd == 0:
+                targets = all_targets
+            else:
+                targets = [k for k, why in failed.items() if not why.startswith("HTTP 4")]
+                _skip = [k for k, why in failed.items() if why.startswith("HTTP 4")]
+                if _skip:
+                    logger.info("跳过 4xx 不重试 %d 项（避免触发 CrowdSec http-probing）", len(_skip))
             if not targets:
                 break
             if rnd > 0:
